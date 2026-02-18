@@ -1,0 +1,182 @@
+"""Tests for ToolRegistry — registration, toolset building, validation, and tool resolution."""
+
+import pytest
+from pydantic_ai.toolsets import ExternalToolset, FunctionToolset
+
+from lovely_assistant.services.tools._registry import ToolRegistry
+from lovely_assistant.services.tools.config import ToolConfig
+from lovely_assistant.services.tools.exceptions import ToolValidationError
+from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+
+
+@pytest.fixture
+def config():
+    return ToolConfig()
+
+
+@pytest.fixture
+def registry(config):
+    return ToolRegistry(config)
+
+
+@pytest.fixture
+def backend_definition():
+    return ToolDefinition(
+        name="get_time",
+        description="Get the current UTC time.",
+        parameters_schema={"type": "object", "properties": {}},
+        category=ToolCategory.BACKEND,
+    )
+
+
+@pytest.fixture
+def frontend_definition():
+    return ToolDefinition(
+        name="ui_notify",
+        description="Send a notification to the UI.",
+        parameters_schema={
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+            "required": ["message"],
+        },
+        category=ToolCategory.FRONTEND,
+    )
+
+
+@pytest.fixture
+def dummy_handler():
+    async def handler() -> str:
+        return "dummy"
+
+    return handler
+
+
+class TestRegistration:
+    def test_register_backend_tool(self, registry, backend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        assert "get_time" in registry.get_tool_names()
+
+    def test_register_frontend_tool(self, registry, frontend_definition):
+        registry.register_frontend_tool(frontend_definition)
+        assert "ui_notify" in registry.get_tool_names()
+
+    def test_duplicate_backend_rejected(self, registry, backend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        with pytest.raises(ToolValidationError, match="already registered"):
+            registry.register_backend_tool(backend_definition, dummy_handler)
+
+    def test_duplicate_frontend_rejected(self, registry, frontend_definition):
+        registry.register_frontend_tool(frontend_definition)
+        with pytest.raises(ToolValidationError, match="already registered"):
+            registry.register_frontend_tool(frontend_definition)
+
+    def test_wrong_category_backend(self, registry, frontend_definition, dummy_handler):
+        """Registering a frontend-categorized definition as a backend tool raises."""
+        with pytest.raises(ToolValidationError, match="Expected backend tool"):
+            registry.register_backend_tool(frontend_definition, dummy_handler)
+
+    def test_wrong_category_frontend(self, registry, backend_definition):
+        """Registering a backend-categorized definition as a frontend tool raises."""
+        with pytest.raises(ToolValidationError, match="Expected frontend tool"):
+            registry.register_frontend_tool(backend_definition)
+
+
+class TestBuildToolset:
+    def test_empty_registry(self, registry):
+        toolsets = registry.build_toolset()
+        assert toolsets == []
+
+    def test_backend_only(self, registry, backend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        toolsets = registry.build_toolset()
+        assert len(toolsets) == 1
+        assert isinstance(toolsets[0], FunctionToolset)
+
+    def test_frontend_only(self, registry, frontend_definition):
+        registry.register_frontend_tool(frontend_definition)
+        toolsets = registry.build_toolset()
+        assert len(toolsets) == 1
+        assert isinstance(toolsets[0], ExternalToolset)
+
+    def test_both(self, registry, backend_definition, frontend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        registry.register_frontend_tool(frontend_definition)
+        toolsets = registry.build_toolset()
+        assert len(toolsets) == 2
+        types = {type(t) for t in toolsets}
+        assert FunctionToolset in types
+        assert ExternalToolset in types
+
+    def test_frontend_disabled(self, backend_definition, frontend_definition, dummy_handler):
+        """With enable_frontend_tools=False, only backend toolset is returned."""
+        config = ToolConfig(enable_frontend_tools=False)
+        registry = ToolRegistry(config)
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        registry.register_frontend_tool(frontend_definition)
+
+        toolsets = registry.build_toolset()
+        assert len(toolsets) == 1
+        assert isinstance(toolsets[0], FunctionToolset)
+
+
+class TestGetAvailableTools:
+    def test_empty(self, registry):
+        result = registry.get_available_tools()
+        assert isinstance(result, ToolSet)
+        assert result.backend_tools == []
+        assert result.frontend_tools == []
+
+    def test_with_tools(self, registry, backend_definition, frontend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        registry.register_frontend_tool(frontend_definition)
+        result = registry.get_available_tools()
+        assert len(result.backend_tools) == 1
+        assert len(result.frontend_tools) == 1
+        assert result.total_count == 2
+
+    def test_returns_toolset_type(self, registry):
+        result = registry.get_available_tools()
+        assert isinstance(result, ToolSet)
+
+
+class TestValidateToolCall:
+    def test_registered_tool(self, registry, backend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        assert registry.validate_tool_call("get_time", {}) is True
+
+    def test_unknown_tool(self, registry):
+        assert registry.validate_tool_call("nonexistent", {}) is False
+
+
+class TestMaxToolsWarning:
+    def test_exceeds_max(self):
+        """When tool count exceeds max_tools_per_request, build_toolset still works (warning only)."""
+        config = ToolConfig(max_tools_per_request=1)
+        registry = ToolRegistry(config)
+
+        async def handler_a() -> str:
+            return "a"
+
+        async def handler_b() -> str:
+            return "b"
+
+        defn_a = ToolDefinition(
+            name="tool_a",
+            description="Tool A",
+            parameters_schema={},
+            category=ToolCategory.BACKEND,
+        )
+        defn_b = ToolDefinition(
+            name="tool_b",
+            description="Tool B",
+            parameters_schema={},
+            category=ToolCategory.BACKEND,
+        )
+
+        registry.register_backend_tool(defn_a, handler_a)
+        registry.register_backend_tool(defn_b, handler_b)
+
+        # Should not raise, just warn
+        toolsets = registry.build_toolset()
+        assert len(toolsets) == 1
+        assert isinstance(toolsets[0], FunctionToolset)
