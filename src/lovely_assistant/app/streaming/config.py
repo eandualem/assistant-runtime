@@ -26,3 +26,7 @@ class StreamingConfig(BaseModel):
         le=600.0,
         description="Maximum time for a single streaming request.",
     )
+    emit_debug_events: bool = Field(
+        default=True,
+        description="Emit debug events exposing pipeline internals.",
+    )

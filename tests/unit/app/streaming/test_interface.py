@@ -18,6 +18,7 @@ from lovely_assistant.app.streaming.exceptions import (
     StreamSetupError,
 )
 from lovely_assistant.app.streaming.interface import StreamingService
+from lovely_assistant.services.history.models import HistoryPreparationResult
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 # --- Helpers ---
@@ -35,17 +36,26 @@ def _make_service(
 
     history_service = AsyncMock()
     history_service.prepare_history = AsyncMock(return_value=([], False))
+    history_service.prepare_history_with_metadata = AsyncMock(
+        return_value=HistoryPreparationResult(
+            history=[], was_compacted=False, message_count=0, estimated_tokens=0
+        )
+    )
 
     tool_service = MagicMock()
     tool_service.get_available_tools.return_value = ToolSet()
     tool_service.build_toolset.return_value = []
 
+    # Mock assistant service with _sessions attribute
+    mock_assistant_service = MagicMock()
+    mock_assistant_service._sessions = sessions or SessionStore()
+
     return StreamingService(
-        config=streaming_config or StreamingConfig(),
+        config=streaming_config or StreamingConfig(emit_debug_events=False),
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
-        sessions=sessions or SessionStore(),
+        assistant_service=mock_assistant_service,
         assistant_config=assistant_config or AssistantConfig(),
     )
 
@@ -426,7 +436,7 @@ class TestStreamSetupErrors:
         service = _make_service()
         await service.start()
 
-        service._history.prepare_history.side_effect = RuntimeError("history fail")
+        service._history.prepare_history_with_metadata.side_effect = RuntimeError("history fail")
         request = _make_request()
 
         with pytest.raises(StreamSetupError, match="Stream setup failed"):
@@ -487,3 +497,113 @@ class TestStreamModelResolution:
 
         final = [e for e in events if e["type"] == "final_response"]
         assert final[0]["model"] == "test-model"
+
+
+class TestStreamDebugEvents:
+    @pytest.mark.asyncio
+    async def test_debug_events_emitted_when_enabled(self):
+        service = _make_service(streaming_config=StreamingConfig(emit_debug_events=True))
+        await service.start()
+        request = _make_request()
+
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_run.result.usage.return_value = MagicMock(
+            request_tokens=100,
+            response_tokens=50,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+            requests=1,
+            total_tokens=150,
+        )
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        types = [e["type"] for e in events]
+        assert "debug_request" in types
+        assert "debug_system_prompt" in types
+        assert "debug_tool_selection" in types
+        assert "debug_agent_config" in types
+        assert "debug_history" in types
+        assert "debug_tool_execution" in types
+        assert "debug_usage" in types
+        assert "debug_completed" in types
+
+    @pytest.mark.asyncio
+    async def test_debug_events_not_emitted_when_disabled(self):
+        service = _make_service(streaming_config=StreamingConfig(emit_debug_events=False))
+        await service.start()
+        request = _make_request()
+
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        debug_events = [e for e in events if e["type"].startswith("debug_")]
+        assert len(debug_events) == 0
+
+    @pytest.mark.asyncio
+    async def test_debug_request_event_content(self):
+        service = _make_service(streaming_config=StreamingConfig(emit_debug_events=True))
+        await service.start()
+        request = _make_request(
+            message="Test message",
+            machine_state={"active_page": {"name": "home"}},
+        )
+
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_run.result.usage.return_value = MagicMock(
+            request_tokens=0,
+            response_tokens=0,
+            requests=0,
+            total_tokens=0,
+        )
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        debug_req = [e for e in events if e["type"] == "debug_request"][0]
+        assert debug_req["session_id"] == "test-session"
+        assert debug_req["message"] == "Test message"
+        assert debug_req["is_continuation"] is False
+        assert debug_req["has_machine_state"] is True
+        assert debug_req["machine_state"] == {"active_page": {"name": "home"}}
+
+    @pytest.mark.asyncio
+    async def test_debug_completed_has_duration(self):
+        service = _make_service(streaming_config=StreamingConfig(emit_debug_events=True))
+        await service.start()
+        request = _make_request()
+
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_run.result.usage.return_value = MagicMock(
+            request_tokens=0,
+            response_tokens=0,
+            requests=0,
+            total_tokens=0,
+        )
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        completed = [e for e in events if e["type"] == "debug_completed"][0]
+        assert "duration_ms" in completed
+        assert completed["duration_ms"] >= 0
+        assert completed["has_deferred"] is False

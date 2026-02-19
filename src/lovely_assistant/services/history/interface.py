@@ -8,13 +8,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 
 from lovely_assistant.services.history._manager import HistoryManager
 from lovely_assistant.services.history._summarizer import HistorySummarizer
 from lovely_assistant.services.history.config import HistoryConfig
 from lovely_assistant.services.history.exceptions import CompactionError
-from lovely_assistant.services.history.models import WorkingMemory
+from lovely_assistant.services.history.models import HistoryPreparationResult, WorkingMemory
 
 if TYPE_CHECKING:
     from lovely_assistant.services.llm.interface import LlmService
@@ -84,6 +84,109 @@ class HistoryService:
             if isinstance(e, CompactionError):
                 raise
             raise CompactionError(f"History preparation failed: {e}") from e
+
+    async def prepare_history_with_metadata(
+        self,
+        history: list[ModelMessage],
+        session_context: dict[str, Any],
+        *,
+        is_continuation: bool = False,
+    ) -> HistoryPreparationResult:
+        """Prepare history and return debug metadata.
+
+        Wraps prepare_history() with additional metadata for debug events.
+
+        Args:
+            history: Current conversation history.
+            session_context: Session context dict.
+            is_continuation: If True, dangling tool calls are expected.
+
+        Returns:
+            HistoryPreparationResult with history and debug metadata.
+
+        Raises:
+            CompactionError: If history preparation fails.
+        """
+        if self._manager is None:
+            raise CompactionError("History service not started")
+
+        original_count = len(history)
+
+        try:
+            prepared, was_compacted = await self._manager.prepare_history(
+                history, session_context, is_continuation=is_continuation
+            )
+        except Exception as e:
+            if isinstance(e, CompactionError):
+                raise
+            raise CompactionError(f"History preparation failed: {e}") from e
+
+        estimated_tokens = self._manager._estimate_tokens(prepared)
+        summaries = self._summarize_messages(prepared)
+
+        return HistoryPreparationResult(
+            history=prepared,
+            was_compacted=was_compacted,
+            message_count=len(prepared),
+            estimated_tokens=estimated_tokens,
+            compacted_from=original_count if was_compacted else 0,
+            message_summaries=summaries,
+        )
+
+    @staticmethod
+    def _summarize_messages(
+        messages: list[ModelMessage],
+        preview_limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Build per-message summaries for debug events."""
+        summaries: list[dict[str, Any]] = []
+        for msg in messages:
+            if isinstance(msg, ModelRequest):
+                content_parts = []
+                for part in msg.parts:
+                    text = getattr(part, "content", None)
+                    if text is not None and not isinstance(text, str):
+                        text = str(text)
+                    if text:
+                        content_parts.append(text)
+                full = "\n".join(content_parts)
+                preview = full[:preview_limit] if len(full) > preview_limit else full
+                summaries.append(
+                    {
+                        "role": "user",
+                        "content_preview": preview,
+                        "char_count": len(full),
+                        "part_count": len(msg.parts),
+                    }
+                )
+            elif isinstance(msg, ModelResponse):
+                content_parts = []
+                for part in msg.parts:
+                    text = getattr(part, "content", None)
+                    if text is not None and not isinstance(text, str):
+                        text = str(text)
+                    if text:
+                        content_parts.append(text)
+                full = "\n".join(content_parts)
+                preview = full[:preview_limit] if len(full) > preview_limit else full
+                summaries.append(
+                    {
+                        "role": "assistant",
+                        "content_preview": preview,
+                        "char_count": len(full),
+                        "part_count": len(msg.parts),
+                    }
+                )
+            else:
+                summaries.append(
+                    {
+                        "role": "system",
+                        "content_preview": "",
+                        "char_count": 0,
+                        "part_count": 0,
+                    }
+                )
+        return summaries
 
     async def extract_memory_delta(
         self,

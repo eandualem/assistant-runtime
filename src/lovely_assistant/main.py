@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,6 +18,7 @@ from lovely_assistant.base.lifecycle import LifecycleManager
 from lovely_assistant.config import AppSettings
 from lovely_assistant.logging_config import setup_logging
 from lovely_assistant.services.history.factory import register_history
+from lovely_assistant.services.llm._cache_control_patch import apply_patch as _apply_cache_patch
 from lovely_assistant.services.llm.factory import register_llm
 from lovely_assistant.services.tools.factory import register_tools
 
@@ -24,6 +26,13 @@ from lovely_assistant.services.tools.factory import register_tools
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifecycle — startup and shutdown."""
+    # Patch pydantic-ai cache control bug before any agent creation
+    _apply_cache_patch()
+
+    # Load .env into os.environ before AppSettings or os.getenv() calls.
+    # Pydantic Settings' env_file only populates model fields, not os.environ.
+    # LLM providers use os.getenv() for API keys, so they need this.
+    load_dotenv()
     settings = AppSettings()
     setup_logging(json_output=settings.log_json, level=settings.log_level)
 

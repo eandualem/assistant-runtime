@@ -40,8 +40,8 @@ class LLMConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     primary_model: str = Field(
-        default="anthropic:claude-sonnet-4-6",
-        description="Default model for assistant conversations",
+        default="anthropic:claude-haiku-4-5",
+        description="Default model for assistant conversations (fast/cheap for operational tasks)",
     )
     summarization_model: str = Field(
         default="anthropic:claude-haiku-4-5",

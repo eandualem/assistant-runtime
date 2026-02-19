@@ -21,7 +21,7 @@ async def register_streaming(app_state: Any, lifecycle: LifecycleManager) -> Non
         llm_service=app_state.llm_service,
         history_service=app_state.history_service,
         tool_service=app_state.tool_service,
-        sessions=app_state.assistant_service._sessions,
+        assistant_service=app_state.assistant_service,
         assistant_config=settings.assistant,
     )
     app_state.streaming_service = service

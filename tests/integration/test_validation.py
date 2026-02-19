@@ -51,7 +51,7 @@ async def full_app_client(monkeypatch):
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
-        sessions=assistant_service._sessions,
+        assistant_service=assistant_service,
         assistant_config=settings.assistant,
     )
     await lifecycle.register("streaming_service", streaming_service)

@@ -58,7 +58,7 @@ def config():
 def llm_service():
     svc = MagicMock()
     svc._config = MagicMock()
-    svc._config.primary_model = "anthropic:claude-sonnet-4-6"
+    svc._config.primary_model = "anthropic:claude-haiku-4-5"
     # build_agent returns a mock agent whose run() returns a mock result
     mock_agent = AsyncMock()
     mock_agent.run = AsyncMock(return_value=_make_mock_run_result("Hello!"))
@@ -181,7 +181,7 @@ class TestProcessNewMessage:
         llm_service.build_agent.assert_called_once()
         call_kwargs = llm_service.build_agent.call_args[1]
         assert "system_prompt" in call_kwargs
-        assert "Lovely Assistant" in call_kwargs["system_prompt"]
+        assert "Lovely Console" in call_kwargs["system_prompt"]
 
     async def test_calls_build_agent_with_toolsets(self, service, llm_service, tool_service):
         await service.start()
@@ -218,7 +218,7 @@ class TestProcessNewMessage:
         await service.start()
         result = await service.process_message(AssistantRequest(session_id="s1", message="hi"))
         # default_model is None, so falls back to primary_model
-        assert result.model == "anthropic:claude-sonnet-4-6"
+        assert result.model == "anthropic:claude-haiku-4-5"
 
     async def test_model_override(self, llm_service, history_service, tool_service):
         config = AssistantConfig(default_model="openai:gpt-4o")

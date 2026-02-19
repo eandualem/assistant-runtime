@@ -29,12 +29,14 @@ class TestStreamingPipeline:
             ):
                 events.append(event)
 
-        types = [e["type"] for e in events]
+        # Filter to protocol events (not debug_* events)
+        protocol_events = [e for e in events if not e["type"].startswith("debug_")]
+        types = [e["type"] for e in protocol_events]
         assert types[0] == "agent_status"
-        assert events[0]["status"] == "started"
+        assert protocol_events[0]["status"] == "started"
         assert "final_response" in types
         assert types[-1] == "agent_status"
-        assert events[-1]["status"] == "completed"
+        assert protocol_events[-1]["status"] == "completed"
 
     @pytest.mark.asyncio
     async def test_stream_final_response_content(self, wired_services):

@@ -73,6 +73,11 @@ class LlmService:
         self._providers = providers
         self._started = True
 
+        if not self._providers:
+            logger.warning(
+                "No LLM providers configured. Set ANTHROPIC_API_KEY in .env or environment."
+            )
+
         logger.info(
             "LLM service started",
             providers=[p.provider for p in self._providers],

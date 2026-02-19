@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from lovely_assistant.services.tools.models import DeferredToolRequest
+
+
+@dataclass(frozen=True)
+class PromptResult:
+    """Result of building a system prompt — content plus fragment metadata."""
+
+    content: str
+    fragments: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AssistantRequest(BaseModel):

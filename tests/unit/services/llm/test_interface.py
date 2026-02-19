@@ -81,7 +81,7 @@ class TestLlmServiceLifecycle:
         health = await service.health_check()
         assert health["healthy"] is True
         assert "anthropic" in health["providers"]
-        assert health["primary_model"] == "anthropic:claude-sonnet-4-6"
+        assert health["primary_model"] == "anthropic:claude-haiku-4-5"
 
     async def test_json_providers_dont_overwrite_env(self, monkeypatch):
         """When ANTHROPIC_API_KEY is already set, export doesn't overwrite it."""
@@ -166,7 +166,7 @@ class TestExecuteLlmCall:
 
         assert isinstance(result, LLMResult)
         assert result.content == "Hello world"
-        assert result.model == "anthropic:claude-sonnet-4-6"
+        assert result.model == "anthropic:claude-haiku-4-5"
 
     async def test_execute_with_model_override(self, service):
         mock_result = MagicMock()

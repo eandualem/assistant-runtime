@@ -28,6 +28,15 @@ def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
     result = MagicMock()
     result.output = output
     result.all_messages.return_value = []
+    # Usage mock for debug events
+    usage = MagicMock()
+    usage.request_tokens = 100
+    usage.response_tokens = 50
+    usage.cache_read_input_tokens = 0
+    usage.cache_creation_input_tokens = 0
+    usage.requests = 1
+    usage.total_tokens = 150
+    result.usage.return_value = usage
     return result
 
 
@@ -108,13 +117,13 @@ async def wired_services(monkeypatch):
     # Start all
     await lm.start_all()
 
-    # Create streaming service (needs assistant_service._sessions)
+    # Create streaming service (accesses sessions via assistant_service)
     streaming_service = StreamingService(
         config=settings.streaming,
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
-        sessions=assistant_service._sessions,
+        assistant_service=assistant_service,
         assistant_config=settings.assistant,
     )
     await lm.register("streaming_service", streaming_service)

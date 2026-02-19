@@ -29,14 +29,20 @@ class EventCoordinator:
     def __init__(self, max_events: int) -> None:
         self._max_events = max_events
         self._event_count = 0
+        self._debug_event_count = 0
         self._started_emitted = False
         self._completed_emitted = False
         self._final_response_emitted = False
 
     @property
     def event_count(self) -> int:
-        """Number of events emitted so far."""
+        """Number of protocol events emitted so far."""
         return self._event_count
+
+    @property
+    def debug_event_count(self) -> int:
+        """Number of debug events emitted so far."""
+        return self._debug_event_count
 
     def try_started(self) -> dict[str, Any] | None:
         """Emit agent_status(started) if not already emitted."""
@@ -65,6 +71,11 @@ class EventCoordinator:
     def track(self, event: dict[str, Any]) -> dict[str, Any]:
         """Track a regular event (thinking_delta, text_delta, tool_*, error)."""
         return self._track(event)
+
+    def track_debug(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Track a debug event — counted separately, never raises EventLimitError."""
+        self._debug_event_count += 1
+        return event
 
     def _track(self, event: dict[str, Any]) -> dict[str, Any]:
         """Increment counter and enforce limit."""

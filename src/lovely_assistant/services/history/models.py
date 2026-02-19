@@ -6,10 +6,25 @@ operations domain. Drops OperationalLearning and learnings migration (greenfield
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+
+@dataclass(frozen=True)
+class HistoryPreparationResult:
+    """Debug metadata from history preparation."""
+
+    history: list[Any] = field(default_factory=list)
+    was_compacted: bool = False
+    message_count: int = 0
+    estimated_tokens: int = 0
+    compacted_from: int = 0
+    message_summaries: list[dict[str, Any]] = field(default_factory=list)
+
 
 MEMORY_CATEGORIES = [
     "agent_behavior",

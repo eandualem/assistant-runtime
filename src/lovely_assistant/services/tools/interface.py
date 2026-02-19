@@ -8,7 +8,13 @@ from typing import Any
 
 from loguru import logger
 
+from lovely_assistant.services.tools._agent_tools import register_agent_tools
+from lovely_assistant.services.tools._github_tools import register_github_tools
+from lovely_assistant.services.tools._meeting_tools import register_meeting_tools
+from lovely_assistant.services.tools._notes_tools import register_notes_tools
+from lovely_assistant.services.tools._plan_tools import register_plan_tools
 from lovely_assistant.services.tools._registry import ToolRegistry
+from lovely_assistant.services.tools._schedule_tools import register_schedule_tools
 from lovely_assistant.services.tools.config import ToolConfig
 from lovely_assistant.services.tools.exceptions import ToolError
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
@@ -23,9 +29,9 @@ class ToolService:
         self._started = False
 
     async def start(self) -> None:
-        """Initialize registry and register placeholder tools."""
+        """Initialize registry and register default tools."""
         self._registry = ToolRegistry(self._config)
-        self._register_placeholder_tools()
+        self._register_default_tools()
         self._started = True
         logger.info(
             "Tool service started",
@@ -79,8 +85,8 @@ class ToolService:
         if not self._started or self._registry is None:
             raise ToolError("Tool service not started")
 
-    def _register_placeholder_tools(self) -> None:
-        """Register minimal placeholder tools for testing both code paths."""
+    def _register_default_tools(self) -> None:
+        """Register built-in tools: placeholders and agent management tools."""
 
         # Backend placeholder: get_time
         async def get_time() -> str:
@@ -120,3 +126,56 @@ class ToolService:
                 category=ToolCategory.FRONTEND,
             ),
         )
+
+        # Frontend tool: navigate
+        self._registry.register_frontend_tool(
+            ToolDefinition(
+                name="navigate",
+                description=(
+                    "Navigate the user to a specific dashboard page. "
+                    "Use this when you want to show the user relevant information on another page."
+                ),
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "route": {
+                            "type": "string",
+                            "enum": [
+                                "/",
+                                "/agents",
+                                "/sessions",
+                                "/tasks",
+                                "/flows",
+                                "/meetings",
+                                "/repos",
+                            ],
+                            "description": "Dashboard route path to navigate to",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Brief explanation of why you're navigating (shown to user)",
+                        },
+                    },
+                    "required": ["route"],
+                },
+                category=ToolCategory.FRONTEND,
+            ),
+        )
+
+        # Agent management tools
+        register_agent_tools(self._registry)
+
+        # Notes management tool
+        register_notes_tools(self._registry)
+
+        # GitHub issue management tools
+        register_github_tools(self._registry)
+
+        # Meeting room management tools
+        register_meeting_tools(self._registry)
+
+        # Schedule management tools
+        register_schedule_tools(self._registry)
+
+        # Plan management tools
+        register_plan_tools(self._registry)

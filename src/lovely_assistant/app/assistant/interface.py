@@ -102,11 +102,12 @@ class AssistantService:
         toolsets = self._tools.build_toolset(request.machine_state)
 
         # 3. Build system prompt from fragments
-        system_prompt = build_system_prompt(
+        prompt_result = build_system_prompt(
             available_tools=available_tools,
             session_context=session_context,
             machine_state=request.machine_state,
         )
+        system_prompt = prompt_result.content
 
         # 4. Determine output type based on frontend tools
         has_frontend_tools = len(available_tools.frontend_tools) > 0
@@ -183,11 +184,12 @@ class AssistantService:
         available_tools = self._tools.get_available_tools(request.machine_state)
         toolsets = self._tools.build_toolset(request.machine_state)
 
-        system_prompt = build_system_prompt(
+        prompt_result = build_system_prompt(
             available_tools=available_tools,
             session_context=session_context,
             machine_state=request.machine_state,
         )
+        system_prompt = prompt_result.content
 
         has_frontend_tools = len(available_tools.frontend_tools) > 0
         output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str

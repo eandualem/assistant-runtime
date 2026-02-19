@@ -54,13 +54,13 @@ async def integration_client(monkeypatch):
     app.state.tool_service = tool_service
     app.state.assistant_service = assistant_service
 
-    # Streaming service needs assistant's session store
+    # Streaming service accesses sessions via assistant_service
     streaming_service = StreamingService(
         config=settings.streaming,
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
-        sessions=assistant_service._sessions,
+        assistant_service=assistant_service,
         assistant_config=settings.assistant,
     )
     await streaming_service.start()

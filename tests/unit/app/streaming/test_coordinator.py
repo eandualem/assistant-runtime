@@ -129,3 +129,33 @@ class TestCoordinatorFullProtocol:
         completed = coord.try_completed()
         assert completed is not None
         assert coord.event_count == 5
+
+
+class TestCoordinatorTrackDebug:
+    def test_track_debug_returns_event(self):
+        coord = EventCoordinator(max_events=100)
+        event = coord.track_debug({"type": "debug_request", "data": "test"})
+        assert event["type"] == "debug_request"
+
+    def test_track_debug_increments_debug_count(self):
+        coord = EventCoordinator(max_events=100)
+        coord.track_debug({"type": "debug_request"})
+        coord.track_debug({"type": "debug_system_prompt"})
+        assert coord.debug_event_count == 2
+
+    def test_track_debug_does_not_increment_event_count(self):
+        coord = EventCoordinator(max_events=100)
+        coord.track_debug({"type": "debug_request"})
+        assert coord.event_count == 0
+
+    def test_track_debug_never_raises_limit_error(self):
+        coord = EventCoordinator(max_events=1)
+        coord.track(make_text_delta_event("x"))  # fills the limit
+        # This should NOT raise even though we're over the regular event limit
+        event = coord.track_debug({"type": "debug_request"})
+        assert event is not None
+        assert coord.debug_event_count == 1
+
+    def test_debug_event_count_initial(self):
+        coord = EventCoordinator(max_events=100)
+        assert coord.debug_event_count == 0

@@ -31,6 +31,8 @@ class ToolSet(BaseModel):
 
     backend_tools: list[ToolDefinition] = []
     frontend_tools: list[ToolDefinition] = []
+    page: str | None = None
+    filtered_out_count: int = 0
 
     @property
     def total_count(self) -> int:

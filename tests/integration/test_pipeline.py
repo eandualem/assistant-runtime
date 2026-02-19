@@ -78,7 +78,7 @@ class TestAssistantPipeline:
         call_kwargs = build_mock.call_args[1]
         assert "toolsets" in call_kwargs
         assert "system_prompt" in call_kwargs
-        assert "Lovely Assistant" in call_kwargs["system_prompt"]
+        assert "Lovely Console" in call_kwargs["system_prompt"]
 
     @pytest.mark.asyncio
     async def test_machine_state_in_prompt(self, wired_services):
@@ -93,12 +93,17 @@ class TestAssistantPipeline:
                 AssistantRequest(
                     session_id="integ-state",
                     message="test",
-                    machine_state={"current_state": "agents.list"},
+                    machine_state={
+                        "active_page": {
+                            "name": "agents",
+                            "data": {"sessions": [{"name": "leo", "state": "idle"}]},
+                        },
+                    },
                 )
             )
 
         prompt = build_mock.call_args[1]["system_prompt"]
-        assert "agents.list" in prompt
+        assert "agents page" in prompt
 
 
 class TestDeferredToolRoundTrip:
