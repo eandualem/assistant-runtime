@@ -4,9 +4,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from loguru import logger
 
+from lovely_assistant.app.assistant.exceptions import AssistantError
 from lovely_assistant.app.assistant.factory import register_assistant
+from lovely_assistant.app.routes import router
+from lovely_assistant.app.streaming.exceptions import StreamingError
 from lovely_assistant.app.streaming.factory import register_streaming
 from lovely_assistant.base.lifecycle import LifecycleManager
 from lovely_assistant.config import AppSettings
@@ -48,6 +53,33 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Exception handlers
+    @app.exception_handler(AssistantError)
+    async def assistant_error_handler(request, exc: AssistantError):
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(exc), "type": exc.__class__.__name__},
+        )
+
+    @app.exception_handler(StreamingError)
+    async def streaming_error_handler(request, exc: StreamingError):
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(exc), "type": exc.__class__.__name__},
+        )
+
+    # Routes
+    app.include_router(router, prefix="/api")
 
     @app.get("/health")
     async def health() -> dict:

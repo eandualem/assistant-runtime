@@ -1,0 +1,132 @@
+"""Shared fixtures for integration tests.
+
+Integration tests wire real services together, mocking only the LLM boundary
+(Agent.run / Agent.iter). This catches cross-module wiring issues that unit
+tests miss.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from pydantic_graph.nodes import End
+
+from lovely_assistant.app.assistant.interface import AssistantService
+from lovely_assistant.app.streaming.interface import StreamingService
+from lovely_assistant.base.lifecycle import LifecycleManager
+from lovely_assistant.config import AppSettings
+from lovely_assistant.services.history.interface import HistoryService
+from lovely_assistant.services.llm.interface import LlmService
+from lovely_assistant.services.tools.interface import ToolService
+
+
+def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
+    """Create a mock AgentRunResult."""
+    result = MagicMock()
+    result.output = output
+    result.all_messages.return_value = []
+    return result
+
+
+def _make_mock_agent(output: Any = "Test response") -> MagicMock:
+    """Create a mock Agent with .run() returning a canned result."""
+    agent = MagicMock()
+    mock_result = _make_mock_agent_result(output)
+    agent.run = AsyncMock(return_value=mock_result)
+    return agent
+
+
+def _make_mock_agent_run(output: Any = "Test response") -> MagicMock:
+    """Create a mock agent.iter() context manager returning End immediately."""
+
+    class _MockRun:
+        def __init__(self):
+            self.ctx = MagicMock()
+            self.result = _make_mock_agent_result(output)
+            self._done = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        @property
+        def next_node(self):
+            return End(data=output)
+
+        async def next(self, node):
+            return End(data=output)
+
+    return _MockRun()
+
+
+@pytest.fixture
+def app_state():
+    """Simple namespace to mimic FastAPI app.state."""
+    return SimpleNamespace()
+
+
+@pytest.fixture
+async def lifecycle():
+    """Create a fresh LifecycleManager."""
+    return LifecycleManager()
+
+
+@pytest.fixture
+async def wired_services(monkeypatch):
+    """Wire all real services together, with LLM API key mocked.
+
+    Returns a dict with all services and a lifecycle manager.
+    Services are started and ready to use.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-integration")
+
+    settings = AppSettings()
+    lm = LifecycleManager()
+
+    # Create services in dependency order
+    llm_service = LlmService(config=settings.llm)
+    history_service = HistoryService(config=settings.history, llm_service=llm_service)
+    tool_service = ToolService(config=settings.tools)
+    assistant_service = AssistantService(
+        config=settings.assistant,
+        llm_service=llm_service,
+        history_service=history_service,
+        tool_service=tool_service,
+    )
+
+    # Register all
+    await lm.register("llm_service", llm_service)
+    await lm.register("history_service", history_service)
+    await lm.register("tool_service", tool_service)
+    await lm.register("assistant_service", assistant_service)
+
+    # Start all
+    await lm.start_all()
+
+    # Create streaming service (needs assistant_service._sessions)
+    streaming_service = StreamingService(
+        config=settings.streaming,
+        llm_service=llm_service,
+        history_service=history_service,
+        tool_service=tool_service,
+        sessions=assistant_service._sessions,
+        assistant_config=settings.assistant,
+    )
+    await lm.register("streaming_service", streaming_service)
+    await streaming_service.start()
+
+    yield {
+        "lifecycle": lm,
+        "llm_service": llm_service,
+        "history_service": history_service,
+        "tool_service": tool_service,
+        "assistant_service": assistant_service,
+        "streaming_service": streaming_service,
+    }
+
+    await lm.stop_all()
