@@ -232,6 +232,30 @@ class TestProcessNewMessage:
         result = await svc.process_message(AssistantRequest(session_id="s1", message="hi"))
         assert result.model == "openai:gpt-4o"
 
+    async def test_images_passed_to_agent_run_as_list(self, service, llm_service):
+        """When images are provided, agent.run() receives a list (not string)."""
+        await service.start()
+        req = AssistantRequest(
+            session_id="s1",
+            message="What's in this image?",
+            images=["data:image/jpeg;base64,/9j/4AAQ"],
+        )
+        await service.process_message(req)
+        agent = llm_service.build_agent.return_value
+        call_args = agent.run.call_args
+        user_prompt = call_args[0][0]
+        assert isinstance(user_prompt, list)
+        assert user_prompt[0] == "What's in this image?"
+
+    async def test_no_images_passes_plain_string(self, service, llm_service):
+        """When no images, agent.run() receives plain string."""
+        await service.start()
+        req = AssistantRequest(session_id="s1", message="Hello")
+        await service.process_message(req)
+        agent = llm_service.build_agent.return_value
+        call_args = agent.run.call_args
+        assert call_args[0][0] == "Hello"
+
 
 # --- Deferred Tool Call Handling ---
 

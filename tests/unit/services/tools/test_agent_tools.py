@@ -18,6 +18,7 @@ from lovely_assistant.services.tools._agent_tools import (
     register_agent_tools,
     send_agent_message,
     start_agent,
+    stop_agent,
 )
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.config import ToolConfig
@@ -353,6 +354,81 @@ class TestStartAgent:
 
 
 # ---------------------------------------------------------------------------
+# TestStopAgent
+# ---------------------------------------------------------------------------
+
+
+class TestStopAgent:
+    @patch(f"{MODULE}._run_command")
+    @patch(f"{MODULE}._read_state_file")
+    async def test_success(self, mock_state, mock_run):
+        mock_state.return_value = {"state": "idle"}
+        # has-session, kill-session
+        mock_run.side_effect = [
+            (0, "", ""),
+            (0, "", ""),
+        ]
+
+        result = await stop_agent("leo")
+        assert result["success"] is True
+        assert result["session_name"] == "leo"
+        assert result["previous_state"] == "idle"
+
+    @patch(f"{MODULE}._run_command")
+    async def test_nonexistent_session(self, mock_run):
+        mock_run.return_value = (1, "", "session not found")
+
+        result = await stop_agent("ghost")
+        assert result["success"] is False
+        assert "does not exist" in result["error"]
+
+    async def test_invalid_name(self):
+        result = await stop_agent("-bad-name")
+        assert result["success"] is False
+        assert "error" in result
+
+    @patch(f"{MODULE}._run_command")
+    @patch(f"{MODULE}._read_state_file")
+    async def test_kill_failure(self, mock_state, mock_run):
+        mock_state.return_value = {"state": "processing"}
+        # has-session succeeds, kill-session fails
+        mock_run.side_effect = [
+            (0, "", ""),
+            (1, "", "cannot kill session"),
+        ]
+
+        result = await stop_agent("stuck")
+        assert result["success"] is False
+        assert "Failed to kill session" in result["error"]
+
+    @patch(f"{MODULE}._run_command")
+    @patch(f"{MODULE}._read_state_file")
+    async def test_no_state_file(self, mock_state, mock_run):
+        mock_state.return_value = None
+        mock_run.side_effect = [
+            (0, "", ""),
+            (0, "", ""),
+        ]
+
+        result = await stop_agent("no-state")
+        assert result["success"] is True
+        assert result["previous_state"] == "unknown"
+
+    @patch(f"{MODULE}._run_command")
+    @patch(f"{MODULE}._read_state_file")
+    async def test_captures_processing_state(self, mock_state, mock_run):
+        mock_state.return_value = {"state": "processing", "issue": 42}
+        mock_run.side_effect = [
+            (0, "", ""),
+            (0, "", ""),
+        ]
+
+        result = await stop_agent("busy-agent")
+        assert result["success"] is True
+        assert result["previous_state"] == "processing"
+
+
+# ---------------------------------------------------------------------------
 # TestSendAgentMessage
 # ---------------------------------------------------------------------------
 
@@ -444,12 +520,13 @@ class TestRegisterAgentTools:
         assert "list_agents" in names
         assert "check_agent_state" in names
         assert "start_agent" in names
+        assert "stop_agent" in names
         assert "send_agent_message" in names
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
         register_agent_tools(registry)
-        assert len(registry._backend_definitions) == 4
+        assert len(registry._backend_definitions) == 5
 
     def test_all_are_backend(self):
         registry = ToolRegistry(ToolConfig())
@@ -467,6 +544,12 @@ class TestRegisterAgentTools:
     def test_handlers_registered(self):
         registry = ToolRegistry(ToolConfig())
         register_agent_tools(registry)
-        for name in ["list_agents", "check_agent_state", "start_agent", "send_agent_message"]:
+        for name in [
+            "list_agents",
+            "check_agent_state",
+            "start_agent",
+            "stop_agent",
+            "send_agent_message",
+        ]:
             assert name in registry._backend_handlers
             assert callable(registry._backend_handlers[name])

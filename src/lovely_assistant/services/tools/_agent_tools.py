@@ -201,6 +201,37 @@ async def start_agent(
     }
 
 
+async def stop_agent(session_name: str) -> dict[str, Any]:
+    """Stop an agent by killing its tmux session."""
+    error = _validate_session_name(session_name)
+    if error:
+        return {"error": error, "success": False}
+
+    # Check if session exists
+    rc, _, _ = await _run_command(["tmux", "has-session", "-t", session_name])
+    if rc != 0:
+        return {
+            "error": f"Session '{session_name}' does not exist",
+            "success": False,
+        }
+
+    # Read state before killing for response context
+    state = _read_state_file(session_name)
+    previous_state = state.get("state", "unknown") if state else "unknown"
+
+    # Kill the session
+    rc, _, stderr = await _run_command(["tmux", "kill-session", "-t", session_name])
+    if rc != 0:
+        return {"error": f"Failed to kill session: {stderr}", "success": False}
+
+    logger.info("Stopped agent session", session=session_name, previous_state=previous_state)
+    return {
+        "session_name": session_name,
+        "previous_state": previous_state,
+        "success": True,
+    }
+
+
 async def send_agent_message(session_name: str, message: str) -> dict[str, Any]:
     """Send a message to a running agent session."""
     error = _validate_session_name(session_name)
@@ -320,6 +351,28 @@ def register_agent_tools(registry: ToolRegistry) -> None:
 
     registry.register_backend_tool(
         ToolDefinition(
+            name="stop_agent",
+            description=(
+                "Stop a running AI agent by killing its tmux session. "
+                "Returns the agent's previous state before termination."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "session_name": {
+                        "type": "string",
+                        "description": "Name of the tmux session to stop",
+                    },
+                },
+                "required": ["session_name"],
+            },
+            category=ToolCategory.BACKEND,
+        ),
+        stop_agent,
+    )
+
+    registry.register_backend_tool(
+        ToolDefinition(
             name="send_agent_message",
             description=(
                 "Send a message to a running agent session. Prepends the "
@@ -345,4 +398,4 @@ def register_agent_tools(registry: ToolRegistry) -> None:
         send_agent_message,
     )
 
-    logger.info("Registered agent management tools", count=4)
+    logger.info("Registered agent management tools", count=5)

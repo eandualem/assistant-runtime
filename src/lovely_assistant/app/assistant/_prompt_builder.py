@@ -215,7 +215,7 @@ def _dashboard_context_fragment(machine_state: dict[str, Any] | None) -> str:
         action_strs = []
         for action in available_actions:
             if isinstance(action, dict):
-                event_type = action.get("eventType", "")
+                event_type = action.get("event_type", "")
                 label = action.get("label", "")
                 action_strs.append(f"{event_type} ({label})" if label else event_type)
             else:

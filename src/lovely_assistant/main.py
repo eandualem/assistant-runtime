@@ -12,14 +12,17 @@ from loguru import logger
 from lovely_assistant.app.assistant.exceptions import AssistantError
 from lovely_assistant.app.assistant.factory import register_assistant
 from lovely_assistant.app.routes import router
+from lovely_assistant.app.settings import RuntimeSettings
 from lovely_assistant.app.streaming.exceptions import StreamingError
 from lovely_assistant.app.streaming.factory import register_streaming
 from lovely_assistant.base.lifecycle import LifecycleManager
 from lovely_assistant.config import AppSettings
 from lovely_assistant.logging_config import setup_logging
+from lovely_assistant.services.database.factory import register_database
 from lovely_assistant.services.history.factory import register_history
 from lovely_assistant.services.llm._cache_control_patch import apply_patch as _apply_cache_patch
 from lovely_assistant.services.llm.factory import register_llm
+from lovely_assistant.services.media.factory import register_media
 from lovely_assistant.services.tools.factory import register_tools
 
 
@@ -39,14 +42,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     lifecycle = LifecycleManager()
     app.state.lifecycle = lifecycle
 
-    # Register modules in dependency order (services before app)
+    # Register modules in dependency order (infrastructure first, then services, then app)
+    await register_database(app.state, lifecycle)
     await register_llm(app.state, lifecycle)
     await register_history(app.state, lifecycle)
+    await register_media(app.state, lifecycle)
     await register_tools(app.state, lifecycle)
     await register_assistant(app.state, lifecycle)
     await register_streaming(app.state, lifecycle)
 
     await lifecycle.start_all()
+
+    # Create runtime settings AFTER start_all — DatabaseService._healthy is now set
+    app.state.runtime_settings = RuntimeSettings(
+        frozen_config=settings.assistant,
+        database_service=getattr(app.state, "database_service", None),
+    )
+    await app.state.runtime_settings.load_from_db()
+
     logger.info("Application started", app=settings.app_name)
 
     yield

@@ -16,10 +16,16 @@ from lovely_assistant.app.assistant._prompt_builder import build_system_prompt
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.config import AssistantConfig
 from lovely_assistant.app.assistant.exceptions import AgentRunError, AssistantError, SessionError
-from lovely_assistant.app.assistant.models import AssistantRequest, AssistantResult
+from lovely_assistant.app.assistant.models import (
+    AssistantRequest,
+    AssistantResult,
+    _build_user_prompt,
+)
+from lovely_assistant.app.settings import RuntimeSettings, resolve_effective_config
 from lovely_assistant.services.tools.models import DeferredToolRequest
 
 if TYPE_CHECKING:
+    from lovely_assistant.services.database.interface import DatabaseService
     from lovely_assistant.services.history.interface import HistoryService
     from lovely_assistant.services.llm.interface import LlmService
     from lovely_assistant.services.tools.interface import ToolService
@@ -34,17 +40,21 @@ class AssistantService:
         llm_service: LlmService,
         history_service: HistoryService,
         tool_service: ToolService,
+        runtime_settings: RuntimeSettings | None = None,
+        database_service: DatabaseService | None = None,
     ) -> None:
         self._config = config
         self._llm = llm_service
         self._history = history_service
         self._tools = tool_service
+        self._runtime_settings = runtime_settings
+        self._database_service: DatabaseService | None = database_service
         self._sessions: SessionStore | None = None
         self._started = False
 
     async def start(self) -> None:
         """Initialize internal components."""
-        self._sessions = SessionStore()
+        self._sessions = SessionStore(database_service=self._database_service)
         self._started = True
         logger.info("Assistant service started")
 
@@ -93,8 +103,8 @@ class AssistantService:
         sessions = self._sessions
         assert sessions is not None
 
-        # 1. Get session context and increment turn
-        session_context = sessions.get_context(session_id)
+        # 1. Get session context (loads from DB on cache miss) and increment turn
+        session_context = await sessions.get_context_async(session_id)
         turn_number = sessions.increment_turn(session_id)
 
         # 2. Get available tools for this request's machine state
@@ -109,47 +119,52 @@ class AssistantService:
         )
         system_prompt = prompt_result.content
 
-        # 4. Determine output type based on frontend tools
+        # 4. Resolve effective config (per-request > runtime > frozen)
+        effective = resolve_effective_config(self._config, self._runtime_settings, request.config)
+
+        # 5. Determine output type based on frontend tools
         has_frontend_tools = len(available_tools.frontend_tools) > 0
         output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
 
-        # 5. Create per-request agent
-        model = self._config.default_model
+        # 6. Create per-request agent
+        model = effective.default_model
         agent = self._llm.build_agent(
             system_prompt=system_prompt,
             toolsets=toolsets,
             model=model,
             output_type=output_type,
-            thinking_budget=self._config.thinking_budget,
+            thinking_budget=effective.thinking_budget,
+            temperature=effective.temperature,
         )
 
-        # 6. Prepare history
+        # 7. Prepare history
         history = sessions.get_history(session_id)
         prepared_history, _context_modified = await self._history.prepare_history(
             history, session_context
         )
 
-        # 7. Run the agent
+        # 8. Run the agent
+        user_prompt = _build_user_prompt(request.message, request.images, model)
         try:
             result = await agent.run(
-                request.message,
+                user_prompt,
                 message_history=prepared_history if prepared_history else None,
             )
         except Exception as e:
             raise AgentRunError(f"Agent execution failed: {e}") from e
 
-        # 8. Save message history
-        sessions.save_history(session_id, list(result.all_messages()))
+        # 9. Save message history (persists to DB)
+        await sessions.save_history_async(session_id, list(result.all_messages()))
 
-        # 9. Handle output
+        # 10. Handle output
         output = result.output
         resolved_model = model or self._llm._config.primary_model
 
         if isinstance(output, DeferredToolRequests):
             return self._handle_deferred_output(output, session_id, turn_number, resolved_model)
 
-        # 10. Extract working memory delta (fire-and-forget style)
-        if self._config.enable_working_memory:
+        # 11. Extract working memory delta (fire-and-forget style)
+        if effective.enable_working_memory:
             await self._update_working_memory(session_id, session_context, turn_number)
 
         return AssistantResult(
@@ -173,7 +188,7 @@ class AssistantService:
         if pending is None:
             raise SessionError(f"No pending tool call for session {session_id}")
 
-        session_context = sessions.get_context(session_id)
+        session_context = await sessions.get_context_async(session_id)
         turn_number = sessions.increment_turn(session_id)
 
         # Build deferred tool results
@@ -191,16 +206,20 @@ class AssistantService:
         )
         system_prompt = prompt_result.content
 
+        # Resolve effective config (per-request > runtime > frozen)
+        effective = resolve_effective_config(self._config, self._runtime_settings, request.config)
+
         has_frontend_tools = len(available_tools.frontend_tools) > 0
         output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
 
-        model = self._config.default_model
+        model = effective.default_model
         agent = self._llm.build_agent(
             system_prompt=system_prompt,
             toolsets=toolsets,
             model=model,
             output_type=output_type,
-            thinking_budget=self._config.thinking_budget,
+            thinking_budget=effective.thinking_budget,
+            temperature=effective.temperature,
         )
 
         # Get saved history and prepare (with is_continuation=True)
@@ -219,8 +238,8 @@ class AssistantService:
         except Exception as e:
             raise AgentRunError(f"Continuation failed: {e}") from e
 
-        # Save updated history
-        sessions.save_history(session_id, list(result.all_messages()))
+        # Save updated history (persists to DB)
+        await sessions.save_history_async(session_id, list(result.all_messages()))
 
         output = result.output
         resolved_model = model or self._llm._config.primary_model
@@ -228,7 +247,7 @@ class AssistantService:
         if isinstance(output, DeferredToolRequests):
             return self._handle_deferred_output(output, session_id, turn_number, resolved_model)
 
-        if self._config.enable_working_memory:
+        if effective.enable_working_memory:
             await self._update_working_memory(session_id, session_context, turn_number)
 
         return AssistantResult(

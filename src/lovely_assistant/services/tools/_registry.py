@@ -22,6 +22,8 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "add_schedule_item",
         "remove_schedule_item",
         "toggle_schedule_item",
+        "generate_image",
+        "generate_video",
     }
 )
 _AGENT_TOOL_NAMES: frozenset[str] = frozenset(
@@ -29,6 +31,7 @@ _AGENT_TOOL_NAMES: frozenset[str] = frozenset(
         "list_agents",
         "check_agent_state",
         "start_agent",
+        "stop_agent",
         "send_agent_message",
     }
 )

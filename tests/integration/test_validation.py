@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from lovely_assistant.app.assistant.interface import AssistantService
+from lovely_assistant.app.settings import RuntimeSettings
 from lovely_assistant.app.streaming.interface import StreamingService
 from lovely_assistant.base.lifecycle import LifecycleManager
 from lovely_assistant.config import AppSettings
@@ -30,6 +31,9 @@ async def full_app_client(monkeypatch):
     lifecycle = LifecycleManager()
     app.state.lifecycle = lifecycle
 
+    runtime_settings = RuntimeSettings(frozen_config=settings.assistant)
+    app.state.runtime_settings = runtime_settings
+
     llm_service = LlmService(config=settings.llm)
     history_service = HistoryService(config=settings.history, llm_service=llm_service)
     tool_service = ToolService(config=settings.tools)
@@ -38,6 +42,7 @@ async def full_app_client(monkeypatch):
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
+        runtime_settings=runtime_settings,
     )
 
     await lifecycle.register("llm_service", llm_service)
@@ -52,6 +57,7 @@ async def full_app_client(monkeypatch):
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=assistant_service,
+        runtime_settings=runtime_settings,
         assistant_config=settings.assistant,
     )
     await lifecycle.register("streaming_service", streaming_service)
@@ -84,6 +90,8 @@ class TestAppStartup:
         assert "/api/chat" in route_paths
         assert "/api/chat/stream" in route_paths
         assert "/api/sessions/{session_id}" in route_paths
+        assert "/api/settings" in route_paths
+        assert "/api/models" in route_paths
 
     def test_route_methods(self):
         """Routes have the correct HTTP methods."""
@@ -98,6 +106,9 @@ class TestAppStartup:
         assert "POST" in routes_by_path.get("/api/chat/stream", set())
         assert "GET" in routes_by_path.get("/api/sessions/{session_id}", set())
         assert "DELETE" in routes_by_path.get("/api/sessions/{session_id}", set())
+        assert "GET" in routes_by_path.get("/api/settings", set())
+        assert "PATCH" in routes_by_path.get("/api/settings", set())
+        assert "GET" in routes_by_path.get("/api/models", set())
 
     @pytest.mark.asyncio
     async def test_cors_headers(self, full_app_client):

@@ -214,8 +214,8 @@ class TestDashboardContextFragment:
         state = {
             "active_page": {"name": "tasks", "data": {}},
             "available_actions": [
-                {"eventType": "NAVIGATE", "label": "Go to agents"},
-                {"eventType": "REFRESH", "label": ""},
+                {"event_type": "NAVIGATE", "label": "Go to agents"},
+                {"event_type": "REFRESH", "label": ""},
             ],
         }
         frag = _dashboard_context_fragment(state)

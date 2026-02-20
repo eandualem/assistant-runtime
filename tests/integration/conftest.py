@@ -15,6 +15,7 @@ import pytest
 from pydantic_graph.nodes import End
 
 from lovely_assistant.app.assistant.interface import AssistantService
+from lovely_assistant.app.settings import RuntimeSettings
 from lovely_assistant.app.streaming.interface import StreamingService
 from lovely_assistant.base.lifecycle import LifecycleManager
 from lovely_assistant.config import AppSettings
@@ -98,6 +99,8 @@ async def wired_services(monkeypatch):
     lm = LifecycleManager()
 
     # Create services in dependency order
+    runtime_settings = RuntimeSettings(frozen_config=settings.assistant)
+
     llm_service = LlmService(config=settings.llm)
     history_service = HistoryService(config=settings.history, llm_service=llm_service)
     tool_service = ToolService(config=settings.tools)
@@ -106,6 +109,7 @@ async def wired_services(monkeypatch):
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
+        runtime_settings=runtime_settings,
     )
 
     # Register all
@@ -124,6 +128,7 @@ async def wired_services(monkeypatch):
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=assistant_service,
+        runtime_settings=runtime_settings,
         assistant_config=settings.assistant,
     )
     await lm.register("streaming_service", streaming_service)

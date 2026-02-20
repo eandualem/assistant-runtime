@@ -106,6 +106,7 @@ class LlmService:
         toolsets: list | None = None,
         output_type: type | list[type] = str,
         thinking_budget: int | None = None,
+        temperature: float | None = None,
     ) -> Agent:
         """Create a configured Pydantic AI Agent.
 
@@ -119,6 +120,7 @@ class LlmService:
             toolsets: Optional list of toolsets to register.
             output_type: Expected output type(s).
             thinking_budget: Optional thinking token budget for extended thinking.
+            temperature: Optional temperature override.
 
         Returns:
             Configured Pydantic AI Agent instance.
@@ -128,6 +130,7 @@ class LlmService:
         settings = build_model_settings(
             model_id=resolved_model,
             thinking_budget=thinking_budget,
+            temperature=temperature,
         )
 
         agent_kwargs: dict[str, Any] = {

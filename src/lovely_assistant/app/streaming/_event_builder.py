@@ -28,11 +28,25 @@ def make_tool_call_event(
     arguments: dict[str, Any],
     call_id: str,
 ) -> dict[str, Any]:
-    """Create a tool_call event (frontend deferred tool)."""
+    """Create a tool_call event (backend or frontend deferred tool)."""
     return {
         "type": "tool_call",
         "tool_name": tool_name,
         "arguments": arguments,
+        "call_id": call_id,
+    }
+
+
+def make_tool_result_event(
+    tool_name: str,
+    result: str,
+    call_id: str,
+) -> dict[str, Any]:
+    """Create a tool_result event (backend tool execution result)."""
+    return {
+        "type": "tool_result",
+        "tool_name": tool_name,
+        "result": result,
         "call_id": call_id,
     }
 
@@ -78,6 +92,7 @@ def make_debug_request_event(
     is_continuation: bool,
     has_machine_state: bool,
     machine_state: dict[str, Any] | None = None,
+    image_count: int = 0,
 ) -> dict[str, Any]:
     """Create a debug_request event — emitted at pipeline entry."""
     return {
@@ -87,6 +102,7 @@ def make_debug_request_event(
         "is_continuation": is_continuation,
         "has_machine_state": has_machine_state,
         "machine_state": machine_state,
+        "image_count": image_count,
     }
 
 
@@ -149,6 +165,7 @@ def make_debug_agent_config_event(
     output_type: str,
     has_frontend_tools: bool,
     thinking_budget: int | None,
+    temperature: float | None = None,
 ) -> dict[str, Any]:
     """Create a debug_agent_config event — emitted after agent creation."""
     return {
@@ -157,6 +174,7 @@ def make_debug_agent_config_event(
         "output_type": output_type,
         "has_frontend_tools": has_frontend_tools,
         "thinking_budget": thinking_budget,
+        "temperature": temperature,
     }
 
 

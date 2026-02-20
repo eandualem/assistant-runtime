@@ -19,6 +19,7 @@ async def integration_client(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-routes")
 
     from lovely_assistant.app.assistant.interface import AssistantService
+    from lovely_assistant.app.settings import RuntimeSettings
     from lovely_assistant.app.streaming.interface import StreamingService
     from lovely_assistant.base.lifecycle import LifecycleManager
     from lovely_assistant.config import AppSettings
@@ -33,6 +34,9 @@ async def integration_client(monkeypatch):
     lifecycle = LifecycleManager()
     app.state.lifecycle = lifecycle
 
+    runtime_settings = RuntimeSettings(frozen_config=settings.assistant)
+    app.state.runtime_settings = runtime_settings
+
     llm_service = LlmService(config=settings.llm)
     history_service = HistoryService(config=settings.history, llm_service=llm_service)
     tool_service = ToolService(config=settings.tools)
@@ -41,6 +45,7 @@ async def integration_client(monkeypatch):
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
+        runtime_settings=runtime_settings,
     )
 
     await lifecycle.register("llm_service", llm_service)
@@ -61,6 +66,7 @@ async def integration_client(monkeypatch):
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=assistant_service,
+        runtime_settings=runtime_settings,
         assistant_config=settings.assistant,
     )
     await streaming_service.start()
@@ -207,3 +213,40 @@ class TestSessionRouteIntegration:
         client, app = integration_client
         response = await client.get("/api/sessions/no-such-session")
         assert response.status_code == 404
+
+
+class TestModelsRouteIntegration:
+    @pytest.mark.asyncio
+    async def test_get_models_route_exists(self, integration_client):
+        """GET /api/models returns 200 with expected shape."""
+        client, app = integration_client
+        response = await client.get("/api/models")
+        assert response.status_code == 200
+        data = response.json()
+        assert "models" in data
+        assert "providers" in data
+        assert "defaults" in data
+        assert isinstance(data["models"], list)
+        assert len(data["models"]) > 0
+
+
+class TestSettingsRouteIntegration:
+    @pytest.mark.asyncio
+    async def test_get_settings_route_exists(self, integration_client):
+        """GET /api/settings returns 200 with expected shape."""
+        client, app = integration_client
+        response = await client.get("/api/settings")
+        assert response.status_code == 200
+        data = response.json()
+        assert "values" in data
+        assert "updated_at" in data
+
+    @pytest.mark.asyncio
+    async def test_patch_settings_route_exists(self, integration_client):
+        """PATCH /api/settings updates and returns settings."""
+        client, app = integration_client
+        response = await client.patch("/api/settings", json={"temperature": 0.5})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["values"]["temperature"]["value"] == 0.5
+        assert data["values"]["temperature"]["source"] == "runtime"

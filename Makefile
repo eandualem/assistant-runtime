@@ -1,4 +1,4 @@
-.PHONY: help install dev lint format fix test test-file check clean
+.PHONY: help install dev lint format fix test test-file check clean db-up db-down db-migrate db-upgrade
 
 .DEFAULT_GOAL := help
 
@@ -67,6 +67,27 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	@echo "${GREEN}Clean complete.${RESET}"
 
+# --- Database ---
+db-up:
+	@echo "${CYAN}Starting Postgres...${RESET}"
+	docker compose up -d postgres
+	@echo "${GREEN}Postgres started on port 5434.${RESET}"
+
+db-down:
+	@echo "${CYAN}Stopping Postgres...${RESET}"
+	docker compose down
+	@echo "${GREEN}Postgres stopped.${RESET}"
+
+db-migrate:
+	@echo "${CYAN}Creating migration: $(MSG)${RESET}"
+	PYTHONPATH=src uv run alembic revision --autogenerate -m "$(MSG)"
+	@echo "${GREEN}Migration created.${RESET}"
+
+db-upgrade:
+	@echo "${CYAN}Running migrations...${RESET}"
+	PYTHONPATH=src uv run alembic upgrade head
+	@echo "${GREEN}Migrations applied.${RESET}"
+
 # --- Help ---
 help:
 	@echo "${BOLD}${CYAN}Lovely Assistant - Development Commands${RESET}"
@@ -80,3 +101,9 @@ help:
 	@echo "  ${GREEN}make test-file FILE=...${RESET} Run single test file"
 	@echo "  ${GREEN}make check${RESET}              Full CI gate (lint + format check + test)"
 	@echo "  ${GREEN}make clean${RESET}              Remove build artifacts and caches"
+	@echo ""
+	@echo "  ${YELLOW}Database:${RESET}"
+	@echo "  ${GREEN}make db-up${RESET}              Start Postgres (docker compose)"
+	@echo "  ${GREEN}make db-down${RESET}            Stop Postgres"
+	@echo "  ${GREEN}make db-migrate MSG=...${RESET} Create new Alembic migration"
+	@echo "  ${GREEN}make db-upgrade${RESET}         Run pending migrations"

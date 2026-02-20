@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
+from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 from pydantic_graph.nodes import End
 
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.config import AssistantConfig
 from lovely_assistant.app.assistant.models import AssistantRequest
+from lovely_assistant.app.settings import RuntimeSettings
 from lovely_assistant.app.streaming.config import StreamingConfig
 from lovely_assistant.app.streaming.exceptions import (
     StreamExecutionError,
@@ -50,13 +55,15 @@ def _make_service(
     mock_assistant_service = MagicMock()
     mock_assistant_service._sessions = sessions or SessionStore()
 
+    config = assistant_config or AssistantConfig()
     return StreamingService(
         config=streaming_config or StreamingConfig(emit_debug_events=False),
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=mock_assistant_service,
-        assistant_config=assistant_config or AssistantConfig(),
+        runtime_settings=RuntimeSettings(frozen_config=config),
+        assistant_config=config,
     )
 
 
@@ -68,6 +75,39 @@ def _make_request(**kwargs) -> AssistantRequest:
     }
     defaults.update(kwargs)
     return AssistantRequest(**defaults)
+
+
+@asynccontextmanager
+async def _empty_stream():
+    """Async context manager that yields an empty async iterator."""
+
+    async def _empty_iter():
+        return
+        yield  # noqa: F541
+
+    yield _empty_iter()
+
+
+def _make_call_tools_node(tool_calls: list[ToolCallPart]) -> MagicMock:
+    """Create a mock that isinstance(x, CallToolsNode) recognizes."""
+    mock_response = MagicMock(spec=ModelResponse)
+    mock_response.tool_calls = tool_calls
+
+    node = MagicMock(spec=CallToolsNode)
+    node.model_response = mock_response
+    return node
+
+
+def _make_model_request_node(parts: list) -> MagicMock:
+    """Create a mock ModelRequestNode with request parts and working stream()."""
+    mock_request = MagicMock(spec=ModelRequest)
+    mock_request.parts = parts
+
+    node = MagicMock(spec=ModelRequestNode)
+    node.request = mock_request
+    # stream() must be an async context manager yielding an async iterator
+    node.stream = MagicMock(side_effect=lambda *a, **kw: _empty_stream())
+    return node
 
 
 class _MockAgentRun:
@@ -223,6 +263,49 @@ class TestStreamNewMessage:
 
         ctx = sessions.get_context("test-session")
         assert ctx["turn_number"] == 1
+
+
+class TestStreamWithImages:
+    @pytest.mark.asyncio
+    async def test_images_passed_to_agent_iter(self):
+        """When images are provided, agent.iter() receives a list prompt."""
+        service = _make_service()
+        await service.start()
+        request = _make_request(
+            message="What's here?",
+            images=["data:image/jpeg;base64,/9j/4AAQ"],
+        )
+
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        async for _ in service.stream_message(request):
+            pass
+
+        call_args = mock_agent.iter.call_args
+        user_prompt = call_args[0][0]
+        assert isinstance(user_prompt, list)
+        assert user_prompt[0] == "What's here?"
+
+    @pytest.mark.asyncio
+    async def test_no_images_passes_plain_string(self):
+        """When no images, agent.iter() receives plain string."""
+        service = _make_service()
+        await service.start()
+        request = _make_request(message="Hello there")
+
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        async for _ in service.stream_message(request):
+            pass
+
+        call_args = mock_agent.iter.call_args
+        assert call_args[0][0] == "Hello there"
 
 
 class TestStreamWithTools:
@@ -607,3 +690,247 @@ class TestStreamDebugEvents:
         assert "duration_ms" in completed
         assert completed["duration_ms"] >= 0
         assert completed["has_deferred"] is False
+
+
+class TestStreamBackendToolCalls:
+    """Tests for backend tool call SSE event emission."""
+
+    @pytest.mark.asyncio
+    async def test_backend_tool_emits_tool_call_event(self):
+        """Backend tool calls should emit tool_call SSE events."""
+        service = _make_service()
+        await service.start()
+
+        tc = ToolCallPart(
+            tool_name="list_agents", args={"filter": "active"}, tool_call_id="call_001"
+        )
+
+        call_node = _make_call_tools_node([tc])
+        # After tool execution, next node is ModelRequestNode with tool return
+        tr = ToolReturnPart(
+            tool_name="list_agents",
+            content="[agent1, agent2]",
+            tool_call_id="call_001",
+            timestamp=datetime.now(UTC),
+        )
+        next_model_node = _make_model_request_node([tr])
+
+        # Nodes: CallToolsNode -> ModelRequestNode (with results) -> End
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Here are the agents")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        request = _make_request()
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        tool_call_events = [e for e in events if e["type"] == "tool_call"]
+        assert len(tool_call_events) == 1
+        assert tool_call_events[0]["tool_name"] == "list_agents"
+        assert tool_call_events[0]["arguments"] == {"filter": "active"}
+        assert tool_call_events[0]["call_id"] == "call_001"
+
+    @pytest.mark.asyncio
+    async def test_backend_tool_emits_tool_result_event(self):
+        """Backend tools should emit tool_result with the execution result."""
+        service = _make_service()
+        await service.start()
+
+        tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_002")
+        call_node = _make_call_tools_node([tc])
+
+        tr = ToolReturnPart(
+            tool_name="list_agents",
+            content="agent1, agent2",
+            tool_call_id="call_002",
+            timestamp=datetime.now(UTC),
+        )
+        next_model_node = _make_model_request_node([tr])
+
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        request = _make_request()
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        tool_result_events = [e for e in events if e["type"] == "tool_result"]
+        assert len(tool_result_events) == 1
+        assert tool_result_events[0]["tool_name"] == "list_agents"
+        assert tool_result_events[0]["result"] == "agent1, agent2"
+        assert tool_result_events[0]["call_id"] == "call_002"
+
+    @pytest.mark.asyncio
+    async def test_frontend_tools_not_emitted_as_backend(self):
+        """Frontend (deferred) tools should NOT emit tool_call from _iterate_run."""
+        service = _make_service()
+        await service.start()
+
+        # Set up a frontend tool in available tools
+        service._tools.get_available_tools.return_value = ToolSet(
+            frontend_tools=[
+                ToolDefinition(
+                    name="ui_notify",
+                    description="Notify UI",
+                    parameters_schema={},
+                    category=ToolCategory.FRONTEND,
+                )
+            ]
+        )
+
+        # CallToolsNode has a frontend tool call
+        tc = ToolCallPart(tool_name="ui_notify", args={"message": "hello"}, tool_call_id="call_003")
+        call_node = _make_call_tools_node([tc])
+
+        # For frontend-only calls, the run may end after tool execution
+        mock_run = _MockAgentRun(nodes=[call_node], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        request = _make_request()
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        # No tool_call events from _iterate_run (frontend tools are filtered)
+        tool_call_events = [e for e in events if e["type"] == "tool_call"]
+        assert len(tool_call_events) == 0
+
+    @pytest.mark.asyncio
+    async def test_multiple_backend_tools_emit_multiple_events(self):
+        """Multiple backend tool calls in one response should each get events."""
+        service = _make_service()
+        await service.start()
+
+        tc1 = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_a")
+        tc2 = ToolCallPart(tool_name="check_status", args={"agent": "leo"}, tool_call_id="call_b")
+        call_node = _make_call_tools_node([tc1, tc2])
+
+        tr1 = ToolReturnPart(
+            tool_name="list_agents",
+            content="[leo, ike]",
+            tool_call_id="call_a",
+            timestamp=datetime.now(UTC),
+        )
+        tr2 = ToolReturnPart(
+            tool_name="check_status",
+            content="idle",
+            tool_call_id="call_b",
+            timestamp=datetime.now(UTC),
+        )
+        next_model_node = _make_model_request_node([tr1, tr2])
+
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        request = _make_request()
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        tool_call_events = [e for e in events if e["type"] == "tool_call"]
+        tool_result_events = [e for e in events if e["type"] == "tool_result"]
+        assert len(tool_call_events) == 2
+        assert len(tool_result_events) == 2
+        assert tool_call_events[0]["tool_name"] == "list_agents"
+        assert tool_call_events[1]["tool_name"] == "check_status"
+        assert tool_result_events[0]["result"] == "[leo, ike]"
+        assert tool_result_events[1]["result"] == "idle"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_before_tool_result_ordering(self):
+        """tool_call events should appear before tool_result events."""
+        service = _make_service()
+        await service.start()
+
+        tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_ord")
+        call_node = _make_call_tools_node([tc])
+        tr = ToolReturnPart(
+            tool_name="list_agents",
+            content="ok",
+            tool_call_id="call_ord",
+            timestamp=datetime.now(UTC),
+        )
+        next_model_node = _make_model_request_node([tr])
+
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        request = _make_request()
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        tool_types = [e["type"] for e in events if e["type"] in ("tool_call", "tool_result")]
+        assert tool_types == ["tool_call", "tool_result"]
+
+    @pytest.mark.asyncio
+    async def test_tool_result_empty_when_not_found(self):
+        """If tool return part not found, result should be empty string."""
+        service = _make_service()
+        await service.start()
+
+        tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_missing")
+        call_node = _make_call_tools_node([tc])
+        # Next node has no matching ToolReturnPart
+        next_model_node = _make_model_request_node([])
+
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        request = _make_request()
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        tool_result_events = [e for e in events if e["type"] == "tool_result"]
+        assert len(tool_result_events) == 1
+        assert tool_result_events[0]["result"] == ""
+
+    @pytest.mark.asyncio
+    async def test_tool_call_with_string_args(self):
+        """Tool calls with JSON string args should be parsed to dict."""
+        service = _make_service()
+        await service.start()
+
+        # ToolCallPart with string args (JSON)
+        tc = ToolCallPart(
+            tool_name="send_message",
+            args='{"to": "leo", "msg": "hello"}',
+            tool_call_id="call_str",
+        )
+        call_node = _make_call_tools_node([tc])
+        tr = ToolReturnPart(
+            tool_name="send_message",
+            content="sent",
+            tool_call_id="call_str",
+            timestamp=datetime.now(UTC),
+        )
+        next_model_node = _make_model_request_node([tr])
+
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service._llm.build_agent.return_value = mock_agent
+
+        request = _make_request()
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        tool_call_events = [e for e in events if e["type"] == "tool_call"]
+        assert len(tool_call_events) == 1
+        # args_as_dict() should parse the JSON string
+        assert tool_call_events[0]["arguments"] == {"to": "leo", "msg": "hello"}

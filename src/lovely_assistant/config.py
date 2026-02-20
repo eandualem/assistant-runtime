@@ -4,8 +4,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lovely_assistant.app.assistant.config import AssistantConfig
 from lovely_assistant.app.streaming.config import StreamingConfig
+from lovely_assistant.services.database.config import DatabaseConfig
 from lovely_assistant.services.history.config import HistoryConfig
 from lovely_assistant.services.llm.config import LLMConfig
+from lovely_assistant.services.media.config import MediaConfig
 from lovely_assistant.services.tools.config import ToolConfig
 
 
@@ -17,8 +19,10 @@ class AppSettings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = False
 
+    database: DatabaseConfig = DatabaseConfig()
     llm: LLMConfig = LLMConfig()
     history: HistoryConfig = HistoryConfig()
+    media: MediaConfig = MediaConfig()
     tools: ToolConfig = ToolConfig()
     assistant: AssistantConfig = AssistantConfig()
     streaming: StreamingConfig = StreamingConfig()

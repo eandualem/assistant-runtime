@@ -162,6 +162,14 @@ class TestDebugRequestEvent:
         assert event["is_continuation"] is True
         assert event["has_machine_state"] is False
 
+    def test_image_count_defaults_to_zero(self):
+        event = make_debug_request_event("sess-1", "Hello", False, True)
+        assert event["image_count"] == 0
+
+    def test_image_count_included(self):
+        event = make_debug_request_event("sess-1", "Hello", False, True, image_count=3)
+        assert event["image_count"] == 3
+
 
 class TestDebugSystemPromptEvent:
     def test_basic(self):

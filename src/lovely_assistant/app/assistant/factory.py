@@ -21,6 +21,8 @@ async def register_assistant(app_state: Any, lifecycle: LifecycleManager) -> Non
         llm_service=app_state.llm_service,
         history_service=app_state.history_service,
         tool_service=app_state.tool_service,
+        runtime_settings=getattr(app_state, "runtime_settings", None),
+        database_service=getattr(app_state, "database_service", None),
     )
     app_state.assistant_service = service
     await lifecycle.register("assistant_service", service)

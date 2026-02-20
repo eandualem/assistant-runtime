@@ -183,19 +183,19 @@ class TestStateDrivenToolFiltering:
     async def test_no_machine_state_returns_all(self, service):
         await service.start()
         result = service.get_available_tools(machine_state=None)
-        assert result.total_count == 23
+        assert result.total_count == 24
 
     async def test_home_page_returns_all(self, service):
         await service.start()
         state = {"active_page": {"name": "home"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 23
+        assert result.total_count == 24
 
     async def test_agents_page_core_and_agent_and_plan(self, service):
         await service.start()
         state = {"active_page": {"name": "agents"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 14  # 7 core + 4 agent + 3 plan
+        assert result.total_count == 15  # 7 core + 5 agent + 3 plan
         names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
         assert "list_agents" in names
         assert "get_time" in names
@@ -209,7 +209,7 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "sessions"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 14  # 7 core + 4 agent + 3 plan
+        assert result.total_count == 15  # 7 core + 5 agent + 3 plan
         names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
         assert "start_agent" in names
         assert "ui_notify" in names
@@ -265,13 +265,13 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "exotic_dashboard"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 23
+        assert result.total_count == 24
 
     async def test_missing_active_page_returns_all(self, service):
         await service.start()
         state = {"some_other_key": "value"}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 23
+        assert result.total_count == 24
 
     async def test_tool_count_warning(self):
         low_max_config = ToolConfig(max_tools_per_request=2)
