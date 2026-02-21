@@ -160,10 +160,29 @@ class TestGetProviderInfo:
 class TestGetDefaults:
     def test_returns_expected_keys(self):
         defaults = get_defaults()
-        assert "primary_model" in defaults
-        assert "summarization_model" in defaults
+        expected_keys = {
+            "primary_model",
+            "summarization_model",
+            "working_memory_model",
+            "default_image_model",
+            "default_video_model",
+            "subagent_model",
+            "subagent_thinking_budget",
+        }
+        assert set(defaults.keys()) == expected_keys
 
-    def test_values_are_strings(self):
+    def test_values_have_correct_types(self):
         defaults = get_defaults()
+        # String fields from LLM config
         assert isinstance(defaults["primary_model"], str)
         assert isinstance(defaults["summarization_model"], str)
+        # working_memory_model defaults to None (str | None in config)
+        assert defaults["working_memory_model"] is None or isinstance(
+            defaults["working_memory_model"], str
+        )
+        # Media model defaults are strings
+        assert isinstance(defaults["default_image_model"], str)
+        assert isinstance(defaults["default_video_model"], str)
+        # Subagent fields are always None (no config backing yet)
+        assert defaults["subagent_model"] is None
+        assert defaults["subagent_thinking_budget"] is None

@@ -79,6 +79,12 @@ class UserSettingsORM(Base):
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_turns: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enable_working_memory: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    summarization_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    working_memory_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_image_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_video_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subagent_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subagent_thinking_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

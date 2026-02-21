@@ -93,9 +93,15 @@ class HistorySummarizer:
     DELTA_EXTRACTION_PROMPT = _DELTA_EXTRACTION_PROMPT
     DELTA_EXTRACTION_SYSTEM = _DELTA_EXTRACTION_SYSTEM
 
-    def __init__(self, config: HistoryConfig, llm_service: LlmService) -> None:
+    def __init__(
+        self,
+        config: HistoryConfig,
+        llm_service: LlmService,
+        runtime_settings: Any | None = None,
+    ) -> None:
         self.config = config
         self._llm = llm_service
+        self._runtime_settings = runtime_settings
 
     def _format_messages_for_summarization(self, messages: list[dict[str, Any]]) -> str:
         """Format dict-format messages into a string for the summarization prompt."""
@@ -136,7 +142,11 @@ class HistorySummarizer:
             messages=formatted_messages,
         )
 
-        model = self.config.summarization_model
+        model = (
+            self._runtime_settings.get("summarization_model", self.config.summarization_model)
+            if self._runtime_settings
+            else self.config.summarization_model
+        )
 
         try:
             agent = self._llm.build_agent(
@@ -188,7 +198,17 @@ class HistorySummarizer:
             turn_number=turn_number,
         )
 
-        model = self.config.working_memory_model or self.config.summarization_model
+        wm_model = (
+            self._runtime_settings.get("working_memory_model", self.config.working_memory_model)
+            if self._runtime_settings
+            else self.config.working_memory_model
+        )
+        sm_model = (
+            self._runtime_settings.get("summarization_model", self.config.summarization_model)
+            if self._runtime_settings
+            else self.config.summarization_model
+        )
+        model = wm_model or sm_model
 
         agent = self._llm.build_agent(
             system_prompt=self.DELTA_EXTRACTION_SYSTEM,

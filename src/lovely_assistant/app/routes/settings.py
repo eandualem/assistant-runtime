@@ -44,6 +44,24 @@ class SettingsPatchRequest(BaseModel):
     enable_working_memory: bool | None = Field(
         default=None, description="Working memory toggle. None = clear."
     )
+    summarization_model: str | None = Field(
+        default=None, description="Summarization model. None = clear."
+    )
+    working_memory_model: str | None = Field(
+        default=None, description="Working memory extraction model. None = clear."
+    )
+    default_image_model: str | None = Field(
+        default=None, description="Default image generation model. None = clear."
+    )
+    default_video_model: str | None = Field(
+        default=None, description="Default video generation model. None = clear."
+    )
+    subagent_model: str | None = Field(
+        default=None, description="Subagent model override. None = clear."
+    )
+    subagent_thinking_budget: int | None = Field(
+        default=None, ge=1, le=100_000, description="Subagent thinking budget. None = clear."
+    )
 
 
 # --- Endpoints ---

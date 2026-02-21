@@ -166,6 +166,12 @@ class TestUserSettingsORMColumns:
             "temperature",
             "max_turns",
             "enable_working_memory",
+            "summarization_model",
+            "working_memory_model",
+            "default_image_model",
+            "default_video_model",
+            "subagent_model",
+            "subagent_thinking_budget",
             "updated_at",
         }
         actual = {c.name for c in UserSettingsORM.__table__.columns}

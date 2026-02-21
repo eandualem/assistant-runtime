@@ -456,5 +456,6 @@ class AssistantService:
                 "output_tokens": usage.response_tokens,
                 "total_tokens": usage.total_tokens,
             }
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to extract usage stats", error=str(e))
             return {"input_tokens": None, "output_tokens": None, "total_tokens": None}

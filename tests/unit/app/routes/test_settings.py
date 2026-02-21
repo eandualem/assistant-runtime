@@ -49,6 +49,17 @@ class TestGetSettings:
         assert "enable_working_memory" in data["values"]
 
     @pytest.mark.asyncio
+    async def test_response_includes_new_fields(self, client):
+        response = await client.get("/api/settings")
+        data = response.json()
+        assert "summarization_model" in data["values"]
+        assert "working_memory_model" in data["values"]
+        assert "default_image_model" in data["values"]
+        assert "default_video_model" in data["values"]
+        assert "subagent_model" in data["values"]
+        assert "subagent_thinking_budget" in data["values"]
+
+    @pytest.mark.asyncio
     async def test_default_sources(self, client):
         response = await client.get("/api/settings")
         data = response.json()
@@ -150,3 +161,34 @@ class TestPatchSettings:
         data = response.json()
         assert "persisted" in data
         assert data["persisted"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_summarization_model(self):
+        rs = RuntimeSettings(frozen_config=AssistantConfig())
+        app = _make_app(rs)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.patch(
+                "/api/settings", json={"summarization_model": "openai:gpt-4o-mini"}
+            )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["values"]["summarization_model"]["value"] == "openai:gpt-4o-mini"
+        assert data["values"]["summarization_model"]["source"] == "runtime"
+
+    @pytest.mark.asyncio
+    async def test_update_subagent_thinking_budget(self):
+        rs = RuntimeSettings(frozen_config=AssistantConfig())
+        app = _make_app(rs)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.patch("/api/settings", json={"subagent_thinking_budget": 5000})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["values"]["subagent_thinking_budget"]["value"] == 5000
+        assert data["values"]["subagent_thinking_budget"]["source"] == "runtime"
+
+    @pytest.mark.asyncio
+    async def test_subagent_thinking_budget_out_of_range_422(self):
+        app = _make_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.patch("/api/settings", json={"subagent_thinking_budget": 200000})
+        assert response.status_code == 422

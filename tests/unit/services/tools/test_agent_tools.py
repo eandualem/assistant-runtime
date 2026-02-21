@@ -106,6 +106,15 @@ class TestReadStateFile:
         result = _read_state_file("broken")
         assert result is None
 
+    def test_invalid_json_logs_warning(self, state_dir):
+        state_file = state_dir / "broken.json"
+        state_file.write_text("not valid json {{{")
+        with patch(f"{MODULE}.logger") as mock_logger:
+            result = _read_state_file("broken")
+        assert result is None
+        mock_logger.warning.assert_called_once()
+        assert mock_logger.warning.call_args[0][0] == "Corrupted agent state file"
+
     def test_non_dict_json(self, state_dir):
         state_file = state_dir / "array.json"
         state_file.write_text(json.dumps([1, 2, 3]))

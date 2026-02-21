@@ -113,5 +113,5 @@ async def get_session_traces(
                 for row in rows
             ]
     except Exception as e:
-        logger.warning("Failed to fetch traces from DB", session_id=session_id, error=str(e))
-        return []
+        logger.error("Failed to fetch traces from DB", session_id=session_id, error=str(e))
+        raise HTTPException(status_code=503, detail="Database unavailable") from e

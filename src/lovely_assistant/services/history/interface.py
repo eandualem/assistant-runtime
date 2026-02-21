@@ -31,11 +31,12 @@ class HistoryService:
         self._config = config
         self._llm = llm_service
         self._manager: HistoryManager | None = None
+        self._runtime_settings = None
         self._started = False
 
     async def start(self) -> None:
         """Initialize internal components."""
-        summarizer = HistorySummarizer(self._config, self._llm)
+        summarizer = HistorySummarizer(self._config, self._llm, self._runtime_settings)
         self._manager = HistoryManager(self._config, summarizer)
         self._started = True
         logger.info("History service started", token_budget=self._config.token_budget)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from lovely_assistant.app.assistant._session_store import (
@@ -291,8 +292,8 @@ class TestSessionStoreWithDb:
             if original_class is not None:
                 repo_mod.SessionRepository = original_class
 
-    async def test_delete_session_graceful_on_db_failure(self):
-        """delete_session still removes from memory when DB fails."""
+    async def test_delete_session_propagates_db_error(self):
+        """delete_session raises when DB fails — session stays in memory."""
         mock_db = _make_mock_db()
 
         @asynccontextmanager
@@ -305,9 +306,10 @@ class TestSessionStoreWithDb:
         store = SessionStore(database_service=mock_db)
         store.get_context("s1")
 
-        # Should not raise
-        await store.delete_session("s1")
-        assert store.has_session("s1") is False
+        with pytest.raises(RuntimeError, match="DB connection failed"):
+            await store.delete_session("s1")
+        # Memory pop only happens after DB succeeds — session is still in memory
+        assert store.has_session("s1") is True
 
     # --- list_sessions ---
 
@@ -361,6 +363,22 @@ class TestSessionStoreWithDb:
         assert len(result) == 2
         session_ids = {s["session_id"] for s in result}
         assert session_ids == {"s1", "s2"}
+
+    async def test_list_sessions_propagates_db_error(self):
+        """list_sessions raises when DB is configured but broken."""
+        mock_db = _make_mock_db()
+
+        @asynccontextmanager
+        async def _failing_context():
+            raise RuntimeError("DB query failed")
+            yield  # noqa: F401
+
+        mock_db.session_context = _failing_context
+
+        store = SessionStore(database_service=mock_db)
+
+        with pytest.raises(RuntimeError, match="DB query failed"):
+            await store.list_sessions()
 
     # --- _load_session_from_db ---
 
@@ -618,7 +636,7 @@ class TestSessionStoreCleanupExpired:
         assert result == 5
         mock_repo.cleanup_expired.assert_awaited_once()
 
-    async def test_cleanup_expired_handles_db_failure(self):
+    async def test_cleanup_expired_propagates_db_error(self):
         mock_db = MagicMock()
 
         @asynccontextmanager
@@ -629,8 +647,9 @@ class TestSessionStoreCleanupExpired:
         mock_db.session_context = _failing_ctx
 
         store = SessionStore(database_service=mock_db)
-        result = await store.cleanup_expired()
-        assert result == 0
+
+        with pytest.raises(RuntimeError, match="DB down"):
+            await store.cleanup_expired()
 
 
 class TestPendingToolCallExpiry:

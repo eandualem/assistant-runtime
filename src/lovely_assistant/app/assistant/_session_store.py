@@ -196,22 +196,17 @@ class SessionStore:
         return len(self._sessions)
 
     async def delete_session(self, session_id: str) -> None:
-        """Remove session from memory and DB."""
-        self._sessions.pop(session_id, None)
-
+        """Remove session from DB first, then memory."""
         if self._db is not None:
-            try:
-                async with self._db.session_context() as db_session:
-                    from lovely_assistant.services.database.repositories import (
-                        SessionRepository,
-                    )
-
-                    repo = SessionRepository(db_session)
-                    await repo.delete(session_id)
-            except Exception as e:
-                logger.warning(
-                    "Failed to delete session from DB", session_id=session_id, error=str(e)
+            async with self._db.session_context() as db_session:
+                from lovely_assistant.services.database.repositories import (
+                    SessionRepository,
                 )
+
+                repo = SessionRepository(db_session)
+                await repo.delete(session_id)
+
+        self._sessions.pop(session_id, None)
 
     async def list_sessions(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         """List sessions from DB (metadata only — no full history)."""
@@ -230,35 +225,22 @@ class SessionStore:
                 )
             return sessions[offset : offset + limit]
 
-        try:
-            async with self._db.session_context() as db_session:
-                from lovely_assistant.services.database.repositories import (
-                    SessionRepository,
-                )
+        async with self._db.session_context() as db_session:
+            from lovely_assistant.services.database.repositories import (
+                SessionRepository,
+            )
 
-                repo = SessionRepository(db_session)
-                rows = await repo.list_all(limit=limit, offset=offset)
-                return [
-                    {
-                        "session_id": row.id,
-                        "title": row.title,
-                        "turn_number": row.turn_number,
-                        "message_count": len(row.message_history) if row.message_history else 0,
-                        "created_at": row.created_at.isoformat() if row.created_at else None,
-                    }
-                    for row in rows
-                ]
-        except Exception as e:
-            logger.warning("Failed to list sessions from DB, using in-memory", error=str(e))
+            repo = SessionRepository(db_session)
+            rows = await repo.list_all(limit=limit, offset=offset)
             return [
                 {
-                    "session_id": sid,
-                    "title": ctx.get("title"),
-                    "turn_number": ctx.get("turn_number", 0),
-                    "message_count": len(ctx.get("message_history", [])),
-                    "created_at": None,
+                    "session_id": row.id,
+                    "title": row.title,
+                    "turn_number": row.turn_number,
+                    "message_count": len(row.message_history) if row.message_history else 0,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
                 }
-                for sid, ctx in list(self._sessions.items())[offset : offset + limit]
+                for row in rows
             ]
 
     def _evict_if_needed(self) -> None:
@@ -281,17 +263,13 @@ class SessionStore:
         if self._db is None:
             return 0
 
-        try:
-            async with self._db.session_context() as db_session:
-                from lovely_assistant.services.database.repositories import (
-                    SessionRepository,
-                )
+        async with self._db.session_context() as db_session:
+            from lovely_assistant.services.database.repositories import (
+                SessionRepository,
+            )
 
-                repo = SessionRepository(db_session)
-                return await repo.cleanup_expired()
-        except Exception as e:
-            logger.warning("Failed to cleanup expired sessions", error=str(e))
-            return 0
+            repo = SessionRepository(db_session)
+            return await repo.cleanup_expired()
 
     async def _load_session_from_db(self, session_id: str) -> dict[str, Any] | None:
         """Load a session from DB into the in-memory format.

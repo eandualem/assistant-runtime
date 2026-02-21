@@ -1,6 +1,6 @@
 """Tests for MediaService lifecycle, generate_image, cache retrieval, and parsing."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -321,3 +321,91 @@ class TestCallProvider:
                 size="1024x1024",
                 quality="medium",
             )
+
+
+# ---------------------------------------------------------------------------
+# Runtime settings overrides
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeSettingsOverride:
+    """Tests for runtime settings overriding default models."""
+
+    def _make_generated_image(
+        self,
+        provider: str = "openai",
+        model: str = "openai:gpt-image-1",
+        mime_type: str = "image/png",
+    ) -> GeneratedImage:
+        return GeneratedImage(
+            image_bytes=b"fake-image-bytes",
+            mime_type=mime_type,
+            provider=provider,
+            model=model,
+        )
+
+    async def test_generate_image_uses_runtime_model(self, started_service):
+        runtime = MagicMock()
+        runtime.get = MagicMock(
+            side_effect=lambda k, default=None: {
+                "default_image_model": "google:imagen-4.0-generate-001",
+            }.get(k, default)
+        )
+        started_service._runtime_settings = runtime
+
+        generated = self._make_generated_image(
+            provider="google", model="google:imagen-4.0-generate-001"
+        )
+        with patch(
+            f"{MODULE}.generate_google", new_callable=AsyncMock, return_value=generated
+        ) as mock_google:
+            await started_service.generate_image(prompt="test")
+            mock_google.assert_called_once()
+            call_kwargs = mock_google.call_args.kwargs
+            assert call_kwargs["model_name"] == "imagen-4.0-generate-001"
+
+    async def test_generate_image_explicit_model_overrides_runtime(self, started_service):
+        runtime = MagicMock()
+        runtime.get = MagicMock(
+            side_effect=lambda k, default=None: {
+                "default_image_model": "google:imagen-4.0-generate-001",
+            }.get(k, default)
+        )
+        started_service._runtime_settings = runtime
+
+        generated = self._make_generated_image(provider="openai", model="openai:gpt-image-1")
+        with patch(
+            f"{MODULE}.generate_openai", new_callable=AsyncMock, return_value=generated
+        ) as mock_openai:
+            await started_service.generate_image(prompt="test", model="openai:gpt-image-1")
+            mock_openai.assert_called_once()
+            call_kwargs = mock_openai.call_args.kwargs
+            assert call_kwargs["model_name"] == "gpt-image-1"
+
+    async def test_generate_video_uses_runtime_model(self, started_service):
+        runtime = MagicMock()
+        runtime.get = MagicMock(
+            side_effect=lambda k, default=None: {
+                "default_video_model": "luma:ray-2",
+            }.get(k, default)
+        )
+        started_service._runtime_settings = runtime
+
+        from lovely_assistant.services.media._video_providers import VideoStatus
+
+        with (
+            patch(
+                f"{MODULE}.submit_luma",
+                new_callable=AsyncMock,
+                return_value="luma-job-123",
+            ) as mock_submit,
+            patch(
+                f"{MODULE}.poll_luma",
+                new_callable=AsyncMock,
+                return_value=VideoStatus(state="processing"),
+            ),
+        ):
+            await started_service.generate_video(prompt="test")
+            mock_submit.assert_called_once()
+            call_kwargs = mock_submit.call_args.kwargs
+            assert call_kwargs["model_name"] == "ray-2"

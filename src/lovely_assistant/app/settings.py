@@ -47,6 +47,12 @@ class RuntimeSettings:
             "temperature",
             "max_turns",
             "enable_working_memory",
+            "summarization_model",
+            "working_memory_model",
+            "default_image_model",
+            "default_video_model",
+            "subagent_model",
+            "subagent_thinking_budget",
         }
     )
 
@@ -66,6 +72,12 @@ class RuntimeSettings:
         self._temperature: float | None = None
         self._max_turns: int | None = None
         self._enable_working_memory: bool | None = None
+        self._summarization_model: str | None = None
+        self._working_memory_model: str | None = None
+        self._default_image_model: str | None = None
+        self._default_video_model: str | None = None
+        self._subagent_model: str | None = None
+        self._subagent_thinking_budget: int | None = None
 
         # Track which fields have been explicitly set
         self._overridden: set[str] = set()
@@ -93,6 +105,13 @@ class RuntimeSettings:
             tb = kwargs["thinking_budget"]
             if not (1 <= tb <= 100_000):
                 raise ValueError(f"thinking_budget must be between 1 and 100000, got {tb}")
+
+        if "subagent_thinking_budget" in kwargs and kwargs["subagent_thinking_budget"] is not None:
+            stb = kwargs["subagent_thinking_budget"]
+            if not (1 <= stb <= 100_000):
+                raise ValueError(
+                    f"subagent_thinking_budget must be between 1 and 100000, got {stb}"
+                )
 
         if "max_turns" in kwargs and kwargs["max_turns"] is not None:
             mt = kwargs["max_turns"]
@@ -170,6 +189,16 @@ class RuntimeSettings:
         except Exception as e:
             logger.warning("Failed to persist settings to DB", error=str(e))
             return False
+
+    def get(self, field: str, frozen_default: Any = None) -> Any:
+        """Return the runtime override if set, otherwise frozen_default.
+
+        Simple consumer API — returns just the value (no source annotation).
+        Used by services that need runtime > frozen two-tier resolution.
+        """
+        if field in self._overridden:
+            return getattr(self, f"_{field}")
+        return frozen_default
 
     def _resolve_field(self, field: str) -> tuple[Any, str]:
         """Return (value, source) for a field."""

@@ -310,7 +310,8 @@ class TestGetSessionTraces:
     async def test_get_traces_returns_empty_when_no_db(self):
         """When _database_service is not set, returns empty list."""
         app = _create_test_app()
-        # No _database_service attribute on mock assistant service
+        # Explicitly set to None so getattr returns None (MagicMock auto-creates attributes)
+        app.state.assistant_service._database_service = None
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/sess-1/traces")
@@ -319,8 +320,8 @@ class TestGetSessionTraces:
         assert response.json() == []
 
     @pytest.mark.asyncio
-    async def test_get_traces_returns_empty_on_db_error(self):
-        """When DB throws, returns empty list instead of 500."""
+    async def test_get_traces_returns_503_on_db_error(self):
+        """When DB throws, returns 503 instead of swallowing the error."""
         mock_db = MagicMock()
         mock_db.session_context = MagicMock(side_effect=RuntimeError("DB down"))
 
@@ -330,8 +331,8 @@ class TestGetSessionTraces:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/sess-1/traces")
 
-        assert response.status_code == 200
-        assert response.json() == []
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Database unavailable"
 
     @pytest.mark.asyncio
     async def test_get_traces_returns_data(self):

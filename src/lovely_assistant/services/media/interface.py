@@ -42,6 +42,7 @@ class MediaService:
         self._config = config
         self._cache: ImageCache | None = None
         self._job_tracker: JobTracker | None = None
+        self._runtime_settings = None
         self._started = False
 
     async def start(self) -> None:
@@ -113,7 +114,13 @@ class MediaService:
         """
         self._ensure_started()
 
-        resolved_model = model or self._config.default_image_model
+        config_default = self._config.default_image_model
+        runtime_default = (
+            self._runtime_settings.get("default_image_model", config_default)
+            if self._runtime_settings
+            else config_default
+        )
+        resolved_model = model or runtime_default
         resolved_size = size or self._config.default_size
         resolved_quality = quality or self._config.default_quality
 
@@ -181,7 +188,13 @@ class MediaService:
         """
         self._ensure_started()
 
-        resolved_model = model or self._config.default_video_model
+        config_default = self._config.default_video_model
+        runtime_default = (
+            self._runtime_settings.get("default_video_model", config_default)
+            if self._runtime_settings
+            else config_default
+        )
+        resolved_model = model or runtime_default
         provider, model_name = self._parse_video_model_id(resolved_model)
 
         # Submit to provider and get poll function

@@ -124,6 +124,12 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 "error_code": "SUBAGENT_NOT_INITIALIZED",
             }
 
+        runtime_settings = deps.get("runtime_settings")
+        model_override = runtime_settings.get("subagent_model", None) if runtime_settings else None
+        thinking_override = (
+            runtime_settings.get("subagent_thinking_budget", None) if runtime_settings else None
+        )
+
         return await execute_subagent(
             definition=definition,
             task=task,
@@ -131,6 +137,8 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
             llm_service=deps["llm_service"],
             backend_toolsets=deps["get_backend_toolsets"](),
             usage=ctx.usage,
+            model_override=model_override,
+            thinking_budget_override=thinking_override,
         )
 
     registry.register_backend_tool(

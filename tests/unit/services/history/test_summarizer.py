@@ -263,6 +263,63 @@ class TestFormatMessages:
         assert len(result) < 500
 
 
+class TestRuntimeSettingsOverride:
+    async def test_summarize_uses_runtime_summarization_model(self, config, mock_llm):
+        """When runtime_settings overrides summarization_model, build_agent uses it."""
+        mock_rs = MagicMock()
+        mock_rs.get = MagicMock(
+            side_effect=lambda field, default: (
+                "openai:gpt-4o-mini" if field == "summarization_model" else default
+            )
+        )
+        summarizer = HistorySummarizer(config, mock_llm, runtime_settings=mock_rs)
+
+        expected = CompactionResult(summary="test")
+        mock_llm.build_agent.return_value = _mock_agent_run(expected)
+
+        messages = [{"role": "user", "content": "hello"}]
+        await summarizer.summarize_structured(messages)
+
+        call_kwargs = mock_llm.build_agent.call_args.kwargs
+        assert call_kwargs["model"] == "openai:gpt-4o-mini"
+        mock_rs.get.assert_any_call("summarization_model", config.summarization_model)
+
+    async def test_extract_memory_uses_runtime_working_memory_model(self, config, mock_llm):
+        """When runtime_settings overrides working_memory_model, build_agent uses it."""
+        mock_rs = MagicMock()
+        mock_rs.get = MagicMock(
+            side_effect=lambda field, default: (
+                "openai:gpt-4o" if field == "working_memory_model" else default
+            )
+        )
+        summarizer = HistorySummarizer(config, mock_llm, runtime_settings=mock_rs)
+
+        delta_result = MemoryDeltaResult(active_goal="test")
+        mock_llm.build_agent.return_value = _mock_agent_run(delta_result)
+
+        wm = WorkingMemory()
+        messages = [{"role": "user", "content": "hello"}]
+        await summarizer.extract_memory_delta(wm, messages, turn_number=1)
+
+        call_kwargs = mock_llm.build_agent.call_args.kwargs
+        assert call_kwargs["model"] == "openai:gpt-4o"
+        mock_rs.get.assert_any_call("working_memory_model", config.working_memory_model)
+
+    async def test_no_runtime_settings_uses_config(self, mock_llm):
+        """When runtime_settings is None, config defaults are used."""
+        config = HistoryConfig(summarization_model="openai:gpt-4o-mini")
+        summarizer = HistorySummarizer(config, mock_llm, runtime_settings=None)
+
+        expected = CompactionResult(summary="test")
+        mock_llm.build_agent.return_value = _mock_agent_run(expected)
+
+        messages = [{"role": "user", "content": "hello"}]
+        await summarizer.summarize_structured(messages)
+
+        call_kwargs = mock_llm.build_agent.call_args.kwargs
+        assert call_kwargs["model"] == "openai:gpt-4o-mini"
+
+
 class TestFallbackCompactionResult:
     def test_basic_fallback(self, summarizer):
         messages = [

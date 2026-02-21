@@ -414,4 +414,9 @@ def get_defaults() -> dict[str, Any]:
     return {
         "primary_model": settings.llm.primary_model,
         "summarization_model": settings.llm.summarization_model,
+        "working_memory_model": settings.history.working_memory_model,
+        "default_image_model": settings.media.default_image_model,
+        "default_video_model": settings.media.default_video_model,
+        "subagent_model": None,
+        "subagent_thinking_budget": None,
     }

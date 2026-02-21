@@ -72,7 +72,10 @@ def _read_state_file(session_name: str) -> dict[str, Any] | None:
         if isinstance(data, dict):
             return data
         return None
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except FileNotFoundError:
+        return None  # Agent has no state file — normal
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Corrupted agent state file", path=str(state_path), error=str(e))
         return None
 
 

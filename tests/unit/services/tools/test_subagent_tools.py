@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools._subagent_tools import (
@@ -179,3 +179,101 @@ class TestRegisterSubagentTools:
         schema = registry._backend_definitions["run_subagent"].parameters_schema
         required = schema.get("required", [])
         assert "subagent_id" not in required
+
+
+# ---------------------------------------------------------------------------
+# TestRunSubagentRuntimeSettings
+# ---------------------------------------------------------------------------
+
+
+class TestRunSubagentRuntimeSettings:
+    """Tests for runtime settings being passed through to execute_subagent."""
+
+    def _setup_handler(self):
+        """Register tools and return the run_subagent handler."""
+        registry = ToolRegistry(ToolConfig())
+        register_subagent_tools(registry)
+        return registry._backend_handlers["run_subagent"]
+
+    def _make_mock_ctx(self):
+        """Create a mock RunContext with usage."""
+        mock_ctx = MagicMock()
+        mock_ctx.usage = MagicMock()
+        return mock_ctx
+
+    @patch(
+        "lovely_assistant.services.tools._subagent_executor.execute_subagent",
+        new_callable=AsyncMock,
+    )
+    async def test_runtime_model_passed_to_executor(self, mock_execute):
+        mock_execute.return_value = {"result": "done", "_metadata": {}}
+
+        handler = self._setup_handler()
+        mock_ctx = self._make_mock_ctx()
+
+        runtime = MagicMock()
+        runtime.get = MagicMock(
+            side_effect=lambda k, default=None: {
+                "subagent_model": "openai:gpt-4o",
+            }.get(k, default)
+        )
+
+        handler._subagent_deps = {
+            "llm_service": MagicMock(),
+            "get_backend_toolsets": MagicMock(return_value=[]),
+            "runtime_settings": runtime,
+        }
+
+        await handler(mock_ctx, task="research something")
+        mock_execute.assert_called_once()
+        call_kwargs = mock_execute.call_args.kwargs
+        assert call_kwargs["model_override"] == "openai:gpt-4o"
+
+    @patch(
+        "lovely_assistant.services.tools._subagent_executor.execute_subagent",
+        new_callable=AsyncMock,
+    )
+    async def test_runtime_thinking_budget_passed_to_executor(self, mock_execute):
+        mock_execute.return_value = {"result": "done", "_metadata": {}}
+
+        handler = self._setup_handler()
+        mock_ctx = self._make_mock_ctx()
+
+        runtime = MagicMock()
+        runtime.get = MagicMock(
+            side_effect=lambda k, default=None: {
+                "subagent_thinking_budget": 5000,
+            }.get(k, default)
+        )
+
+        handler._subagent_deps = {
+            "llm_service": MagicMock(),
+            "get_backend_toolsets": MagicMock(return_value=[]),
+            "runtime_settings": runtime,
+        }
+
+        await handler(mock_ctx, task="analyze data")
+        mock_execute.assert_called_once()
+        call_kwargs = mock_execute.call_args.kwargs
+        assert call_kwargs["thinking_budget_override"] == 5000
+
+    @patch(
+        "lovely_assistant.services.tools._subagent_executor.execute_subagent",
+        new_callable=AsyncMock,
+    )
+    async def test_no_runtime_settings_passes_none(self, mock_execute):
+        mock_execute.return_value = {"result": "done", "_metadata": {}}
+
+        handler = self._setup_handler()
+        mock_ctx = self._make_mock_ctx()
+
+        handler._subagent_deps = {
+            "llm_service": MagicMock(),
+            "get_backend_toolsets": MagicMock(return_value=[]),
+        }
+
+        await handler(mock_ctx, task="check status")
+        mock_execute.assert_called_once()
+        call_kwargs = mock_execute.call_args.kwargs
+        assert call_kwargs["model_override"] is None
+        assert call_kwargs["thinking_budget_override"] is None

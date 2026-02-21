@@ -229,6 +229,25 @@ class TestGetInbox:
 
         assert response.status_code == 503
 
+    @pytest.mark.asyncio
+    async def test_db_error_returns_503(self):
+        """DB is configured but session_context raises — should return 503."""
+        mock_db = MagicMock()
+        mock_db._healthy = True
+
+        @asynccontextmanager
+        async def _failing_context():
+            raise RuntimeError("DB down")
+            yield  # noqa: F401
+
+        mock_db.session_context = _failing_context
+
+        app = _make_app(db_service=mock_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.get("/inbox")
+
+        assert response.status_code == 503
+
 
 # ---------------------------------------------------------------------------
 # PATCH /inbox/{item_id}/surfaced

@@ -114,8 +114,8 @@ async def list_inbox_items(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Failed to list inbox items", error=str(e))
-        return []
+        logger.error("Failed to list inbox items", error=str(e))
+        raise HTTPException(status_code=503, detail="Database unavailable") from e
 
 
 @router.patch("/{item_id}/surfaced")

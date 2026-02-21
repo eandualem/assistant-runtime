@@ -320,8 +320,8 @@ class StreamingService:
                             total=usage.total_tokens or 0,
                         )
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to extract usage stats", error=str(e))
 
             # Handle output
             output = run.result.output
@@ -622,8 +622,8 @@ class StreamingService:
                             total=usage.total_tokens or 0,
                         )
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to extract usage stats", error=str(e))
 
             output = run.result.output
             if isinstance(output, DeferredToolRequests):
