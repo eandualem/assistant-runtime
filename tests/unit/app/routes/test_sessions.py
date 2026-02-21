@@ -20,7 +20,8 @@ def _create_test_app(*, sessions: SessionStore | None = None) -> Any:
     app.state.lifecycle = LifecycleManager()
 
     mock_service = MagicMock()
-    mock_service._sessions = sessions or SessionStore()
+    mock_service.get_session_store.return_value = sessions or SessionStore()
+    mock_service.get_database_service.return_value = None
     app.state.assistant_service = mock_service
     app.state.streaming_service = MagicMock()
     return app
@@ -72,9 +73,9 @@ class TestListSessions:
 
     @pytest.mark.asyncio
     async def test_list_sessions_none_sessions(self):
-        """When _sessions is None, returns empty list."""
+        """When session store is None (service not started), returns empty list."""
         app = _create_test_app()
-        app.state.assistant_service._sessions = None
+        app.state.assistant_service.get_session_store.return_value = None
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions")
@@ -294,9 +295,9 @@ class TestGetSessionMessages:
 
     @pytest.mark.asyncio
     async def test_get_messages_no_session_store(self):
-        """When service._sessions is None, returns 404."""
+        """When session store is None (service not started), returns 404."""
         app = _create_test_app()
-        app.state.assistant_service._sessions = None
+        app.state.assistant_service.get_session_store.return_value = None
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/sess-1/messages")
@@ -308,10 +309,9 @@ class TestGetSessionMessages:
 class TestGetSessionTraces:
     @pytest.mark.asyncio
     async def test_get_traces_returns_empty_when_no_db(self):
-        """When _database_service is not set, returns empty list."""
+        """When database service is None, returns empty list."""
         app = _create_test_app()
-        # Explicitly set to None so getattr returns None (MagicMock auto-creates attributes)
-        app.state.assistant_service._database_service = None
+        # get_database_service already returns None from _create_test_app
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/sess-1/traces")
@@ -326,7 +326,7 @@ class TestGetSessionTraces:
         mock_db.session_context = MagicMock(side_effect=RuntimeError("DB down"))
 
         app = _create_test_app()
-        app.state.assistant_service._database_service = mock_db
+        app.state.assistant_service.get_database_service.return_value = mock_db
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/sess-1/traces")
@@ -362,7 +362,7 @@ class TestGetSessionTraces:
         mock_db_session.execute = AsyncMock(return_value=mock_result)
 
         app = _create_test_app()
-        app.state.assistant_service._database_service = mock_db
+        app.state.assistant_service.get_database_service.return_value = mock_db
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/sess-1/traces")
@@ -393,7 +393,7 @@ class TestGetSessionTraces:
         mock_db_session.execute = AsyncMock(return_value=mock_result)
 
         app = _create_test_app()
-        app.state.assistant_service._database_service = mock_db
+        app.state.assistant_service.get_database_service.return_value = mock_db
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/sess-1/traces?limit=10&offset=5")

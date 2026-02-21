@@ -46,8 +46,8 @@ class ToolService:
         self._started = True
         logger.info(
             "Tool service started",
-            backend_tools=len(self._registry._backend_definitions),
-            frontend_tools=len(self._registry._frontend_definitions),
+            backend_tools=self._registry.backend_tool_count(),
+            frontend_tools=self._registry.frontend_tool_count(),
         )
 
     async def stop(self) -> None:
@@ -62,8 +62,8 @@ class ToolService:
             return {"healthy": False}
         return {
             "healthy": True,
-            "backend_tools": len(self._registry._backend_definitions),
-            "frontend_tools": len(self._registry._frontend_definitions),
+            "backend_tools": self._registry.backend_tool_count(),
+            "frontend_tools": self._registry.frontend_tool_count(),
         }
 
     def build_toolset(self, machine_state: dict[str, Any] | None = None) -> list:
@@ -191,11 +191,11 @@ class ToolService:
         """Configure runtime dependencies consumed by run_subagent handler."""
         if self._registry is None:
             return
-        run_subagent_handler = self._registry._backend_handlers.get("run_subagent")
-        if run_subagent_handler is None:
-            return
-        run_subagent_handler._subagent_deps = {
-            "llm_service": self._llm_service,
-            "get_backend_toolsets": self._registry.build_subagent_toolset,
-            "runtime_settings": getattr(self, "_runtime_settings", None),
-        }
+        self._registry.configure_handler_deps(
+            "run_subagent",
+            {
+                "llm_service": self._llm_service,
+                "get_backend_toolsets": self._registry.build_subagent_toolset,
+                "runtime_settings": getattr(self, "_runtime_settings", None),
+            },
+        )

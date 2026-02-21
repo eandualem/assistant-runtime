@@ -95,11 +95,13 @@ class AssistantService:
         """Attach live runtime settings after service construction."""
         self._runtime_settings = runtime_settings
 
-    def get_session_store(self) -> SessionStore:
-        """Expose session store through a public boundary."""
-        self._ensure_started()
-        assert self._sessions is not None
+    def get_session_store(self) -> SessionStore | None:
+        """Return the session store, or None if service not started."""
         return self._sessions
+
+    def get_database_service(self) -> DatabaseService | None:
+        """Return the database service for route-level access."""
+        return self._database_service
 
     async def process_message(self, request: AssistantRequest) -> AssistantResult:
         """Process a user message through the full assistant pipeline.

@@ -222,6 +222,20 @@ class ToolRegistry:
         """All registered tool names."""
         return list(self._backend_definitions.keys()) + list(self._frontend_definitions.keys())
 
+    def backend_tool_count(self) -> int:
+        """Number of registered backend tools."""
+        return len(self._backend_definitions)
+
+    def frontend_tool_count(self) -> int:
+        """Number of registered frontend tools."""
+        return len(self._frontend_definitions)
+
+    def configure_handler_deps(self, handler_name: str, deps: dict) -> None:
+        """Set runtime dependency dict on a registered backend handler."""
+        handler = self._backend_handlers.get(handler_name)
+        if handler is not None:
+            handler._subagent_deps = deps
+
     def _resolve_available_tools(self, machine_state: dict[str, Any] | None = None) -> ToolSet:
         """Determine which tools are available based on the active page.
 

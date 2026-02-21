@@ -15,6 +15,7 @@ def _backbone_error(payload: dict[str, Any]) -> str:
     """Extract normalized error text from backbone transport payload."""
     return payload.get("error", payload.get("message", "Request failed"))
 
+
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------

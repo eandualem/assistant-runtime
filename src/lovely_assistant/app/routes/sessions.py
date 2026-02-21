@@ -35,7 +35,7 @@ async def list_sessions(
     offset: int = 0,
 ) -> list[dict]:
     """List sessions (metadata only — no full message history)."""
-    sessions = service._sessions
+    sessions = service.get_session_store()
     if sessions is None:
         return []
 
@@ -48,7 +48,7 @@ async def get_session(session_id: str, service: AssistantServiceDep) -> dict:
 
     Checks in-memory cache first, then tries DB. Returns 404 if not found in either.
     """
-    ctx = await _get_session_context(session_id, service._sessions)
+    ctx = await _get_session_context(session_id, service.get_session_store())
 
     return {
         "session_id": session_id,
@@ -61,14 +61,14 @@ async def get_session(session_id: str, service: AssistantServiceDep) -> dict:
 @router.get("/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, service: AssistantServiceDep) -> list[dict]:
     """Get display-ready message history for a session."""
-    ctx = await _get_session_context(session_id, service._sessions)
+    ctx = await _get_session_context(session_id, service.get_session_store())
     return messages_to_display_format(ctx.get("message_history", []))
 
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, service: AssistantServiceDep) -> dict:
     """Delete a session and all its context."""
-    sessions = service._sessions
+    sessions = service.get_session_store()
     if sessions is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -89,7 +89,7 @@ async def get_session_traces(
     offset: int = 0,
 ) -> list[dict]:
     """Get debug traces for a session, ordered by creation time."""
-    db: DatabaseService | None = getattr(service, "_database_service", None)
+    db: DatabaseService | None = service.get_database_service()
     if db is None:
         return []
 

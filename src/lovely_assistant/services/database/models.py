@@ -96,9 +96,7 @@ class UserSettingsORM(Base):
     """Persisted user settings — single-row table with id='default'."""
 
     __tablename__ = "user_settings"
-    __table_args__ = (
-        CheckConstraint("id = 'default'", name="ck_user_settings_singleton_id"),
-    )
+    __table_args__ = (CheckConstraint("id = 'default'", name="ck_user_settings_singleton_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     default_model: Mapped[str | None] = mapped_column(Text, nullable=True)
