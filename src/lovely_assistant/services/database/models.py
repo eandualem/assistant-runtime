@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -54,6 +66,18 @@ class InboxItemORM(Base):
     """Inbox items — agents push messages for Jarvis to surface contextually."""
 
     __tablename__ = "inbox_items"
+    __table_args__ = (
+        CheckConstraint(
+            "severity IN ('info', 'action_needed', 'urgent')",
+            name="ck_inbox_items_severity_valid",
+        ),
+        Index(
+            "ix_inbox_items_surfaced_severity_created_at",
+            "surfaced",
+            "severity",
+            "created_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, server_default=func.gen_random_uuid().cast(String)
@@ -72,6 +96,9 @@ class UserSettingsORM(Base):
     """Persisted user settings — single-row table with id='default'."""
 
     __tablename__ = "user_settings"
+    __table_args__ = (
+        CheckConstraint("id = 'default'", name="ck_user_settings_singleton_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     default_model: Mapped[str | None] = mapped_column(Text, nullable=True)

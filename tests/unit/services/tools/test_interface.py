@@ -325,3 +325,17 @@ class TestSubagentIntegration:
 
         toolsets = svc.get_subagent_toolsets()
         assert isinstance(toolsets, list)
+
+    async def test_runtime_settings_propagates_to_run_subagent_handler(self):
+        """set_runtime_settings updates run_subagent dependencies via public API."""
+        mock_llm = MagicMock()
+        runtime = MagicMock()
+        svc = ToolService(config=ToolConfig(), llm_service=mock_llm)
+        await svc.start()
+
+        svc.set_runtime_settings(runtime)
+
+        handler = svc._registry._backend_handlers.get("run_subagent")
+        assert handler is not None
+        deps = getattr(handler, "_subagent_deps", {})
+        assert deps.get("runtime_settings") is runtime

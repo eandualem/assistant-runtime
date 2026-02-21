@@ -57,9 +57,23 @@ async def backbone_request(
         return await _request()
     except httpx.TimeoutException:
         logger.warning("Backbone request timed out after retries", method=method, path=path)
-        return (-1, {"message": f"Request timed out: {method} {path}"})
+        return (
+            -1,
+            {
+                "success": False,
+                "error": f"Request timed out: {method} {path}",
+                "error_code": "BACKBONE_TIMEOUT",
+            },
+        )
     except httpx.HTTPError as exc:
         logger.warning(
             "Backbone request failed after retries", method=method, path=path, error=str(exc)
         )
-        return (-1, {"message": f"HTTP error: {exc}"})
+        return (
+            -1,
+            {
+                "success": False,
+                "error": f"HTTP error: {exc}",
+                "error_code": "BACKBONE_HTTP_ERROR",
+            },
+        )

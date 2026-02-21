@@ -67,9 +67,9 @@ def _make_service(
     tool_service.get_available_tools.return_value = ToolSet()
     tool_service.build_toolset.return_value = []
 
-    # Mock assistant service with _sessions attribute
+    # Mock assistant service with public session store accessor
     mock_assistant_service = MagicMock()
-    mock_assistant_service._sessions = sessions or SessionStore()
+    mock_assistant_service.get_session_store = MagicMock(return_value=sessions or SessionStore())
 
     config = assistant_config or AssistantConfig()
     return StreamingService(
@@ -200,6 +200,12 @@ class TestStreamingServiceLifecycle:
         service = _make_service()
         health = await service.health_check()
         assert health["healthy"] is False
+
+    async def test_sessions_accesses_assistant_public_accessor(self):
+        service = _make_service()
+        store = service._assistant_service.get_session_store.return_value
+        assert service._sessions is store
+        service._assistant_service.get_session_store.assert_called()
 
 
 class TestStreamingServiceNotStarted:

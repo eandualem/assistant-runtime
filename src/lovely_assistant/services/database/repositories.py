@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,11 +63,17 @@ class SessionRepository:
 
     async def update(self, session_id: str, **fields) -> None:
         """Update specific fields on a session. No-op if session doesn't exist."""
-        row = await self.get(session_id)
-        if row is None:
+        if not fields:
             return
-        for key, value in fields.items():
-            setattr(row, key, value)
+        stmt = (
+            update(SessionORM)
+            .where(
+                SessionORM.id == session_id,
+                SessionORM.expires_at > func.now(),
+            )
+            .values(**fields, updated_at=func.now())
+        )
+        await self._session.execute(stmt)
         await self._session.flush()
 
     async def delete(self, session_id: str) -> bool:

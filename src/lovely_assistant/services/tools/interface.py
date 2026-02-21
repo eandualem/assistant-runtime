@@ -35,6 +35,7 @@ class ToolService:
         self._config = config
         self._media_service = media_service
         self._llm_service = llm_service
+        self._runtime_settings: object | None = None
         self._registry: ToolRegistry | None = None
         self._started = False
 
@@ -94,6 +95,11 @@ class ToolService:
         """Build toolsets for subagent execution (backend only, no run_subagent)."""
         self._ensure_started()
         return self._registry.build_subagent_toolset()
+
+    def set_runtime_settings(self, runtime_settings: object | None) -> None:
+        """Attach live runtime settings and propagate to subagent handler deps."""
+        self._runtime_settings = runtime_settings
+        self._configure_subagent_handler_deps()
 
     def _ensure_started(self) -> None:
         """Guard: raise if service not started."""
@@ -174,16 +180,22 @@ class ToolService:
         # Subagent tools (only if llm_service is available)
         if self._llm_service is not None:
             register_subagent_tools(self._registry)
-            # Attach deps to the run_subagent handler so it can access llm_service
-            # and build subagent toolsets at call time
-            run_subagent_handler = self._registry._backend_handlers.get("run_subagent")
-            if run_subagent_handler:
-                run_subagent_handler._subagent_deps = {
-                    "llm_service": self._llm_service,
-                    "get_backend_toolsets": self._registry.build_subagent_toolset,
-                }
+            self._configure_subagent_handler_deps()
 
         # Media generation tools (only if media service is available)
         if self._media_service is not None:
             register_media_tools(self._registry, self._media_service)
             register_video_tools(self._registry, self._media_service)
+
+    def _configure_subagent_handler_deps(self) -> None:
+        """Configure runtime dependencies consumed by run_subagent handler."""
+        if self._registry is None:
+            return
+        run_subagent_handler = self._registry._backend_handlers.get("run_subagent")
+        if run_subagent_handler is None:
+            return
+        run_subagent_handler._subagent_deps = {
+            "llm_service": self._llm_service,
+            "get_backend_toolsets": self._registry.build_subagent_toolset,
+            "runtime_settings": getattr(self, "_runtime_settings", None),
+        }

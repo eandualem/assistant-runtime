@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from lovely_assistant.base.resilience import retry_with_backoff
 from lovely_assistant.services.history.config import HistoryConfig
 from lovely_assistant.services.history.models import (
     CompactionResult,
@@ -101,6 +102,10 @@ class HistorySummarizer:
     ) -> None:
         self.config = config
         self._llm = llm_service
+        self._runtime_settings = runtime_settings
+
+    def set_runtime_settings(self, runtime_settings: Any | None) -> None:
+        """Attach live runtime settings after construction."""
         self._runtime_settings = runtime_settings
 
     def _format_messages_for_summarization(self, messages: list[dict[str, Any]]) -> str:
@@ -216,56 +221,50 @@ class HistorySummarizer:
             **({"model": model} if model else {}),
         )
 
-        max_attempts = 2
-        last_error: Exception | None = None
-
-        for attempt in range(1, max_attempts + 1):
-            try:
-                result = await agent.run(prompt)
-                delta_result = result.output
-
-                updated_wm = WorkingMemory(
-                    active_goal=delta_result.active_goal,
-                    progress=delta_result.progress,
-                    next_steps=delta_result.next_steps,
-                    key_decisions=delta_result.key_decisions,
-                    open_loops=delta_result.open_loops,
-                    entries=[e.model_copy() for e in current_wm.entries],
-                    turn_number=turn_number,
-                )
-
-                updated_wm.apply_deltas(
-                    delta_result.deltas, turn_number, max_entries=self.config.max_memory_entries
-                )
-
-                duration_ms = (time.time() - start_time) * 1000
-
-                delta_counts = {"add": 0, "update": 0, "delete": 0}
-                for delta in delta_result.deltas:
-                    if delta.operation.value in delta_counts:
-                        delta_counts[delta.operation.value] += 1
-
-                logger.info(
-                    f"[WORKING_MEMORY] Delta extraction in {duration_ms:.0f}ms: "
-                    f"{len(delta_result.deltas)} operations "
-                    f"(+{delta_counts['add']} ~{delta_counts['update']} -{delta_counts['delete']}), "
-                    f"{len(updated_wm.entries)} total entries"
-                )
-
-                return updated_wm
-
-            except Exception as e:
-                last_error = e
-                if attempt < max_attempts:
-                    logger.warning(
-                        f"[WORKING_MEMORY] Delta extraction attempt {attempt} failed, retrying: {e}"
-                    )
-                    continue
-
-        logger.warning(
-            f"[WORKING_MEMORY] Delta extraction failed, keeping current WM: {last_error}"
+        @retry_with_backoff(
+            max_attempts=2,
+            min_wait=0.5,
+            max_wait=5.0,
+            retry_on=(Exception,),
+            name="extract_memory_delta",
         )
-        return current_wm
+        async def _run_extract() -> MemoryDeltaResult:
+            result = await agent.run(prompt)
+            return result.output
+
+        try:
+            delta_result = await _run_extract()
+            updated_wm = WorkingMemory(
+                active_goal=delta_result.active_goal,
+                progress=delta_result.progress,
+                next_steps=delta_result.next_steps,
+                key_decisions=delta_result.key_decisions,
+                open_loops=delta_result.open_loops,
+                entries=[e.model_copy() for e in current_wm.entries],
+                turn_number=turn_number,
+            )
+
+            updated_wm.apply_deltas(
+                delta_result.deltas, turn_number, max_entries=self.config.max_memory_entries
+            )
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            delta_counts = {"add": 0, "update": 0, "delete": 0}
+            for delta in delta_result.deltas:
+                if delta.operation.value in delta_counts:
+                    delta_counts[delta.operation.value] += 1
+
+            logger.info(
+                f"[WORKING_MEMORY] Delta extraction in {duration_ms:.0f}ms: "
+                f"{len(delta_result.deltas)} operations "
+                f"(+{delta_counts['add']} ~{delta_counts['update']} -{delta_counts['delete']}), "
+                f"{len(updated_wm.entries)} total entries"
+            )
+            return updated_wm
+        except Exception as e:
+            logger.warning(f"[WORKING_MEMORY] Delta extraction failed, keeping current WM: {e}")
+            return current_wm
 
     def _create_fallback_summary(self, messages: list[dict[str, Any]]) -> str:
         """Create a basic summary without LLM when summarization fails."""

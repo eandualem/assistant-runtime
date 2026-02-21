@@ -54,6 +54,12 @@ class HistoryService:
             "token_budget": self._config.token_budget,
         }
 
+    def set_runtime_settings(self, runtime_settings: Any | None) -> None:
+        """Attach live runtime settings and propagate to internals."""
+        self._runtime_settings = runtime_settings
+        if self._manager is not None:
+            self._manager.set_runtime_settings(runtime_settings)
+
     async def prepare_history(
         self,
         history: list[ModelMessage],

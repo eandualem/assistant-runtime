@@ -96,10 +96,14 @@ class StreamingService:
     @property
     def _sessions(self) -> SessionStore:
         """Access sessions through assistant service (created during start())."""
-        sessions = self._assistant_service._sessions
-        if sessions is None:
-            raise StreamSetupError("Assistant service not started — no session store")
-        return sessions
+        try:
+            return self._assistant_service.get_session_store()
+        except Exception as e:
+            raise StreamSetupError("Assistant service not started — no session store") from e
+
+    def set_runtime_settings(self, runtime_settings: RuntimeSettings | None) -> None:
+        """Attach live runtime settings after service construction."""
+        self._runtime_settings = runtime_settings
 
     async def start(self) -> None:
         """Initialize the streaming service."""

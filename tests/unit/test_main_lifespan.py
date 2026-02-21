@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -31,10 +31,11 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
         app_state.assistant_service = SimpleNamespace(
             _runtime_settings=None,
             cleanup_expired_sessions=AsyncMock(return_value=0),
+            set_runtime_settings=MagicMock(),
         )
 
     async def _register_streaming(app_state, lifecycle):
-        app_state.streaming_service = SimpleNamespace(_runtime_settings=None)
+        app_state.streaming_service = SimpleNamespace(set_runtime_settings=MagicMock())
 
     monkeypatch.setattr("lovely_assistant.main.register_database", _register_database)
     monkeypatch.setattr("lovely_assistant.main.register_llm", _register_llm)
@@ -52,5 +53,9 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
 
     app = create_app()
     async with lifespan(app):
-        assert app.state.assistant_service._runtime_settings is app.state.runtime_settings
-        assert app.state.streaming_service._runtime_settings is app.state.runtime_settings
+        app.state.assistant_service.set_runtime_settings.assert_called_once_with(
+            app.state.runtime_settings
+        )
+        app.state.streaming_service.set_runtime_settings.assert_called_once_with(
+            app.state.runtime_settings
+        )

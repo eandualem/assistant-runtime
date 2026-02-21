@@ -54,7 +54,7 @@ class TestGithubRequest:
     async def test_missing_token(self):
         status, data = await _github_request("GET", "/repos/test/test/issues")
         assert status == -1
-        assert "not configured" in data["message"]
+        assert "not configured" in data["error"]
 
     @patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_test_token"})
     @patch(f"{MODULE}.httpx.AsyncClient")
@@ -122,7 +122,7 @@ class TestGithubRequest:
 
         status, data = await _github_request("GET", "/repos/test/test/issues")
         assert status == -1
-        assert "timed out" in data["message"]
+        assert "timed out" in data["error"]
 
 
 # ---------------------------------------------------------------------------

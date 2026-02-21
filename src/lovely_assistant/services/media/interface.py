@@ -87,6 +87,10 @@ class MediaService:
             result["active_video_jobs"] = self._job_tracker.active_count()
         return result
 
+    def set_runtime_settings(self, runtime_settings: object | None) -> None:
+        """Attach live runtime settings after service construction."""
+        self._runtime_settings = runtime_settings
+
     async def generate_image(
         self,
         prompt: str,

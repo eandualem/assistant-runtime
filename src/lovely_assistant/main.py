@@ -60,23 +60,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await app.state.runtime_settings.load_from_db()
     # Services are registered before runtime settings exists.
-    # Inject the live runtime settings reference after initialization.
+    # Attach the live runtime settings through public service APIs.
     rs = app.state.runtime_settings
     if getattr(app.state, "assistant_service", None) is not None:
-        app.state.assistant_service._runtime_settings = rs
+        app.state.assistant_service.set_runtime_settings(rs)
     if getattr(app.state, "streaming_service", None) is not None:
-        app.state.streaming_service._runtime_settings = rs
+        app.state.streaming_service.set_runtime_settings(rs)
     if getattr(app.state, "history_service", None) is not None:
-        app.state.history_service._runtime_settings = rs
+        app.state.history_service.set_runtime_settings(rs)
     if getattr(app.state, "media_service", None) is not None:
-        app.state.media_service._runtime_settings = rs
+        app.state.media_service.set_runtime_settings(rs)
     if getattr(app.state, "tool_service", None) is not None:
-        ts = app.state.tool_service
-        ts._runtime_settings = rs
-        if ts._registry:
-            handler = ts._registry._backend_handlers.get("run_subagent")
-            if handler and hasattr(handler, "_subagent_deps"):
-                handler._subagent_deps["runtime_settings"] = rs
+        app.state.tool_service.set_runtime_settings(rs)
 
     # Cleanup expired sessions on startup (before accepting requests)
     if getattr(app.state, "assistant_service", None) is not None:

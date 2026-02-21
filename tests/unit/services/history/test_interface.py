@@ -66,6 +66,16 @@ class TestLifecycle:
         health = await service.health_check()
         assert health["token_budget"] == 50_000
 
+    async def test_set_runtime_settings_propagates_to_summarizer(self, service):
+        await service.start()
+        runtime = MagicMock()
+
+        service.set_runtime_settings(runtime)
+
+        assert service._runtime_settings is runtime
+        assert service._manager is not None
+        assert service._manager._summarizer._runtime_settings is runtime
+
 
 class TestPrepareHistory:
     async def test_raises_if_not_started(self, service):

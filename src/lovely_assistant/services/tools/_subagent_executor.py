@@ -33,7 +33,7 @@ async def execute_subagent(
     aggregates token usage into the parent's RunUsage.
 
     Returns a dict with either {"result": ..., "_metadata": ...} on success
-    or {"error": ..., "error_code": ...} on failure.
+    or {"success": false, "error": ..., "error_code": ...} on failure.
     """
     start_time = time.monotonic()
 
@@ -97,6 +97,7 @@ async def execute_subagent(
             duration_seconds=round(duration, 2),
         )
         return {
+            "success": False,
             "error": str(e),
             "error_code": "SUBAGENT_EXECUTION_ERROR",
             "subagent_id": definition.id,

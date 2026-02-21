@@ -47,6 +47,10 @@ class HistoryManager:
         self.config = config
         self._summarizer = summarizer
 
+    def set_runtime_settings(self, runtime_settings: Any | None) -> None:
+        """Forward runtime settings to summarizer dependency."""
+        self._summarizer.set_runtime_settings(runtime_settings)
+
     async def prepare_history(
         self,
         history: list[ModelMessage],

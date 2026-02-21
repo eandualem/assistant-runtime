@@ -91,6 +91,16 @@ class AssistantService:
             return 0
         return await self._sessions.cleanup_expired()
 
+    def set_runtime_settings(self, runtime_settings: RuntimeSettings | None) -> None:
+        """Attach live runtime settings after service construction."""
+        self._runtime_settings = runtime_settings
+
+    def get_session_store(self) -> SessionStore:
+        """Expose session store through a public boundary."""
+        self._ensure_started()
+        assert self._sessions is not None
+        return self._sessions
+
     async def process_message(self, request: AssistantRequest) -> AssistantResult:
         """Process a user message through the full assistant pipeline.
 

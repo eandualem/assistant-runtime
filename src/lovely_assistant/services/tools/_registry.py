@@ -9,8 +9,8 @@ from typing import Any
 from loguru import logger
 from pydantic_ai.tools import ToolDefinition as PydanticToolDef
 from pydantic_ai.toolsets import ExternalToolset, FunctionToolset
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
+from lovely_assistant.base.resilience import retry_with_backoff
 from lovely_assistant.services.tools.config import ToolConfig
 from lovely_assistant.services.tools.exceptions import ToolValidationError
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
@@ -104,14 +104,15 @@ class ToolRegistry:
         """Wrap a tool handler with retry on transient errors and a safety net.
 
         Retries once (2 total attempts) on ConnectionError/TimeoutError before
-        falling through to the error dict response.
+        falling through to the structured error response.
         """
 
-        @retry(
-            stop=stop_after_attempt(2),
-            wait=wait_fixed(0.5),
-            retry=retry_if_exception_type((ConnectionError, TimeoutError)),
-            reraise=True,
+        @retry_with_backoff(
+            max_attempts=2,
+            min_wait=0.5,
+            max_wait=5.0,
+            retry_on=(ConnectionError, TimeoutError),
+            name=f"tool:{tool_name}",
         )
         async def _retryable(*args: Any, **kwargs: Any) -> Any:
             return await handler(*args, **kwargs)
@@ -128,6 +129,7 @@ class ToolRegistry:
                     error=str(e),
                 )
                 return {
+                    "success": False,
                     "error": f"Internal error: {e}",
                     "error_code": "TOOL_EXECUTION_ERROR",
                 }

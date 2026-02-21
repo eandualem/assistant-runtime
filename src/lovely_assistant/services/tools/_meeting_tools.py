@@ -13,6 +13,11 @@ from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 VALID_ROOM_STATES = {"active", "paused", "closed"}
 
 
+def _backbone_error(payload: dict[str, Any]) -> str:
+    """Extract normalized error text from backbone transport payload."""
+    return payload.get("error", payload.get("message", "Request failed"))
+
+
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------
@@ -42,7 +47,7 @@ async def create_meeting_room(
     )
 
     if status == -1:
-        return {"error": data.get("message", "Request failed"), "success": False}
+        return {"error": _backbone_error(data), "success": False}
 
     if status not in (200, 201):
         return {
@@ -68,7 +73,7 @@ async def list_meeting_rooms(state: str = "") -> dict[str, Any]:
     status, data = await backbone_request("GET", "/api/rooms", params=params or None)
 
     if status == -1:
-        return {"error": data.get("message", "Request failed"), "success": False}
+        return {"error": _backbone_error(data), "success": False}
 
     if status != 200:
         return {
@@ -114,7 +119,7 @@ async def send_meeting_message(
         )
 
     if status == -1:
-        return {"error": data.get("message", "Request failed"), "success": False}
+        return {"error": _backbone_error(data), "success": False}
 
     if status not in (200, 201):
         return {
@@ -144,7 +149,7 @@ async def update_meeting_state(room_id: str, state: str) -> dict[str, Any]:
     )
 
     if status == -1:
-        return {"error": data.get("message", "Request failed"), "success": False}
+        return {"error": _backbone_error(data), "success": False}
 
     if status != 200:
         return {

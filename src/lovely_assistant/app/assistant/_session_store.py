@@ -1,8 +1,12 @@
 """Session store with read-through DB persistence.
 
 Manages per-session context (working memory, turn count, pending tool calls).
-In-memory dict acts as hot cache; DB is the durable backing store.
-Falls back to pure in-memory mode when DB is unavailable.
+In-memory dict acts as hot cache; DB is the durable backing store when available.
+
+Durability contract:
+- When DB writes/reads succeed, session state is durable across restarts.
+- When DB is unavailable or retries are exhausted, operation continues in-memory
+  and the process enters a best-effort, non-durable mode until DB recovers.
 """
 
 from __future__ import annotations
@@ -312,7 +316,7 @@ class SessionStore:
             return await _load()
         except Exception as e:
             logger.warning(
-                "Failed to load session from DB",
+                "Failed to load session from DB; continuing with in-memory session state only",
                 session_id=session_id,
                 error=str(e),
             )
@@ -380,7 +384,7 @@ class SessionStore:
             await _persist()
         except Exception as e:
             logger.exception(
-                "[SESSION] Failed to persist session to DB",
+                "[SESSION] Failed to persist session to DB; state remains in-memory only",
                 session_id=session_id,
                 error=str(e),
             )
