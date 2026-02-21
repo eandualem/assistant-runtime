@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.egg-info/
+
+# Testing & linting
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage_html/
+
+# Environment
+.env
+.venv/
+
+# OS
+.DS_Store

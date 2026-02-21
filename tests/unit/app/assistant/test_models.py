@@ -210,6 +210,62 @@ class TestAssistantRequest:
         assert req.tool_result == {"status": "ok"}
 
 
+class TestTopLevelCamelCaseNormalization:
+    """Tests that the model_validator normalizes camelCase top-level keys."""
+
+    def test_camel_case_top_level_keys(self):
+        """Frontend sends sessionId/machineState — should be normalized."""
+        req = AssistantRequest.model_validate(
+            {"sessionId": "s1", "message": "hi", "machineState": {"activePage": {"name": "home"}}}
+        )
+        assert req.session_id == "s1"
+        assert req.machine_state is not None
+        assert "active_page" in req.machine_state
+
+    def test_camel_case_tool_call_id(self):
+        req = AssistantRequest.model_validate(
+            {"sessionId": "s1", "message": "", "toolCallId": "tc-1", "toolResult": {"ok": True}}
+        )
+        assert req.tool_call_id == "tc-1"
+        assert req.tool_result == {"ok": True}
+
+    def test_snake_case_passthrough(self):
+        """Snake_case keys still work (idempotent normalization)."""
+        req = AssistantRequest(session_id="s1", message="hi")
+        assert req.session_id == "s1"
+
+
+class TestConfigCamelCaseNormalization:
+    """Tests that camelCase config keys are normalized before RequestConfigOverride validates."""
+
+    def test_camel_case_config_keys(self):
+        req = AssistantRequest.model_validate(
+            {
+                "sessionId": "s1",
+                "message": "hi",
+                "config": {"defaultModel": "anthropic:claude-haiku-4-5", "thinkingBudget": 5000},
+            }
+        )
+        assert req.config is not None
+        assert req.config.default_model == "anthropic:claude-haiku-4-5"
+        assert req.config.thinking_budget == 5000
+
+    def test_mixed_case_config_keys(self):
+        req = AssistantRequest.model_validate(
+            {
+                "session_id": "s1",
+                "message": "hi",
+                "config": {"default_model": "openai:gpt-4o", "enableWorkingMemory": True},
+            }
+        )
+        assert req.config.default_model == "openai:gpt-4o"
+        assert req.config.enable_working_memory is True
+
+    def test_config_none_passthrough(self):
+        req = AssistantRequest(session_id="s1", message="hi", config=None)
+        assert req.config is None
+
+
 class TestAssistantResult:
     def test_text_result(self):
         result = AssistantResult(

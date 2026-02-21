@@ -388,6 +388,36 @@ class TestSessionStoreWithDb:
         result = await store._load_session_from_db("s1")
         assert result is None
 
+    async def test_load_session_from_db_deserialization_failure_returns_empty_history(self):
+        """When message history fails to deserialize, session loads with empty history."""
+        mock_db = _make_mock_db()
+        store = SessionStore(database_service=mock_db)
+
+        mock_row = MagicMock()
+        mock_row.turn_number = 3
+        mock_row.working_memory = None
+        mock_row.pending_tool_call = None
+        mock_row.message_history = [{"bad": "data", "not_a_real": "message"}]
+        mock_row.title = "Test session"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_row
+
+        mock_async_session = AsyncMock()
+        mock_async_session.execute = AsyncMock(return_value=mock_result)
+
+        @asynccontextmanager
+        async def _ctx():
+            yield mock_async_session
+
+        mock_db.session_context = _ctx
+
+        result = await store._load_session_from_db("s1")
+        assert result is not None
+        assert result["turn_number"] == 3
+        assert result["title"] == "Test session"
+        assert result["message_history"] == []  # Empty — deserialization failed gracefully
+
     # --- _persist_to_db ---
 
     async def test_persist_to_db_noop_when_no_db(self):

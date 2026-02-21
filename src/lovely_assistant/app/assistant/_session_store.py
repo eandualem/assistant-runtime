@@ -279,6 +279,8 @@ class SessionStore:
         """Load a session from DB into the in-memory format.
 
         Retries on transient DB errors (OperationalError, DisconnectionError, etc.).
+        Deserialization failures return the session with empty history (data is in DB
+        but unreadable by the current pydantic-ai version) and log at ERROR level.
         """
         if self._db is None:
             return None
@@ -300,9 +302,20 @@ class SessionStore:
                     return None
 
                 # Deserialize JSONB message history back to typed ModelMessage list
-                message_history = deserialize_messages(
-                    row.message_history if row.message_history else []
-                )
+                raw_history = row.message_history if row.message_history else []
+                try:
+                    message_history = deserialize_messages(raw_history)
+                except Exception as e:
+                    logger.error(
+                        "Session message history failed to deserialize — "
+                        "returning session with empty history. "
+                        "Data is still in DB and may be recoverable after a pydantic-ai upgrade.",
+                        session_id=session_id,
+                        stored_message_count=len(raw_history),
+                        error_type=type(e).__name__,
+                        error=str(e),
+                    )
+                    message_history = []
 
                 return {
                     "turn_number": row.turn_number,
@@ -314,10 +327,19 @@ class SessionStore:
 
         try:
             return await _load()
-        except Exception as e:
+        except _DB_RETRYABLE_EXCEPTIONS as e:
             logger.warning(
-                "Failed to load session from DB; continuing with in-memory session state only",
+                "Transient DB error loading session; continuing in-memory only",
                 session_id=session_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                "Unexpected error loading session from DB",
+                session_id=session_id,
+                error_type=type(e).__name__,
                 error=str(e),
             )
             return None

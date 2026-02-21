@@ -99,14 +99,32 @@ class AssistantRequest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_machine_state(cls, data: Any) -> Any:
-        """Deep-convert machine_state keys from camelCase to snake_case."""
-        if isinstance(data, dict):
-            ms = data.get("machine_state")
-            if ms is not None:
-                normalized = _normalize_keys(ms)
-                normalized = _apply_field_aliases(normalized)
-                data = {**data, "machine_state": normalized}
+    def normalize_camel_case(cls, data: Any) -> Any:
+        """Normalize camelCase keys from the frontend to snake_case.
+
+        Covers three scopes:
+        1. Top-level keys (sessionId → session_id, machineState → machine_state)
+        2. machine_state contents (deep recursive conversion + field aliases)
+        3. config keys (defaultModel → default_model, thinkingBudget → thinking_budget)
+        """
+        if not isinstance(data, dict):
+            return data
+
+        # 1. Normalize top-level keys
+        data = {_camel_to_snake(k): v for k, v in data.items()}
+
+        # 2. Deep-normalize machine_state contents + field aliases
+        ms = data.get("machine_state")
+        if ms is not None:
+            normalized = _normalize_keys(ms)
+            normalized = _apply_field_aliases(normalized)
+            data = {**data, "machine_state": normalized}
+
+        # 3. Normalize config keys (shallow — flat model)
+        cfg = data.get("config")
+        if isinstance(cfg, dict):
+            data = {**data, "config": {_camel_to_snake(k): v for k, v in cfg.items()}}
+
         return data
 
 
