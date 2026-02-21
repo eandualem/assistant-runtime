@@ -40,7 +40,7 @@ def _normalize_keys(obj: Any) -> Any:
 # Page-scoped semantic field aliases.  Only applied inside ``active_page.data``
 # for the matching page name — prevents collisions on other pages.
 _PAGE_FIELD_ALIASES: dict[str, dict[str, str]] = {
-    "agents": {"entities": "sessions"},
+    "agents": {"entities": "sessions", "coding_agents": "sessions"},
     "tasks": {"filters": "active_filters"},
 }
 

@@ -51,6 +51,20 @@ def make_tool_result_event(
     }
 
 
+def make_tool_error_event(
+    tool_name: str,
+    error: str,
+    call_id: str,
+) -> dict[str, Any]:
+    """Create a tool_error event (tool returned an error result)."""
+    return {
+        "type": "tool_error",
+        "tool_name": tool_name,
+        "error": error,
+        "call_id": call_id,
+    }
+
+
 def make_tool_status_event(tool_name: str, status: str) -> dict[str, Any]:
     """Create a tool_status event (started | completed | error)."""
     return {"type": "tool_status", "tool_name": tool_name, "status": status}
@@ -59,19 +73,45 @@ def make_tool_status_event(tool_name: str, status: str) -> dict[str, Any]:
 def make_final_response_event(
     content: str | None,
     model: str,
+    *,
+    streamed: bool = False,
+    thinking_streamed: bool = False,
+    error: bool = False,
+    error_type: str | None = None,
 ) -> dict[str, Any]:
     """Create a final_response event."""
-    return {
+    event: dict[str, Any] = {
         "type": "final_response",
         "content": content,
         "model": model,
-        "streamed": True,
+        "streamed": streamed,
     }
+    if thinking_streamed:
+        event["thinking_streamed"] = True
+    if error:
+        event["error"] = True
+    if error_type is not None:
+        event["error_type"] = error_type
+    return event
 
 
-def make_error_event(message: str) -> dict[str, Any]:
+def make_error_event(
+    message: str,
+    *,
+    error_type: str | None = None,
+    terminal: bool = True,
+    retry_allowed: bool = False,
+) -> dict[str, Any]:
     """Create an error event."""
-    return {"type": "error", "message": message}
+    event: dict[str, Any] = {
+        "type": "error",
+        "message": message,
+        "terminal": terminal,
+        "retry_allowed": retry_allowed,
+    }
+    if error_type is not None:
+        event["error_type"] = error_type
+    return event
 
 
 # --- Debug event factories ---

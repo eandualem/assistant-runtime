@@ -16,6 +16,7 @@ from lovely_assistant.app.streaming._event_builder import (
     make_text_delta_event,
     make_thinking_delta_event,
     make_tool_call_event,
+    make_tool_error_event,
     make_tool_status_event,
 )
 
@@ -53,13 +54,13 @@ class TestTextDeltaEvent:
 class TestToolCallEvent:
     def test_basic(self):
         event = make_tool_call_event(
-            tool_name="ui_notify",
+            tool_name="navigate",
             arguments={"message": "hi", "level": "info"},
             call_id="call_123",
         )
         assert event == {
             "type": "tool_call",
-            "tool_name": "ui_notify",
+            "tool_name": "navigate",
             "arguments": {"message": "hi", "level": "info"},
             "call_id": "call_123",
         }
@@ -94,19 +95,52 @@ class TestFinalResponseEvent:
             "type": "final_response",
             "content": "Done!",
             "model": "claude-3-5-sonnet",
-            "streamed": True,
+            "streamed": False,
         }
+        assert "thinking_streamed" not in event
+        assert "error" not in event
+        assert "error_type" not in event
 
     def test_null_content(self):
         event = make_final_response_event(None, "claude-3-5-sonnet")
         assert event["content"] is None
+        assert event["streamed"] is False
+
+    def test_streamed_true(self):
+        event = make_final_response_event("Done!", "model", streamed=True)
         assert event["streamed"] is True
+
+    def test_thinking_streamed(self):
+        event = make_final_response_event("Done!", "model", thinking_streamed=True)
+        assert event["thinking_streamed"] is True
+
+    def test_error_fields(self):
+        event = make_final_response_event("Oops", "model", error=True, error_type="timeout")
+        assert event["error"] is True
+        assert event["error_type"] == "timeout"
+
+    def test_error_fields_absent(self):
+        event = make_final_response_event("OK", "model")
+        assert "error" not in event
+        assert "error_type" not in event
 
 
 class TestErrorEvent:
     def test_basic(self):
         event = make_error_event("Something went wrong")
-        assert event == {"type": "error", "message": "Something went wrong"}
+        assert event["type"] == "error"
+        assert event["message"] == "Something went wrong"
+        assert event["terminal"] is True
+        assert event["retry_allowed"] is False
+
+    def test_error_type_timeout(self):
+        event = make_error_event("Timed out", error_type="timeout", retry_allowed=True)
+        assert event["error_type"] == "timeout"
+        assert event["retry_allowed"] is True
+
+    def test_error_type_absent(self):
+        event = make_error_event("fail")
+        assert "error_type" not in event
 
 
 # --- Debug event tests ---
@@ -243,7 +277,7 @@ class TestDebugToolSelectionEvent:
             backend_count=2,
             frontend_count=1,
             filtered_out=0,
-            tool_names=["get_time", "list_agents", "ui_notify"],
+            tool_names=["get_time", "list_agents", "navigate"],
         )
         assert event["type"] == "debug_tool_selection"
         assert event["page"] is None
@@ -268,14 +302,14 @@ class TestDebugToolSelectionEvent:
     def test_with_tool_details(self):
         tools = [
             {"name": "get_time", "description": "Get current time"},
-            {"name": "ui_notify", "description": "Send notification"},
+            {"name": "navigate", "description": "Send notification"},
         ]
         event = make_debug_tool_selection_event(
             page=None,
             backend_count=1,
             frontend_count=1,
             filtered_out=0,
-            tool_names=["get_time", "ui_notify"],
+            tool_names=["get_time", "navigate"],
             tools=tools,
         )
         assert event["tools"] == tools
@@ -310,12 +344,12 @@ class TestDebugAgentConfigEvent:
 class TestDebugToolExecutionEvent:
     def test_basic(self):
         event = make_debug_tool_execution_event(
-            tool_names=["get_time", "ui_notify"],
+            tool_names=["get_time", "navigate"],
             backend_count=1,
             frontend_count=1,
         )
         assert event["type"] == "debug_tool_execution"
-        assert event["tool_names"] == ["get_time", "ui_notify"]
+        assert event["tool_names"] == ["get_time", "navigate"]
         assert event["backend_count"] == 1
         assert event["frontend_count"] == 1
 
@@ -359,3 +393,30 @@ class TestDebugCompletedEvent:
     def test_duration_rounded(self):
         event = make_debug_completed_event(has_deferred=False, duration_ms=99.999)
         assert event["duration_ms"] == 100.0
+
+
+# --- Tool error event tests ---
+
+
+class TestToolErrorEvent:
+    def test_basic(self):
+        event = make_tool_error_event(
+            tool_name="get_time",
+            error="Something went wrong",
+            call_id="call_789",
+        )
+        assert event == {
+            "type": "tool_error",
+            "tool_name": "get_time",
+            "error": "Something went wrong",
+            "call_id": "call_789",
+        }
+
+    def test_empty_error(self):
+        event = make_tool_error_event(
+            tool_name="navigate",
+            error="",
+            call_id="call_empty",
+        )
+        assert event["error"] == ""
+        assert event["type"] == "tool_error"

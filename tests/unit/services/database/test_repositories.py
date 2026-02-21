@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -67,6 +68,20 @@ class TestCreate:
         result = await repo.create(session_id="abc-123")
 
         assert result.turn_number == 0
+
+    async def test_accepts_expires_at_parameter(self, repo):
+        future = datetime.now(UTC) + timedelta(hours=48)
+        result = await repo.create(session_id="abc-123", expires_at=future)
+
+        assert result.expires_at == future
+
+    async def test_expires_at_defaults_to_none_if_not_passed(self, repo):
+        """When no expires_at is given, it's left to the server_default."""
+        result = await repo.create(session_id="abc-123")
+        # expires_at is not explicitly set — uses server_default
+        # In unit tests with mocked session, it won't have the server default.
+        # We verify create() doesn't crash without it.
+        assert result.id == "abc-123"
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +247,76 @@ class TestExists:
         result = await repo.exists("nonexistent")
 
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Cleanup Expired
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupExpired:
+    async def test_returns_count_of_deleted_rows(self, repo, mock_session):
+        mock_result = MagicMock()
+        mock_result.rowcount = 3
+        mock_session.execute.return_value = mock_result
+
+        result = await repo.cleanup_expired()
+
+        assert result == 3
+        mock_session.flush.assert_awaited_once()
+
+    async def test_returns_zero_when_none_expired(self, repo, mock_session):
+        mock_result = MagicMock()
+        mock_result.rowcount = 0
+        mock_session.execute.return_value = mock_result
+
+        result = await repo.cleanup_expired()
+
+        assert result == 0
+
+    async def test_returns_zero_when_rowcount_is_none(self, repo, mock_session):
+        mock_result = MagicMock()
+        mock_result.rowcount = None
+        mock_session.execute.return_value = mock_result
+
+        result = await repo.cleanup_expired()
+
+        assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# Upsert
+# ---------------------------------------------------------------------------
+
+
+class TestUpsert:
+    async def test_upsert_executes_and_flushes(self, repo, mock_session):
+        await repo.upsert("abc-123")
+
+        mock_session.execute.assert_awaited_once()
+        mock_session.flush.assert_awaited_once()
+
+    async def test_upsert_with_all_fields(self, repo, mock_session):
+        expires = datetime.now(UTC) + timedelta(hours=12)
+        await repo.upsert(
+            "abc-123",
+            title="My Session",
+            turn_number=5,
+            message_history=[{"role": "user", "content": "hi"}],
+            working_memory={"goal": "test"},
+            pending_tool_call={"id": "tc-1"},
+            expires_at=expires,
+        )
+
+        mock_session.execute.assert_awaited_once()
+        mock_session.flush.assert_awaited_once()
+
+    async def test_upsert_defaults(self, repo, mock_session):
+        """Defaults: title=None, turn_number=0, message_history=[], rest None."""
+        await repo.upsert("abc-123")
+
+        # Verify execute was called (the INSERT statement was built with defaults)
+        mock_session.execute.assert_awaited_once()
 
 
 # ===========================================================================

@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import TYPE_CHECKING, Any
 
+from fastapi import APIRouter, HTTPException
+from loguru import logger
+
+from lovely_assistant.app.assistant._serialization import messages_to_display_format
 from lovely_assistant.app.assistant.deps import AssistantServiceDep
 
+if TYPE_CHECKING:
+    from lovely_assistant.services.database.interface import DatabaseService
+
 router = APIRouter()
+
+
+async def _get_session_context(session_id: str, sessions: Any) -> dict:
+    """Look up session context: memory first, then DB fallback, then 404."""
+    if sessions is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    ctx = await sessions.get_context_if_exists_async(session_id)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return ctx
 
 
 @router.get("/sessions")
@@ -29,21 +48,7 @@ async def get_session(session_id: str, service: AssistantServiceDep) -> dict:
 
     Checks in-memory cache first, then tries DB. Returns 404 if not found in either.
     """
-    sessions = service._sessions
-    if sessions is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Check in-memory first
-    if sessions.has_session(session_id):
-        ctx = sessions.get_context(session_id)
-    else:
-        # Try loading from DB
-        loaded = await sessions._load_session_from_db(session_id)
-        if loaded is None:
-            raise HTTPException(status_code=404, detail="Session not found")
-        # Cache in memory
-        sessions._sessions[session_id] = loaded
-        ctx = loaded
+    ctx = await _get_session_context(session_id, service._sessions)
 
     return {
         "session_id": session_id,
@@ -53,6 +58,13 @@ async def get_session(session_id: str, service: AssistantServiceDep) -> dict:
     }
 
 
+@router.get("/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str, service: AssistantServiceDep) -> list[dict]:
+    """Get display-ready message history for a session."""
+    ctx = await _get_session_context(session_id, service._sessions)
+    return messages_to_display_format(ctx.get("message_history", []))
+
+
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, service: AssistantServiceDep) -> dict:
     """Delete a session and all its context."""
@@ -60,12 +72,46 @@ async def delete_session(session_id: str, service: AssistantServiceDep) -> dict:
     if sessions is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Check if exists in memory or DB
-    if not sessions.has_session(session_id):
-        # Try DB
-        loaded = await sessions._load_session_from_db(session_id)
-        if loaded is None:
-            raise HTTPException(status_code=404, detail="Session not found")
+    # Verify existence (memory or DB) before deleting
+    ctx = await sessions.get_context_if_exists_async(session_id)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     await sessions.delete_session(session_id)
     return {"session_id": session_id, "deleted": True}
+
+
+@router.get("/sessions/{session_id}/traces")
+async def get_session_traces(
+    session_id: str,
+    service: AssistantServiceDep,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Get debug traces for a session, ordered by creation time."""
+    db: DatabaseService | None = getattr(service, "_database_service", None)
+    if db is None:
+        return []
+
+    try:
+        async with db.session_context() as db_session:
+            from lovely_assistant.services.database.repositories import TraceRepository
+
+            repo = TraceRepository(db_session)
+            rows = await repo.list_by_session(session_id, limit=limit, offset=offset)
+            return [
+                {
+                    "id": row.id,
+                    "session_id": row.session_id,
+                    "events": row.events,
+                    "user_message": row.user_message,
+                    "is_continuation": row.is_continuation,
+                    "duration_ms": row.duration_ms,
+                    "screenshot": row.screenshot,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+                for row in rows
+            ]
+    except Exception as e:
+        logger.warning("Failed to fetch traces from DB", session_id=session_id, error=str(e))
+        return []

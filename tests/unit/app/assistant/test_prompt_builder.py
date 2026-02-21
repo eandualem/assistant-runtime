@@ -3,6 +3,7 @@
 from lovely_assistant.app.assistant._prompt_builder import (
     _dashboard_context_fragment,
     _datetime_fragment,
+    _ecosystem_fragment,
     _persona_fragment,
     _smart_hints,
     _tools_fragment,
@@ -17,21 +18,55 @@ from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition,
 class TestPersonaFragment:
     def test_contains_identity(self):
         frag = _persona_fragment()
-        assert "Lovely Console" in frag
+        assert "Jarvis" in frag
+        assert "operational nervous system" in frag
 
     def test_contains_behavioral_instruction(self):
         frag = _persona_fragment()
-        assert "direct" in frag.lower() or "concise" in frag.lower()
+        assert "direct" in frag.lower()
+        assert "anticipat" in frag.lower()
 
     def test_action_oriented(self):
         frag = _persona_fragment()
-        assert "primary actor" in frag
-        assert "use your tools directly" in frag
+        assert "force multiplier" in frag.lower()
+        assert "agency" in frag.lower()
 
     def test_assistant_first_model(self):
         frag = _persona_fragment()
-        assert "pages show information" in frag.lower() or "Pages show information" in frag
-        assert "you perform actions" in frag.lower() or "you perform actions" in frag
+        assert "everything flows through you" in frag.lower()
+
+
+class TestEcosystemFragment:
+    def test_contains_agents(self):
+        frag = _ecosystem_fragment()
+        assert "Leo" in frag
+        assert "Ike" in frag
+        assert "Feynman" in frag
+
+    def test_contains_routing(self):
+        frag = _ecosystem_fragment()
+        assert "Route:" in frag
+
+    def test_format(self):
+        frag = _ecosystem_fragment()
+        assert frag.startswith("The Lovely Universe")
+        assert len(frag) > 0
+
+    def test_all_agents_present(self):
+        frag = _ecosystem_fragment()
+        expected = [
+            "Leo",
+            "Ike",
+            "Hamilton",
+            "Curie",
+            "Bell",
+            "Feynman",
+            "Ada",
+            "Brunel",
+            "Coding Agents",
+        ]
+        for name in expected:
+            assert name in frag, f"{name} not found in ecosystem fragment"
 
 
 class TestDatetimeFragment:
@@ -68,7 +103,7 @@ class TestToolsFragment:
         ts = ToolSet(
             frontend_tools=[
                 ToolDefinition(
-                    name="ui_notify",
+                    name="navigate",
                     description="Send notification",
                     parameters_schema={},
                     category=ToolCategory.FRONTEND,
@@ -358,7 +393,7 @@ class TestBuildSystemPrompt:
             available_tools=ToolSet(),
             session_context={},
         )
-        assert "Lovely Console" in result.content
+        assert "Jarvis" in result.content
 
     def test_contains_datetime(self):
         result = build_system_prompt(
@@ -466,6 +501,7 @@ class TestBuildSystemPrompt:
         )
         fragment_names = [f["name"] for f in result.fragments]
         assert "persona" in fragment_names
+        assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
         assert "tools" in fragment_names
         assert "dashboard_context" in fragment_names
@@ -483,8 +519,9 @@ class TestBuildSystemPrompt:
             session_context={},
         )
         fragment_names = [f["name"] for f in result.fragments]
-        # Minimum: persona + datetime (always present)
+        # Minimum: persona + ecosystem + datetime (always present)
         assert "persona" in fragment_names
+        assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
         # No tools, dashboard_context, smart_hints, or working_memory
         assert "tools" not in fragment_names

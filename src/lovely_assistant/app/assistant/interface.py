@@ -5,17 +5,25 @@ Public facade for the assistant module. Implements LifecycleAware.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.result import DeferredToolRequests
+from pydantic_ai.usage import UsageLimits
 
 from lovely_assistant.app.assistant._prompt_builder import build_system_prompt
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.config import AssistantConfig
-from lovely_assistant.app.assistant.exceptions import AgentRunError, AssistantError, SessionError
+from lovely_assistant.app.assistant.exceptions import (
+    REJECTED_TOOL_RESULT,
+    AgentRunError,
+    AssistantError,
+    ContinuationMismatchError,
+    SessionError,
+)
 from lovely_assistant.app.assistant.models import (
     AssistantRequest,
     AssistantResult,
@@ -54,7 +62,11 @@ class AssistantService:
 
     async def start(self) -> None:
         """Initialize internal components."""
-        self._sessions = SessionStore(database_service=self._database_service)
+        self._sessions = SessionStore(
+            database_service=self._database_service,
+            session_ttl_hours=self._config.session_ttl_hours,
+            pending_tool_call_timeout_minutes=self._config.pending_tool_call_timeout_minutes,
+        )
         self._started = True
         logger.info("Assistant service started")
 
@@ -72,6 +84,12 @@ class AssistantService:
             "healthy": True,
             "active_sessions": self._sessions.session_count(),
         }
+
+    async def cleanup_expired_sessions(self) -> int:
+        """Delete expired sessions from DB. Returns count deleted."""
+        if self._sessions is None:
+            return 0
+        return await self._sessions.cleanup_expired()
 
     async def process_message(self, request: AssistantRequest) -> AssistantResult:
         """Process a user message through the full assistant pipeline.
@@ -99,6 +117,7 @@ class AssistantService:
 
     async def _handle_new_message(self, request: AssistantRequest) -> AssistantResult:
         """Handle a fresh user message (not a continuation)."""
+        started_at = time.monotonic()
         session_id = request.session_id
         sessions = self._sessions
         assert sessions is not None
@@ -121,17 +140,30 @@ class AssistantService:
 
         # 4. Resolve effective config (per-request > runtime > frozen)
         effective = resolve_effective_config(self._config, self._runtime_settings, request.config)
+        resolved_model = self._llm.resolve_model(effective.default_model)
+        usage_limits = UsageLimits(request_limit=effective.max_turns)
+
+        logger.info(
+            "Executing assistant request",
+            session_id=session_id,
+            continuation=False,
+            turn_number=turn_number,
+            model=resolved_model,
+            has_images=bool(request.images),
+            max_turns=effective.max_turns,
+            thinking_budget=effective.thinking_budget,
+            temperature=effective.temperature,
+        )
 
         # 5. Determine output type based on frontend tools
         has_frontend_tools = len(available_tools.frontend_tools) > 0
         output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
 
         # 6. Create per-request agent
-        model = effective.default_model
         agent = self._llm.build_agent(
             system_prompt=system_prompt,
             toolsets=toolsets,
-            model=model,
+            model=resolved_model,
             output_type=output_type,
             thinking_budget=effective.thinking_budget,
             temperature=effective.temperature,
@@ -144,13 +176,22 @@ class AssistantService:
         )
 
         # 8. Run the agent
-        user_prompt = _build_user_prompt(request.message, request.images, model)
+        user_prompt = _build_user_prompt(request.message, request.images, resolved_model)
         try:
             result = await agent.run(
                 user_prompt,
                 message_history=prepared_history if prepared_history else None,
+                usage_limits=usage_limits,
             )
         except Exception as e:
+            logger.exception(
+                "Assistant request failed",
+                session_id=session_id,
+                continuation=False,
+                model=resolved_model,
+                duration_ms=(time.monotonic() - started_at) * 1000,
+                error=str(e),
+            )
             raise AgentRunError(f"Agent execution failed: {e}") from e
 
         # 9. Save message history (persists to DB)
@@ -158,7 +199,18 @@ class AssistantService:
 
         # 10. Handle output
         output = result.output
-        resolved_model = model or self._llm._config.primary_model
+        usage = self._safe_usage(result)
+        logger.info(
+            "Assistant request completed",
+            session_id=session_id,
+            continuation=False,
+            model=resolved_model,
+            duration_ms=(time.monotonic() - started_at) * 1000,
+            output_type=type(output).__name__,
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
 
         if isinstance(output, DeferredToolRequests):
             return self._handle_deferred_output(output, session_id, turn_number, resolved_model)
@@ -176,6 +228,7 @@ class AssistantService:
 
     async def _handle_continuation(self, request: AssistantRequest) -> AssistantResult:
         """Handle a continuation request (frontend returning tool result)."""
+        started_at = time.monotonic()
         sessions = self._sessions
         assert sessions is not None
         session_id = request.session_id
@@ -188,12 +241,24 @@ class AssistantService:
         if pending is None:
             raise SessionError(f"No pending tool call for session {session_id}")
 
+        # Validate continuation ID matches stored pending ID
+        assert request.tool_call_id is not None
+        if pending["tool_call_id"] != request.tool_call_id:
+            raise ContinuationMismatchError(
+                expected=pending["tool_call_id"],
+                received=request.tool_call_id,
+                tool_name=pending.get("tool_name", "unknown"),
+            )
+
         session_context = await sessions.get_context_async(session_id)
         turn_number = sessions.increment_turn(session_id)
 
-        # Build deferred tool results
-        assert request.tool_call_id is not None
-        deferred_results = DeferredToolResults(calls={request.tool_call_id: request.tool_result})
+        # Build deferred tool results (include rejected call results if any)
+        calls_map: dict[str, Any] = {request.tool_call_id: request.tool_result}
+        rejected_ids: list[str] = pending.get("rejected_call_ids") or []
+        for rid in rejected_ids:
+            calls_map[rid] = REJECTED_TOOL_RESULT
+        deferred_results = DeferredToolResults(calls=calls_map)
 
         # Rebuild agent with same configuration
         available_tools = self._tools.get_available_tools(request.machine_state)
@@ -208,15 +273,26 @@ class AssistantService:
 
         # Resolve effective config (per-request > runtime > frozen)
         effective = resolve_effective_config(self._config, self._runtime_settings, request.config)
+        resolved_model = self._llm.resolve_model(effective.default_model)
+        usage_limits = UsageLimits(request_limit=effective.max_turns)
+        logger.info(
+            "Executing assistant request",
+            session_id=session_id,
+            continuation=True,
+            turn_number=turn_number,
+            model=resolved_model,
+            max_turns=effective.max_turns,
+            thinking_budget=effective.thinking_budget,
+            temperature=effective.temperature,
+        )
 
         has_frontend_tools = len(available_tools.frontend_tools) > 0
         output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
 
-        model = effective.default_model
         agent = self._llm.build_agent(
             system_prompt=system_prompt,
             toolsets=toolsets,
-            model=model,
+            model=resolved_model,
             output_type=output_type,
             thinking_budget=effective.thinking_budget,
             temperature=effective.temperature,
@@ -234,15 +310,35 @@ class AssistantService:
                 None,
                 message_history=prepared_history if prepared_history else None,
                 deferred_tool_results=deferred_results,
+                usage_limits=usage_limits,
             )
         except Exception as e:
+            logger.exception(
+                "Assistant continuation failed",
+                session_id=session_id,
+                continuation=True,
+                model=resolved_model,
+                duration_ms=(time.monotonic() - started_at) * 1000,
+                error=str(e),
+            )
             raise AgentRunError(f"Continuation failed: {e}") from e
 
         # Save updated history (persists to DB)
         await sessions.save_history_async(session_id, list(result.all_messages()))
 
         output = result.output
-        resolved_model = model or self._llm._config.primary_model
+        usage = self._safe_usage(result)
+        logger.info(
+            "Assistant request completed",
+            session_id=session_id,
+            continuation=True,
+            model=resolved_model,
+            duration_ms=(time.monotonic() - started_at) * 1000,
+            output_type=type(output).__name__,
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
 
         if isinstance(output, DeferredToolRequests):
             return self._handle_deferred_output(output, session_id, turn_number, resolved_model)
@@ -276,8 +372,11 @@ class AssistantService:
         call = calls[0]
         tool_call_id = call.tool_call_id
 
-        # Store pending state for continuation
-        sessions.set_pending_tool_call(session_id, tool_call_id, call.tool_name)
+        # Store pending state for continuation (with rejected IDs if multiple calls)
+        rejected_call_ids = [c.tool_call_id for c in calls[1:]] if len(calls) > 1 else None
+        sessions.set_pending_tool_call(
+            session_id, tool_call_id, call.tool_name, rejected_call_ids=rejected_call_ids
+        )
 
         # Build args dict
         args: dict[str, Any] = {}
@@ -311,14 +410,30 @@ class AssistantService:
     ) -> None:
         """Extract working memory delta from recent messages (best-effort)."""
         try:
+            from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
             from lovely_assistant.services.history.models import WorkingMemory
 
             current_wm = session_context.get("working_memory") or WorkingMemory()
-            # Get recent messages as simple dicts for analysis
             sessions = self._sessions
             assert sessions is not None
             history = sessions.get_history(session_id)
-            recent = [{"role": "message", "index": i} for i, _ in enumerate(history[-4:])]
+
+            # Convert ModelMessage objects to dicts with role + content
+            recent: list[dict[str, Any]] = []
+            for msg in history[-4:]:
+                if isinstance(msg, ModelRequest):
+                    texts = [
+                        p.content
+                        for p in msg.parts
+                        if isinstance(p, UserPromptPart) and isinstance(p.content, str)
+                    ]
+                    if texts:
+                        recent.append({"role": "user", "content": "\n".join(texts)})
+                elif isinstance(msg, ModelResponse):
+                    texts = [p.content for p in msg.parts if isinstance(p, TextPart)]
+                    if texts:
+                        recent.append({"role": "assistant", "content": "".join(texts)})
 
             updated_wm = await self._history.extract_memory_delta(current_wm, recent, turn_number)
             session_context["working_memory"] = updated_wm
@@ -330,3 +445,16 @@ class AssistantService:
         """Guard: raise if service not started."""
         if not self._started or self._sessions is None:
             raise AssistantError("Assistant service not started")
+
+    @staticmethod
+    def _safe_usage(result: Any) -> dict[str, int | None]:
+        """Extract usage stats from a run result (best-effort)."""
+        try:
+            usage = result.usage()
+            return {
+                "input_tokens": usage.request_tokens,
+                "output_tokens": usage.response_tokens,
+                "total_tokens": usage.total_tokens,
+            }
+        except Exception:
+            return {"input_tokens": None, "output_tokens": None, "total_tokens": None}

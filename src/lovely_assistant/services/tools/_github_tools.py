@@ -11,7 +11,6 @@ from loguru import logger
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO_OWNER = "eandualem"
 GITHUB_REPO_NAME = "orchestration"
 GITHUB_API_BASE = "https://api.github.com"
@@ -32,12 +31,14 @@ async def _github_request(
     """Make a GitHub API request. Returns (status_code, parsed_json_body).
 
     Returns (-1, error_dict) if the token is not configured or on network error.
+    Token is read at call time (not import time) so load_dotenv() in lifespan works.
     """
-    if not GITHUB_TOKEN:
-        return (-1, {"message": "GITHUB_TOKEN not configured"})
+    github_token = os.environ.get("GITHUB_TOKEN", "")
+    if not github_token:
+        return (-1, {"message": "GITHUB_TOKEN not configured. Set GITHUB_TOKEN in .env"})
 
     headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Authorization": f"Bearer {github_token}",
         "Accept": "application/vnd.github.v3+json",
     }
 

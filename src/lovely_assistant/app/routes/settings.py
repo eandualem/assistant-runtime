@@ -61,6 +61,9 @@ async def patch_settings(
 ) -> dict[str, Any]:
     """Update runtime settings. Omitted fields are unchanged; null clears the override."""
     updates = body.model_dump(exclude_unset=True)
+    persisted = True
     if updates:
-        await runtime_settings.update(**updates)
-    return runtime_settings.to_response_dict()
+        persisted = await runtime_settings.update(**updates)
+    response = runtime_settings.to_response_dict()
+    response["persisted"] = persisted
+    return response

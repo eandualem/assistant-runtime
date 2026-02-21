@@ -81,7 +81,7 @@ class TestToolSet:
             category=ToolCategory.BACKEND,
         )
         frontend = ToolDefinition(
-            name="ui_notify",
+            name="navigate",
             description="Notify",
             parameters_schema={},
             category=ToolCategory.FRONTEND,
@@ -89,7 +89,7 @@ class TestToolSet:
         ts = ToolSet(backend_tools=[backend], frontend_tools=[frontend])
         assert ts.total_count == 2
         assert "get_time" in ts.tool_names
-        assert "ui_notify" in ts.tool_names
+        assert "navigate" in ts.tool_names
 
     def test_tool_names_order(self):
         """Backend tool names appear before frontend tool names."""
@@ -125,7 +125,7 @@ class TestDeferredToolRequest:
         assert req.arguments == {"path": "/dashboard"}
 
     def test_auto_request_id(self):
-        req = DeferredToolRequest(tool_name="ui_notify")
+        req = DeferredToolRequest(tool_name="navigate")
         assert req.request_id is not None
         # UUID v4 format: 8-4-4-4-12 hex characters
         uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -137,7 +137,7 @@ class TestDeferredToolRequest:
         assert req1.request_id != req2.request_id
 
     def test_default_arguments(self):
-        req = DeferredToolRequest(tool_name="ui_notify")
+        req = DeferredToolRequest(tool_name="navigate")
         assert req.arguments == {}
 
 

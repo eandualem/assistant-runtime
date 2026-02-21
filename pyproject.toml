@@ -19,6 +19,7 @@ dependencies = [
     "httpx>=0.27.0",
     "loguru>=0.7.0",
     "tenacity>=8.2.0",
+    "pyyaml>=6.0",
     "runwayml>=1.0.0",
     "lumaai>=1.0.0",
     "sqlalchemy[asyncio]>=2.0",

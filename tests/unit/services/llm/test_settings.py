@@ -168,3 +168,74 @@ class TestBuildModelSettings:
         settings = build_model_settings(model_id="openai:gpt-4o", thinking_budget=10_000)
         assert isinstance(settings, dict)
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS  # not inflated
+
+
+class TestBuildModelSettingsGoogle:
+    """Google provider settings — GoogleModelSettings with thinking config."""
+
+    def test_google_gla_defaults(self):
+        settings = build_model_settings(model_id="google-gla:gemini-3-flash-preview")
+        assert isinstance(settings, dict)
+        assert settings["temperature"] == 0.1
+        assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
+
+    def test_google_gla_no_thinking_omits_config(self):
+        settings = build_model_settings(model_id="google-gla:gemini-3-flash-preview")
+        assert isinstance(settings, dict)
+        assert "google_thinking_config" not in settings
+
+    def test_google_gla_with_thinking(self):
+        settings = build_model_settings(
+            model_id="google-gla:gemini-3-flash-preview", thinking_budget=10_000
+        )
+        assert isinstance(settings, dict)
+        assert settings["google_thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_budget": 10_000,
+        }
+
+    def test_google_thinking_does_not_inflate_max_tokens(self):
+        """Google thinking budget is separate — max_tokens stays at base."""
+        settings = build_model_settings(
+            model_id="google-gla:gemini-3-flash-preview", thinking_budget=10_000
+        )
+        assert isinstance(settings, dict)
+        assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
+
+    def test_google_temperature_override(self):
+        settings = build_model_settings(
+            model_id="google-gla:gemini-3-flash-preview", temperature=0.7
+        )
+        assert isinstance(settings, dict)
+        assert settings["temperature"] == 0.7
+
+    def test_google_max_tokens_override(self):
+        settings = build_model_settings(
+            model_id="google-gla:gemini-3-flash-preview", max_tokens=4000
+        )
+        assert isinstance(settings, dict)
+        assert settings["max_tokens"] == 4000
+
+    def test_google_no_anthropic_or_openrouter_keys(self):
+        """Google settings should not have cross-provider keys."""
+        settings = build_model_settings(model_id="google-gla:gemini-3-flash-preview")
+        assert isinstance(settings, dict)
+        assert "anthropic_cache_instructions" not in settings
+        assert "openrouter_provider" not in settings
+
+    def test_google_vertex_detected(self):
+        settings = build_model_settings(model_id="google-vertex:gemini-3-flash")
+        assert isinstance(settings, dict)
+        assert settings["temperature"] == 0.1
+
+    def test_normalized_google_prefix(self):
+        """Models normalized from google: to google-gla: should hit the Google branch."""
+        from lovely_assistant.services.llm._settings import normalize_model_id
+
+        normalized = normalize_model_id("google:gemini-3-flash-preview")
+        settings = build_model_settings(model_id=normalized, thinking_budget=5000)
+        assert isinstance(settings, dict)
+        assert settings["google_thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_budget": 5000,
+        }

@@ -15,7 +15,12 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelRequest,
+    ModelResponse,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 
 
@@ -85,3 +90,109 @@ def _sanitize_history(history: list[Any]) -> list[Any]:
             f"Sanitized {sanitized_count} tool return part(s) with rogue FileUrl reconstructions"
         )
     return history
+
+
+def messages_to_display_format(messages: list[ModelMessage]) -> list[dict[str, Any]]:
+    """Convert ModelMessage list to display-ready dicts for the frontend.
+
+    Two-pass conversion:
+    1. Collect ToolReturnPart results keyed by tool_call_id
+    2. Build display messages with ordered segments, collapsing consecutive
+       assistant turns (ModelResponse messages separated by tool-return-only
+       ModelRequests) into single entries
+    """
+    # Pass 1: collect tool return results
+    tool_results: dict[str, Any] = {}
+    for msg in messages:
+        if isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
+                    tool_results[part.tool_call_id] = part.content
+
+    # Pass 2: build display messages with ordered segments
+    display: list[dict[str, Any]] = []
+    pending_segments: list[dict[str, Any]] = []
+    pending_timestamp: str | None = None
+
+    def _flush_assistant() -> None:
+        nonlocal pending_segments, pending_timestamp
+        if not pending_segments:
+            return
+        display.append(_build_assistant_entry(pending_segments, pending_timestamp))
+        pending_segments = []
+        pending_timestamp = None
+
+    for msg in messages:
+        if isinstance(msg, ModelRequest):
+            user_texts = [
+                part.content
+                for part in msg.parts
+                if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+            ]
+            if not user_texts:
+                continue
+            _flush_assistant()
+            entry: dict[str, Any] = {
+                "role": "user",
+                "text": "\n".join(user_texts),
+            }
+            if msg.timestamp is not None:
+                entry["timestamp"] = msg.timestamp.isoformat()
+            display.append(entry)
+
+        elif isinstance(msg, ModelResponse):
+            if pending_timestamp is None and msg.timestamp is not None:
+                pending_timestamp = msg.timestamp.isoformat()
+
+            for part in msg.parts:
+                if isinstance(part, ThinkingPart):
+                    pending_segments.append({"kind": "thinking", "text": part.content})
+                elif isinstance(part, TextPart):
+                    pending_segments.append({"kind": "text", "text": part.content})
+                elif isinstance(part, ToolCallPart):
+                    tc: dict[str, Any] = {
+                        "id": part.tool_call_id,
+                        "name": part.tool_name,
+                        "input": part.args if isinstance(part.args, dict) else {},
+                    }
+                    if part.tool_call_id in tool_results:
+                        tc["output"] = tool_results[part.tool_call_id]
+                    if pending_segments and pending_segments[-1]["kind"] == "tool_group":
+                        pending_segments[-1]["tools"].append(tc)
+                    else:
+                        pending_segments.append({"kind": "tool_group", "tools": [tc]})
+
+    _flush_assistant()
+    return display
+
+
+def _build_assistant_entry(segments: list[dict[str, Any]], timestamp: str | None) -> dict[str, Any]:
+    """Build an assistant display entry from ordered segments.
+
+    Produces both the ordered ``segments`` array (for position-aware rendering)
+    and backward-compatible flat ``text``/``thinking``/``tool_calls`` fields.
+    """
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+
+    for seg in segments:
+        if seg["kind"] == "text":
+            text_parts.append(seg["text"])
+        elif seg["kind"] == "thinking":
+            thinking_parts.append(seg["text"])
+        elif seg["kind"] == "tool_group":
+            tool_calls.extend(seg["tools"])
+
+    entry: dict[str, Any] = {
+        "role": "assistant",
+        "text": "".join(text_parts),
+        "segments": segments,
+    }
+    if thinking_parts:
+        entry["thinking"] = "".join(thinking_parts)
+    if tool_calls:
+        entry["tool_calls"] = tool_calls
+    if timestamp is not None:
+        entry["timestamp"] = timestamp
+    return entry

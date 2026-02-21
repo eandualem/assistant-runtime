@@ -1,5 +1,16 @@
 """Base module — foundation layer providing lifecycle, instrumentation, exceptions, and resilience."""
 
+from lovely_assistant.base._logging import (
+    TAG_DB,
+    TAG_HISTORY,
+    TAG_LLM,
+    TAG_REQUEST,
+    TAG_SESSION,
+    TAG_STREAM,
+    TAG_TOOLS,
+    truncate,
+    truncate_payload,
+)
 from lovely_assistant.base.exceptions import (
     ConfigurationError,
     ExternalServiceError,
@@ -17,6 +28,15 @@ __all__ = [
     "LifecycleAware",
     "LifecycleManager",
     "LovelyAssistantError",
+    "TAG_DB",
+    "TAG_HISTORY",
+    "TAG_LLM",
+    "TAG_REQUEST",
+    "TAG_SESSION",
+    "TAG_STREAM",
+    "TAG_TOOLS",
     "instrument",
     "retry_with_backoff",
+    "truncate",
+    "truncate_payload",
 ]

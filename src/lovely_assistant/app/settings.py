@@ -70,7 +70,7 @@ class RuntimeSettings:
         # Track which fields have been explicitly set
         self._overridden: set[str] = set()
 
-    async def update(self, **kwargs: Any) -> None:
+    async def update(self, **kwargs: Any) -> bool:
         """Update one or more overlay fields.
 
         Setting a field to ``None`` clears the override (reverts to frozen default).
@@ -109,14 +109,14 @@ class RuntimeSettings:
             self._updated_at = datetime.now(UTC)
 
         # Persist after lock release — best-effort, don't block the caller
-        await self._persist_to_db()
+        return await self._persist_to_db()
 
     async def load_from_db(self) -> None:
         """Load persisted settings from DB into the overlay on startup.
 
         Non-NULL DB fields become runtime overrides. Proceeds silently if DB is unavailable.
         """
-        if self._db is None or not self._db._healthy:
+        if self._db is None:
             return
 
         try:
@@ -145,10 +145,10 @@ class RuntimeSettings:
                 "Failed to load settings from DB — proceeding with defaults", error=str(e)
             )
 
-    async def _persist_to_db(self) -> None:
+    async def _persist_to_db(self) -> bool:
         """Persist current overlay state to DB. Best-effort — failures are logged, not raised."""
-        if self._db is None or not self._db._healthy:
-            return
+        if self._db is None:
+            return False
 
         # Build full state dict: overridden fields get values, others get None (clears old values)
         state: dict[str, Any] = {}
@@ -166,8 +166,10 @@ class RuntimeSettings:
 
                 repo = SettingsRepository(db_session)
                 await repo.save(state)
+            return True
         except Exception as e:
             logger.warning("Failed to persist settings to DB", error=str(e))
+            return False
 
     def _resolve_field(self, field: str) -> tuple[Any, str]:
         """Return (value, source) for a field."""
@@ -223,7 +225,7 @@ def resolve_effective_config(
     return EffectiveConfig(
         default_model=_pick("default_model", frozen_config.default_model),
         thinking_budget=_pick("thinking_budget", frozen_config.thinking_budget),
-        temperature=_pick("temperature", None),
+        temperature=_pick("temperature", frozen_config.temperature),
         max_turns=_pick("max_turns", frozen_config.max_turns),
         enable_working_memory=_pick("enable_working_memory", frozen_config.enable_working_memory),
     )

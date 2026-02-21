@@ -10,21 +10,28 @@ class TestAssistantConfigDefaults:
     def test_defaults(self):
         config = AssistantConfig()
         assert config.default_model is None
-        assert config.thinking_budget is None
+        assert config.thinking_budget == 10000
+        assert config.temperature == 1.0
         assert config.max_turns == 10
         assert config.enable_working_memory is True
+        assert config.session_ttl_hours == 24
+        assert config.pending_tool_call_timeout_minutes == 10
 
     def test_custom_values(self):
         config = AssistantConfig(
             default_model="anthropic:claude-sonnet-4-6",
             thinking_budget=5000,
+            temperature=0.5,
             max_turns=20,
             enable_working_memory=False,
+            session_ttl_hours=48,
         )
         assert config.default_model == "anthropic:claude-sonnet-4-6"
         assert config.thinking_budget == 5000
+        assert config.temperature == 0.5
         assert config.max_turns == 20
         assert config.enable_working_memory is False
+        assert config.session_ttl_hours == 48
 
 
 class TestAssistantConfigValidation:
@@ -68,3 +75,55 @@ class TestAssistantConfigValidation:
     def test_thinking_budget_boundary_max(self):
         config = AssistantConfig(thinking_budget=100000)
         assert config.thinking_budget == 100000
+
+    def test_temperature_below_min(self):
+        with pytest.raises(ValidationError):
+            AssistantConfig(temperature=-0.1)
+
+    def test_temperature_above_max(self):
+        with pytest.raises(ValidationError):
+            AssistantConfig(temperature=2.1)
+
+    def test_temperature_boundary_min(self):
+        config = AssistantConfig(temperature=0.0)
+        assert config.temperature == 0.0
+
+    def test_temperature_boundary_max(self):
+        config = AssistantConfig(temperature=2.0)
+        assert config.temperature == 2.0
+
+    def test_session_ttl_hours_below_min(self):
+        with pytest.raises(ValidationError):
+            AssistantConfig(session_ttl_hours=0)
+
+    def test_session_ttl_hours_above_max(self):
+        with pytest.raises(ValidationError):
+            AssistantConfig(session_ttl_hours=169)
+
+    def test_session_ttl_hours_boundary_min(self):
+        config = AssistantConfig(session_ttl_hours=1)
+        assert config.session_ttl_hours == 1
+
+    def test_session_ttl_hours_boundary_max(self):
+        config = AssistantConfig(session_ttl_hours=168)
+        assert config.session_ttl_hours == 168
+
+    def test_pending_timeout_default(self):
+        config = AssistantConfig()
+        assert config.pending_tool_call_timeout_minutes == 10
+
+    def test_pending_timeout_below_min(self):
+        with pytest.raises(ValidationError):
+            AssistantConfig(pending_tool_call_timeout_minutes=0)
+
+    def test_pending_timeout_above_max(self):
+        with pytest.raises(ValidationError):
+            AssistantConfig(pending_tool_call_timeout_minutes=61)
+
+    def test_pending_timeout_boundary_min(self):
+        config = AssistantConfig(pending_tool_call_timeout_minutes=1)
+        assert config.pending_tool_call_timeout_minutes == 1
+
+    def test_pending_timeout_boundary_max(self):
+        config = AssistantConfig(pending_tool_call_timeout_minutes=60)
+        assert config.pending_tool_call_timeout_minutes == 60

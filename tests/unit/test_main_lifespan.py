@@ -1,0 +1,56 @@
+"""Tests for application lifespan wiring."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from lovely_assistant.main import create_app, lifespan
+
+
+@pytest.mark.asyncio
+async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
+    async def _register_database(app_state, lifecycle):
+        app_state.database_service = SimpleNamespace(_healthy=True)
+
+    async def _register_llm(app_state, lifecycle):
+        return None
+
+    async def _register_history(app_state, lifecycle):
+        return None
+
+    async def _register_media(app_state, lifecycle):
+        return None
+
+    async def _register_tools(app_state, lifecycle):
+        return None
+
+    async def _register_assistant(app_state, lifecycle):
+        app_state.assistant_service = SimpleNamespace(
+            _runtime_settings=None,
+            cleanup_expired_sessions=AsyncMock(return_value=0),
+        )
+
+    async def _register_streaming(app_state, lifecycle):
+        app_state.streaming_service = SimpleNamespace(_runtime_settings=None)
+
+    monkeypatch.setattr("lovely_assistant.main.register_database", _register_database)
+    monkeypatch.setattr("lovely_assistant.main.register_llm", _register_llm)
+    monkeypatch.setattr("lovely_assistant.main.register_history", _register_history)
+    monkeypatch.setattr("lovely_assistant.main.register_media", _register_media)
+    monkeypatch.setattr("lovely_assistant.main.register_tools", _register_tools)
+    monkeypatch.setattr("lovely_assistant.main.register_assistant", _register_assistant)
+    monkeypatch.setattr("lovely_assistant.main.register_streaming", _register_streaming)
+    monkeypatch.setattr("lovely_assistant.main.load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr("lovely_assistant.main.setup_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "lovely_assistant.main.RuntimeSettings.load_from_db",
+        AsyncMock(return_value=None),
+    )
+
+    app = create_app()
+    async with lifespan(app):
+        assert app.state.assistant_service._runtime_settings is app.state.runtime_settings
+        assert app.state.streaming_service._runtime_settings is app.state.runtime_settings

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from lovely_assistant.services.tools._github_tools import (
@@ -49,13 +50,13 @@ class TestHasLabelPrefix:
 
 
 class TestGithubRequest:
-    @patch(f"{MODULE}.GITHUB_TOKEN", "")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": ""})
     async def test_missing_token(self):
         status, data = await _github_request("GET", "/repos/test/test/issues")
         assert status == -1
         assert "not configured" in data["message"]
 
-    @patch(f"{MODULE}.GITHUB_TOKEN", "ghp_test_token")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_test_token"})
     @patch(f"{MODULE}.httpx.AsyncClient")
     async def test_successful_get(self, mock_client_cls):
         mock_response = MagicMock()
@@ -72,7 +73,7 @@ class TestGithubRequest:
         assert status == 200
         assert data == [{"number": 1}]
 
-    @patch(f"{MODULE}.GITHUB_TOKEN", "ghp_test_token")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_test_token"})
     @patch(f"{MODULE}.httpx.AsyncClient")
     async def test_successful_post(self, mock_client_cls):
         mock_response = MagicMock()
@@ -91,7 +92,7 @@ class TestGithubRequest:
         assert status == 201
         assert data["number"] == 42
 
-    @patch(f"{MODULE}.GITHUB_TOKEN", "ghp_test_token")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_test_token"})
     @patch(f"{MODULE}.httpx.AsyncClient")
     async def test_non_success_status(self, mock_client_cls):
         mock_response = MagicMock()
@@ -108,7 +109,7 @@ class TestGithubRequest:
         assert status == 422
         assert data["message"] == "Validation Failed"
 
-    @patch(f"{MODULE}.GITHUB_TOKEN", "ghp_test_token")
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_test_token"})
     @patch(f"{MODULE}.httpx.AsyncClient")
     async def test_timeout(self, mock_client_cls):
         import httpx

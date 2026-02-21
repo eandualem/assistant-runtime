@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,6 +25,46 @@ class SessionORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("now() + interval '24 hours'"),
+        nullable=False,
+    )
+
+
+class TraceORM(Base):
+    """Debug trace storage — one row per assistant request (stream)."""
+
+    __tablename__ = "traces"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    events: Mapped[list] = mapped_column(JSONB, default=list)
+    user_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_continuation: Mapped[bool] = mapped_column(Boolean, default=False)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InboxItemORM(Base):
+    """Inbox items — agents push messages for Jarvis to surface contextually."""
+
+    __tablename__ = "inbox_items"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, server_default=func.gen_random_uuid().cast(String)
+    )
+    from_agent: Mapped[str] = mapped_column(String(50), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'info'"))
+    context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    surfaced: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 

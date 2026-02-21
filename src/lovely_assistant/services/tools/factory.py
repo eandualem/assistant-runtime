@@ -13,7 +13,10 @@ async def register_tools(app_state: Any, lifecycle: LifecycleManager) -> None:
     """Create ToolService, store on app_state, register with lifecycle."""
     settings = AppSettings()
     media_service = getattr(app_state, "media_service", None)
-    service = ToolService(config=settings.tools, media_service=media_service)
+    llm_service = getattr(app_state, "llm_service", None)
+    service = ToolService(
+        config=settings.tools, media_service=media_service, llm_service=llm_service
+    )
     app_state.tool_service = service
     await lifecycle.register("tool_service", service)
     logger.info("Tool module registered")

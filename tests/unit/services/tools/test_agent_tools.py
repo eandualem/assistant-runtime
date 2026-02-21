@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from lovely_assistant.services.tools._agent_tools import (
+    AGENT_REGISTRY,
     MAX_SESSION_NAME_LENGTH,
     _read_state_file,
     _run_command,
@@ -172,6 +174,39 @@ class TestValidateWorkingDirectory:
 
 
 # ---------------------------------------------------------------------------
+# TestAgentRegistry
+# ---------------------------------------------------------------------------
+
+
+class TestAgentRegistry:
+    def test_registry_has_expected_agents(self):
+        expected = {
+            "bell",
+            "feynman",
+            "ike",
+            "leo",
+            "hamilton",
+            "curie",
+            "ada",
+            "brunel",
+            "agent-backbone",
+            "agent-orchestration-dashboard",
+            "lovely-assistant",
+            "alfred",
+        }
+        assert set(AGENT_REGISTRY.keys()) == expected
+
+    def test_registry_paths_are_absolute(self):
+        for name, path in AGENT_REGISTRY.items():
+            assert path.is_absolute(), f"{name} has relative path: {path}"
+
+    def test_registry_paths_under_home(self):
+        home = Path.home()
+        for name, path in AGENT_REGISTRY.items():
+            assert str(path).startswith(str(home)), f"{name} not under home: {path}"
+
+
+# ---------------------------------------------------------------------------
 # TestListAgents
 # ---------------------------------------------------------------------------
 
@@ -221,6 +256,20 @@ class TestListAgents:
         result = await list_agents()
         assert result["success"] is True
         assert all(s["state"] == "unknown" for s in result["sessions"])
+
+    @patch(f"{MODULE}._run_command")
+    @patch(f"{MODULE}._read_state_file")
+    async def test_includes_registered_directory(self, mock_state, mock_run):
+        mock_run.return_value = (0, "leo\nunknown-session", "")
+        mock_state.return_value = None
+
+        result = await list_agents()
+        assert result["success"] is True
+        sessions_by_name = {s["session_name"]: s for s in result["sessions"]}
+        # leo is in registry
+        assert sessions_by_name["leo"]["registered_directory"] is not None
+        # unknown-session is not
+        assert sessions_by_name["unknown-session"]["registered_directory"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +400,66 @@ class TestStartAgent:
         assert result["success"] is True
         assert result["initial_prompt"] == "do the thing"
         mock_sleep.assert_awaited_once_with(2)
+
+    @patch(f"{MODULE}._run_command")
+    async def test_success_with_registry_fallback(self, mock_run, workspace_dir):
+        target = workspace_dir / "core" / "bell"
+        target.mkdir(parents=True)
+        # Patch registry to use the temp workspace path
+        with patch(f"{MODULE}.AGENT_REGISTRY", {"bell": target}):
+            # has-session (not found), new-session, send-keys (claude)
+            mock_run.side_effect = [
+                (1, "", "session not found"),
+                (0, "", ""),
+                (0, "", ""),
+            ]
+
+            result = await start_agent("bell")
+            assert result["success"] is True
+            assert result["working_directory"] == str(target)
+
+    @patch(f"{MODULE}._run_command")
+    async def test_registry_override_by_explicit_directory(self, mock_run, workspace_dir):
+        explicit = workspace_dir / "explicit" / "path"
+        explicit.mkdir(parents=True)
+
+        mock_run.side_effect = [
+            (1, "", "session not found"),
+            (0, "", ""),
+            (0, "", ""),
+        ]
+
+        result = await start_agent("bell", str(explicit))
+        assert result["success"] is True
+        assert result["working_directory"] == str(explicit)
+
+    async def test_unknown_agent_without_directory_fails(self):
+        result = await start_agent("unknown-agent-xyz")
+        assert result["success"] is False
+        assert "not in the agent registry" in result["error"]
+
+    @patch(f"{MODULE}._run_command")
+    async def test_registry_path_not_exist_fails(self, mock_run, workspace_dir):
+        nonexistent = workspace_dir / "does" / "not" / "exist"
+        with patch(f"{MODULE}.AGENT_REGISTRY", {"test-agent": nonexistent}):
+            result = await start_agent("test-agent")
+            assert result["success"] is False
+            assert "does not exist" in result["error"]
+
+    @patch(f"{MODULE}._run_command")
+    async def test_registry_path_outside_workspace_succeeds(self, mock_run, tmp_path):
+        """Registry paths outside ~/ws/ (e.g. feynman, brunel) should bypass workspace check."""
+        outside_ws = tmp_path / "orchestration"
+        outside_ws.mkdir()
+        with patch(f"{MODULE}.AGENT_REGISTRY", {"feynman": outside_ws}):
+            mock_run.side_effect = [
+                (1, "", "session not found"),
+                (0, "", ""),
+                (0, "", ""),
+            ]
+            result = await start_agent("feynman")
+            assert result["success"] is True
+            assert result["working_directory"] == str(outside_ws)
 
 
 # ---------------------------------------------------------------------------
@@ -553,3 +662,11 @@ class TestRegisterAgentTools:
         ]:
             assert name in registry._backend_handlers
             assert callable(registry._backend_handlers[name])
+
+    def test_start_agent_working_directory_not_required(self):
+        registry = ToolRegistry(ToolConfig())
+        register_agent_tools(registry)
+        schema = registry._backend_definitions["start_agent"].parameters_schema
+        required = schema.get("required", [])
+        assert "working_directory" not in required
+        assert "session_name" in required

@@ -36,6 +36,7 @@ class TestSessionORMColumns:
             "pending_tool_call",
             "created_at",
             "updated_at",
+            "expires_at",
         }
         actual = {c.name for c in SessionORM.__table__.columns}
         assert actual == expected
@@ -123,6 +124,21 @@ class TestSessionORMColumns:
     def test_updated_at_has_onupdate(self):
         col = self._col("updated_at")
         assert col.onupdate is not None
+
+    # --- expires_at ---
+
+    def test_expires_at_is_datetime_with_timezone(self):
+        col = self._col("expires_at")
+        assert isinstance(col.type, DateTime)
+        assert col.type.timezone is True
+
+    def test_expires_at_has_server_default(self):
+        col = self._col("expires_at")
+        assert col.server_default is not None
+
+    def test_expires_at_is_not_nullable(self):
+        col = self._col("expires_at")
+        assert col.nullable is False
 
 
 class TestUserSettingsORMTableName:

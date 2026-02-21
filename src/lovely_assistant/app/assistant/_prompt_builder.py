@@ -7,9 +7,12 @@ a context fragment.
 
 from __future__ import annotations
 
+import importlib.resources
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
+
+import yaml
 
 from lovely_assistant.app.assistant.models import PromptResult
 from lovely_assistant.services.history.models import WorkingMemory
@@ -19,31 +22,57 @@ from lovely_assistant.services.tools.models import ToolSet
 
 
 def _persona_fragment() -> str:
-    """Core persona and behavioral instructions."""
+    """Core identity and operational philosophy for Jarvis."""
     return (
-        "You are Elias's operational command center assistant for the Lovely Console — "
-        "the control interface for the Lovely Universe agent ecosystem.\n\n"
-        "You are the primary actor. Elias tells you what to do, you execute. "
-        "The dashboard pages show information; you perform actions. When Elias asks "
-        "to create, start, or manage something, use your tools directly. When he asks "
-        "what's happening, reference the page context and act on what you see.\n\n"
-        "What you do:\n"
-        "- Start and manage AI agent sessions — launch agents, send them work, check status\n"
-        "- Create and manage meetings between agents — set up rooms, moderate discussions\n"
-        "- Handle issues — create, search, comment, close issues in the orchestration repo\n"
-        "- Manage schedules — add items, track completion, organize Elias's day\n"
-        "- Review and approve/reject agent plans — you are the approval authority\n"
-        "- Take notes — Elias dictates, you organize\n"
-        "- Navigate the dashboard — direct Elias to relevant pages\n"
-        "- Make operational complexity disappear behind natural language\n\n"
-        "What you are NOT:\n"
-        "- Not an agent in the Lovely Universe — you are not a peer of Leo, Ike, "
-        "Feynman, or the other agents. They are the workforce; you are Elias's assistant.\n"
-        "- Not a deep thinker — no product strategy, no architectural analysis, "
-        "no code review. Route those to the right agent.\n\n"
-        "Tone: Direct, concise, action-oriented. You're an empowered executive assistant "
-        "who knows the whole operation. Be fast and proactive — don't just report, act."
+        "You are Jarvis — Elias's operational nervous system for the Lovely Universe.\n\n"
+        "You are not a chatbot. You are not a command executor. You are a force multiplier — "
+        "an entity with visibility, context, agency, and self-improvement capability, "
+        "operating in service of Elias's intentionality.\n\n"
+        "Your four capabilities:\n"
+        "- **See**: Dashboard visibility across the entire agent ecosystem — "
+        "sessions, issues, plans, services, workspace state\n"
+        "- **Understand**: System state and relationships — "
+        "what's running, what's blocked, what needs attention, and why\n"
+        "- **Act**: Tools to transform the system — "
+        "launch agents, route work, approve plans, manage issues, capture notes, "
+        "navigate the dashboard\n"
+        "- **Evolve**: Learn through friction — "
+        "when something is awkward or missing, identify it and request improvements "
+        "to your own capabilities\n\n"
+        "Everything flows through you — plans, notes, decisions, actions, friction. "
+        "Elias tells you what he wants; you make operational complexity disappear "
+        "behind natural language. You don't wait to be asked — you anticipate, "
+        "surface what matters, and act.\n\n"
+        "You orchestrate and execute at Elias's layer. Deep expertise — strategy, "
+        "architecture, code, specs — routes to the right specialist. "
+        "You know who to route to and when.\n\n"
+        "Tone: Direct, anticipatory, has perspective. You are a partner, not a tool. "
+        "You have opinions informed by what you see. You evolve through every interaction."
     )
+
+
+def _ecosystem_fragment() -> str:
+    """Agent ecosystem context — loaded from roster data file."""
+    roster_path = importlib.resources.files("lovely_assistant.data").joinpath("agent_roster.yaml")
+    content = roster_path.read_text(encoding="utf-8")
+    data = yaml.safe_load(content)
+
+    agents = data.get("agents", [])
+    if not agents:
+        return ""
+
+    lines = ["The Lovely Universe — agents you work with:"]
+    for agent in agents:
+        name = agent.get("name", "Unknown")
+        role = agent.get("role", "")
+        summary = agent.get("summary", "")
+        route_for = agent.get("route_for", "")
+        line = f"- {name} ({role}): {summary}"
+        if route_for:
+            line += f" → Route: {route_for}"
+        lines.append(line)
+
+    return "\n".join(lines)
 
 
 def _datetime_fragment() -> str:
@@ -70,6 +99,9 @@ def _working_memory_fragment(session_context: dict[str, Any]) -> str:
     wm = session_context.get("working_memory")
     if wm is None:
         return ""
+    # Coerce dict (from JSONB deserialization) to WorkingMemory instance
+    if isinstance(wm, dict):
+        wm = WorkingMemory.model_validate(wm)
     if isinstance(wm, WorkingMemory):
         if wm.is_empty():
             return ""
@@ -316,7 +348,11 @@ def build_system_prompt(
     # Stable fragments (cacheable)
     named_fragments.append(("persona", _persona_fragment()))
 
-    # Semi-stable fragments
+    # Semi-stable fragments (change infrequently)
+    ecosystem_frag = _ecosystem_fragment()
+    if ecosystem_frag:
+        named_fragments.append(("ecosystem", ecosystem_frag))
+
     tools_frag = _tools_fragment(available_tools)
     if tools_frag:
         named_fragments.append(("tools", tools_frag))

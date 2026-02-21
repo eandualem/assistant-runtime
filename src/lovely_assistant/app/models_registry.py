@@ -139,6 +139,15 @@ MODEL_CATALOG: list[ModelEntry] = [
         description="Google's flagship model with 1M token context",
     ),
     ModelEntry(
+        id="google:gemini-3.1-pro-preview",
+        provider="google",
+        name="Gemini 3.1 Pro Preview",
+        capability="flagship",
+        context_window=1_000_000,
+        capabilities=["text", "vision", "thinking"],
+        description="Google's latest flagship — enhanced reasoning and agentic workflows",
+    ),
+    ModelEntry(
         id="google:gemini-3-flash-preview",
         provider="google",
         name="Gemini 3 Flash Preview",

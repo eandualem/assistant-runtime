@@ -30,3 +30,15 @@ class StreamingConfig(BaseModel):
         default=True,
         description="Emit debug events exposing pipeline internals.",
     )
+    part_start_chunk_size: int = Field(
+        default=100,
+        ge=20,
+        le=2000,
+        description="Max chars per SSE event when chunking large PartStartEvent content.",
+    )
+    part_start_chunk_threshold: int = Field(
+        default=200,
+        ge=50,
+        le=5000,
+        description="PartStartEvent content above this length gets chunked.",
+    )

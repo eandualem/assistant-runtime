@@ -78,7 +78,7 @@ class TestAssistantPipeline:
         call_kwargs = build_mock.call_args[1]
         assert "toolsets" in call_kwargs
         assert "system_prompt" in call_kwargs
-        assert "Lovely Console" in call_kwargs["system_prompt"]
+        assert "Jarvis" in call_kwargs["system_prompt"]
 
     @pytest.mark.asyncio
     async def test_machine_state_in_prompt(self, wired_services):
@@ -115,7 +115,7 @@ class TestDeferredToolRoundTrip:
         # Step 1: Agent returns DeferredToolRequests
         mock_call = MagicMock(spec=ToolCallPart)
         mock_call.tool_call_id = "call-round-trip"
-        mock_call.tool_name = "ui_notify"
+        mock_call.tool_name = "navigate"
         mock_call.args = {"message": "hello"}
 
         mock_deferred = MagicMock()
@@ -138,7 +138,7 @@ class TestDeferredToolRoundTrip:
                 return_value=ToolSet(
                     frontend_tools=[
                         ToolDefinition(
-                            name="ui_notify",
+                            name="navigate",
                             description="Notify",
                             parameters_schema={},
                             category=ToolCategory.FRONTEND,
@@ -151,7 +151,7 @@ class TestDeferredToolRoundTrip:
                 )
 
         assert result1.is_tool_call
-        assert result1.deferred_tool_request.tool_name == "ui_notify"
+        assert result1.deferred_tool_request.tool_name == "navigate"
 
         # Verify pending tool call was stored
         sessions = assistant._sessions

@@ -226,3 +226,105 @@ class TestExecuteLlmCall:
             mock_agent_instance.run.assert_called_once()
             call_kwargs = mock_agent_instance.run.call_args
             assert "model_settings" in call_kwargs.kwargs
+
+
+class TestExecuteLlmCallRetry:
+    """Tests for retry behavior in execute_llm_call."""
+
+    @pytest.fixture
+    def service(self):
+        return LlmService(config=LLMConfig())
+
+    async def test_retries_on_connection_error_then_succeeds(self, service):
+        """execute_llm_call retries on ConnectionError and succeeds."""
+        call_count = 0
+        mock_result = MagicMock()
+        mock_result.output = "recovered"
+
+        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+            mock_agent_instance = MagicMock()
+
+            async def _run_side_effect(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count < 2:
+                    raise ConnectionError("transient")
+                return mock_result
+
+            mock_agent_instance.run = _run_side_effect
+            mock_agent_cls.return_value = mock_agent_instance
+
+            # Patch wait to avoid real sleeps
+            with patch(
+                "lovely_assistant.base.resilience.wait_random_exponential",
+                return_value=MagicMock(return_value=0),
+            ):
+                result = await service.execute_llm_call(
+                    system_prompt="Test",
+                    user_prompt="Test",
+                )
+
+        assert result.content == "recovered"
+        assert call_count == 2
+
+    async def test_gives_up_after_max_retries(self, service):
+        """execute_llm_call raises LLMCallError after exhausting retries."""
+        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run = AsyncMock(side_effect=ConnectionError("permanent"))
+            mock_agent_cls.return_value = mock_agent_instance
+
+            with pytest.raises(LLMCallError) as exc_info:
+                await service.execute_llm_call(
+                    system_prompt="Test",
+                    user_prompt="Test",
+                )
+
+            assert exc_info.value.error_category == "CONNECTION_ERROR"
+            assert exc_info.value.is_retryable is True
+
+    async def test_does_not_retry_on_non_retryable_error(self, service):
+        """Non-retryable errors (like RuntimeError) are not retried."""
+        call_count = 0
+
+        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+            mock_agent_instance = MagicMock()
+
+            async def _run_side_effect(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                raise RuntimeError("not retryable")
+
+            mock_agent_instance.run = _run_side_effect
+            mock_agent_cls.return_value = mock_agent_instance
+
+            with pytest.raises(LLMCallError) as exc_info:
+                await service.execute_llm_call(
+                    system_prompt="Test",
+                    user_prompt="Test",
+                )
+
+            assert exc_info.value.error_category == "UNKNOWN"
+            assert exc_info.value.is_retryable is False
+
+        # Should be called only once — no retries
+        assert call_count == 1
+
+    async def test_error_classified_via_classify_llm_error(self, service):
+        """Errors are classified with error_category via classify_llm_error."""
+
+        class RateLimitError(Exception):
+            pass
+
+        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run = AsyncMock(side_effect=RateLimitError("slow down"))
+            mock_agent_cls.return_value = mock_agent_instance
+
+            with pytest.raises(LLMCallError) as exc_info:
+                await service.execute_llm_call(
+                    system_prompt="Test",
+                    user_prompt="Test",
+                )
+
+            assert exc_info.value.error_category == "RATE_LIMIT"

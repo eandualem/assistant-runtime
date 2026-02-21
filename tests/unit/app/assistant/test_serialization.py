@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
+    SystemPromptPart,
     TextPart,
+    ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 
@@ -15,6 +20,7 @@ from lovely_assistant.app.assistant._serialization import (
     _sanitize_history,
     _sanitize_tool_return_content,
     deserialize_messages,
+    messages_to_display_format,
     serialize_messages,
 )
 
@@ -131,3 +137,521 @@ class TestSanitizeHistory:
         # Objects should be the same identity (no modification needed)
         assert result[0] is msg
         assert result[1] is resp
+
+
+# --- messages_to_display_format ---
+
+
+class TestMessagesToDisplayFormat:
+    def test_empty_messages(self):
+        result = messages_to_display_format([])
+        assert result == []
+
+    def test_user_message(self):
+        msg = ModelRequest(parts=[UserPromptPart(content="hello")])
+        result = messages_to_display_format([msg])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        assert result[0]["text"] == "hello"
+
+    def test_assistant_text_only(self):
+        resp = ModelResponse(
+            parts=[TextPart(content="The answer is 42.")],
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        result = messages_to_display_format([resp])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "assistant"
+        assert result[0]["text"] == "The answer is 42."
+        assert result[0]["segments"] == [{"kind": "text", "text": "The answer is 42."}]
+        assert "thinking" not in result[0]
+        assert "tool_calls" not in result[0]
+
+    def test_assistant_with_thinking(self):
+        resp = ModelResponse(
+            parts=[
+                ThinkingPart(content="Let me consider..."),
+                TextPart(content="Here is the answer."),
+            ],
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        result = messages_to_display_format([resp])
+
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["role"] == "assistant"
+        assert entry["text"] == "Here is the answer."
+        assert entry["thinking"] == "Let me consider..."
+        assert entry["segments"] == [
+            {"kind": "thinking", "text": "Let me consider..."},
+            {"kind": "text", "text": "Here is the answer."},
+        ]
+
+    def test_tool_call_paired_with_result(self):
+        call_id = "tc_001"
+        response_msg = ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="get_status",
+                    args={"agent": "leo"},
+                    tool_call_id=call_id,
+                ),
+            ],
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        return_msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="get_status",
+                    content="idle",
+                    tool_call_id=call_id,
+                    timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+                ),
+            ]
+        )
+        result = messages_to_display_format([response_msg, return_msg])
+
+        # Only the assistant message should appear (tool return is not a standalone message)
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["role"] == "assistant"
+        assert len(entry["tool_calls"]) == 1
+        tc = entry["tool_calls"][0]
+        assert tc["name"] == "get_status"
+        assert tc["input"] == {"agent": "leo"}
+        assert tc["id"] == call_id
+        assert tc["output"] == "idle"
+        assert entry["segments"] == [
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {
+                        "id": call_id,
+                        "name": "get_status",
+                        "input": {"agent": "leo"},
+                        "output": "idle",
+                    }
+                ],
+            }
+        ]
+
+    def test_tool_call_without_result(self):
+        call_id = "tc_orphan"
+        resp = ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="restart_agent",
+                    args={"name": "ada"},
+                    tool_call_id=call_id,
+                ),
+            ],
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        result = messages_to_display_format([resp])
+
+        assert len(result) == 1
+        tc = result[0]["tool_calls"][0]
+        assert tc["name"] == "restart_agent"
+        assert "output" not in tc
+        assert result[0]["segments"] == [
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {
+                        "id": call_id,
+                        "name": "restart_agent",
+                        "input": {"name": "ada"},
+                    }
+                ],
+            }
+        ]
+
+    def test_system_prompts_skipped(self):
+        msg = ModelRequest(parts=[SystemPromptPart(content="You are an assistant.")])
+        result = messages_to_display_format([msg])
+
+        assert result == []
+
+    def test_tool_returns_not_separate_messages(self):
+        msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="check",
+                    content="ok",
+                    tool_call_id="tc_100",
+                    timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+            ]
+        )
+        result = messages_to_display_format([msg])
+
+        assert result == []
+
+    def test_multi_turn_ordering(self):
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        messages = [
+            ModelRequest(parts=[UserPromptPart(content="Question 1")]),
+            ModelResponse(parts=[TextPart(content="Answer 1")], timestamp=ts),
+            ModelRequest(parts=[UserPromptPart(content="Question 2")]),
+            ModelResponse(parts=[TextPart(content="Answer 2")], timestamp=ts),
+        ]
+        result = messages_to_display_format(messages)
+
+        assert len(result) == 4
+        assert result[0]["role"] == "user"
+        assert result[0]["text"] == "Question 1"
+        assert result[1]["role"] == "assistant"
+        assert result[1]["text"] == "Answer 1"
+        assert result[2]["role"] == "user"
+        assert result[2]["text"] == "Question 2"
+        assert result[3]["role"] == "assistant"
+        assert result[3]["text"] == "Answer 2"
+        assert result[1]["segments"] == [{"kind": "text", "text": "Answer 1"}]
+        assert result[3]["segments"] == [{"kind": "text", "text": "Answer 2"}]
+
+    def test_timestamps_propagated(self):
+        ts_user = datetime(2026, 2, 15, 10, 30, 0, tzinfo=UTC)
+        ts_assistant = datetime(2026, 2, 15, 10, 30, 5, tzinfo=UTC)
+        messages = [
+            ModelRequest(
+                parts=[UserPromptPart(content="hi", timestamp=ts_user)],
+                timestamp=ts_user,
+            ),
+            ModelResponse(
+                parts=[TextPart(content="hello")],
+                timestamp=ts_assistant,
+            ),
+        ]
+        result = messages_to_display_format(messages)
+
+        assert len(result) == 2
+        assert result[0]["timestamp"] == ts_user.isoformat()
+        assert result[1]["timestamp"] == ts_assistant.isoformat()
+
+    def test_segments_interleaved_multi_tool_turn(self):
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        messages = [
+            ModelRequest(parts=[UserPromptPart(content="Check agents")]),
+            ModelResponse(
+                parts=[
+                    TextPart(content="Let me check."),
+                    ToolCallPart(
+                        tool_name="get_status",
+                        args={"agent": "leo"},
+                        tool_call_id="tc_1",
+                    ),
+                ],
+                timestamp=ts,
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="get_status",
+                        content="idle",
+                        tool_call_id="tc_1",
+                        timestamp=ts,
+                    ),
+                ]
+            ),
+            ModelResponse(
+                parts=[
+                    TextPart(content="Leo is idle. Checking Ada."),
+                    ToolCallPart(
+                        tool_name="get_status",
+                        args={"agent": "ada"},
+                        tool_call_id="tc_2",
+                    ),
+                ],
+                timestamp=ts,
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="get_status",
+                        content="busy",
+                        tool_call_id="tc_2",
+                        timestamp=ts,
+                    ),
+                ]
+            ),
+            ModelResponse(
+                parts=[TextPart(content="Ada is busy.")],
+                timestamp=ts,
+            ),
+        ]
+        result = messages_to_display_format(messages)
+
+        # 1 user entry + 1 collapsed assistant entry
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[0]["text"] == "Check agents"
+
+        entry = result[1]
+        assert entry["role"] == "assistant"
+        assert entry["segments"] == [
+            {"kind": "text", "text": "Let me check."},
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {
+                        "id": "tc_1",
+                        "name": "get_status",
+                        "input": {"agent": "leo"},
+                        "output": "idle",
+                    }
+                ],
+            },
+            {"kind": "text", "text": "Leo is idle. Checking Ada."},
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {
+                        "id": "tc_2",
+                        "name": "get_status",
+                        "input": {"agent": "ada"},
+                        "output": "busy",
+                    }
+                ],
+            },
+            {"kind": "text", "text": "Ada is busy."},
+        ]
+
+    def test_segments_consecutive_tool_calls_grouped(self):
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        messages = [
+            ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="get_status",
+                        args={"agent": "leo"},
+                        tool_call_id="tc_a",
+                    ),
+                    ToolCallPart(
+                        tool_name="get_status",
+                        args={"agent": "ada"},
+                        tool_call_id="tc_b",
+                    ),
+                ],
+                timestamp=ts,
+            ),
+        ]
+        result = messages_to_display_format(messages)
+
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["role"] == "assistant"
+        assert entry["segments"] == [
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {
+                        "id": "tc_a",
+                        "name": "get_status",
+                        "input": {"agent": "leo"},
+                    },
+                    {
+                        "id": "tc_b",
+                        "name": "get_status",
+                        "input": {"agent": "ada"},
+                    },
+                ],
+            }
+        ]
+
+    def test_segments_collapsed_assistant_turn(self):
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        messages = [
+            ModelResponse(
+                parts=[TextPart(content="First part.")],
+                timestamp=ts,
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="x",
+                        content="r",
+                        tool_call_id="tc_x",
+                        timestamp=ts,
+                    ),
+                ]
+            ),
+            ModelResponse(
+                parts=[TextPart(content="Second part.")],
+                timestamp=ts,
+            ),
+        ]
+        result = messages_to_display_format(messages)
+
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["role"] == "assistant"
+        assert entry["segments"] == [
+            {"kind": "text", "text": "First part."},
+            {"kind": "text", "text": "Second part."},
+        ]
+
+    def test_segments_text_only_no_tool_group(self):
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        messages = [
+            ModelResponse(
+                parts=[TextPart(content="Just text.")],
+                timestamp=ts,
+            ),
+        ]
+        result = messages_to_display_format(messages)
+
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["segments"] == [{"kind": "text", "text": "Just text."}]
+        assert "tool_calls" not in entry
+        # No tool_group segments should be present
+        assert all(seg["kind"] != "tool_group" for seg in entry["segments"])
+
+    def test_segments_backward_compat_flat_fields(self):
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        messages = [
+            ModelResponse(
+                parts=[
+                    ThinkingPart(content="Hmm..."),
+                    TextPart(content="Here's what I found."),
+                    ToolCallPart(
+                        tool_name="check",
+                        args={},
+                        tool_call_id="tc_z",
+                    ),
+                ],
+                timestamp=ts,
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="check",
+                        content="all good",
+                        tool_call_id="tc_z",
+                        timestamp=ts,
+                    ),
+                ]
+            ),
+        ]
+        result = messages_to_display_format(messages)
+
+        assert len(result) == 1
+        entry = result[0]
+
+        # Backward-compatible flat fields
+        assert entry["text"] == "Here's what I found."
+        assert entry["thinking"] == "Hmm..."
+        assert len(entry["tool_calls"]) == 1
+        assert entry["tool_calls"][0]["name"] == "check"
+        assert entry["tool_calls"][0]["output"] == "all good"
+
+        # Ordered segments field
+        assert entry["segments"] == [
+            {"kind": "thinking", "text": "Hmm..."},
+            {"kind": "text", "text": "Here's what I found."},
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {
+                        "id": "tc_z",
+                        "name": "check",
+                        "input": {},
+                        "output": "all good",
+                    }
+                ],
+            },
+        ]
+
+    def test_interleaved_segments_across_multi_response_turn(self):
+        """Five-segment interleaving: text -> tool -> text -> tool -> text across collapsed turns."""
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        messages = [
+            ModelRequest(parts=[UserPromptPart(content="Check everything")]),
+            # Turn 1: text + tool call
+            ModelResponse(
+                parts=[
+                    TextPart(content="Starting checks."),
+                    ToolCallPart(
+                        tool_name="check_a", args={"target": "alpha"}, tool_call_id="tc_i1"
+                    ),
+                ],
+                timestamp=ts,
+            ),
+            # Tool return for check_a
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="check_a",
+                        content="alpha ok",
+                        tool_call_id="tc_i1",
+                        timestamp=ts,
+                    ),
+                ]
+            ),
+            # Turn 2: text + tool call
+            ModelResponse(
+                parts=[
+                    TextPart(content="Alpha passed. Now beta."),
+                    ToolCallPart(
+                        tool_name="check_b", args={"target": "beta"}, tool_call_id="tc_i2"
+                    ),
+                ],
+                timestamp=ts,
+            ),
+            # Tool return for check_b
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name="check_b",
+                        content="beta ok",
+                        tool_call_id="tc_i2",
+                        timestamp=ts,
+                    ),
+                ]
+            ),
+            # Turn 3: final text
+            ModelResponse(
+                parts=[TextPart(content="All checks passed.")],
+                timestamp=ts,
+            ),
+        ]
+        result = messages_to_display_format(messages)
+
+        # 1 user + 1 collapsed assistant
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+
+        entry = result[1]
+        assert entry["role"] == "assistant"
+        assert entry["segments"] == [
+            {"kind": "text", "text": "Starting checks."},
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {
+                        "id": "tc_i1",
+                        "name": "check_a",
+                        "input": {"target": "alpha"},
+                        "output": "alpha ok",
+                    }
+                ],
+            },
+            {"kind": "text", "text": "Alpha passed. Now beta."},
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {
+                        "id": "tc_i2",
+                        "name": "check_b",
+                        "input": {"target": "beta"},
+                        "output": "beta ok",
+                    }
+                ],
+            },
+            {"kind": "text", "text": "All checks passed."},
+        ]
+        # Backward compat: text concatenates all text parts, tool_calls has both
+        assert entry["text"] == "Starting checks.Alpha passed. Now beta.All checks passed."
+        assert len(entry["tool_calls"]) == 2

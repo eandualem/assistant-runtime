@@ -1,5 +1,7 @@
 """Tests for ToolService lifecycle, not-started guards, and delegation to registry."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from lovely_assistant.services.tools.config import ToolConfig
@@ -49,7 +51,6 @@ class TestLifecycle:
         tool_names = service._registry.get_tool_names()
         # Placeholders
         assert "get_time" in tool_names
-        assert "ui_notify" in tool_names
         # Agent management tools
         assert "list_agents" in tool_names
         assert "check_agent_state" in tool_names
@@ -122,7 +123,7 @@ class TestDelegation:
     async def test_build_toolset(self, service):
         await service.start()
         toolsets = service.build_toolset()
-        # Not empty because placeholders are registered (get_time + ui_notify)
+        # Not empty because placeholders are registered (get_time + navigate)
         assert isinstance(toolsets, list)
         assert len(toolsets) > 0
 
@@ -131,8 +132,8 @@ class TestDelegation:
         result = service.get_available_tools()
         assert isinstance(result, ToolSet)
         assert (
-            result.total_count >= 23
-        )  # 2 placeholders + 4 agent + 1 notes + 5 github + 4 meeting + 3 schedule + 3 plan
+            result.total_count >= 22
+        )  # 1 backend + 1 frontend + 5 agent + 1 notes + 5 github + 4 meeting + 3 schedule + 3 plan
 
     async def test_validate_registered_tool(self, service):
         await service.start()
@@ -183,19 +184,19 @@ class TestStateDrivenToolFiltering:
     async def test_no_machine_state_returns_all(self, service):
         await service.start()
         result = service.get_available_tools(machine_state=None)
-        assert result.total_count == 24
+        assert result.total_count == 23
 
     async def test_home_page_returns_all(self, service):
         await service.start()
         state = {"active_page": {"name": "home"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 24
+        assert result.total_count == 23
 
     async def test_agents_page_core_and_agent_and_plan(self, service):
         await service.start()
         state = {"active_page": {"name": "agents"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 15  # 7 core + 5 agent + 3 plan
+        assert result.total_count == 14  # 6 core + 5 agent + 3 plan
         names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
         assert "list_agents" in names
         assert "get_time" in names
@@ -209,22 +210,22 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "sessions"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 15  # 7 core + 5 agent + 3 plan
+        assert result.total_count == 14  # 6 core + 5 agent + 3 plan
         names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
         assert "start_agent" in names
-        assert "ui_notify" in names
+        assert "navigate" in names
         assert "approve_plan" in names
 
     async def test_tasks_page_core_and_github(self, service):
         await service.start()
         state = {"active_page": {"name": "tasks"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 12  # 7 core + 5 github
+        assert result.total_count == 11  # 6 core + 5 github
         names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
         # Core tools present
         assert "get_time" in names
         assert "manage_notes" in names
-        assert "ui_notify" in names
+        assert "navigate" in names
         assert "add_schedule_item" in names
         # GitHub tools present
         assert "create_issue" in names
@@ -239,7 +240,7 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "meetings"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 11  # 7 core + 4 meeting
+        assert result.total_count == 10  # 6 core + 4 meeting
         names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
         assert "create_meeting_room" in names
         assert "list_meeting_rooms" in names
@@ -255,7 +256,7 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "flows"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 7  # 7 core
+        assert result.total_count == 6  # 6 core
         names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
         assert "get_time" in names
         assert "add_schedule_item" in names
@@ -265,13 +266,13 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "exotic_dashboard"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 24
+        assert result.total_count == 23
 
     async def test_missing_active_page_returns_all(self, service):
         await service.start()
         state = {"some_other_key": "value"}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 24
+        assert result.total_count == 23
 
     async def test_tool_count_warning(self):
         low_max_config = ToolConfig(max_tools_per_request=2)
@@ -280,4 +281,47 @@ class TestStateDrivenToolFiltering:
         # meetings page gives 10 tools which exceeds max=2
         state = {"active_page": {"name": "meetings"}}
         result = svc.get_available_tools(machine_state=state)
-        assert result.total_count == 11  # still returns them, just warns
+        assert result.total_count == 10  # still returns them, just warns
+
+
+class TestSubagentIntegration:
+    """Tests for subagent tool registration when llm_service is provided."""
+
+    async def test_run_subagent_registered_with_llm_service(self):
+        """When llm_service is provided, run_subagent tool is registered."""
+        mock_llm = MagicMock()
+        svc = ToolService(config=ToolConfig(), llm_service=mock_llm)
+        await svc.start()
+
+        tool_names = svc._registry.get_tool_names()
+        assert "run_subagent" in tool_names
+
+    async def test_run_subagent_not_registered_without_llm_service(self):
+        """Without llm_service, run_subagent is NOT registered."""
+        svc = ToolService(config=ToolConfig())
+        await svc.start()
+
+        tool_names = svc._registry.get_tool_names()
+        assert "run_subagent" not in tool_names
+
+    async def test_tool_count_with_llm_service(self):
+        """With llm_service, total tool count increases by 1."""
+        svc_without = ToolService(config=ToolConfig())
+        await svc_without.start()
+        count_without = svc_without.get_available_tools().total_count
+
+        mock_llm = MagicMock()
+        svc_with = ToolService(config=ToolConfig(), llm_service=mock_llm)
+        await svc_with.start()
+        count_with = svc_with.get_available_tools().total_count
+
+        assert count_with == count_without + 1
+
+    async def test_get_subagent_toolsets(self):
+        """get_subagent_toolsets returns toolsets without run_subagent."""
+        mock_llm = MagicMock()
+        svc = ToolService(config=ToolConfig(), llm_service=mock_llm)
+        await svc.start()
+
+        toolsets = svc.get_subagent_toolsets()
+        assert isinstance(toolsets, list)

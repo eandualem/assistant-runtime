@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
 from pydantic_ai.tools import ToolDefinition as PydanticToolDef
 from pydantic_ai.toolsets import ExternalToolset, FunctionToolset
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from lovely_assistant.services.tools.config import ToolConfig
 from lovely_assistant.services.tools.exceptions import ToolValidationError
@@ -17,13 +19,13 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "get_time",
         "manage_notes",
-        "ui_notify",
         "navigate",
         "add_schedule_item",
         "remove_schedule_item",
         "toggle_schedule_item",
         "generate_image",
         "generate_video",
+        "run_subagent",
     }
 )
 _AGENT_TOOL_NAMES: frozenset[str] = frozenset(
@@ -97,11 +99,46 @@ class ToolRegistry:
         self._frontend_definitions[definition.name] = definition
         logger.debug("Registered frontend tool", tool=definition.name)
 
+    @staticmethod
+    def _wrap_handler(handler: Callable, tool_name: str) -> Callable:
+        """Wrap a tool handler with retry on transient errors and a safety net.
+
+        Retries once (2 total attempts) on ConnectionError/TimeoutError before
+        falling through to the error dict response.
+        """
+
+        @retry(
+            stop=stop_after_attempt(2),
+            wait=wait_fixed(0.5),
+            retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+            reraise=True,
+        )
+        async def _retryable(*args: Any, **kwargs: Any) -> Any:
+            return await handler(*args, **kwargs)
+
+        @functools.wraps(handler)
+        async def _safe_handler(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await _retryable(*args, **kwargs)
+            except Exception as e:
+                logger.error(
+                    "[TOOLS] Unhandled tool exception",
+                    tool=tool_name,
+                    error_type=e.__class__.__name__,
+                    error=str(e),
+                )
+                return {
+                    "error": f"Internal error: {e}",
+                    "error_code": "TOOL_EXECUTION_ERROR",
+                }
+
+        return _safe_handler
+
     def build_toolset(self, machine_state: dict[str, Any] | None = None) -> list:
         """Build Pydantic AI toolsets for a request.
 
         Returns list of AbstractToolset instances:
-        - FunctionToolset for backend tools (with real handlers)
+        - FunctionToolset for backend tools (with real handlers, wrapped with safety net)
         - ExternalToolset for frontend tools (deferred via SSE)
         """
         available = self._resolve_available_tools(machine_state)
@@ -112,8 +149,9 @@ class ToolRegistry:
             func_toolset = FunctionToolset()
             for defn in available.backend_tools:
                 handler = self._backend_handlers[defn.name]
+                safe_handler = self._wrap_handler(handler, defn.name)
                 func_toolset.add_function(
-                    handler,
+                    safe_handler,
                     name=defn.name,
                     description=defn.description,
                 )
@@ -132,10 +170,41 @@ class ToolRegistry:
             toolsets.append(ExternalToolset(tool_defs=pydantic_defs))
 
         logger.debug(
-            "Built toolsets",
+            "[TOOLS] Built toolsets",
             backend=len(available.backend_tools),
             frontend=len(available.frontend_tools),
             toolsets=len(toolsets),
+        )
+        return toolsets
+
+    def build_subagent_toolset(self) -> list:
+        """Build toolsets for subagent execution — backend tools only, excluding run_subagent.
+
+        Returns a list with a single FunctionToolset containing all backend tools
+        except run_subagent (prevents recursion). No frontend tools — subagents
+        don't interact with the UI.
+        """
+        toolsets: list = []
+        backend_defs = [
+            defn for defn in self._backend_definitions.values() if defn.name != "run_subagent"
+        ]
+
+        if backend_defs:
+            func_toolset = FunctionToolset()
+            for defn in backend_defs:
+                handler = self._backend_handlers[defn.name]
+                safe_handler = self._wrap_handler(handler, defn.name)
+                func_toolset.add_function(
+                    safe_handler,
+                    name=defn.name,
+                    description=defn.description,
+                )
+            toolsets.append(func_toolset)
+
+        logger.debug(
+            "[TOOLS] Built subagent toolsets",
+            backend=len(backend_defs),
+            excluded="run_subagent",
         )
         return toolsets
 

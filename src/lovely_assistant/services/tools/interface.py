@@ -16,6 +16,7 @@ from lovely_assistant.services.tools._notes_tools import register_notes_tools
 from lovely_assistant.services.tools._plan_tools import register_plan_tools
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools._schedule_tools import register_schedule_tools
+from lovely_assistant.services.tools._subagent_tools import register_subagent_tools
 from lovely_assistant.services.tools._video_tools import register_video_tools
 from lovely_assistant.services.tools.config import ToolConfig
 from lovely_assistant.services.tools.exceptions import ToolError
@@ -25,9 +26,15 @@ from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition,
 class ToolService:
     """Tool system facade. Implements LifecycleAware."""
 
-    def __init__(self, config: ToolConfig, media_service: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: ToolConfig,
+        media_service: Any | None = None,
+        llm_service: Any | None = None,
+    ) -> None:
         self._config = config
         self._media_service = media_service
+        self._llm_service = llm_service
         self._registry: ToolRegistry | None = None
         self._started = False
 
@@ -83,6 +90,11 @@ class ToolService:
         self._ensure_started()
         self._registry.register_frontend_tool(definition)
 
+    def get_subagent_toolsets(self) -> list:
+        """Build toolsets for subagent execution (backend only, no run_subagent)."""
+        self._ensure_started()
+        return self._registry.build_subagent_toolset()
+
     def _ensure_started(self) -> None:
         """Guard: raise if service not started."""
         if not self._started or self._registry is None:
@@ -104,30 +116,6 @@ class ToolService:
                 category=ToolCategory.BACKEND,
             ),
             get_time,
-        )
-
-        # Frontend placeholder: ui_notify
-        self._registry.register_frontend_tool(
-            ToolDefinition(
-                name="ui_notify",
-                description="Send a notification to the user interface.",
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "Notification message",
-                        },
-                        "level": {
-                            "type": "string",
-                            "enum": ["info", "warning", "error"],
-                            "description": "Notification severity level",
-                        },
-                    },
-                    "required": ["message"],
-                },
-                category=ToolCategory.FRONTEND,
-            ),
         )
 
         # Frontend tool: navigate
@@ -182,6 +170,18 @@ class ToolService:
 
         # Plan management tools
         register_plan_tools(self._registry)
+
+        # Subagent tools (only if llm_service is available)
+        if self._llm_service is not None:
+            register_subagent_tools(self._registry)
+            # Attach deps to the run_subagent handler so it can access llm_service
+            # and build subagent toolsets at call time
+            run_subagent_handler = self._registry._backend_handlers.get("run_subagent")
+            if run_subagent_handler:
+                run_subagent_handler._subagent_deps = {
+                    "llm_service": self._llm_service,
+                    "get_backend_toolsets": self._registry.build_subagent_toolset,
+                }
 
         # Media generation tools (only if media service is available)
         if self._media_service is not None:

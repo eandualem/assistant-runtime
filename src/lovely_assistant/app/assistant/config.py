@@ -13,10 +13,16 @@ class AssistantConfig(BaseModel):
         description="Model override for assistant conversations. None = use LLM primary_model.",
     )
     thinking_budget: int | None = Field(
-        default=None,
+        default=10000,
         ge=1,
         le=100000,
         description="Thinking token budget for extended thinking. None = disabled.",
+    )
+    temperature: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=2.0,
+        description="LLM temperature for response generation.",
     )
     max_turns: int = Field(
         default=10,
@@ -27,4 +33,16 @@ class AssistantConfig(BaseModel):
     enable_working_memory: bool = Field(
         default=True,
         description="Whether to extract working memory deltas after each turn.",
+    )
+    session_ttl_hours: int = Field(
+        default=24,
+        ge=1,
+        le=168,
+        description="Session TTL in hours.",
+    )
+    pending_tool_call_timeout_minutes: int = Field(
+        default=10,
+        ge=1,
+        le=60,
+        description="Minutes before a pending frontend tool call expires.",
     )

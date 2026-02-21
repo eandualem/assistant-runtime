@@ -121,6 +121,22 @@ class TestMachineStateNormalization:
         assert "entities" not in data
         assert data["sessions"][0]["name"] == "leo"
 
+    def test_coding_agents_aliased_to_sessions_on_agents_page(self):
+        req = AssistantRequest(
+            session_id="s1",
+            message="hi",
+            machine_state={
+                "activePage": {
+                    "name": "agents",
+                    "data": {"codingAgents": [{"name": "platform-api", "state": "idle"}]},
+                }
+            },
+        )
+        data = req.machine_state["active_page"]["data"]
+        assert "sessions" in data
+        assert "coding_agents" not in data
+        assert data["sessions"][0]["name"] == "platform-api"
+
     def test_filters_aliased_to_active_filters_on_tasks_page(self):
         req = AssistantRequest(
             session_id="s1",
@@ -212,7 +228,7 @@ class TestAssistantResult:
             model="anthropic:claude-sonnet-4-6",
             deferred_tool_request=DeferredToolRequest(
                 request_id="tc-123",
-                tool_name="ui_notify",
+                tool_name="navigate",
                 arguments={"message": "Done"},
             ),
             session_id="s1",
@@ -220,7 +236,7 @@ class TestAssistantResult:
         )
         assert result.content is None
         assert result.is_tool_call is True
-        assert result.deferred_tool_request.tool_name == "ui_notify"
+        assert result.deferred_tool_request.tool_name == "navigate"
 
     def test_serialization(self):
         result = AssistantResult(

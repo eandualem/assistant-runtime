@@ -59,6 +59,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database_service=getattr(app.state, "database_service", None),
     )
     await app.state.runtime_settings.load_from_db()
+    # Assistant/streaming services are registered before runtime settings exists.
+    # Inject the live runtime settings reference after initialization.
+    if getattr(app.state, "assistant_service", None) is not None:
+        app.state.assistant_service._runtime_settings = app.state.runtime_settings
+    if getattr(app.state, "streaming_service", None) is not None:
+        app.state.streaming_service._runtime_settings = app.state.runtime_settings
+
+    # Cleanup expired sessions on startup (before accepting requests)
+    if getattr(app.state, "assistant_service", None) is not None:
+        cleaned = await app.state.assistant_service.cleanup_expired_sessions()
+        if cleaned:
+            logger.info("Cleaned up expired sessions on startup", count=cleaned)
 
     logger.info("Application started", app=settings.app_name)
 

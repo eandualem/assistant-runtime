@@ -14,9 +14,50 @@ from loguru import logger
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
+from lovely_assistant.base.resilience import retry_with_backoff
 from lovely_assistant.services.llm._settings import build_model_settings, validate_model_id
 from lovely_assistant.services.llm.config import _PROVIDER_ENV_VAR_MAP, LLMConfig, ProviderConfig
-from lovely_assistant.services.llm.exceptions import LLMCallError, ProviderConfigError
+from lovely_assistant.services.llm.exceptions import ProviderConfigError, classify_llm_error
+
+
+def _collect_retryable_llm_exceptions() -> tuple[type[Exception], ...]:
+    """Collect retryable exception types from installed LLM provider SDKs.
+
+    Lazily imports from anthropic, openai, and google-genai to avoid hard
+    dependency on packages that may not be installed.
+    """
+    types: list[type[Exception]] = [ConnectionError, TimeoutError]
+
+    for module_path in ("anthropic", "openai"):
+        try:
+            mod = __import__(module_path)
+            for name in (
+                "RateLimitError",
+                "InternalServerError",
+                "APIConnectionError",
+                "APITimeoutError",
+            ):
+                cls = getattr(mod, name, None)
+                if cls is not None:
+                    types.append(cls)
+        except ImportError:
+            pass
+
+    # google-genai uses a different module path
+    try:
+        from google.genai import errors as google_errors
+
+        for name in ("ClientError", "ServerError"):
+            cls = getattr(google_errors, name, None)
+            if cls is not None:
+                types.append(cls)
+    except ImportError:
+        pass
+
+    return tuple(types)
+
+
+_LLM_RETRYABLE_EXCEPTIONS = _collect_retryable_llm_exceptions()
 
 
 class LLMResult(BaseModel):
@@ -97,6 +138,10 @@ class LlmService:
             "primary_model": self._config.primary_model,
         }
 
+    def resolve_model(self, model: str | None = None) -> str:
+        """Resolve, normalize, and validate a model identifier."""
+        return validate_model_id(model or self._config.primary_model)
+
     def build_agent(
         self,
         *,
@@ -125,7 +170,7 @@ class LlmService:
         Returns:
             Configured Pydantic AI Agent instance.
         """
-        resolved_model = validate_model_id(model or self._config.primary_model)
+        resolved_model = self.resolve_model(model)
 
         settings = build_model_settings(
             model_id=resolved_model,
@@ -164,9 +209,10 @@ class LlmService:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> LLMResult:
-        """Execute a standalone one-shot LLM call.
+        """Execute a standalone one-shot LLM call with retry on transient failures.
 
         Creates a one-shot Pydantic AI Agent (no tools, no history) and runs it.
+        Retries up to 3 times on rate limits, server errors, and connection failures.
 
         Args:
             system_prompt: System instructions for the LLM.
@@ -180,10 +226,10 @@ class LlmService:
             LLMResult with content and model identifier.
 
         Raises:
-            LLMCallError: If the LLM call fails.
+            LLMCallError: If the LLM call fails after all retries.
             ProviderConfigError: If the model ID is invalid.
         """
-        resolved_model = validate_model_id(model or self._config.primary_model)
+        resolved_model = self.resolve_model(model)
 
         logger.info(
             "Executing standalone LLM call",
@@ -191,7 +237,14 @@ class LlmService:
             thinking_budget=thinking_budget,
         )
 
-        try:
+        @retry_with_backoff(
+            max_attempts=3,
+            min_wait=1.0,
+            max_wait=30.0,
+            retry_on=_LLM_RETRYABLE_EXCEPTIONS,
+            name="execute_llm_call",
+        )
+        async def _run_with_retry() -> LLMResult:
             agent = Agent(
                 model=resolved_model,
                 instructions=system_prompt,
@@ -210,7 +263,9 @@ class LlmService:
 
             return LLMResult(content=result.output, model=resolved_model)
 
+        try:
+            return await _run_with_retry()
         except ProviderConfigError:
             raise
         except Exception as e:
-            raise LLMCallError(f"LLM call failed: {e}") from e
+            raise classify_llm_error(e) from e

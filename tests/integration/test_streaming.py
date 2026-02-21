@@ -57,7 +57,7 @@ class TestStreamingPipeline:
         final = [e for e in events if e["type"] == "final_response"]
         assert len(final) == 1
         assert final[0]["content"] == "The answer is 42"
-        assert final[0]["streamed"] is True
+        assert final[0]["streamed"] is False
 
     @pytest.mark.asyncio
     async def test_stream_saves_history(self, wired_services):

@@ -24,6 +24,7 @@ async def register_streaming(app_state: Any, lifecycle: LifecycleManager) -> Non
         assistant_service=app_state.assistant_service,
         runtime_settings=getattr(app_state, "runtime_settings", None),
         assistant_config=settings.assistant,
+        database_service=getattr(app_state, "database_service", None),
     )
     app_state.streaming_service = service
     await lifecycle.register("streaming_service", service)

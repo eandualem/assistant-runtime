@@ -146,13 +146,6 @@ class TestRuntimeSettingsDB:
         assert len(rs._overridden) == 0
 
     @pytest.mark.asyncio
-    async def test_load_from_db_skips_when_not_healthy(self):
-        mock_db = self._make_mock_db(healthy=False)
-        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
-        await rs.load_from_db()
-        assert len(rs._overridden) == 0
-
-    @pytest.mark.asyncio
     async def test_load_from_db_loads_non_null_fields(self):
         mock_row = MagicMock()
         mock_row.default_model = "anthropic:claude-sonnet-4-6"
@@ -229,15 +222,6 @@ class TestRuntimeSettingsDB:
         assert resp["values"]["temperature"]["value"] == 0.5
 
     @pytest.mark.asyncio
-    async def test_persist_to_db_skips_when_not_healthy(self):
-        mock_db = self._make_mock_db(healthy=False)
-        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
-        # update() calls _persist_to_db — should succeed silently when unhealthy
-        await rs.update(temperature=0.7)
-        resp = rs.to_response_dict()
-        assert resp["values"]["temperature"]["value"] == 0.7
-
-    @pytest.mark.asyncio
     async def test_update_calls_persist(self):
         mock_repo = MagicMock()
         mock_repo.save = AsyncMock()
@@ -250,11 +234,12 @@ class TestRuntimeSettingsDB:
             "lovely_assistant.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
-            await rs.update(temperature=0.5)
+            result = await rs.update(temperature=0.5)
 
         # session_context was used — the repo was constructed and save was called
         mock_settings_repo_cls.assert_called_once()
         mock_repo.save.assert_awaited_once()
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_persist_sends_full_state(self):
@@ -285,14 +270,82 @@ class TestRuntimeSettingsDB:
         # All valid fields are present
         assert set(state_dict.keys()) == RuntimeSettings._VALID_FIELDS
 
+    @pytest.mark.asyncio
+    async def test_load_from_db_recovers_after_degraded_startup(self):
+        """DB was unhealthy at start but session_context works -- settings load."""
+        mock_row = MagicMock()
+        mock_row.default_model = "anthropic:claude-sonnet-4-6"
+        mock_row.thinking_budget = None
+        mock_row.temperature = None
+        mock_row.max_turns = None
+        mock_row.enable_working_memory = None
+        mock_row.updated_at = None
+
+        mock_repo = MagicMock()
+        mock_repo.get = AsyncMock(return_value=mock_row)
+        mock_settings_repo_cls = MagicMock(return_value=mock_repo)
+
+        mock_db = self._make_mock_db(healthy=False)  # unhealthy at start
+        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
+
+        with patch(
+            "lovely_assistant.services.database.repositories.SettingsRepository",
+            mock_settings_repo_cls,
+        ):
+            await rs.load_from_db()
+
+        # Still loaded because we no longer check _healthy
+        assert "default_model" in rs._overridden
+        assert rs._default_model == "anthropic:claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_persist_returns_false_on_failure(self):
+        """DB that throws returns False from update()."""
+        mock_db = MagicMock()
+
+        @asynccontextmanager
+        async def failing_session_context():
+            raise RuntimeError("DB connection lost")
+            yield  # noqa: F541
+
+        mock_db.session_context = failing_session_context
+        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
+        result = await rs.update(temperature=0.5)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_persist_returns_true_on_success(self):
+        """DB that works returns True from update()."""
+        mock_repo = MagicMock()
+        mock_repo.save = AsyncMock()
+        mock_settings_repo_cls = MagicMock(return_value=mock_repo)
+
+        mock_db = self._make_mock_db(healthy=True)
+        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
+
+        with patch(
+            "lovely_assistant.services.database.repositories.SettingsRepository",
+            mock_settings_repo_cls,
+        ):
+            result = await rs.update(temperature=0.5)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_persist_returns_false_when_no_db(self):
+        """No DB configured returns False from update()."""
+        rs = RuntimeSettings(frozen_config=AssistantConfig())
+        result = await rs.update(temperature=0.5)
+        assert result is False
+
 
 class TestResolveEffectiveConfig:
     def test_all_defaults(self):
         frozen = AssistantConfig()
         effective = resolve_effective_config(frozen)
         assert effective.default_model is None
-        assert effective.thinking_budget is None
-        assert effective.temperature is None
+        assert effective.thinking_budget == 10000
+        assert effective.temperature == 1.0
         assert effective.max_turns == 10
         assert effective.enable_working_memory is True
 

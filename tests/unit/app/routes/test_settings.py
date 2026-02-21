@@ -105,3 +105,48 @@ class TestPatchSettings:
         assert data["values"]["temperature"]["value"] == 0.7
         assert data["values"]["max_turns"]["value"] == 20
         assert data["updated_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_patch_includes_persisted_false_without_db(self):
+        """PATCH without DB returns persisted=false."""
+        rs = RuntimeSettings(frozen_config=AssistantConfig())
+        app = _make_app(rs)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.patch("/api/settings", json={"temperature": 0.5})
+        data = response.json()
+        assert "persisted" in data
+        assert data["persisted"] is False
+
+    @pytest.mark.asyncio
+    async def test_patch_includes_persisted_true_with_db(self):
+        """PATCH with working DB returns persisted=true."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_db = MagicMock()
+        mock_db._healthy = True
+        mock_session = AsyncMock()
+
+        @asynccontextmanager
+        async def fake_session_context():
+            yield mock_session
+
+        mock_db.session_context = fake_session_context
+
+        mock_repo = MagicMock()
+        mock_repo.save = AsyncMock()
+        mock_settings_repo_cls = MagicMock(return_value=mock_repo)
+
+        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
+        app = _make_app(rs)
+
+        with patch(
+            "lovely_assistant.services.database.repositories.SettingsRepository",
+            mock_settings_repo_cls,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                response = await c.patch("/api/settings", json={"temperature": 0.5})
+
+        data = response.json()
+        assert "persisted" in data
+        assert data["persisted"] is True

@@ -61,7 +61,7 @@ class TestChatEndpoint:
             model="test-model",
             deferred_tool_request=DeferredToolRequest(
                 request_id="req-1",
-                tool_name="ui_notify",
+                tool_name="navigate",
                 arguments={"message": "done"},
             ),
             session_id="sess-1",
@@ -78,7 +78,7 @@ class TestChatEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["content"] is None
-        assert data["deferred_tool_request"]["tool_name"] == "ui_notify"
+        assert data["deferred_tool_request"]["tool_name"] == "navigate"
 
     @pytest.mark.asyncio
     async def test_chat_with_machine_state(self):
@@ -163,6 +163,8 @@ class TestChatStreamEndpoint:
 
         assert response.status_code == 200
         assert "text/event-stream" in response.headers["content-type"]
+        assert response.headers["cache-control"] == "no-cache"
+        assert response.headers["x-accel-buffering"] == "no"
 
         # Parse SSE lines
         lines = response.text.strip().split("\n\n")

@@ -17,6 +17,25 @@ STATE_DIR = Path.home() / ".claude" / "state"
 WORKSPACE_ROOT = Path.home() / "ws"
 SESSION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$")
 MAX_SESSION_NAME_LENGTH = 64
+AGENT_REGISTRY: dict[str, Path] = {
+    "bell": Path.home() / "ws" / "core" / "bell",
+    "feynman": Path.home() / "orchestration",
+    "ike": Path.home() / "ws" / "core" / "ike",
+    "leo": Path.home() / "ws" / "leo",
+    "hamilton": Path.home() / "ws" / "core" / "hamilton",
+    "curie": Path.home() / "ws" / "core" / "curie",
+    "ada": Path.home() / "ws" / "core" / "spec",
+    "brunel": Path.home() / "infra",
+    "agent-backbone": Path.home() / "ws" / "core" / "code" / "WF" / "agent-backbone",
+    "agent-orchestration-dashboard": Path.home()
+    / "ws"
+    / "core"
+    / "code"
+    / "WF"
+    / "agent-orchestration-dashboard",
+    "lovely-assistant": Path.home() / "ws" / "core" / "code" / "WF" / "lovely-assistant",
+    "alfred": Path.home() / "ws" / "core" / "code" / "WF" / "Alfred",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +127,9 @@ async def list_agents() -> dict[str, Any]:
                 "entity": state.get("entity") if state else None,
                 "issue": state.get("issue") if state else None,
                 "context": state.get("context") if state else None,
+                "registered_directory": str(AGENT_REGISTRY[name])
+                if name in AGENT_REGISTRY
+                else None,
             }
         )
 
@@ -151,7 +173,7 @@ async def check_agent_state(session_name: str) -> dict[str, Any]:
 
 async def start_agent(
     session_name: str,
-    working_directory: str,
+    working_directory: str | None = None,
     initial_prompt: str = "",
 ) -> dict[str, Any]:
     """Start a new agent in a tmux session."""
@@ -159,9 +181,29 @@ async def start_agent(
     if error:
         return {"error": error, "success": False}
 
-    error = _validate_working_directory(working_directory)
-    if error:
-        return {"error": error, "success": False}
+    # Resolve working directory from registry if not provided
+    from_registry = False
+    if working_directory is None:
+        registry_path = AGENT_REGISTRY.get(session_name)
+        if registry_path is None:
+            return {
+                "error": f"No working directory provided and '{session_name}' is not in the agent registry",
+                "success": False,
+            }
+        working_directory = str(registry_path)
+        from_registry = True
+
+    if from_registry:
+        # Registry paths are curated — skip workspace boundary check, only verify existence
+        if not Path(working_directory).is_dir():
+            return {
+                "error": f"Registry directory does not exist: {working_directory}",
+                "success": False,
+            }
+    else:
+        error = _validate_working_directory(working_directory)
+        if error:
+            return {"error": error, "success": False}
 
     # Check if session already exists
     rc, _, _ = await _run_command(["tmux", "has-session", "-t", session_name])
@@ -288,7 +330,8 @@ def register_agent_tools(registry: ToolRegistry) -> None:
             name="list_agents",
             description=(
                 "List all running AI agent sessions. Returns session names, "
-                "current state (idle/processing/blocked), entity name, and current task."
+                "current state (idle/processing/blocked), entity name, current task, "
+                "and registered working directory (if known)."
             ),
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,
@@ -323,7 +366,8 @@ def register_agent_tools(registry: ToolRegistry) -> None:
             name="start_agent",
             description=(
                 "Start a new AI agent in a tmux session. Creates the session, "
-                "launches Claude, and optionally sends an initial prompt."
+                "launches Claude, and optionally sends an initial prompt. "
+                "If working_directory is omitted, falls back to the agent registry."
             ),
             parameters_schema={
                 "type": "object",
@@ -334,7 +378,7 @@ def register_agent_tools(registry: ToolRegistry) -> None:
                     },
                     "working_directory": {
                         "type": "string",
-                        "description": "Working directory (must be under ~/ws/)",
+                        "description": "Working directory (must be under ~/ws/). Optional — falls back to agent registry.",
                     },
                     "initial_prompt": {
                         "type": "string",
@@ -342,7 +386,7 @@ def register_agent_tools(registry: ToolRegistry) -> None:
                         "default": "",
                     },
                 },
-                "required": ["session_name", "working_directory"],
+                "required": ["session_name"],
             },
             category=ToolCategory.BACKEND,
         ),

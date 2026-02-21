@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 from loguru import logger
 from pydantic_ai.models.anthropic import AnthropicModelSettings
+from pydantic_ai.models.google import GoogleModelSettings
 from pydantic_ai.models.openrouter import OpenRouterModelSettings
 
 from lovely_assistant.services.llm.exceptions import ProviderConfigError
@@ -72,7 +73,7 @@ def build_model_settings(
     thinking_budget: int | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
-) -> AnthropicModelSettings | OpenRouterModelSettings | dict[str, Any]:
+) -> AnthropicModelSettings | GoogleModelSettings | OpenRouterModelSettings | dict[str, Any]:
     """Build provider-specific model settings for a Pydantic AI Agent.
 
     Determines the correct settings type based on the model ID prefix and configures
@@ -86,6 +87,7 @@ def build_model_settings(
     """
     is_openrouter = model_id.startswith("openrouter:")
     is_anthropic = "anthropic" in model_id and not is_openrouter
+    is_google = model_id.startswith("google-gla:") or model_id.startswith("google-vertex:")
 
     # Compute effective temperature and max_tokens
     base_max_tokens = max_tokens if max_tokens is not None else _RESPONSE_MAX_TOKENS
@@ -116,9 +118,9 @@ def build_model_settings(
                 "budget_tokens": thinking_budget,
             }
 
-        settings: AnthropicModelSettings | OpenRouterModelSettings | dict[str, Any] = (
-            AnthropicModelSettings(**anthropic_kwargs)
-        )
+        settings: (
+            AnthropicModelSettings | GoogleModelSettings | OpenRouterModelSettings | dict[str, Any]
+        ) = AnthropicModelSettings(**anthropic_kwargs)
 
         logger.info(
             "LLM model settings built",
@@ -151,10 +153,32 @@ def build_model_settings(
             max_tokens=effective_max_tokens,
         )
 
+    elif is_google:
+        google_kwargs: dict[str, Any] = {
+            "temperature": effective_temperature,
+            "max_tokens": base_max_tokens,
+        }
+        if thinking_budget:
+            google_kwargs["google_thinking_config"] = {
+                "include_thoughts": True,
+                "thinking_budget": thinking_budget,
+            }
+
+        settings = GoogleModelSettings(**google_kwargs)
+
+        logger.info(
+            "LLM model settings built",
+            provider="google",
+            thinking="enabled" if thinking_budget else "disabled",
+            thinking_budget=thinking_budget,
+            temperature=effective_temperature,
+            max_tokens=base_max_tokens,
+        )
+
     else:
         if thinking_budget:
             logger.warning(
-                "Thinking budget configured for non-Anthropic model — will be ignored",
+                "Thinking budget configured for unsupported provider — will be ignored",
                 model=model_id,
                 thinking_budget=thinking_budget,
             )

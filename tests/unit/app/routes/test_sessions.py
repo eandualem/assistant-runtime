@@ -117,7 +117,7 @@ class TestGetSession:
     async def test_get_session_with_pending_tool_call(self):
         sessions = SessionStore()
         sessions.get_context("sess-1")
-        sessions.set_pending_tool_call("sess-1", "call-1", "ui_notify")
+        sessions.set_pending_tool_call("sess-1", "call-1", "navigate")
 
         app = _create_test_app(sessions=sessions)
 
@@ -145,15 +145,14 @@ class TestGetSession:
     async def test_get_session_loads_from_db(self):
         """When session not in memory but exists in DB, loads and returns it."""
         sessions = SessionStore()
-        sessions._load_session_from_db = AsyncMock(
-            return_value={
-                "turn_number": 5,
-                "working_memory": None,
-                "pending_tool_call": None,
-                "message_history": [MagicMock(), MagicMock()],
-                "title": "DB session",
-            }
-        )
+        db_context = {
+            "turn_number": 5,
+            "working_memory": None,
+            "pending_tool_call": None,
+            "message_history": [MagicMock(), MagicMock()],
+            "title": "DB session",
+        }
+        sessions.get_context_if_exists_async = AsyncMock(return_value=db_context)
 
         app = _create_test_app(sessions=sessions)
 
@@ -170,7 +169,7 @@ class TestGetSession:
     async def test_get_session_not_in_memory_or_db(self):
         """When session not in memory and DB returns None, 404."""
         sessions = SessionStore()
-        sessions._load_session_from_db = AsyncMock(return_value=None)
+        sessions.get_context_if_exists_async = AsyncMock(return_value=None)
 
         app = _create_test_app(sessions=sessions)
 
@@ -201,7 +200,7 @@ class TestDeleteSession:
     @pytest.mark.asyncio
     async def test_delete_session_not_found(self):
         sessions = SessionStore()
-        sessions._load_session_from_db = AsyncMock(return_value=None)
+        sessions.get_context_if_exists_async = AsyncMock(return_value=None)
 
         app = _create_test_app(sessions=sessions)
 
@@ -235,3 +234,168 @@ class TestDeleteSession:
             # Get should now 404
             response = await client.get("/api/sessions/sess-1")
             assert response.status_code == 404
+
+
+class TestGetSessionMessages:
+    @pytest.mark.asyncio
+    async def test_get_messages_with_history(self):
+        """Session with real ModelMessage objects returns display-format messages."""
+        from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+        sessions = SessionStore()
+        sessions.get_context("sess-1")
+
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="Hello")]),
+            ModelResponse(parts=[TextPart(content="Hi there")]),
+        ]
+        sessions.save_history("sess-1", history)
+
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1/messages")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 2
+        assert data[0]["role"] == "user"
+        assert data[0]["text"] == "Hello"
+        assert data[1]["role"] == "assistant"
+        assert data[1]["text"] == "Hi there"
+
+    @pytest.mark.asyncio
+    async def test_get_messages_empty_history(self):
+        """Session exists but has no messages — returns empty list."""
+        sessions = SessionStore()
+        sessions.get_context("sess-1")
+
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1/messages")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    @pytest.mark.asyncio
+    async def test_get_messages_not_found(self):
+        """Unknown session with DB returning None gives 404."""
+        sessions = SessionStore()
+        sessions._load_session_from_db = AsyncMock(return_value=None)
+
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/nonexistent/messages")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Session not found"
+
+    @pytest.mark.asyncio
+    async def test_get_messages_no_session_store(self):
+        """When service._sessions is None, returns 404."""
+        app = _create_test_app()
+        app.state.assistant_service._sessions = None
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1/messages")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Session not found"
+
+
+class TestGetSessionTraces:
+    @pytest.mark.asyncio
+    async def test_get_traces_returns_empty_when_no_db(self):
+        """When _database_service is not set, returns empty list."""
+        app = _create_test_app()
+        # No _database_service attribute on mock assistant service
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1/traces")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    @pytest.mark.asyncio
+    async def test_get_traces_returns_empty_on_db_error(self):
+        """When DB throws, returns empty list instead of 500."""
+        mock_db = MagicMock()
+        mock_db.session_context = MagicMock(side_effect=RuntimeError("DB down"))
+
+        app = _create_test_app()
+        app.state.assistant_service._database_service = mock_db
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1/traces")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    @pytest.mark.asyncio
+    async def test_get_traces_returns_data(self):
+        """When DB has traces, returns serialized trace rows."""
+        from datetime import UTC, datetime
+
+        mock_row = MagicMock()
+        mock_row.id = "trace-001"
+        mock_row.session_id = "sess-1"
+        mock_row.events = [{"type": "debug_request", "session_id": "sess-1"}]
+        mock_row.user_message = "Hello"
+        mock_row.is_continuation = False
+        mock_row.duration_ms = 123.4
+        mock_row.screenshot = "data:image/jpeg;base64,abc123"
+        mock_row.created_at = datetime(2026, 2, 21, 10, 0, 0, tzinfo=UTC)
+
+        mock_db_session = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.session_context = MagicMock(return_value=mock_db_session)
+        mock_db_session.__aenter__ = AsyncMock(return_value=mock_db_session)
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        # Mock the repository's list_by_session to return our mock row
+        # The endpoint creates TraceRepository internally, so we mock execute
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [mock_row]
+        mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+        app = _create_test_app()
+        app.state.assistant_service._database_service = mock_db
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1/traces")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["id"] == "trace-001"
+        assert data[0]["session_id"] == "sess-1"
+        assert data[0]["events"] == [{"type": "debug_request", "session_id": "sess-1"}]
+        assert data[0]["user_message"] == "Hello"
+        assert data[0]["is_continuation"] is False
+        assert data[0]["duration_ms"] == 123.4
+        assert data[0]["screenshot"] == "data:image/jpeg;base64,abc123"
+        assert data[0]["created_at"] == "2026-02-21T10:00:00+00:00"
+
+    @pytest.mark.asyncio
+    async def test_get_traces_pagination(self):
+        """Limit and offset are passed through to the query."""
+        mock_db_session = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.session_context = MagicMock(return_value=mock_db_session)
+        mock_db_session.__aenter__ = AsyncMock(return_value=mock_db_session)
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db_session.execute = AsyncMock(return_value=mock_result)
+
+        app = _create_test_app()
+        app.state.assistant_service._database_service = mock_db
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1/traces?limit=10&offset=5")
+
+        assert response.status_code == 200
+        assert response.json() == []
