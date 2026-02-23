@@ -546,6 +546,12 @@ class TestResolveEffectiveConfig:
             temperature=None,
             max_turns=10,
             enable_working_memory=True,
+            summarization_model=None,
+            working_memory_model=None,
+            default_image_model=None,
+            default_video_model=None,
+            subagent_model=None,
+            subagent_thinking_budget=None,
         )
         with pytest.raises(AttributeError):
             effective.temperature = 0.5  # type: ignore[misc]

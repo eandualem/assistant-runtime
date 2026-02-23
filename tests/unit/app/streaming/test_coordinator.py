@@ -262,6 +262,18 @@ class TestCoordinatorFinalResponseStreamed:
         assert "error" not in event
         assert "error_type" not in event
 
+    def test_session_id_passed_through(self):
+        coord = EventCoordinator(max_events=100)
+        event = coord.try_final_response("ok", "model-1", session_id="sess-42")
+        assert event is not None
+        assert event["session_id"] == "sess-42"
+
+    def test_session_id_absent_when_not_provided(self):
+        coord = EventCoordinator(max_events=100)
+        event = coord.try_final_response("ok", "model-1")
+        assert event is not None
+        assert "session_id" not in event
+
 
 class TestCoordinatorDebugEventsCollection:
     def test_debug_events_empty_initially(self):

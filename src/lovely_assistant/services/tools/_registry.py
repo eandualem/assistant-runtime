@@ -19,6 +19,7 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "get_time",
         "manage_notes",
+        "manage_artifacts",
         "navigate",
         "add_schedule_item",
         "remove_schedule_item",
@@ -26,6 +27,7 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "generate_image",
         "generate_video",
         "run_subagent",
+        "respond_telegram",
     }
 )
 _AGENT_TOOL_NAMES: frozenset[str] = frozenset(
@@ -234,7 +236,7 @@ class ToolRegistry:
         """Set runtime dependency dict on a registered backend handler."""
         handler = self._backend_handlers.get(handler_name)
         if handler is not None:
-            handler._subagent_deps = deps
+            handler._handler_deps = deps
 
     def _resolve_available_tools(self, machine_state: dict[str, Any] | None = None) -> ToolSet:
         """Determine which tools are available based on the active page.

@@ -124,6 +124,14 @@ class TestFinalResponseEvent:
         assert "error" not in event
         assert "error_type" not in event
 
+    def test_session_id_included(self):
+        event = make_final_response_event("Done!", "model", session_id="sess-42")
+        assert event["session_id"] == "sess-42"
+
+    def test_session_id_absent_when_none(self):
+        event = make_final_response_event("Done!", "model")
+        assert "session_id" not in event
+
 
 class TestErrorEvent:
     def test_basic(self):
@@ -339,6 +347,25 @@ class TestDebugAgentConfigEvent:
         )
         assert event["has_frontend_tools"] is True
         assert event["thinking_budget"] == 10000
+
+    def test_session_id_included(self):
+        event = make_debug_agent_config_event(
+            model="claude-3-5-sonnet",
+            output_type="str",
+            has_frontend_tools=False,
+            thinking_budget=None,
+            session_id="sess-99",
+        )
+        assert event["session_id"] == "sess-99"
+
+    def test_session_id_absent_when_none(self):
+        event = make_debug_agent_config_event(
+            model="claude-3-5-sonnet",
+            output_type="str",
+            has_frontend_tools=False,
+            thinking_budget=None,
+        )
+        assert "session_id" not in event
 
 
 class TestDebugToolExecutionEvent:

@@ -17,7 +17,7 @@ from lovely_assistant.app.assistant.exceptions import (
     SessionError,
 )
 from lovely_assistant.app.assistant.interface import AssistantService
-from lovely_assistant.app.assistant.models import AssistantRequest
+from lovely_assistant.app.assistant.models import AssistantRequest, RequestConfigOverride
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 # --- Fixtures ---
@@ -89,6 +89,7 @@ def tool_service():
     svc = MagicMock()
     svc.get_available_tools = MagicMock(return_value=_make_tool_set())
     svc.build_toolset = MagicMock(return_value=[MagicMock()])
+    svc.get_mcp_summary = AsyncMock(return_value=None)
     return svc
 
 
@@ -680,3 +681,138 @@ class TestCleanupExpiredSessions:
 
         assert result == 3
         service._sessions.cleanup_expired.assert_awaited_once()
+
+
+# --- prepare_agent_context ---
+
+
+class TestPrepareAgentContext:
+    async def test_returns_agent_setup_context(self, service, request_msg):
+        """prepare_agent_context returns an AgentSetupContext with all fields."""
+        from lovely_assistant.app.assistant.models import AgentSetupContext
+
+        await service.start()
+        session_context = service._sessions.get_context(request_msg.session_id)
+
+        ctx = await service.prepare_agent_context(request_msg, session_context)
+
+        assert isinstance(ctx, AgentSetupContext)
+        assert ctx.agent is not None
+        assert ctx.available_tools is not None
+        assert ctx.toolsets is not None
+        assert ctx.prompt_result is not None
+        assert ctx.resolved_model == "anthropic:claude-haiku-4-5"
+        assert ctx.usage_limits is not None
+        assert ctx.effective_config is not None
+
+    async def test_uses_tool_service(self, service, tool_service, request_msg):
+        """prepare_agent_context calls tool_service for tools and MCP."""
+        await service.start()
+        session_context = service._sessions.get_context(request_msg.session_id)
+
+        await service.prepare_agent_context(request_msg, session_context)
+
+        tool_service.get_available_tools.assert_called_once()
+        tool_service.build_toolset.assert_called_once()
+        tool_service.get_mcp_summary.assert_awaited_once()
+
+    async def test_mcp_summary_included(self, service, tool_service, request_msg):
+        """MCP summary from tool_service is included in the context."""
+        await service.start()
+        mcp_data = [{"name": "test-mcp", "tools": ["tool1"]}]
+        tool_service.get_mcp_summary = AsyncMock(return_value=mcp_data)
+        session_context = service._sessions.get_context(request_msg.session_id)
+
+        ctx = await service.prepare_agent_context(request_msg, session_context)
+
+        assert ctx.mcp_summary == mcp_data
+
+    async def test_frontend_tools_set_output_type(self, service, tool_service, request_msg):
+        """has_frontend_tools and output_type reflect available frontend tools."""
+        await service.start()
+        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
+        session_context = service._sessions.get_context(request_msg.session_id)
+
+        ctx = await service.prepare_agent_context(request_msg, session_context)
+
+        assert ctx.has_frontend_tools is True
+        assert ctx.output_type == [str, DeferredToolRequests]
+
+    async def test_no_frontend_tools_str_output(self, service, tool_service, request_msg):
+        """Without frontend tools, output_type is str."""
+        await service.start()
+        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=False)
+        session_context = service._sessions.get_context(request_msg.session_id)
+
+        ctx = await service.prepare_agent_context(request_msg, session_context)
+
+        assert ctx.has_frontend_tools is False
+        assert ctx.output_type is str
+
+    async def test_per_request_config_override(self, llm_service, history_service, tool_service):
+        """Per-request config overrides are applied via resolve_effective_config."""
+        config = AssistantConfig(max_turns=5)
+        svc = AssistantService(
+            config=config,
+            llm_service=llm_service,
+            history_service=history_service,
+            tool_service=tool_service,
+        )
+        await svc.start()
+
+        req = AssistantRequest(
+            session_id="s1",
+            message="hi",
+            config=RequestConfigOverride(max_turns=12),
+        )
+        session_context = svc._sessions.get_context("s1")
+        ctx = await svc.prepare_agent_context(req, session_context)
+
+        assert ctx.usage_limits.request_limit == 12
+
+    async def test_builds_agent_via_llm_service(self, service, llm_service, request_msg):
+        """prepare_agent_context delegates agent creation to llm_service.build_agent."""
+        await service.start()
+        session_context = service._sessions.get_context(request_msg.session_id)
+
+        ctx = await service.prepare_agent_context(request_msg, session_context)
+
+        llm_service.build_agent.assert_called_once()
+        assert ctx.agent is llm_service.build_agent.return_value
+
+    async def test_artifacts_loaded_when_db_available(
+        self, llm_service, history_service, tool_service
+    ):
+        """Artifacts are loaded from DB when database_service is available."""
+        db_service = MagicMock()
+        mock_session = AsyncMock()
+        db_service.session_context.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        db_service.session_context.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        svc = AssistantService(
+            config=AssistantConfig(),
+            llm_service=llm_service,
+            history_service=history_service,
+            tool_service=tool_service,
+            database_service=db_service,
+        )
+        await svc.start()
+
+        # Patch _load_active_artifacts to confirm it's called
+        svc._load_active_artifacts = AsyncMock(return_value={"rules": "Be helpful"})
+        session_context = svc._sessions.get_context("s1")
+        req = AssistantRequest(session_id="s1", message="hi")
+
+        await svc.prepare_agent_context(req, session_context)
+
+        svc._load_active_artifacts.assert_awaited_once()
+
+    async def test_no_db_artifacts_none(self, service, request_msg):
+        """Without database_service, artifacts are None (graceful fallback)."""
+        await service.start()
+        assert service._database_service is None
+
+        session_context = service._sessions.get_context(request_msg.session_id)
+        # Should not raise — _load_active_artifacts returns None
+        ctx = await service.prepare_agent_context(request_msg, session_context)
+        assert ctx is not None

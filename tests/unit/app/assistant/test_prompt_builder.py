@@ -1,9 +1,11 @@
 """Tests for the system prompt builder."""
 
 from lovely_assistant.app.assistant._prompt_builder import (
+    _communication_protocol_fragment,
     _dashboard_context_fragment,
     _datetime_fragment,
     _ecosystem_fragment,
+    _mcp_connections_fragment,
     _persona_fragment,
     _smart_hints,
     _tools_fragment,
@@ -34,6 +36,30 @@ class TestPersonaFragment:
     def test_assistant_first_model(self):
         frag = _persona_fragment()
         assert "everything flows through you" in frag.lower()
+
+
+class TestCommunicationProtocolFragment:
+    def test_contains_envelope_tags(self):
+        frag = _communication_protocol_fragment()
+        assert "[via:telegram from:elias]" in frag
+        assert "[via:tmux from:{agent}]" in frag
+        assert "[via:backbone]" in frag
+
+    def test_contains_response_medium_rule(self):
+        frag = _communication_protocol_fragment()
+        assert "Response Medium Rule" in frag
+
+    def test_mentions_respond_telegram_tool(self):
+        frag = _communication_protocol_fragment()
+        assert "respond_telegram" in frag
+
+    def test_mentions_send_agent_message_tool(self):
+        frag = _communication_protocol_fragment()
+        assert "send_agent_message" in frag
+
+    def test_non_empty(self):
+        frag = _communication_protocol_fragment()
+        assert len(frag) > 0
 
 
 class TestEcosystemFragment:
@@ -129,6 +155,59 @@ class TestWorkingMemoryFragment:
         wm = WorkingMemory(active_goal="Fix the bug")
         frag = _working_memory_fragment({"working_memory": wm})
         assert "Fix the bug" in frag
+
+
+class TestMcpConnectionsFragment:
+    def test_none_returns_empty(self):
+        assert _mcp_connections_fragment(None) == ""
+
+    def test_empty_list_returns_empty(self):
+        assert _mcp_connections_fragment([]) == ""
+
+    def test_simple_server_no_tools(self):
+        frag = _mcp_connections_fragment([{"name": "memory"}])
+        assert "**memory**" in frag
+
+    def test_server_with_tools_shows_names_and_count(self):
+        summary = [
+            {
+                "name": "memory",
+                "tools": ["create_entities", "add_observations", "search_nodes"],
+                "tool_count": 3,
+            }
+        ]
+        frag = _mcp_connections_fragment(summary)
+        assert "**memory** (3 tools)" in frag
+        assert "add_observations" in frag
+        assert "create_entities" in frag
+        assert "search_nodes" in frag
+
+    def test_more_than_3_tools_shows_overflow(self):
+        summary = [
+            {
+                "name": "memory",
+                "tools": ["tool_a", "tool_b", "tool_c", "tool_d", "tool_e"],
+                "tool_count": 5,
+            }
+        ]
+        frag = _mcp_connections_fragment(summary)
+        assert "(5 tools)" in frag
+        assert "+2 more" in frag
+
+    def test_multiple_servers(self):
+        summary = [
+            {"name": "memory", "tools": ["create_entities"], "tool_count": 1},
+            {"name": "brave-search", "tools": ["brave_web_search"], "tool_count": 1},
+        ]
+        frag = _mcp_connections_fragment(summary)
+        assert "**memory**" in frag
+        assert "**brave-search**" in frag
+        assert "brave_web_search" in frag
+
+    def test_includes_calling_guidance(self):
+        summary = [{"name": "memory", "tools": ["tool_a"], "tool_count": 1}]
+        frag = _mcp_connections_fragment(summary)
+        assert "MCP tools are called directly by name" in frag
 
 
 class TestDashboardContextFragment:
@@ -395,6 +474,14 @@ class TestBuildSystemPrompt:
         )
         assert "Jarvis" in result.content
 
+    def test_contains_communication_protocol(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+        )
+        assert "Response Medium Rule" in result.content
+        assert "respond_telegram" in result.content
+
     def test_contains_datetime(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
@@ -519,8 +606,9 @@ class TestBuildSystemPrompt:
             session_context={},
         )
         fragment_names = [f["name"] for f in result.fragments]
-        # Minimum: persona + ecosystem + datetime (always present)
+        # Minimum: persona + communication_protocol + ecosystem + datetime (always present)
         assert "persona" in fragment_names
+        assert "communication_protocol" in fragment_names
         assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
         # No tools, dashboard_context, smart_hints, or working_memory
@@ -528,3 +616,110 @@ class TestBuildSystemPrompt:
         assert "dashboard_context" not in fragment_names
         assert "smart_hints" not in fragment_names
         assert "working_memory" not in fragment_names
+
+
+class TestArtifactIntegration:
+    """Tests for DB artifact loading in prompt builder."""
+
+    def test_artifacts_override_persona(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"persona": "Custom persona content"},
+        )
+        assert "Custom persona content" in result.content
+        # Should NOT contain the hardcoded persona
+        assert "operational nervous system" not in result.content
+
+    def test_artifacts_override_ecosystem(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"ecosystem": "Custom ecosystem agents"},
+        )
+        assert "Custom ecosystem agents" in result.content
+
+    def test_scratchpad_appears_when_present(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"scratchpad": "Remember: Elias prefers dark mode"},
+        )
+        assert "Remember: Elias prefers dark mode" in result.content
+        fragment_names = [f["name"] for f in result.fragments]
+        assert "scratchpad" in fragment_names
+
+    def test_empty_scratchpad_excluded(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"scratchpad": ""},
+        )
+        fragment_names = [f["name"] for f in result.fragments]
+        assert "scratchpad" not in fragment_names
+
+    def test_none_artifacts_falls_back_to_hardcoded(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts=None,
+        )
+        # Should contain hardcoded persona
+        assert "Jarvis" in result.content
+        assert "operational nervous system" in result.content
+
+    def test_missing_persona_key_falls_back_to_hardcoded(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"scratchpad": "some notes"},
+        )
+        # Persona should fall back to hardcoded
+        assert "Jarvis" in result.content
+        assert "operational nervous system" in result.content
+
+    def test_missing_ecosystem_key_falls_back_to_hardcoded(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"persona": "Custom"},
+        )
+        # Ecosystem should fall back to hardcoded
+        assert "Leo" in result.content
+
+    def test_communication_protocol_artifact_override(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"communication_protocol": "Custom protocol rules"},
+        )
+        assert "Custom protocol rules" in result.content
+        # Should NOT contain the hardcoded protocol
+        assert "Response Medium Rule" not in result.content
+
+    def test_communication_protocol_falls_back_to_hardcoded(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"persona": "Custom"},
+        )
+        # Communication protocol should fall back to hardcoded
+        assert "Response Medium Rule" in result.content
+
+    def test_all_artifacts_override(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={
+                "persona": "I am TestBot",
+                "ecosystem": "Test agents here",
+                "scratchpad": "Test scratchpad",
+            },
+        )
+        assert "I am TestBot" in result.content
+        assert "Test agents here" in result.content
+        assert "Test scratchpad" in result.content
+        fragment_names = [f["name"] for f in result.fragments]
+        assert "persona" in fragment_names
+        assert "ecosystem" in fragment_names
+        assert "scratchpad" in fragment_names

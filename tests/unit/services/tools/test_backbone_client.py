@@ -58,7 +58,8 @@ class TestBackboneRequest:
 
         status, data = await backbone_request("GET", "/api/rooms")
         assert status == -1
-        assert "HTTP error" in data["message"]
+        assert "HTTP error" in data["error"]
+        assert data["error_code"] == "BACKBONE_HTTP_ERROR"
 
     @patch.dict(os.environ, {"BACKBONE_API_KEY": "test-key"})
     @patch(f"{MODULE}.httpx.AsyncClient")
@@ -73,7 +74,8 @@ class TestBackboneRequest:
 
         status, data = await backbone_request("GET", "/api/rooms")
         assert status == -1
-        assert "timed out" in data["message"]
+        assert "timed out" in data["error"]
+        assert data["error_code"] == "BACKBONE_TIMEOUT"
 
     @patch.dict(os.environ, {"BACKBONE_API_KEY": "test-key"})
     @patch(f"{MODULE}.httpx.AsyncClient")
@@ -206,4 +208,5 @@ class TestBackboneRetry:
 
         status, data = await backbone_request("GET", "/api/rooms")
         assert status == -1
-        assert "timed out" in data["message"]
+        assert "timed out" in data["error"]
+        assert data["error_code"] == "BACKBONE_TIMEOUT"

@@ -28,17 +28,14 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.result import DeferredToolRequests
-from pydantic_ai.usage import UsageLimits
 from pydantic_graph.nodes import End
 
-from lovely_assistant.app.assistant._prompt_builder import build_system_prompt
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.exceptions import (
     REJECTED_TOOL_RESULT,
     ContinuationMismatchError,
 )
 from lovely_assistant.app.assistant.models import AssistantRequest, _build_user_prompt
-from lovely_assistant.app.settings import RuntimeSettings, resolve_effective_config
 from lovely_assistant.app.streaming._coordinator import EventCoordinator
 from lovely_assistant.app.streaming._event_builder import (
     make_debug_agent_config_event,
@@ -63,6 +60,7 @@ from lovely_assistant.app.streaming.exceptions import (
 if TYPE_CHECKING:
     from lovely_assistant.app.assistant.config import AssistantConfig
     from lovely_assistant.app.assistant.interface import AssistantService
+    from lovely_assistant.app.settings import RuntimeSettings
     from lovely_assistant.services.database.interface import DatabaseService
     from lovely_assistant.services.history.interface import HistoryService
     from lovely_assistant.services.llm.interface import LlmService
@@ -173,8 +171,10 @@ class StreamingService:
                     )
                 )
 
-            available_tools = self._tools.get_available_tools(request.machine_state)
-            toolsets = self._tools.build_toolset(request.machine_state)
+            # Build agent setup context (single source of truth for agent setup)
+            ctx = await self._assistant_service.prepare_agent_context(request, session_context)
+            available_tools = ctx.available_tools
+            resolved_model = ctx.resolved_model
 
             # Debug: tool selection
             if emit_debug:
@@ -192,67 +192,41 @@ class StreamingService:
                     )
                 )
 
-            prompt_result = build_system_prompt(
-                available_tools=available_tools,
-                session_context=session_context,
-                machine_state=request.machine_state,
-            )
-            system_prompt = prompt_result.content
-
             # Debug: system prompt
             if emit_debug:
                 yield coordinator.track_debug(
                     make_debug_system_prompt_event(
-                        total_length=len(system_prompt),
-                        fragment_count=len(prompt_result.fragments),
-                        fragments=prompt_result.fragments,
-                        content=system_prompt,
+                        total_length=len(ctx.prompt_result.content),
+                        fragment_count=len(ctx.prompt_result.fragments),
+                        fragments=ctx.prompt_result.fragments,
+                        content=ctx.prompt_result.content,
                     )
                 )
 
-            has_frontend_tools = len(available_tools.frontend_tools) > 0
-            output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
-
-            # Resolve effective config (per-request > runtime > frozen)
-            frozen = self._assistant_config
-            if frozen is None:
-                from lovely_assistant.app.assistant.config import AssistantConfig
-
-                frozen = AssistantConfig()
-            effective = resolve_effective_config(frozen, self._runtime_settings, request.config)
-            resolved_model = self._llm.resolve_model(effective.default_model)
-            usage_limits = UsageLimits(request_limit=effective.max_turns)
-            agent = self._llm.build_agent(
-                system_prompt=system_prompt,
-                toolsets=toolsets,
-                model=resolved_model,
-                output_type=output_type,
-                thinking_budget=effective.thinking_budget,
-                temperature=effective.temperature,
-            )
             logger.info(
                 "[STREAM] Executing streaming request",
                 session_id=session_id,
                 continuation=False,
                 model=resolved_model,
                 has_images=bool(request.images),
-                max_turns=effective.max_turns,
-                thinking_budget=effective.thinking_budget,
-                temperature=effective.temperature,
+                max_turns=ctx.effective_config.max_turns,
+                thinking_budget=ctx.effective_config.thinking_budget,
+                temperature=ctx.effective_config.temperature,
             )
 
             # Debug: agent config
             if emit_debug:
                 output_type_str = (
-                    "union[str, DeferredToolRequests]" if has_frontend_tools else "str"
+                    "union[str, DeferredToolRequests]" if ctx.has_frontend_tools else "str"
                 )
                 yield coordinator.track_debug(
                     make_debug_agent_config_event(
                         model=resolved_model,
                         output_type=output_type_str,
-                        has_frontend_tools=has_frontend_tools,
-                        thinking_budget=effective.thinking_budget,
-                        temperature=effective.temperature,
+                        has_frontend_tools=ctx.has_frontend_tools,
+                        thinking_budget=ctx.effective_config.thinking_budget,
+                        temperature=ctx.effective_config.temperature,
+                        session_id=session_id,
                     )
                 )
 
@@ -286,10 +260,10 @@ class StreamingService:
         try:
             frontend_tool_names = frozenset(t.name for t in available_tools.frontend_tools)
             async with asyncio.timeout(self._config.stream_timeout_seconds):
-                async with agent.iter(
+                async with ctx.agent.iter(
                     user_prompt,
                     message_history=prepared_history if prepared_history else None,
-                    usage_limits=usage_limits,
+                    usage_limits=ctx.usage_limits,
                 ) as run:
                     async for event in self._iterate_run(
                         run, coordinator, resolved_model, frontend_tool_names
@@ -336,7 +310,9 @@ class StreamingService:
                 ):
                     yield event
             else:
-                final = coordinator.try_final_response(str(output), resolved_model)
+                final = coordinator.try_final_response(
+                    str(output), resolved_model, session_id=session_id
+                )
                 if final:
                     yield final
             logger.info(
@@ -475,8 +451,10 @@ class StreamingService:
                 calls_map[rid] = REJECTED_TOOL_RESULT
             deferred_results = DeferredToolResults(calls=calls_map)
 
-            available_tools = self._tools.get_available_tools(request.machine_state)
-            toolsets = self._tools.build_toolset(request.machine_state)
+            # Build agent setup context (single source of truth for agent setup)
+            ctx = await self._assistant_service.prepare_agent_context(request, session_context)
+            available_tools = ctx.available_tools
+            resolved_model = ctx.resolved_model
 
             # Debug: tool selection
             if emit_debug:
@@ -494,66 +472,40 @@ class StreamingService:
                     )
                 )
 
-            prompt_result = build_system_prompt(
-                available_tools=available_tools,
-                session_context=session_context,
-                machine_state=request.machine_state,
-            )
-            system_prompt = prompt_result.content
-
             # Debug: system prompt
             if emit_debug:
                 yield coordinator.track_debug(
                     make_debug_system_prompt_event(
-                        total_length=len(system_prompt),
-                        fragment_count=len(prompt_result.fragments),
-                        fragments=prompt_result.fragments,
-                        content=system_prompt,
+                        total_length=len(ctx.prompt_result.content),
+                        fragment_count=len(ctx.prompt_result.fragments),
+                        fragments=ctx.prompt_result.fragments,
+                        content=ctx.prompt_result.content,
                     )
                 )
 
-            has_frontend_tools = len(available_tools.frontend_tools) > 0
-            output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
-
-            # Resolve effective config (per-request > runtime > frozen)
-            frozen = self._assistant_config
-            if frozen is None:
-                from lovely_assistant.app.assistant.config import AssistantConfig
-
-                frozen = AssistantConfig()
-            effective = resolve_effective_config(frozen, self._runtime_settings, request.config)
-            resolved_model = self._llm.resolve_model(effective.default_model)
-            usage_limits = UsageLimits(request_limit=effective.max_turns)
-            agent = self._llm.build_agent(
-                system_prompt=system_prompt,
-                toolsets=toolsets,
-                model=resolved_model,
-                output_type=output_type,
-                thinking_budget=effective.thinking_budget,
-                temperature=effective.temperature,
-            )
             logger.info(
                 "[STREAM] Executing streaming request",
                 session_id=session_id,
                 continuation=True,
                 model=resolved_model,
-                max_turns=effective.max_turns,
-                thinking_budget=effective.thinking_budget,
-                temperature=effective.temperature,
+                max_turns=ctx.effective_config.max_turns,
+                thinking_budget=ctx.effective_config.thinking_budget,
+                temperature=ctx.effective_config.temperature,
             )
 
             # Debug: agent config
             if emit_debug:
                 output_type_str = (
-                    "union[str, DeferredToolRequests]" if has_frontend_tools else "str"
+                    "union[str, DeferredToolRequests]" if ctx.has_frontend_tools else "str"
                 )
                 yield coordinator.track_debug(
                     make_debug_agent_config_event(
                         model=resolved_model,
                         output_type=output_type_str,
-                        has_frontend_tools=has_frontend_tools,
-                        thinking_budget=effective.thinking_budget,
-                        temperature=effective.temperature,
+                        has_frontend_tools=ctx.has_frontend_tools,
+                        thinking_budget=ctx.effective_config.thinking_budget,
+                        temperature=ctx.effective_config.temperature,
+                        session_id=session_id,
                     )
                 )
 
@@ -588,11 +540,11 @@ class StreamingService:
         try:
             frontend_tool_names = frozenset(t.name for t in available_tools.frontend_tools)
             async with asyncio.timeout(self._config.stream_timeout_seconds):
-                async with agent.iter(
+                async with ctx.agent.iter(
                     None,
                     message_history=prepared_history if prepared_history else None,
                     deferred_tool_results=deferred_results,
-                    usage_limits=usage_limits,
+                    usage_limits=ctx.usage_limits,
                 ) as run:
                     async for event in self._iterate_run(
                         run, coordinator, resolved_model, frontend_tool_names
@@ -637,7 +589,9 @@ class StreamingService:
                 ):
                     yield event
             else:
-                final = coordinator.try_final_response(str(output), resolved_model)
+                final = coordinator.try_final_response(
+                    str(output), resolved_model, session_id=session_id
+                )
                 if final:
                     yield final
             logger.info(
@@ -945,7 +899,7 @@ class StreamingService:
         yield coordinator.track(make_tool_call_event(call.tool_name, args, tool_call_id))
 
         # Final response is null content for deferred tool calls
-        final = coordinator.try_final_response(None, model)
+        final = coordinator.try_final_response(None, model, session_id=session_id)
         if final:
             yield final
 

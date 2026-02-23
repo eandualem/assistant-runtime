@@ -73,6 +73,25 @@ class PromptResult:
     fragments: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class AgentSetupContext:
+    """Everything needed to run an agent — produced by prepare_agent_context().
+
+    Shared by both AssistantService and StreamingService to prevent drift.
+    """
+
+    agent: Any  # pydantic_ai.Agent
+    available_tools: Any  # ToolSet
+    toolsets: list[Any]
+    prompt_result: PromptResult
+    resolved_model: str
+    usage_limits: Any  # pydantic_ai.usage.UsageLimits
+    has_frontend_tools: bool
+    output_type: Any  # str | list[type]
+    effective_config: Any  # EffectiveConfig
+    mcp_summary: list[dict[str, Any]] | None
+
+
 class RequestConfigOverride(BaseModel):
     """Per-request config overrides sent from the dashboard."""
 
@@ -83,6 +102,12 @@ class RequestConfigOverride(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_turns: int | None = Field(default=None, ge=1, le=50)
     enable_working_memory: bool | None = None
+    summarization_model: str | None = None
+    working_memory_model: str | None = None
+    default_image_model: str | None = None
+    default_video_model: str | None = None
+    subagent_model: str | None = None
+    subagent_thinking_budget: int | None = Field(default=None, ge=1, le=100_000)
 
 
 class AssistantRequest(BaseModel):

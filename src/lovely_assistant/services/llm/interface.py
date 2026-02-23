@@ -187,6 +187,9 @@ class LlmService:
         }
         if toolsets:
             agent_kwargs["toolsets"] = toolsets
+            for ts in toolsets:
+                ts_name = getattr(ts, "id", None) or type(ts).__name__
+                logger.info("Agent toolset", name=ts_name, type=type(ts).__name__)
 
         agent = Agent(**agent_kwargs)
 
