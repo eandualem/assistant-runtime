@@ -51,6 +51,25 @@ def _persona_fragment() -> str:
     )
 
 
+def _communication_protocol_fragment() -> str:
+    """Communication protocol — envelope parsing and Response Medium Rule."""
+    return (
+        "## Communication Protocol\n\n"
+        "Messages may arrive with envelope tags indicating their source:\n"
+        "- `[via:telegram from:elias]` — Elias messaged via Telegram\n"
+        "- `[via:tmux from:{agent}]` — An agent sent a direct message\n"
+        "- `[via:backbone]` — System notification from the backbone\n"
+        "- No tag — Elias is typing directly in the dashboard\n\n"
+        "**Response Medium Rule:** Respond through the same channel you were reached on.\n"
+        "- If `[via:telegram]`: After processing, use the `respond_telegram` tool to send your response\n"
+        "- If `[via:tmux from:{agent}]`: After processing, use `send_agent_message` to reply to that agent\n"
+        "- If no tag (dashboard): Respond normally in chat (default behavior)\n\n"
+        "Always process the request fully first (use tools, think, etc.), then respond via the "
+        "correct channel. The dashboard chat shows all activity regardless of channel — "
+        "this is your workspace log."
+    )
+
+
 def _ecosystem_fragment() -> str:
     """Agent ecosystem context — loaded from roster data file."""
     roster_path = importlib.resources.files("lovely_assistant.data").joinpath("agent_roster.yaml")
@@ -91,6 +110,27 @@ def _tools_fragment(available_tools: ToolSet) -> str:
         lines.append(f"- {tool.name}: {tool.description}")
     for tool in available_tools.frontend_tools:
         lines.append(f"- {tool.name} (UI): {tool.description}")
+    return "\n".join(lines)
+
+
+def _mcp_connections_fragment(mcp_summary: list[dict[str, Any]] | None) -> str:
+    """Compact summary of connected MCP integrations with tool names."""
+    if not mcp_summary:
+        return ""
+    lines = ["**Connected Integrations:**"]
+    for server in mcp_summary:
+        name = server.get("name", "unknown")
+        tools = server.get("tools", [])
+        tool_count = server.get("tool_count", len(tools))
+        if tools:
+            example_names = sorted(tools)[:3]
+            line = f"- **{name}** ({tool_count} tools): {', '.join(example_names)}"
+            if tool_count > 3:
+                line += f", +{tool_count - 3} more"
+            lines.append(line)
+        else:
+            lines.append(f"- **{name}**")
+    lines.append("\n*Use tool names exactly as shown. MCP tools are called directly by name.*")
     return "\n".join(lines)
 
 
@@ -329,6 +369,8 @@ def build_system_prompt(
     available_tools: ToolSet,
     session_context: dict[str, Any],
     machine_state: dict[str, Any] | None = None,
+    mcp_summary: list[dict[str, Any]] | None = None,
+    artifacts: dict[str, str] | None = None,
 ) -> PromptResult:
     """Compose system prompt from module fragments.
 
@@ -338,24 +380,41 @@ def build_system_prompt(
         available_tools: Tools available for this request.
         session_context: Session context dict (may contain working memory).
         machine_state: Frontend XState machine state snapshot.
+        mcp_summary: MCP server connection summary for prompt context.
+        artifacts: DB-loaded artifact name→content map. Falls back to hardcoded if None/missing.
 
     Returns:
         PromptResult with composed content and fragment metadata.
     """
     # Collect named fragments
     named_fragments: list[tuple[str, str]] = []
+    _artifacts = artifacts or {}
 
-    # Stable fragments (cacheable)
-    named_fragments.append(("persona", _persona_fragment()))
+    # Stable fragments (cacheable) — DB artifact or hardcoded fallback
+    persona_content = _artifacts.get("persona") or _persona_fragment()
+    named_fragments.append(("persona", persona_content))
 
-    # Semi-stable fragments (change infrequently)
-    ecosystem_frag = _ecosystem_fragment()
+    comm_protocol = _artifacts.get("communication_protocol") or _communication_protocol_fragment()
+    if comm_protocol:
+        named_fragments.append(("communication_protocol", comm_protocol))
+
+    # Semi-stable fragments (change infrequently) — DB artifact or hardcoded fallback
+    ecosystem_frag = _artifacts.get("ecosystem") or _ecosystem_fragment()
     if ecosystem_frag:
         named_fragments.append(("ecosystem", ecosystem_frag))
+
+    # Scratchpad — only from DB (no hardcoded fallback)
+    scratchpad_content = _artifacts.get("scratchpad")
+    if scratchpad_content:
+        named_fragments.append(("scratchpad", scratchpad_content))
 
     tools_frag = _tools_fragment(available_tools)
     if tools_frag:
         named_fragments.append(("tools", tools_frag))
+
+    mcp_frag = _mcp_connections_fragment(mcp_summary)
+    if mcp_frag:
+        named_fragments.append(("mcp_connections", mcp_frag))
 
     # Dynamic fragments (change per request)
     named_fragments.append(("datetime", _datetime_fragment()))

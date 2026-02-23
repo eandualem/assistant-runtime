@@ -6,7 +6,7 @@ from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from lovely_assistant.services.database.base import Base
-from lovely_assistant.services.database.models import SessionORM, UserSettingsORM
+from lovely_assistant.services.database.models import ArtifactORM, SessionORM, UserSettingsORM
 
 
 class TestSessionORMTableName:
@@ -43,10 +43,10 @@ class TestSessionORMColumns:
 
     # --- id ---
 
-    def test_id_is_string_36(self):
+    def test_id_is_string_64(self):
         col = self._col("id")
         assert isinstance(col.type, String)
-        assert col.type.length == 36
+        assert col.type.length == 64
 
     def test_id_is_primary_key(self):
         col = self._col("id")
@@ -252,3 +252,140 @@ class TestUserSettingsORMColumns:
     def test_updated_at_has_onupdate(self):
         col = self._col("updated_at")
         assert col.onupdate is not None
+
+
+class TestArtifactORMTableName:
+    def test_table_name_is_artifacts(self):
+        assert ArtifactORM.__tablename__ == "artifacts"
+
+
+class TestArtifactORMInheritance:
+    def test_is_subclass_of_base(self):
+        assert issubclass(ArtifactORM, Base)
+
+
+class TestArtifactORMColumns:
+    """Verify all expected columns exist with correct types and constraints."""
+
+    def _col(self, name: str):
+        """Helper to retrieve a column from the model's table."""
+        return ArtifactORM.__table__.columns[name]
+
+    def test_has_all_expected_columns(self):
+        expected = {
+            "id",
+            "name",
+            "content",
+            "version",
+            "is_active",
+            "proposed_by",
+            "created_at",
+        }
+        actual = {c.name for c in ArtifactORM.__table__.columns}
+        assert actual == expected
+
+    # --- id ---
+
+    def test_id_is_integer(self):
+        col = self._col("id")
+        assert isinstance(col.type, Integer)
+
+    def test_id_is_primary_key(self):
+        col = self._col("id")
+        assert col.primary_key is True
+
+    # --- name ---
+
+    def test_name_is_string_64(self):
+        col = self._col("name")
+        assert isinstance(col.type, String)
+        assert col.type.length == 64
+
+    def test_name_is_not_nullable(self):
+        col = self._col("name")
+        assert col.nullable is False
+
+    # --- content ---
+
+    def test_content_is_text(self):
+        col = self._col("content")
+        assert isinstance(col.type, Text)
+
+    def test_content_is_not_nullable(self):
+        col = self._col("content")
+        assert col.nullable is False
+
+    # --- version ---
+
+    def test_version_is_integer(self):
+        col = self._col("version")
+        assert isinstance(col.type, Integer)
+
+    def test_version_is_not_nullable(self):
+        col = self._col("version")
+        assert col.nullable is False
+
+    def test_version_has_server_default(self):
+        col = self._col("version")
+        assert col.server_default is not None
+
+    # --- is_active ---
+
+    def test_is_active_is_boolean(self):
+        col = self._col("is_active")
+        assert isinstance(col.type, Boolean)
+
+    def test_is_active_is_not_nullable(self):
+        col = self._col("is_active")
+        assert col.nullable is False
+
+    def test_is_active_has_server_default(self):
+        col = self._col("is_active")
+        assert col.server_default is not None
+
+    # --- proposed_by ---
+
+    def test_proposed_by_is_string_32(self):
+        col = self._col("proposed_by")
+        assert isinstance(col.type, String)
+        assert col.type.length == 32
+
+    def test_proposed_by_is_not_nullable(self):
+        col = self._col("proposed_by")
+        assert col.nullable is False
+
+    def test_proposed_by_has_server_default(self):
+        col = self._col("proposed_by")
+        assert col.server_default is not None
+
+    # --- created_at ---
+
+    def test_created_at_is_datetime_with_timezone(self):
+        col = self._col("created_at")
+        assert isinstance(col.type, DateTime)
+        assert col.type.timezone is True
+
+    def test_created_at_has_server_default(self):
+        col = self._col("created_at")
+        assert col.server_default is not None
+
+
+class TestArtifactORMConstraints:
+    """Verify constraints on the artifacts table."""
+
+    def test_has_unique_name_version_constraint(self):
+        constraints = ArtifactORM.__table__.constraints
+        unique_constraints = [
+            c for c in constraints if hasattr(c, "columns") and len(c.columns) == 2
+        ]
+        name_version_uq = [
+            c for c in unique_constraints if {col.name for col in c.columns} == {"name", "version"}
+        ]
+        assert len(name_version_uq) == 1
+
+    def test_has_name_is_active_index(self):
+        indexes = ArtifactORM.__table__.indexes
+        matching = [
+            idx for idx in indexes if {col.name for col in idx.columns} == {"name", "is_active"}
+        ]
+        assert len(matching) == 1

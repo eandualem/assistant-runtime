@@ -74,6 +74,7 @@ def make_final_response_event(
     content: str | None,
     model: str,
     *,
+    session_id: str | None = None,
     streamed: bool = False,
     thinking_streamed: bool = False,
     error: bool = False,
@@ -86,6 +87,8 @@ def make_final_response_event(
         "model": model,
         "streamed": streamed,
     }
+    if session_id is not None:
+        event["session_id"] = session_id
     if thinking_streamed:
         event["thinking_streamed"] = True
     if error:
@@ -206,9 +209,10 @@ def make_debug_agent_config_event(
     has_frontend_tools: bool,
     thinking_budget: int | None,
     temperature: float | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a debug_agent_config event — emitted after agent creation."""
-    return {
+    event: dict[str, Any] = {
         "type": "debug_agent_config",
         "model": model,
         "output_type": output_type,
@@ -216,6 +220,9 @@ def make_debug_agent_config_event(
         "thinking_budget": thinking_budget,
         "temperature": temperature,
     }
+    if session_id is not None:
+        event["session_id"] = session_id
+    return event
 
 
 def make_debug_tool_execution_event(

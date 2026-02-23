@@ -25,6 +25,7 @@ from lovely_assistant.app.assistant.exceptions import (
     SessionError,
 )
 from lovely_assistant.app.assistant.models import (
+    AgentSetupContext,
     AssistantRequest,
     AssistantResult,
     _build_user_prompt,
@@ -103,6 +104,62 @@ class AssistantService:
         """Return the database service for route-level access."""
         return self._database_service
 
+    async def prepare_agent_context(
+        self,
+        request: AssistantRequest,
+        session_context: dict[str, Any],
+    ) -> AgentSetupContext:
+        """Build the full agent setup context for a request.
+
+        Shared by both AssistantService and StreamingService to prevent drift.
+        """
+        # 1. Tools
+        available_tools = self._tools.get_available_tools(request.machine_state)
+        toolsets = self._tools.build_toolset(request.machine_state)
+
+        # 2. MCP + artifacts + system prompt
+        mcp_summary = await self._tools.get_mcp_summary()
+        artifacts = await self._load_active_artifacts()
+        prompt_result = build_system_prompt(
+            available_tools=available_tools,
+            session_context=session_context,
+            machine_state=request.machine_state,
+            mcp_summary=mcp_summary,
+            artifacts=artifacts,
+        )
+
+        # 3. Config resolution
+        effective = resolve_effective_config(self._config, self._runtime_settings, request.config)
+        resolved_model = self._llm.resolve_model(effective.default_model)
+        usage_limits = UsageLimits(request_limit=effective.max_turns)
+
+        # 4. Output type
+        has_frontend_tools = len(available_tools.frontend_tools) > 0
+        output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
+
+        # 5. Build agent
+        agent = self._llm.build_agent(
+            system_prompt=prompt_result.content,
+            toolsets=toolsets,
+            model=resolved_model,
+            output_type=output_type,
+            thinking_budget=effective.thinking_budget,
+            temperature=effective.temperature,
+        )
+
+        return AgentSetupContext(
+            agent=agent,
+            available_tools=available_tools,
+            toolsets=toolsets,
+            prompt_result=prompt_result,
+            resolved_model=resolved_model,
+            usage_limits=usage_limits,
+            has_frontend_tools=has_frontend_tools,
+            output_type=output_type,
+            effective_config=effective,
+            mcp_summary=mcp_summary,
+        )
+
     async def process_message(self, request: AssistantRequest) -> AssistantResult:
         """Process a user message through the full assistant pipeline.
 
@@ -138,85 +195,57 @@ class AssistantService:
         session_context = await sessions.get_context_async(session_id)
         turn_number = sessions.increment_turn(session_id)
 
-        # 2. Get available tools for this request's machine state
-        available_tools = self._tools.get_available_tools(request.machine_state)
-        toolsets = self._tools.build_toolset(request.machine_state)
-
-        # 3. Build system prompt from fragments
-        prompt_result = build_system_prompt(
-            available_tools=available_tools,
-            session_context=session_context,
-            machine_state=request.machine_state,
-        )
-        system_prompt = prompt_result.content
-
-        # 4. Resolve effective config (per-request > runtime > frozen)
-        effective = resolve_effective_config(self._config, self._runtime_settings, request.config)
-        resolved_model = self._llm.resolve_model(effective.default_model)
-        usage_limits = UsageLimits(request_limit=effective.max_turns)
+        # 2. Build agent setup context (tools → MCP → artifacts → prompt → config → agent)
+        ctx = await self.prepare_agent_context(request, session_context)
 
         logger.info(
             "Executing assistant request",
             session_id=session_id,
             continuation=False,
             turn_number=turn_number,
-            model=resolved_model,
+            model=ctx.resolved_model,
             has_images=bool(request.images),
-            max_turns=effective.max_turns,
-            thinking_budget=effective.thinking_budget,
-            temperature=effective.temperature,
+            max_turns=ctx.effective_config.max_turns,
+            thinking_budget=ctx.effective_config.thinking_budget,
+            temperature=ctx.effective_config.temperature,
         )
 
-        # 5. Determine output type based on frontend tools
-        has_frontend_tools = len(available_tools.frontend_tools) > 0
-        output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
-
-        # 6. Create per-request agent
-        agent = self._llm.build_agent(
-            system_prompt=system_prompt,
-            toolsets=toolsets,
-            model=resolved_model,
-            output_type=output_type,
-            thinking_budget=effective.thinking_budget,
-            temperature=effective.temperature,
-        )
-
-        # 7. Prepare history
+        # 3. Prepare history
         history = sessions.get_history(session_id)
         prepared_history, _context_modified = await self._history.prepare_history(
             history, session_context
         )
 
-        # 8. Run the agent
-        user_prompt = _build_user_prompt(request.message, request.images, resolved_model)
+        # 4. Run the agent
+        user_prompt = _build_user_prompt(request.message, request.images, ctx.resolved_model)
         try:
-            result = await agent.run(
+            result = await ctx.agent.run(
                 user_prompt,
                 message_history=prepared_history if prepared_history else None,
-                usage_limits=usage_limits,
+                usage_limits=ctx.usage_limits,
             )
         except Exception as e:
             logger.exception(
                 "Assistant request failed",
                 session_id=session_id,
                 continuation=False,
-                model=resolved_model,
+                model=ctx.resolved_model,
                 duration_ms=(time.monotonic() - started_at) * 1000,
                 error=str(e),
             )
             raise AgentRunError(f"Agent execution failed: {e}") from e
 
-        # 9. Save message history (persists to DB)
+        # 5. Save message history (persists to DB)
         await sessions.save_history_async(session_id, list(result.all_messages()))
 
-        # 10. Handle output
+        # 6. Handle output
         output = result.output
         usage = self._safe_usage(result)
         logger.info(
             "Assistant request completed",
             session_id=session_id,
             continuation=False,
-            model=resolved_model,
+            model=ctx.resolved_model,
             duration_ms=(time.monotonic() - started_at) * 1000,
             output_type=type(output).__name__,
             input_tokens=usage.get("input_tokens"),
@@ -225,15 +254,15 @@ class AssistantService:
         )
 
         if isinstance(output, DeferredToolRequests):
-            return self._handle_deferred_output(output, session_id, turn_number, resolved_model)
+            return self._handle_deferred_output(output, session_id, turn_number, ctx.resolved_model)
 
-        # 11. Extract working memory delta (fire-and-forget style)
-        if effective.enable_working_memory:
+        # 7. Extract working memory delta (fire-and-forget style)
+        if ctx.effective_config.enable_working_memory:
             await self._update_working_memory(session_id, session_context, turn_number)
 
         return AssistantResult(
             content=str(output),
-            model=resolved_model,
+            model=ctx.resolved_model,
             session_id=session_id,
             turn_number=turn_number,
         )
@@ -272,42 +301,18 @@ class AssistantService:
             calls_map[rid] = REJECTED_TOOL_RESULT
         deferred_results = DeferredToolResults(calls=calls_map)
 
-        # Rebuild agent with same configuration
-        available_tools = self._tools.get_available_tools(request.machine_state)
-        toolsets = self._tools.build_toolset(request.machine_state)
+        # Build agent setup context (tools → MCP → artifacts → prompt → config → agent)
+        ctx = await self.prepare_agent_context(request, session_context)
 
-        prompt_result = build_system_prompt(
-            available_tools=available_tools,
-            session_context=session_context,
-            machine_state=request.machine_state,
-        )
-        system_prompt = prompt_result.content
-
-        # Resolve effective config (per-request > runtime > frozen)
-        effective = resolve_effective_config(self._config, self._runtime_settings, request.config)
-        resolved_model = self._llm.resolve_model(effective.default_model)
-        usage_limits = UsageLimits(request_limit=effective.max_turns)
         logger.info(
             "Executing assistant request",
             session_id=session_id,
             continuation=True,
             turn_number=turn_number,
-            model=resolved_model,
-            max_turns=effective.max_turns,
-            thinking_budget=effective.thinking_budget,
-            temperature=effective.temperature,
-        )
-
-        has_frontend_tools = len(available_tools.frontend_tools) > 0
-        output_type: Any = [str, DeferredToolRequests] if has_frontend_tools else str
-
-        agent = self._llm.build_agent(
-            system_prompt=system_prompt,
-            toolsets=toolsets,
-            model=resolved_model,
-            output_type=output_type,
-            thinking_budget=effective.thinking_budget,
-            temperature=effective.temperature,
+            model=ctx.resolved_model,
+            max_turns=ctx.effective_config.max_turns,
+            thinking_budget=ctx.effective_config.thinking_budget,
+            temperature=ctx.effective_config.temperature,
         )
 
         # Get saved history and prepare (with is_continuation=True)
@@ -318,18 +323,18 @@ class AssistantService:
 
         # Run with deferred tool results
         try:
-            result = await agent.run(
+            result = await ctx.agent.run(
                 None,
                 message_history=prepared_history if prepared_history else None,
                 deferred_tool_results=deferred_results,
-                usage_limits=usage_limits,
+                usage_limits=ctx.usage_limits,
             )
         except Exception as e:
             logger.exception(
                 "Assistant continuation failed",
                 session_id=session_id,
                 continuation=True,
-                model=resolved_model,
+                model=ctx.resolved_model,
                 duration_ms=(time.monotonic() - started_at) * 1000,
                 error=str(e),
             )
@@ -344,7 +349,7 @@ class AssistantService:
             "Assistant request completed",
             session_id=session_id,
             continuation=True,
-            model=resolved_model,
+            model=ctx.resolved_model,
             duration_ms=(time.monotonic() - started_at) * 1000,
             output_type=type(output).__name__,
             input_tokens=usage.get("input_tokens"),
@@ -353,14 +358,14 @@ class AssistantService:
         )
 
         if isinstance(output, DeferredToolRequests):
-            return self._handle_deferred_output(output, session_id, turn_number, resolved_model)
+            return self._handle_deferred_output(output, session_id, turn_number, ctx.resolved_model)
 
-        if effective.enable_working_memory:
+        if ctx.effective_config.enable_working_memory:
             await self._update_working_memory(session_id, session_context, turn_number)
 
         return AssistantResult(
             content=str(output),
-            model=resolved_model,
+            model=ctx.resolved_model,
             session_id=session_id,
             turn_number=turn_number,
         )
@@ -452,6 +457,21 @@ class AssistantService:
         except Exception as e:
             # Working memory extraction is best-effort — don't fail the request
             logger.warning("Working memory extraction failed", error=str(e))
+
+    async def _load_active_artifacts(self) -> dict[str, str] | None:
+        """Load all active artifacts from DB. Returns None if DB unavailable."""
+        if self._database_service is None:
+            return None
+        try:
+            from lovely_assistant.services.database.repositories import ArtifactRepository
+
+            async with self._database_service.session_context() as session:
+                repo = ArtifactRepository(session)
+                rows = await repo.get_all_active()
+                return {row.name: row.content for row in rows}
+        except Exception as e:
+            logger.warning("Failed to load artifacts from DB", error=str(e))
+            return None
 
     def _ensure_started(self) -> None:
         """Guard: raise if service not started."""

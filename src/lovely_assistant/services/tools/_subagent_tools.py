@@ -116,8 +116,8 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
         from lovely_assistant.services.tools._subagent_executor import execute_subagent
 
         # llm_service and backend_toolsets are injected by the ToolService
-        # via the _subagent_deps dict attached to this handler
-        deps = getattr(run_subagent, "_subagent_deps", None)
+        # via the _handler_deps dict attached to this handler
+        deps = getattr(run_subagent, "_handler_deps", None)
         if deps is None:
             return {
                 "error": "Subagent system not initialized",

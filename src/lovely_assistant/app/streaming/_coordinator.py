@@ -80,6 +80,7 @@ class EventCoordinator:
         content: str | None,
         model: str,
         *,
+        session_id: str | None = None,
         error: bool = False,
         error_type: str | None = None,
     ) -> dict[str, Any] | None:
@@ -96,6 +97,7 @@ class EventCoordinator:
             make_final_response_event(
                 effective_content,
                 model,
+                session_id=session_id,
                 streamed=self._streamed_text,
                 thinking_streamed=self._streamed_thinking,
                 error=error,

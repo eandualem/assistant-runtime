@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -28,7 +29,7 @@ class SessionORM(Base):
 
     __tablename__ = "sessions"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     turn_number: Mapped[int] = mapped_column(Integer, default=0)
     message_history: Mapped[list] = mapped_column(JSONB, default=list)
@@ -52,7 +53,7 @@ class TraceORM(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
     events: Mapped[list] = mapped_column(JSONB, default=list)
     user_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -113,3 +114,23 @@ class UserSettingsORM(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ArtifactORM(Base):
+    """Versioned prompt artifacts — mutable data backing system prompt fragments."""
+
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        UniqueConstraint("name", "version", name="uq_artifacts_name_version"),
+        Index("ix_artifacts_name_is_active", "name", "is_active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    proposed_by: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'system'")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

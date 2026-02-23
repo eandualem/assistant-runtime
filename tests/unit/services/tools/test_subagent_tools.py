@@ -218,7 +218,7 @@ class TestRunSubagentRuntimeSettings:
             }.get(k, default)
         )
 
-        handler._subagent_deps = {
+        handler._handler_deps = {
             "llm_service": MagicMock(),
             "get_backend_toolsets": MagicMock(return_value=[]),
             "runtime_settings": runtime,
@@ -246,7 +246,7 @@ class TestRunSubagentRuntimeSettings:
             }.get(k, default)
         )
 
-        handler._subagent_deps = {
+        handler._handler_deps = {
             "llm_service": MagicMock(),
             "get_backend_toolsets": MagicMock(return_value=[]),
             "runtime_settings": runtime,
@@ -267,7 +267,7 @@ class TestRunSubagentRuntimeSettings:
         handler = self._setup_handler()
         mock_ctx = self._make_mock_ctx()
 
-        handler._subagent_deps = {
+        handler._handler_deps = {
             "llm_service": MagicMock(),
             "get_backend_toolsets": MagicMock(return_value=[]),
         }

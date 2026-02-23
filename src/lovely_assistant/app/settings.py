@@ -31,6 +31,12 @@ class EffectiveConfig:
     temperature: float | None
     max_turns: int
     enable_working_memory: bool
+    summarization_model: str | None
+    working_memory_model: str | None
+    default_image_model: str | None
+    default_video_model: str | None
+    subagent_model: str | None
+    subagent_thinking_budget: int | None
 
 
 class RuntimeSettings:
@@ -257,4 +263,10 @@ def resolve_effective_config(
         temperature=_pick("temperature", frozen_config.temperature),
         max_turns=_pick("max_turns", frozen_config.max_turns),
         enable_working_memory=_pick("enable_working_memory", frozen_config.enable_working_memory),
+        summarization_model=_pick("summarization_model", None),
+        working_memory_model=_pick("working_memory_model", None),
+        default_image_model=_pick("default_image_model", None),
+        default_video_model=_pick("default_video_model", None),
+        subagent_model=_pick("subagent_model", None),
+        subagent_thinking_budget=_pick("subagent_thinking_budget", None),
     )

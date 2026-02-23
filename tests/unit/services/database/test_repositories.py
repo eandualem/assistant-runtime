@@ -176,9 +176,8 @@ class TestUpdate:
         mock_row.__setattr__("turn_number", 5)
         mock_session.flush.assert_awaited()
 
-    async def test_noop_when_session_not_found(self, repo, mock_session):
+    async def test_executes_update_even_when_session_not_found(self, repo, mock_session):
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
         mock_session.execute.return_value = mock_result
 
         # Reset flush call count before the update call
@@ -186,8 +185,9 @@ class TestUpdate:
 
         await repo.update("nonexistent", title="Updated")
 
-        # flush should not be called when the row doesn't exist
-        mock_session.flush.assert_not_awaited()
+        # Bulk update + flush is always called (no pre-check query)
+        mock_session.execute.assert_awaited()
+        mock_session.flush.assert_awaited()
 
 
 # ---------------------------------------------------------------------------

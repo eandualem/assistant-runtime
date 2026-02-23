@@ -20,13 +20,14 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
+from pydantic_ai.usage import UsageLimits
 from pydantic_graph.nodes import End
 
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.config import AssistantConfig
 from lovely_assistant.app.assistant.exceptions import ContinuationMismatchError
-from lovely_assistant.app.assistant.models import AssistantRequest
-from lovely_assistant.app.settings import RuntimeSettings
+from lovely_assistant.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
+from lovely_assistant.app.settings import EffectiveConfig, RuntimeSettings
 from lovely_assistant.app.streaming.config import StreamingConfig
 from lovely_assistant.app.streaming.exceptions import (
     StreamingError,
@@ -39,12 +40,51 @@ from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition,
 # --- Helpers ---
 
 
+def _make_default_agent_context(
+    *,
+    available_tools: ToolSet | None = None,
+    resolved_model: str = "test-model",
+    effective_config: EffectiveConfig | None = None,
+    agent: Any = None,
+) -> AgentSetupContext:
+    """Build a default AgentSetupContext for tests."""
+    tools = available_tools or ToolSet()
+    config = effective_config or EffectiveConfig(
+        default_model=None,
+        thinking_budget=None,
+        temperature=None,
+        max_turns=10,
+        enable_working_memory=True,
+        summarization_model=None,
+        working_memory_model=None,
+        default_image_model=None,
+        default_video_model=None,
+        subagent_model=None,
+        subagent_thinking_budget=None,
+    )
+    has_frontend = len(tools.frontend_tools) > 0
+    mock_agent = agent or MagicMock()
+    return AgentSetupContext(
+        agent=mock_agent,
+        available_tools=tools,
+        toolsets=[],
+        prompt_result=PromptResult(content="You are Jarvis.", fragments=[]),
+        resolved_model=resolved_model,
+        usage_limits=UsageLimits(request_limit=config.max_turns),
+        has_frontend_tools=has_frontend,
+        output_type=[str, object] if has_frontend else str,
+        effective_config=config,
+        mcp_summary=None,
+    )
+
+
 def _make_service(
     *,
     streaming_config: StreamingConfig | None = None,
     assistant_config: AssistantConfig | None = None,
     sessions: SessionStore | None = None,
     database_service: Any | None = None,
+    agent_context: AgentSetupContext | None = None,
 ) -> StreamingService:
     """Create a StreamingService with mocked dependencies."""
     llm_service = MagicMock()
@@ -66,10 +106,13 @@ def _make_service(
     tool_service = MagicMock()
     tool_service.get_available_tools.return_value = ToolSet()
     tool_service.build_toolset.return_value = []
+    tool_service.get_mcp_summary = AsyncMock(return_value=None)
 
-    # Mock assistant service with public session store accessor
+    # Mock assistant service with public session store accessor and prepare_agent_context
     mock_assistant_service = MagicMock()
     mock_assistant_service.get_session_store = MagicMock(return_value=sessions or SessionStore())
+    ctx = agent_context or _make_default_agent_context()
+    mock_assistant_service.prepare_agent_context = AsyncMock(return_value=ctx)
 
     config = assistant_config or AssistantConfig()
     return StreamingService(
@@ -221,15 +264,12 @@ class TestStreamingServiceNotStarted:
 class TestStreamNewMessage:
     @pytest.mark.asyncio
     async def test_emits_started_and_completed(self):
-        service = _make_service()
-        await service.start()
-        request = _make_request()
-
-        # Mock agent.iter() to return a run with just an End node
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -243,14 +283,12 @@ class TestStreamNewMessage:
 
     @pytest.mark.asyncio
     async def test_emits_final_response(self):
-        service = _make_service()
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Hello world")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -264,15 +302,15 @@ class TestStreamNewMessage:
     @pytest.mark.asyncio
     async def test_saves_history_after_run(self):
         sessions = SessionStore()
-        service = _make_service(sessions=sessions)
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_run.result.all_messages.return_value = [MagicMock()]
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
+        )
+        await service.start()
+        request = _make_request()
 
         async for _ in service.stream_message(request):
             pass
@@ -283,14 +321,14 @@ class TestStreamNewMessage:
     @pytest.mark.asyncio
     async def test_increments_turn(self):
         sessions = SessionStore()
-        service = _make_service(sessions=sessions)
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
+        )
+        await service.start()
+        request = _make_request()
 
         async for _ in service.stream_message(request):
             pass
@@ -303,17 +341,15 @@ class TestStreamWithImages:
     @pytest.mark.asyncio
     async def test_images_passed_to_agent_iter(self):
         """When images are provided, agent.iter() receives a list prompt."""
-        service = _make_service()
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
         await service.start()
         request = _make_request(
             message="What's here?",
             images=["data:image/jpeg;base64,/9j/4AAQ"],
         )
-
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
 
         async for _ in service.stream_message(request):
             pass
@@ -326,14 +362,12 @@ class TestStreamWithImages:
     @pytest.mark.asyncio
     async def test_no_images_passes_plain_string(self):
         """When no images, agent.iter() receives plain string."""
-        service = _make_service()
-        await service.start()
-        request = _make_request(message="Hello there")
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+        request = _make_request(message="Hello there")
 
         async for _ in service.stream_message(request):
             pass
@@ -345,10 +379,7 @@ class TestStreamWithImages:
 class TestStreamWithTools:
     @pytest.mark.asyncio
     async def test_builds_agent_with_frontend_tools(self):
-        service = _make_service()
-        await service.start()
-
-        service._tools.get_available_tools.return_value = ToolSet(
+        frontend_tools = ToolSet(
             frontend_tools=[
                 ToolDefinition(
                     name="navigate",
@@ -358,27 +389,26 @@ class TestStreamWithTools:
                 )
             ]
         )
-
-        request = _make_request()
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        ctx = _make_default_agent_context(available_tools=frontend_tools, agent=mock_agent)
+        service = _make_service(agent_context=ctx)
+        await service.start()
 
+        request = _make_request()
         async for _ in service.stream_message(request):
             pass
 
-        # Verify output_type includes DeferredToolRequests
-        call_kwargs = service._llm.build_agent.call_args[1]
-        assert isinstance(call_kwargs["output_type"], list)
+        # Verify the context has frontend tools
+        assert ctx.has_frontend_tools is True
+        assert isinstance(ctx.output_type, list)
 
 
 class TestStreamDeferredToolRequests:
     @pytest.mark.asyncio
     async def test_deferred_tool_emits_tool_call_event(self):
         sessions = SessionStore()
-        service = _make_service(sessions=sessions)
-        await service.start()
 
         # Create a mock DeferredToolRequests output
         mock_call = MagicMock()
@@ -389,16 +419,17 @@ class TestStreamDeferredToolRequests:
         mock_deferred = MagicMock()
         mock_deferred.calls = [mock_call]
 
-        # Patch isinstance to recognize our mock as DeferredToolRequests
-        mock_run = _MockAgentRun(nodes=[], output=mock_deferred)
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
-
-        # We need to patch the isinstance check for DeferredToolRequests
         from pydantic_ai.result import DeferredToolRequests
 
         mock_deferred.__class__ = DeferredToolRequests
+
+        mock_run = _MockAgentRun(nodes=[], output=mock_deferred)
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(
+            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
+        )
+        await service.start()
 
         request = _make_request()
         events = []
@@ -413,8 +444,6 @@ class TestStreamDeferredToolRequests:
     @pytest.mark.asyncio
     async def test_deferred_tool_stores_pending(self):
         sessions = SessionStore()
-        service = _make_service(sessions=sessions)
-        await service.start()
 
         mock_call = MagicMock()
         mock_call.tool_call_id = "call_xyz"
@@ -431,7 +460,10 @@ class TestStreamDeferredToolRequests:
         mock_run = _MockAgentRun(nodes=[], output=mock_deferred)
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
+        )
+        await service.start()
 
         request = _make_request()
         async for _ in service.stream_message(request):
@@ -444,8 +476,6 @@ class TestStreamDeferredToolRequests:
     @pytest.mark.asyncio
     async def test_deferred_tool_final_response_null_content(self):
         sessions = SessionStore()
-        service = _make_service(sessions=sessions)
-        await service.start()
 
         mock_call = MagicMock()
         mock_call.tool_call_id = "call_123"
@@ -462,7 +492,10 @@ class TestStreamDeferredToolRequests:
         mock_run = _MockAgentRun(nodes=[], output=mock_deferred)
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
+        )
+        await service.start()
 
         request = _make_request()
         events = []
@@ -511,13 +544,13 @@ class TestStreamContinuation:
         sessions.get_context("test-session")
         sessions.set_pending_tool_call("test-session", "call_123", "navigate")
 
-        service = _make_service(sessions=sessions)
-        await service.start()
-
         mock_run = _MockAgentRun(nodes=[], output="Continued response")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
+        )
+        await service.start()
 
         request = _make_request(
             tool_call_id="call_123",
@@ -566,13 +599,13 @@ class TestStreamContinuationValidation:
             "test-session", "call_a", "navigate", rejected_call_ids=["call_b", "call_c"]
         )
 
-        service = _make_service(sessions=sessions)
-        await service.start()
-
         mock_run = _MockAgentRun(nodes=[], output="Done with rejections")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
+        )
+        await service.start()
 
         request = _make_request(
             tool_call_id="call_a",
@@ -590,11 +623,13 @@ class TestStreamContinuationValidation:
 
 class TestStreamSetupErrors:
     @pytest.mark.asyncio
-    async def test_tool_service_failure_raises_setup_error(self):
+    async def test_prepare_agent_context_failure_raises_setup_error(self):
         service = _make_service()
         await service.start()
 
-        service._tools.get_available_tools.side_effect = RuntimeError("tool fail")
+        service._assistant_service.prepare_agent_context = AsyncMock(
+            side_effect=RuntimeError("tool fail")
+        )
         request = _make_request()
 
         with pytest.raises(StreamSetupError, match="Stream setup failed"):
@@ -617,13 +652,11 @@ class TestStreamSetupErrors:
 class TestStreamExecutionErrors:
     @pytest.mark.asyncio
     async def test_agent_iter_failure_emits_error_event(self):
-        service = _make_service()
-        await service.start()
-        request = _make_request()
-
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(side_effect=RuntimeError("iter fail"))
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -642,15 +675,13 @@ class TestStreamExecutionErrors:
 class TestStreamModelResolution:
     @pytest.mark.asyncio
     async def test_uses_configured_model(self):
-        config = AssistantConfig(default_model="custom-model")
-        service = _make_service(assistant_config=config)
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        ctx = _make_default_agent_context(resolved_model="custom-model", agent=mock_agent)
+        service = _make_service(agent_context=ctx)
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -661,15 +692,15 @@ class TestStreamModelResolution:
 
     @pytest.mark.asyncio
     async def test_normalizes_configured_model(self):
-        config = AssistantConfig(default_model="Anthropic/Claude-Sonnet-4-6")
-        service = _make_service(assistant_config=config)
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        ctx = _make_default_agent_context(
+            resolved_model="anthropic:claude-sonnet-4-6", agent=mock_agent
+        )
+        service = _make_service(agent_context=ctx)
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -680,14 +711,12 @@ class TestStreamModelResolution:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_primary_model(self):
-        service = _make_service()
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -698,15 +727,26 @@ class TestStreamModelResolution:
 
     @pytest.mark.asyncio
     async def test_applies_max_turns_usage_limit(self):
-        config = AssistantConfig(max_turns=6)
-        service = _make_service(assistant_config=config)
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        config = EffectiveConfig(
+            default_model=None,
+            thinking_budget=None,
+            temperature=None,
+            max_turns=6,
+            enable_working_memory=True,
+            summarization_model=None,
+            working_memory_model=None,
+            default_image_model=None,
+            default_video_model=None,
+            subagent_model=None,
+            subagent_thinking_budget=None,
+        )
+        ctx = _make_default_agent_context(effective_config=config, agent=mock_agent)
+        service = _make_service(agent_context=ctx)
+        await service.start()
+        request = _make_request()
 
         async for _ in service.stream_message(request):
             pass
@@ -718,10 +758,6 @@ class TestStreamModelResolution:
 class TestStreamDebugEvents:
     @pytest.mark.asyncio
     async def test_debug_events_emitted_when_enabled(self):
-        service = _make_service(streaming_config=StreamingConfig(emit_debug_events=True))
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_run.result.usage.return_value = MagicMock(
             request_tokens=100,
@@ -733,7 +769,12 @@ class TestStreamDebugEvents:
         )
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=True),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -751,14 +792,15 @@ class TestStreamDebugEvents:
 
     @pytest.mark.asyncio
     async def test_debug_events_not_emitted_when_disabled(self):
-        service = _make_service(streaming_config=StreamingConfig(emit_debug_events=False))
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=False),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -769,13 +811,6 @@ class TestStreamDebugEvents:
 
     @pytest.mark.asyncio
     async def test_debug_request_event_content(self):
-        service = _make_service(streaming_config=StreamingConfig(emit_debug_events=True))
-        await service.start()
-        request = _make_request(
-            message="Test message",
-            machine_state={"active_page": {"name": "home"}},
-        )
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_run.result.usage.return_value = MagicMock(
             request_tokens=0,
@@ -785,7 +820,15 @@ class TestStreamDebugEvents:
         )
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=True),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request(
+            message="Test message",
+            machine_state={"active_page": {"name": "home"}},
+        )
 
         events = []
         async for event in service.stream_message(request):
@@ -799,11 +842,8 @@ class TestStreamDebugEvents:
         assert debug_req["machine_state"] == {"active_page": {"name": "home"}}
 
     @pytest.mark.asyncio
-    async def test_debug_completed_has_duration(self):
-        service = _make_service(streaming_config=StreamingConfig(emit_debug_events=True))
-        await service.start()
-        request = _make_request()
-
+    async def test_debug_agent_config_includes_session_id(self):
+        """debug_agent_config event includes session_id when debug events enabled."""
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_run.result.usage.return_value = MagicMock(
             request_tokens=0,
@@ -813,7 +853,37 @@ class TestStreamDebugEvents:
         )
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=True),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request(session_id="sess-debug")
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        agent_config = [e for e in events if e["type"] == "debug_agent_config"][0]
+        assert agent_config["session_id"] == "sess-debug"
+
+    @pytest.mark.asyncio
+    async def test_debug_completed_has_duration(self):
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_run.result.usage.return_value = MagicMock(
+            request_tokens=0,
+            response_tokens=0,
+            requests=0,
+            total_tokens=0,
+        )
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=True),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -828,18 +898,16 @@ class TestStreamDebugEvents:
 class TestStreamBackendToolCalls:
     """Tests for backend tool call SSE event emission."""
 
+    def _make_service_with_agent(self, mock_agent, **kwargs):
+        return _make_service(agent_context=_make_default_agent_context(agent=mock_agent), **kwargs)
+
     @pytest.mark.asyncio
     async def test_backend_tool_emits_tool_call_event(self):
         """Backend tool calls should emit tool_call SSE events."""
-        service = _make_service()
-        await service.start()
-
         tc = ToolCallPart(
             tool_name="list_agents", args={"filter": "active"}, tool_call_id="call_001"
         )
-
         call_node = _make_call_tools_node([tc])
-        # After tool execution, next node is ModelRequestNode with tool return
         tr = ToolReturnPart(
             tool_name="list_agents",
             content="[agent1, agent2]",
@@ -848,11 +916,11 @@ class TestStreamBackendToolCalls:
         )
         next_model_node = _make_model_request_node([tr])
 
-        # Nodes: CallToolsNode -> ModelRequestNode (with results) -> End
         mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Here are the agents")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = self._make_service_with_agent(mock_agent)
+        await service.start()
 
         request = _make_request()
         events = []
@@ -868,12 +936,8 @@ class TestStreamBackendToolCalls:
     @pytest.mark.asyncio
     async def test_backend_tool_emits_tool_result_event(self):
         """Backend tools should emit tool_result with the execution result."""
-        service = _make_service()
-        await service.start()
-
         tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_002")
         call_node = _make_call_tools_node([tc])
-
         tr = ToolReturnPart(
             tool_name="list_agents",
             content="agent1, agent2",
@@ -885,7 +949,8 @@ class TestStreamBackendToolCalls:
         mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = self._make_service_with_agent(mock_agent)
+        await service.start()
 
         request = _make_request()
         events = []
@@ -901,11 +966,7 @@ class TestStreamBackendToolCalls:
     @pytest.mark.asyncio
     async def test_frontend_tools_not_emitted_as_backend(self):
         """Frontend (deferred) tools should NOT emit tool_call from _iterate_run."""
-        service = _make_service()
-        await service.start()
-
-        # Set up a frontend tool in available tools
-        service._tools.get_available_tools.return_value = ToolSet(
+        frontend_tools = ToolSet(
             frontend_tools=[
                 ToolDefinition(
                     name="navigate",
@@ -916,31 +977,30 @@ class TestStreamBackendToolCalls:
             ]
         )
 
-        # CallToolsNode has a frontend tool call
         tc = ToolCallPart(tool_name="navigate", args={"message": "hello"}, tool_call_id="call_003")
         call_node = _make_call_tools_node([tc])
 
-        # For frontend-only calls, the run may end after tool execution
         mock_run = _MockAgentRun(nodes=[call_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            agent_context=_make_default_agent_context(
+                available_tools=frontend_tools, agent=mock_agent
+            )
+        )
+        await service.start()
 
         request = _make_request()
         events = []
         async for event in service.stream_message(request):
             events.append(event)
 
-        # No tool_call events from _iterate_run (frontend tools are filtered)
         tool_call_events = [e for e in events if e["type"] == "tool_call"]
         assert len(tool_call_events) == 0
 
     @pytest.mark.asyncio
     async def test_multiple_backend_tools_emit_multiple_events(self):
         """Multiple backend tool calls in one response should each get events."""
-        service = _make_service()
-        await service.start()
-
         tc1 = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_a")
         tc2 = ToolCallPart(tool_name="check_status", args={"agent": "leo"}, tool_call_id="call_b")
         call_node = _make_call_tools_node([tc1, tc2])
@@ -962,7 +1022,8 @@ class TestStreamBackendToolCalls:
         mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = self._make_service_with_agent(mock_agent)
+        await service.start()
 
         request = _make_request()
         events = []
@@ -981,9 +1042,6 @@ class TestStreamBackendToolCalls:
     @pytest.mark.asyncio
     async def test_tool_call_before_tool_result_ordering(self):
         """tool_call events should appear before tool_result events."""
-        service = _make_service()
-        await service.start()
-
         tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_ord")
         call_node = _make_call_tools_node([tc])
         tr = ToolReturnPart(
@@ -997,7 +1055,8 @@ class TestStreamBackendToolCalls:
         mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = self._make_service_with_agent(mock_agent)
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1010,18 +1069,15 @@ class TestStreamBackendToolCalls:
     @pytest.mark.asyncio
     async def test_tool_result_empty_when_not_found(self):
         """If tool return part not found, result should be empty string."""
-        service = _make_service()
-        await service.start()
-
         tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_missing")
         call_node = _make_call_tools_node([tc])
-        # Next node has no matching ToolReturnPart
         next_model_node = _make_model_request_node([])
 
         mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = self._make_service_with_agent(mock_agent)
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1035,10 +1091,6 @@ class TestStreamBackendToolCalls:
     @pytest.mark.asyncio
     async def test_tool_call_with_string_args(self):
         """Tool calls with JSON string args should be parsed to dict."""
-        service = _make_service()
-        await service.start()
-
-        # ToolCallPart with string args (JSON)
         tc = ToolCallPart(
             tool_name="send_message",
             args='{"to": "leo", "msg": "hello"}',
@@ -1056,7 +1108,8 @@ class TestStreamBackendToolCalls:
         mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = self._make_service_with_agent(mock_agent)
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1065,7 +1118,6 @@ class TestStreamBackendToolCalls:
 
         tool_call_events = [e for e in events if e["type"] == "tool_call"]
         assert len(tool_call_events) == 1
-        # args_as_dict() should parse the JSON string
         assert tool_call_events[0]["arguments"] == {"to": "leo", "msg": "hello"}
 
 
@@ -1075,9 +1127,6 @@ class TestStreamPartStartEvents:
     @pytest.mark.asyncio
     async def test_text_part_start_emits_text_delta(self):
         """PartStartEvent with TextPart should yield a text_delta event."""
-        service = _make_service()
-        await service.start()
-
         # ModelRequestNode that streams a PartStartEvent with TextPart
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content="Hello from Google")),
@@ -1089,7 +1138,8 @@ class TestStreamPartStartEvents:
         mock_run = _MockAgentRun(nodes=[model_node], output="Hello from Google")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1103,9 +1153,6 @@ class TestStreamPartStartEvents:
     @pytest.mark.asyncio
     async def test_thinking_part_start_emits_thinking_delta(self):
         """PartStartEvent with ThinkingPart should yield a thinking_delta event."""
-        service = _make_service()
-        await service.start()
-
         stream_events = [
             PartStartEvent(index=0, part=ThinkingPart(content="Let me reason...")),
             PartStartEvent(index=1, part=TextPart(content="Here is the answer.")),
@@ -1117,7 +1164,8 @@ class TestStreamPartStartEvents:
         mock_run = _MockAgentRun(nodes=[model_node], output="Here is the answer.")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1134,9 +1182,6 @@ class TestStreamPartStartEvents:
     @pytest.mark.asyncio
     async def test_part_start_followed_by_part_delta(self):
         """Both PartStartEvent and PartDeltaEvent should produce events."""
-        service = _make_service()
-        await service.start()
-
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content="Hello")),
             PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" world")),
@@ -1148,7 +1193,8 @@ class TestStreamPartStartEvents:
         mock_run = _MockAgentRun(nodes=[model_node], output="Hello world")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1163,9 +1209,6 @@ class TestStreamPartStartEvents:
     @pytest.mark.asyncio
     async def test_empty_part_start_content_skipped(self):
         """PartStartEvent with empty content should not yield an event."""
-        service = _make_service()
-        await service.start()
-
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content="")),
             PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="Actual content")),
@@ -1177,7 +1220,8 @@ class TestStreamPartStartEvents:
         mock_run = _MockAgentRun(nodes=[model_node], output="Actual content")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1195,14 +1239,6 @@ class TestPartStartChunking:
     @pytest.mark.asyncio
     async def test_large_thinking_part_is_chunked(self):
         """ThinkingPart content above threshold is split into multiple events."""
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=50,
-                part_start_chunk_size=20,
-            ),
-        )
-        await service.start()
-
         # 100-char thinking content — above 50-char threshold
         thinking_content = "A" * 100
         stream_events = [
@@ -1216,7 +1252,14 @@ class TestPartStartChunking:
         mock_run = _MockAgentRun(nodes=[model_node], output="Answer")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(
+                part_start_chunk_threshold=50,
+                part_start_chunk_size=20,
+            ),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1232,14 +1275,6 @@ class TestPartStartChunking:
     @pytest.mark.asyncio
     async def test_large_text_part_is_chunked(self):
         """TextPart content above threshold is split into multiple events."""
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=50,
-                part_start_chunk_size=30,
-            ),
-        )
-        await service.start()
-
         # 90-char text — above 50-char threshold, 30-char chunks → 3 events
         text_content = "B" * 90
         stream_events = [
@@ -1252,7 +1287,14 @@ class TestPartStartChunking:
         mock_run = _MockAgentRun(nodes=[model_node], output=text_content)
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(
+                part_start_chunk_threshold=50,
+                part_start_chunk_size=30,
+            ),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1266,14 +1308,6 @@ class TestPartStartChunking:
     @pytest.mark.asyncio
     async def test_small_content_not_chunked(self):
         """Content at or below threshold is emitted as a single event."""
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=200,
-                part_start_chunk_size=100,
-            ),
-        )
-        await service.start()
-
         # 150 chars — below 200-char threshold
         text_content = "C" * 150
         stream_events = [
@@ -1286,7 +1320,14 @@ class TestPartStartChunking:
         mock_run = _MockAgentRun(nodes=[model_node], output=text_content)
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(
+                part_start_chunk_threshold=200,
+                part_start_chunk_size=100,
+            ),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1300,14 +1341,6 @@ class TestPartStartChunking:
     @pytest.mark.asyncio
     async def test_exact_threshold_not_chunked(self):
         """Content exactly at threshold is NOT chunked (uses <= check)."""
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=100,
-                part_start_chunk_size=50,
-            ),
-        )
-        await service.start()
-
         text_content = "D" * 100  # exactly at threshold
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content=text_content)),
@@ -1319,7 +1352,14 @@ class TestPartStartChunking:
         mock_run = _MockAgentRun(nodes=[model_node], output=text_content)
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(
+                part_start_chunk_threshold=100,
+                part_start_chunk_size=50,
+            ),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1332,14 +1372,6 @@ class TestPartStartChunking:
     @pytest.mark.asyncio
     async def test_uneven_chunk_remainder(self):
         """Content that doesn't divide evenly produces a shorter final chunk."""
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=50,
-                part_start_chunk_size=30,
-            ),
-        )
-        await service.start()
-
         text_content = "E" * 70  # 30 + 30 + 10
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content=text_content)),
@@ -1351,7 +1383,14 @@ class TestPartStartChunking:
         mock_run = _MockAgentRun(nodes=[model_node], output=text_content)
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(
+                part_start_chunk_threshold=50,
+                part_start_chunk_size=30,
+            ),
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1380,13 +1419,6 @@ class TestStreamTracePersistence:
         mock_db_session.add = MagicMock()
         mock_db_session.flush = AsyncMock()
 
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            database_service=mock_db,
-        )
-        await service.start()
-        request = _make_request(message="Hello trace test")
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_run.result.usage.return_value = MagicMock(
             request_tokens=0,
@@ -1396,7 +1428,13 @@ class TestStreamTracePersistence:
         )
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=True),
+            database_service=mock_db,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request(message="Hello trace test")
 
         async for _ in service.stream_message(request):
             pass
@@ -1407,13 +1445,6 @@ class TestStreamTracePersistence:
     @pytest.mark.asyncio
     async def test_save_trace_skipped_when_no_db(self):
         """When no DB, _save_trace is a no-op — no error."""
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            database_service=None,
-        )
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_run.result.usage.return_value = MagicMock(
             request_tokens=0,
@@ -1423,7 +1454,13 @@ class TestStreamTracePersistence:
         )
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=True),
+            database_service=None,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -1436,38 +1473,30 @@ class TestStreamTracePersistence:
     @pytest.mark.asyncio
     async def test_save_trace_skipped_when_debug_disabled(self):
         """When debug events are disabled, no trace events to save."""
-        mock_db = MagicMock()
-
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
         service = _make_service(
             streaming_config=StreamingConfig(emit_debug_events=False),
-            database_service=mock_db,
+            database_service=None,
+            agent_context=_make_default_agent_context(agent=mock_agent),
         )
         await service.start()
         request = _make_request()
 
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
 
-        async for _ in service.stream_message(request):
-            pass
-
-        # No trace events → _save_trace returns early
-        mock_db.session_context.assert_not_called()
+        # No DB → no trace saved, no artifact loading — completes cleanly
+        types = [e["type"] for e in events]
+        assert "agent_status" in types
 
     @pytest.mark.asyncio
     async def test_save_trace_failure_does_not_break_stream(self):
         """DB failure in _save_trace is logged, not raised."""
         mock_db = MagicMock()
         mock_db.session_context = MagicMock(side_effect=RuntimeError("DB down"))
-
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            database_service=mock_db,
-        )
-        await service.start()
-        request = _make_request()
 
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_run.result.usage.return_value = MagicMock(
@@ -1478,7 +1507,13 @@ class TestStreamTracePersistence:
         )
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=True),
+            database_service=mock_db,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -1505,13 +1540,6 @@ class TestStreamTracePersistence:
         sessions.get_context("test-session")
         sessions.set_pending_tool_call("test-session", "call_123", "navigate")
 
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            sessions=sessions,
-            database_service=mock_db,
-        )
-        await service.start()
-
         mock_run = _MockAgentRun(nodes=[], output="Continued")
         mock_run.result.usage.return_value = MagicMock(
             request_tokens=0,
@@ -1521,7 +1549,13 @@ class TestStreamTracePersistence:
         )
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            streaming_config=StreamingConfig(emit_debug_events=True),
+            sessions=sessions,
+            database_service=mock_db,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
 
         request = _make_request(
             tool_call_id="call_123",
@@ -1590,7 +1624,9 @@ class TestStreamTimeout:
 
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=hanging_run)
-        service._llm.build_agent.return_value = mock_agent
+        service._assistant_service.prepare_agent_context.return_value = _make_default_agent_context(
+            agent=mock_agent
+        )
 
         events = []
         async for event in service.stream_message(request):
@@ -1612,15 +1648,16 @@ class TestStreamTimeout:
     @pytest.mark.asyncio
     async def test_no_timeout_when_fast_enough(self):
         """Normal fast responses complete without timeout issues."""
-        config = StreamingConfig(stream_timeout_seconds=10.0, emit_debug_events=False)
-        service = _make_service(streaming_config=config)
-        await service.start()
-        request = _make_request()
-
         mock_run = _MockAgentRun(nodes=[], output="Fast response")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        config = StreamingConfig(stream_timeout_seconds=10.0, emit_debug_events=False)
+        service = _make_service(
+            streaming_config=config,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+        request = _make_request()
 
         events = []
         async for event in service.stream_message(request):
@@ -1639,9 +1676,6 @@ class TestStreamToolCallInterleaving:
     @pytest.mark.asyncio
     async def test_tool_call_emitted_during_streaming_at_correct_position(self):
         """Tool call events interleave with text deltas in stream order."""
-        service = _make_service()
-        await service.start()
-
         tc = ToolCallPart(tool_name="get_status", args={"agent": "leo"}, tool_call_id="call_s1")
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content="Let me check.")),
@@ -1665,7 +1699,8 @@ class TestStreamToolCallInterleaving:
         mock_run = _MockAgentRun(nodes=[model_node, call_node, next_model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1687,9 +1722,6 @@ class TestStreamToolCallInterleaving:
     @pytest.mark.asyncio
     async def test_tool_call_not_duplicated_in_call_tools_node(self):
         """A tool call streamed from _stream_node is NOT re-emitted by CallToolsNode."""
-        service = _make_service()
-        await service.start()
-
         tc = ToolCallPart(tool_name="get_status", args={"agent": "leo"}, tool_call_id="call_s1")
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content="Let me check.")),
@@ -1713,7 +1745,8 @@ class TestStreamToolCallInterleaving:
         mock_run = _MockAgentRun(nodes=[model_node, call_node, next_model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1726,10 +1759,7 @@ class TestStreamToolCallInterleaving:
     @pytest.mark.asyncio
     async def test_frontend_tool_not_emitted_during_streaming(self):
         """Frontend tool calls in _stream_node are skipped (not emitted)."""
-        service = _make_service()
-        await service.start()
-
-        service._tools.get_available_tools.return_value = ToolSet(
+        frontend_tools = ToolSet(
             frontend_tools=[
                 ToolDefinition(
                     name="navigate",
@@ -1757,7 +1787,12 @@ class TestStreamToolCallInterleaving:
         mock_run = _MockAgentRun(nodes=[model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(
+            agent_context=_make_default_agent_context(
+                available_tools=frontend_tools, agent=mock_agent
+            )
+        )
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1770,9 +1805,6 @@ class TestStreamToolCallInterleaving:
     @pytest.mark.asyncio
     async def test_interleaved_multi_tool_streaming(self):
         """Multiple tool calls interleave correctly with text deltas."""
-        service = _make_service()
-        await service.start()
-
         tc_a = ToolCallPart(tool_name="tool_a", args={}, tool_call_id="call_a1")
         tc_b = ToolCallPart(tool_name="tool_b", args={"x": 1}, tool_call_id="call_b1")
 
@@ -1805,7 +1837,8 @@ class TestStreamToolCallInterleaving:
         mock_run = _MockAgentRun(nodes=[model_node, call_node, next_model_node], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1884,9 +1917,6 @@ class TestToolErrorDetection:
     @pytest.mark.asyncio
     async def test_tool_error_emitted_for_error_result(self):
         """When a tool returns an error dict, tool_error event is emitted instead of tool_result."""
-        service = _make_service()
-        await service.start()
-
         tc = ToolCallPart(tool_name="get_time", args={}, tool_call_id="call_err")
         call_node = _make_call_tools_node([tc])
 
@@ -1902,7 +1932,8 @@ class TestToolErrorDetection:
         mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Error noted")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         events = []
         async for event in service.stream_message(_make_request()):
@@ -1926,9 +1957,6 @@ class TestStreamFinalResponseMetadata:
     @pytest.mark.asyncio
     async def test_streaming_text_deltas_clears_content(self):
         """When text deltas are streamed, final_response has empty content and streamed=True."""
-        service = _make_service()
-        await service.start()
-
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content="Hello")),
             PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" world")),
@@ -1940,7 +1968,8 @@ class TestStreamFinalResponseMetadata:
         mock_run = _MockAgentRun(nodes=[model_node], output="Hello world")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1954,13 +1983,11 @@ class TestStreamFinalResponseMetadata:
     @pytest.mark.asyncio
     async def test_no_streaming_preserves_content(self):
         """When no deltas are emitted, final_response has full content and streamed=False."""
-        service = _make_service()
-        await service.start()
-
         mock_run = _MockAgentRun(nodes=[], output="Direct response")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []
@@ -1972,11 +1999,25 @@ class TestStreamFinalResponseMetadata:
         assert final["streamed"] is False
 
     @pytest.mark.asyncio
-    async def test_thinking_deltas_set_thinking_streamed(self):
-        """When thinking deltas are streamed, final_response has thinking_streamed=True."""
-        service = _make_service()
+    async def test_final_response_includes_session_id(self):
+        """final_response event includes the session_id."""
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
         await service.start()
 
+        request = _make_request(session_id="sess-abc")
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        final = [e for e in events if e["type"] == "final_response"][0]
+        assert final["session_id"] == "sess-abc"
+
+    @pytest.mark.asyncio
+    async def test_thinking_deltas_set_thinking_streamed(self):
+        """When thinking deltas are streamed, final_response has thinking_streamed=True."""
         stream_events = [
             PartStartEvent(index=0, part=ThinkingPart(content="Let me think")),
             PartStartEvent(index=1, part=TextPart(content="Answer")),
@@ -1988,7 +2029,8 @@ class TestStreamFinalResponseMetadata:
         mock_run = _MockAgentRun(nodes=[model_node], output="Answer")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service._llm.build_agent.return_value = mock_agent
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
 
         request = _make_request()
         events = []

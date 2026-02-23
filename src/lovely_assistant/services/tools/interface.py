@@ -9,6 +9,7 @@ from typing import Any
 from loguru import logger
 
 from lovely_assistant.services.tools._agent_tools import register_agent_tools
+from lovely_assistant.services.tools._artifact_tools import register_artifact_tools
 from lovely_assistant.services.tools._github_tools import register_github_tools
 from lovely_assistant.services.tools._media_tools import register_media_tools
 from lovely_assistant.services.tools._meeting_tools import register_meeting_tools
@@ -17,6 +18,7 @@ from lovely_assistant.services.tools._plan_tools import register_plan_tools
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools._schedule_tools import register_schedule_tools
 from lovely_assistant.services.tools._subagent_tools import register_subagent_tools
+from lovely_assistant.services.tools._telegram_tools import register_telegram_tools
 from lovely_assistant.services.tools._video_tools import register_video_tools
 from lovely_assistant.services.tools.config import ToolConfig
 from lovely_assistant.services.tools.exceptions import ToolError
@@ -31,10 +33,14 @@ class ToolService:
         config: ToolConfig,
         media_service: Any | None = None,
         llm_service: Any | None = None,
+        mcp_service: Any | None = None,
+        database_service: Any | None = None,
     ) -> None:
         self._config = config
         self._media_service = media_service
         self._llm_service = llm_service
+        self._mcp_service = mcp_service
+        self._database_service = database_service
         self._runtime_settings: object | None = None
         self._registry: ToolRegistry | None = None
         self._started = False
@@ -67,9 +73,15 @@ class ToolService:
         }
 
     def build_toolset(self, machine_state: dict[str, Any] | None = None) -> list:
-        """Build Pydantic AI toolsets for a request."""
+        """Build Pydantic AI toolsets for a request.
+
+        Includes MCP server toolsets (always available, not page-filtered).
+        """
         self._ensure_started()
-        return self._registry.build_toolset(machine_state)
+        toolsets = self._registry.build_toolset(machine_state)
+        if self._mcp_service is not None:
+            toolsets.extend(self._mcp_service.get_toolsets())
+        return toolsets
 
     def get_available_tools(self, machine_state: dict[str, Any] | None = None) -> ToolSet:
         """List tools available for a given machine state."""
@@ -100,6 +112,16 @@ class ToolService:
         """Attach live runtime settings and propagate to subagent handler deps."""
         self._runtime_settings = runtime_settings
         self._configure_subagent_handler_deps()
+
+    async def get_mcp_summary(self) -> list[dict[str, Any]] | None:
+        """Return MCP server summary for prompt builder, or None if no MCP service."""
+        if self._mcp_service is None:
+            return None
+        try:
+            summary = await self._mcp_service.get_detailed_summary()
+        except Exception:
+            summary = self._mcp_service.get_server_summary()
+        return summary or None
 
     def _ensure_started(self) -> None:
         """Guard: raise if service not started."""
@@ -174,8 +196,15 @@ class ToolService:
         # Schedule management tools
         register_schedule_tools(self._registry)
 
+        # Telegram messaging tools
+        register_telegram_tools(self._registry)
+
         # Plan management tools
         register_plan_tools(self._registry)
+
+        # Artifact management tools
+        register_artifact_tools(self._registry)
+        self._configure_artifact_handler_deps()
 
         # Subagent tools (only if llm_service is available)
         if self._llm_service is not None:
@@ -186,6 +215,15 @@ class ToolService:
         if self._media_service is not None:
             register_media_tools(self._registry, self._media_service)
             register_video_tools(self._registry, self._media_service)
+
+    def _configure_artifact_handler_deps(self) -> None:
+        """Configure runtime dependencies consumed by manage_artifacts handler."""
+        if self._registry is None:
+            return
+        self._registry.configure_handler_deps(
+            "manage_artifacts",
+            {"database_service": self._database_service},
+        )
 
     def _configure_subagent_handler_deps(self) -> None:
         """Configure runtime dependencies consumed by run_subagent handler."""
