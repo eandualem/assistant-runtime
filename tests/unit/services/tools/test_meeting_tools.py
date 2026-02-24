@@ -170,7 +170,7 @@ class TestSendMeetingMessage:
         call_args = mock_req.call_args
         assert "/directed" in call_args[0][1]
         json_body = call_args.kwargs.get("json_body") or call_args[1].get("json_body")
-        assert json_body["to"] == "leo"
+        assert json_body["target"] == "leo"
 
     async def test_empty_message(self):
         result = await send_meeting_message("room-1", "")

@@ -119,7 +119,8 @@ class ToolService:
             return None
         try:
             summary = await self._mcp_service.get_detailed_summary()
-        except Exception:
+        except Exception as exc:
+            logger.warning("MCP detailed summary failed, falling back", error=str(exc))
             summary = self._mcp_service.get_server_summary()
         return summary or None
 
