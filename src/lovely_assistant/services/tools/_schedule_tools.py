@@ -6,14 +6,9 @@ from typing import Any
 
 from loguru import logger
 
-from lovely_assistant.services.tools._backbone_client import backbone_request
+from lovely_assistant.services.tools._backbone_client import backbone_error, backbone_request
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
-
-
-def _backbone_error(payload: dict[str, Any]) -> str:
-    """Extract normalized error text from backbone transport payload."""
-    return payload.get("error", payload.get("message", "Request failed"))
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +31,7 @@ async def add_schedule_item(time: str, title: str) -> dict[str, Any]:
     )
 
     if status == -1:
-        return {"error": _backbone_error(data), "success": False}
+        return {"error": backbone_error(data), "success": False}
 
     if status not in (200, 201):
         return {
@@ -60,7 +55,7 @@ async def remove_schedule_item(item_id: str) -> dict[str, Any]:
     )
 
     if status == -1:
-        return {"error": _backbone_error(data), "success": False}
+        return {"error": backbone_error(data), "success": False}
 
     if status == 404:
         return {"error": f"Schedule item '{item_id}' not found", "success": False}
@@ -80,7 +75,7 @@ async def toggle_schedule_item(item_id: str) -> dict[str, Any]:
     get_status, get_data = await backbone_request("GET", "/api/schedule/today")
 
     if get_status == -1:
-        return {"error": _backbone_error(get_data), "success": False}
+        return {"error": backbone_error(get_data), "success": False}
 
     if get_status != 200:
         return {
@@ -108,7 +103,7 @@ async def toggle_schedule_item(item_id: str) -> dict[str, Any]:
     )
 
     if status == -1:
-        return {"error": _backbone_error(data), "success": False}
+        return {"error": backbone_error(data), "success": False}
 
     if status == 404:
         return {"error": f"Schedule item '{item_id}' not found", "success": False}

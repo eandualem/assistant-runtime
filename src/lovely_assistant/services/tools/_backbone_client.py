@@ -77,3 +77,8 @@ async def backbone_request(
                 "error_code": "BACKBONE_HTTP_ERROR",
             },
         )
+
+
+def backbone_error(payload: dict[str, Any]) -> str:
+    """Extract normalized error text from a backbone transport payload."""
+    return payload.get("error", payload.get("message", "Request failed"))

@@ -26,6 +26,7 @@ AGENT_REGISTRY: dict[str, Path] = {
     "curie": Path.home() / "ws" / "core" / "curie",
     "ada": Path.home() / "ws" / "core" / "spec",
     "brunel": Path.home() / "infra",
+    "gallup": Path.home() / "ws" / "core" / "gallup",
     "agent-backbone": Path.home() / "ws" / "core" / "code" / "WF" / "agent-backbone",
     "agent-orchestration-dashboard": Path.home()
     / "ws"

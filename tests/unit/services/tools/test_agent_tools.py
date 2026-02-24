@@ -198,6 +198,7 @@ class TestAgentRegistry:
             "curie",
             "ada",
             "brunel",
+            "gallup",
             "agent-backbone",
             "agent-orchestration-dashboard",
             "lovely-assistant",
