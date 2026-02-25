@@ -10,7 +10,6 @@ from lovely_assistant.services.tools._backbone_client import backbone_error, bac
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
-
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------

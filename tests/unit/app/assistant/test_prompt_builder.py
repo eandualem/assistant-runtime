@@ -62,37 +62,70 @@ class TestCommunicationProtocolFragment:
         assert len(frag) > 0
 
 
+SAMPLE_AGENTS = [
+    {
+        "name": "leo",
+        "display_name": "Leo",
+        "role": "Strategy Co-Architect",
+        "session": "leo",
+        "type": "entity",
+    },
+    {
+        "name": "ike",
+        "display_name": "Ike",
+        "role": "Core Orchestrator",
+        "session": "ike",
+        "type": "entity",
+    },
+    {
+        "name": "feynman",
+        "display_name": "Feynman",
+        "role": "Orchestration Optimizer",
+        "session": "feynman",
+        "type": "entity",
+    },
+]
+
+
 class TestEcosystemFragment:
     def test_contains_agents(self):
-        frag = _ecosystem_fragment()
+        frag = _ecosystem_fragment(SAMPLE_AGENTS)
         assert "Leo" in frag
         assert "Ike" in frag
         assert "Feynman" in frag
 
-    def test_contains_routing(self):
-        frag = _ecosystem_fragment()
-        assert "Route:" in frag
+    def test_contains_session_info(self):
+        frag = _ecosystem_fragment(SAMPLE_AGENTS)
+        assert "[session: leo]" in frag
 
     def test_format(self):
-        frag = _ecosystem_fragment()
+        frag = _ecosystem_fragment(SAMPLE_AGENTS)
         assert frag.startswith("The Lovely Universe")
         assert len(frag) > 0
 
-    def test_all_agents_present(self):
-        frag = _ecosystem_fragment()
-        expected = [
-            "Leo",
-            "Ike",
-            "Hamilton",
-            "Curie",
-            "Bell",
-            "Feynman",
-            "Ada",
-            "Brunel",
-            "Coding Agents",
+    def test_none_returns_empty(self):
+        frag = _ecosystem_fragment(None)
+        assert frag == ""
+
+    def test_empty_list_returns_empty(self):
+        frag = _ecosystem_fragment([])
+        assert frag == ""
+
+    def test_includes_role(self):
+        frag = _ecosystem_fragment(SAMPLE_AGENTS)
+        assert "Strategy Co-Architect" in frag
+
+    def test_includes_org_when_present(self):
+        agents = [
+            {
+                "display_name": "agent-backbone",
+                "role": "Coding Agent",
+                "session": "agent-backbone",
+                "org": "WF",
+            },
         ]
-        for name in expected:
-            assert name in frag, f"{name} not found in ecosystem fragment"
+        frag = _ecosystem_fragment(agents)
+        assert "org: WF" in frag
 
 
 class TestDatetimeFragment:
@@ -585,6 +618,7 @@ class TestBuildSystemPrompt:
                     "data": {"sessions": [{"name": "leo", "state": "idle"}]},
                 },
             },
+            registry_agents=SAMPLE_AGENTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
         assert "persona" in fragment_names
@@ -606,16 +640,26 @@ class TestBuildSystemPrompt:
             session_context={},
         )
         fragment_names = [f["name"] for f in result.fragments]
-        # Minimum: persona + communication_protocol + ecosystem + datetime (always present)
+        # Minimum: persona + communication_protocol + datetime (always present)
         assert "persona" in fragment_names
         assert "communication_protocol" in fragment_names
-        assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
-        # No tools, dashboard_context, smart_hints, or working_memory
+        # No ecosystem (no registry_agents), tools, dashboard_context, etc.
+        assert "ecosystem" not in fragment_names
         assert "tools" not in fragment_names
         assert "dashboard_context" not in fragment_names
         assert "smart_hints" not in fragment_names
         assert "working_memory" not in fragment_names
+
+    def test_ecosystem_included_with_registry_agents(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            registry_agents=SAMPLE_AGENTS,
+        )
+        fragment_names = [f["name"] for f in result.fragments]
+        assert "ecosystem" in fragment_names
+        assert "Leo" in result.content
 
 
 class TestArtifactIntegration:
@@ -658,7 +702,7 @@ class TestArtifactIntegration:
         fragment_names = [f["name"] for f in result.fragments]
         assert "scratchpad" not in fragment_names
 
-    def test_none_artifacts_falls_back_to_hardcoded(self):
+    def test_none_artifacts_falls_back_to_hardcoded_persona(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
@@ -678,13 +722,14 @@ class TestArtifactIntegration:
         assert "Jarvis" in result.content
         assert "operational nervous system" in result.content
 
-    def test_missing_ecosystem_key_falls_back_to_hardcoded(self):
+    def test_missing_ecosystem_key_falls_back_to_registry(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
             artifacts={"persona": "Custom"},
+            registry_agents=SAMPLE_AGENTS,
         )
-        # Ecosystem should fall back to hardcoded
+        # Ecosystem should fall back to registry data
         assert "Leo" in result.content
 
     def test_communication_protocol_artifact_override(self):

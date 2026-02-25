@@ -10,33 +10,13 @@ from typing import Any
 
 from loguru import logger
 
+from lovely_assistant.services.tools._agent_registry_cache import get_registry_cache
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
 STATE_DIR = Path.home() / ".claude" / "state"
-WORKSPACE_ROOT = Path.home() / "ws"
 SESSION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$")
 MAX_SESSION_NAME_LENGTH = 64
-AGENT_REGISTRY: dict[str, Path] = {
-    "bell": Path.home() / "ws" / "core" / "bell",
-    "feynman": Path.home() / "orchestration",
-    "ike": Path.home() / "ws" / "core" / "ike",
-    "leo": Path.home() / "ws" / "leo",
-    "hamilton": Path.home() / "ws" / "core" / "hamilton",
-    "curie": Path.home() / "ws" / "core" / "curie",
-    "ada": Path.home() / "ws" / "core" / "spec",
-    "brunel": Path.home() / "infra",
-    "gallup": Path.home() / "ws" / "core" / "gallup",
-    "agent-backbone": Path.home() / "ws" / "core" / "code" / "WF" / "agent-backbone",
-    "agent-orchestration-dashboard": Path.home()
-    / "ws"
-    / "core"
-    / "code"
-    / "WF"
-    / "agent-orchestration-dashboard",
-    "lovely-assistant": Path.home() / "ws" / "core" / "code" / "WF" / "lovely-assistant",
-    "alfred": Path.home() / "ws" / "core" / "code" / "WF" / "Alfred",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -91,21 +71,6 @@ def _validate_session_name(session_name: str) -> str | None:
     return None
 
 
-def _validate_working_directory(working_directory: str) -> str | None:
-    """Validate a working directory. Returns error message or None if valid."""
-    try:
-        path = Path(working_directory).resolve()
-    except (ValueError, OSError):
-        return f"Invalid path: {working_directory}"
-    try:
-        path.relative_to(WORKSPACE_ROOT.resolve())
-    except ValueError:
-        return f"Working directory must be under {WORKSPACE_ROOT}"
-    if not path.is_dir():
-        return f"Directory does not exist: {path}"
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------
@@ -120,22 +85,27 @@ async def list_agents() -> dict[str, Any]:
         # tmux returns error when no sessions exist
         return {"sessions": [], "success": True}
 
+    cache = get_registry_cache()
+    await cache.get_agents()  # ensure cache is populated
+
     session_names = [s for s in stdout.splitlines() if s.strip()]
     sessions = []
     for name in session_names:
         state = _read_state_file(name)
-        sessions.append(
-            {
-                "session_name": name,
-                "state": state.get("state", "unknown") if state else "unknown",
-                "entity": state.get("entity") if state else None,
-                "issue": state.get("issue") if state else None,
-                "context": state.get("context") if state else None,
-                "registered_directory": str(AGENT_REGISTRY[name])
-                if name in AGENT_REGISTRY
-                else None,
-            }
-        )
+        info = cache.get_agent_info(name)
+        entry: dict[str, Any] = {
+            "session_name": name,
+            "state": state.get("state", "unknown") if state else "unknown",
+            "entity": state.get("entity") if state else None,
+            "issue": state.get("issue") if state else None,
+            "context": state.get("context") if state else None,
+        }
+        if info:
+            entry["display_name"] = info.get("display_name")
+            entry["role"] = info.get("role")
+            entry["type"] = info.get("type")
+            entry["home"] = info.get("home")
+        sessions.append(entry)
 
     return {"sessions": sessions, "count": len(sessions), "success": True}
 
@@ -177,37 +147,44 @@ async def check_agent_state(session_name: str) -> dict[str, Any]:
 
 async def start_agent(
     session_name: str,
-    working_directory: str | None = None,
     initial_prompt: str = "",
 ) -> dict[str, Any]:
-    """Start a new agent in a tmux session."""
+    """Start a new agent in a tmux session.
+
+    Working directory is resolved from the backbone agent registry.
+    """
     error = _validate_session_name(session_name)
     if error:
         return {"error": error, "success": False}
 
-    # Resolve working directory from registry if not provided
-    from_registry = False
-    if working_directory is None:
-        registry_path = AGENT_REGISTRY.get(session_name)
-        if registry_path is None:
-            return {
-                "error": f"No working directory provided and '{session_name}' is not in the agent registry",
-                "success": False,
-            }
-        working_directory = str(registry_path)
-        from_registry = True
+    # Resolve working directory from backbone registry
+    cache = get_registry_cache()
+    agents = await cache.get_agents()
+    if agents is None:
+        return {
+            "error": "Agent registry unavailable — cannot resolve working directory",
+            "success": False,
+        }
 
-    if from_registry:
-        # Registry paths are curated — skip workspace boundary check, only verify existence
-        if not Path(working_directory).is_dir():
-            return {
-                "error": f"Registry directory does not exist: {working_directory}",
-                "success": False,
-            }
-    else:
-        error = _validate_working_directory(working_directory)
-        if error:
-            return {"error": error, "success": False}
+    working_directory = cache.get_working_directory(session_name)
+    if working_directory is None:
+        available = cache.get_available_sessions()
+        return {
+            "error": (
+                f"Unknown session '{session_name}' — not in agent registry. "
+                f"Available sessions: {', '.join(available) if available else 'none'}"
+            ),
+            "success": False,
+        }
+
+    # Backbone may return tilde-prefixed paths (e.g. ~/ws/core/bell)
+    working_directory = str(Path(working_directory).expanduser())
+
+    if not Path(working_directory).is_dir():
+        return {
+            "error": f"Registry directory does not exist: {working_directory}",
+            "success": False,
+        }
 
     # Check if session already exists
     rc, _, _ = await _run_command(["tmux", "has-session", "-t", session_name])
@@ -371,18 +348,15 @@ def register_agent_tools(registry: ToolRegistry) -> None:
             description=(
                 "Start a new AI agent in a tmux session. Creates the session, "
                 "launches Claude, and optionally sends an initial prompt. "
-                "If working_directory is omitted, falls back to the agent registry."
+                "Working directory is resolved automatically from the agent registry. "
+                "Use list_agents to see available session names."
             ),
             parameters_schema={
                 "type": "object",
                 "properties": {
                     "session_name": {
                         "type": "string",
-                        "description": "Name for the new tmux session",
-                    },
-                    "working_directory": {
-                        "type": "string",
-                        "description": "Working directory (must be under ~/ws/). Optional — falls back to agent registry.",
+                        "description": "Name for the new tmux session (must be a known agent)",
                     },
                     "initial_prompt": {
                         "type": "string",
