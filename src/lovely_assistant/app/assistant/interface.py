@@ -117,15 +117,21 @@ class AssistantService:
         available_tools = self._tools.get_available_tools(request.machine_state)
         toolsets = self._tools.build_toolset(request.machine_state)
 
-        # 2. MCP + artifacts + system prompt
+        # 2. MCP + artifacts + registry + system prompt
         mcp_summary = await self._tools.get_mcp_summary()
         artifacts = await self._load_active_artifacts()
+
+        from lovely_assistant.services.tools._agent_registry_cache import get_registry_cache
+
+        registry_agents = await get_registry_cache().get_agents()
+
         prompt_result = build_system_prompt(
             available_tools=available_tools,
             session_context=session_context,
             machine_state=request.machine_state,
             mcp_summary=mcp_summary,
             artifacts=artifacts,
+            registry_agents=registry_agents,
         )
 
         # 3. Config resolution

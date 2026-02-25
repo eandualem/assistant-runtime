@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from lovely_assistant.services.tools._agent_tools import (
-    AGENT_REGISTRY,
     MAX_SESSION_NAME_LENGTH,
     _read_state_file,
     _run_command,
     _validate_session_name,
-    _validate_working_directory,
     check_agent_state,
     list_agents,
     register_agent_tools,
@@ -42,15 +39,6 @@ def state_dir(tmp_path, monkeypatch):
     """Redirect STATE_DIR to a temp directory."""
     monkeypatch.setattr(f"{MODULE}.STATE_DIR", tmp_path)
     return tmp_path
-
-
-@pytest.fixture
-def workspace_dir(tmp_path, monkeypatch):
-    """Redirect WORKSPACE_ROOT to a temp directory with a sub-dir."""
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    monkeypatch.setattr(f"{MODULE}.WORKSPACE_ROOT", ws)
-    return ws
 
 
 # ---------------------------------------------------------------------------
@@ -160,63 +148,6 @@ class TestValidateSessionName:
 
 
 # ---------------------------------------------------------------------------
-# TestValidateWorkingDirectory
-# ---------------------------------------------------------------------------
-
-
-class TestValidateWorkingDirectory:
-    def test_valid_path(self, workspace_dir):
-        subdir = workspace_dir / "core" / "code"
-        subdir.mkdir(parents=True)
-        result = _validate_working_directory(str(subdir))
-        assert result is None
-
-    def test_outside_workspace(self, workspace_dir):
-        result = _validate_working_directory("/tmp/not-in-workspace")
-        assert result is not None
-        assert "must be under" in result
-
-    def test_nonexistent_directory(self, workspace_dir):
-        result = _validate_working_directory(str(workspace_dir / "does-not-exist"))
-        assert result is not None
-        assert "does not exist" in result
-
-
-# ---------------------------------------------------------------------------
-# TestAgentRegistry
-# ---------------------------------------------------------------------------
-
-
-class TestAgentRegistry:
-    def test_registry_has_expected_agents(self):
-        expected = {
-            "bell",
-            "feynman",
-            "ike",
-            "leo",
-            "hamilton",
-            "curie",
-            "ada",
-            "brunel",
-            "gallup",
-            "agent-backbone",
-            "agent-orchestration-dashboard",
-            "lovely-assistant",
-            "alfred",
-        }
-        assert set(AGENT_REGISTRY.keys()) == expected
-
-    def test_registry_paths_are_absolute(self):
-        for name, path in AGENT_REGISTRY.items():
-            assert path.is_absolute(), f"{name} has relative path: {path}"
-
-    def test_registry_paths_under_home(self):
-        home = Path.home()
-        for name, path in AGENT_REGISTRY.items():
-            assert str(path).startswith(str(home)), f"{name} not under home: {path}"
-
-
-# ---------------------------------------------------------------------------
 # TestListAgents
 # ---------------------------------------------------------------------------
 
@@ -232,7 +163,11 @@ class TestListAgents:
             None,
         ]
 
-        result = await list_agents()
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=[])
+        mock_cache.get_agent_info = MagicMock(return_value=None)
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await list_agents()
         assert result["success"] is True
         assert result["count"] == 3
         assert len(result["sessions"]) == 3
@@ -263,23 +198,47 @@ class TestListAgents:
         mock_run.return_value = (0, "session1\nsession2", "")
         mock_state.return_value = None
 
-        result = await list_agents()
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=[])
+        mock_cache.get_agent_info = MagicMock(return_value=None)
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await list_agents()
         assert result["success"] is True
         assert all(s["state"] == "unknown" for s in result["sessions"])
 
     @patch(f"{MODULE}._run_command")
     @patch(f"{MODULE}._read_state_file")
-    async def test_includes_registered_directory(self, mock_state, mock_run):
+    async def test_enriches_from_registry_cache(self, mock_state, mock_run):
         mock_run.return_value = (0, "leo\nunknown-session", "")
         mock_state.return_value = None
 
-        result = await list_agents()
+        leo_info = {
+            "display_name": "Leo",
+            "role": "Strategy Co-Architect",
+            "type": "orchestrator",
+            "home": "/Users/elias/ws/leo",
+        }
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", **leo_info}])
+        mock_cache.get_agent_info = MagicMock(
+            side_effect=lambda name: leo_info if name == "leo" else None
+        )
+
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await list_agents()
+
         assert result["success"] is True
         sessions_by_name = {s["session_name"]: s for s in result["sessions"]}
-        # leo is in registry
-        assert sessions_by_name["leo"]["registered_directory"] is not None
-        # unknown-session is not
-        assert sessions_by_name["unknown-session"]["registered_directory"] is None
+        # leo is in registry cache — enriched with display_name, role, type, home
+        assert sessions_by_name["leo"]["display_name"] == "Leo"
+        assert sessions_by_name["leo"]["role"] == "Strategy Co-Architect"
+        assert sessions_by_name["leo"]["type"] == "orchestrator"
+        assert sessions_by_name["leo"]["home"] == "/Users/elias/ws/leo"
+        # unknown-session is NOT in cache — no enrichment fields
+        assert "display_name" not in sessions_by_name["unknown-session"]
+        assert "role" not in sessions_by_name["unknown-session"]
+        assert "type" not in sessions_by_name["unknown-session"]
+        assert "home" not in sessions_by_name["unknown-session"]
 
 
 # ---------------------------------------------------------------------------
@@ -354,122 +313,91 @@ class TestCheckAgentState:
 
 class TestStartAgent:
     @patch(f"{MODULE}._run_command")
-    async def test_success(self, mock_run, workspace_dir):
-        target = workspace_dir / "core" / "code"
+    async def test_success_from_cache(self, mock_run, tmp_path):
+        target = tmp_path / "ws" / "leo"
         target.mkdir(parents=True)
-
-        # has-session (not found), new-session, send-keys (claude)
-        mock_run.side_effect = [
-            (1, "", "session not found"),
-            (0, "", ""),
-            (0, "", ""),
-        ]
-
-        result = await start_agent("test-agent", str(target))
-        assert result["success"] is True
-        assert result["session_name"] == "test-agent"
-        assert result["working_directory"] == str(target)
-
-    @patch(f"{MODULE}._run_command")
-    async def test_existing_session_rejected(self, mock_run, workspace_dir):
-        target = workspace_dir / "repo"
-        target.mkdir()
-        mock_run.return_value = (0, "", "")  # has-session succeeds
-
-        result = await start_agent("existing", str(target))
-        assert result["success"] is False
-        assert "already exists" in result["error"]
-
-    async def test_invalid_name(self, workspace_dir):
-        target = workspace_dir / "repo"
-        target.mkdir()
-        result = await start_agent("-bad-name", str(target))
-        assert result["success"] is False
-
-    async def test_path_outside_workspace(self, workspace_dir):
-        result = await start_agent("test-agent", "/tmp/outside")
-        assert result["success"] is False
-        assert "must be under" in result["error"]
-
-    @patch(f"{MODULE}._run_command")
-    @patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock)
-    async def test_with_initial_prompt(self, mock_sleep, mock_run, workspace_dir):
-        target = workspace_dir / "repo"
-        target.mkdir()
-
-        # has-session, new-session, send-keys(claude), send-keys(prompt), send-keys(Enter)
-        mock_run.side_effect = [
-            (1, "", ""),
-            (0, "", ""),
-            (0, "", ""),
-            (0, "", ""),
-            (0, "", ""),
-        ]
-
-        result = await start_agent("test-agent", str(target), "do the thing")
-        assert result["success"] is True
-        assert result["initial_prompt"] == "do the thing"
-        mock_sleep.assert_awaited_once_with(2)
-
-    @patch(f"{MODULE}._run_command")
-    async def test_success_with_registry_fallback(self, mock_run, workspace_dir):
-        target = workspace_dir / "core" / "bell"
-        target.mkdir(parents=True)
-        # Patch registry to use the temp workspace path
-        with patch(f"{MODULE}.AGENT_REGISTRY", {"bell": target}):
-            # has-session (not found), new-session, send-keys (claude)
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", "home": str(target)}])
+        mock_cache.get_working_directory = MagicMock(return_value=str(target))
+        mock_cache.get_available_sessions = MagicMock(return_value=["leo", "ike"])
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
             mock_run.side_effect = [
-                (1, "", "session not found"),
-                (0, "", ""),
-                (0, "", ""),
+                (1, "", "session not found"),  # has-session
+                (0, "", ""),  # new-session
+                (0, "", ""),  # send-keys claude
             ]
-
-            result = await start_agent("bell")
+            result = await start_agent("leo")
             assert result["success"] is True
             assert result["working_directory"] == str(target)
 
+    async def test_registry_unavailable(self):
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=None)
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await start_agent("leo")
+            assert result["success"] is False
+            assert "registry unavailable" in result["error"].lower()
+
+    async def test_unknown_session(self):
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo"}])
+        mock_cache.get_working_directory = MagicMock(return_value=None)
+        mock_cache.get_available_sessions = MagicMock(return_value=["leo"])
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await start_agent("unknown-agent")
+            assert result["success"] is False
+            assert "Unknown session" in result["error"]
+            assert "leo" in result["error"]  # shows available sessions
+
     @patch(f"{MODULE}._run_command")
-    async def test_registry_override_by_explicit_directory(self, mock_run, workspace_dir):
-        explicit = workspace_dir / "explicit" / "path"
-        explicit.mkdir(parents=True)
+    async def test_existing_session_rejected(self, mock_run, tmp_path):
+        target = tmp_path / "ws" / "leo"
+        target.mkdir(parents=True)
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", "home": str(target)}])
+        mock_cache.get_working_directory = MagicMock(return_value=str(target))
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            mock_run.return_value = (0, "", "")  # has-session succeeds
+            result = await start_agent("leo")
+            assert result["success"] is False
+            assert "already exists" in result["error"]
 
-        mock_run.side_effect = [
-            (1, "", "session not found"),
-            (0, "", ""),
-            (0, "", ""),
-        ]
-
-        result = await start_agent("bell", str(explicit))
-        assert result["success"] is True
-        assert result["working_directory"] == str(explicit)
-
-    async def test_unknown_agent_without_directory_fails(self):
-        result = await start_agent("unknown-agent-xyz")
+    async def test_invalid_name(self):
+        result = await start_agent("-bad-name")
         assert result["success"] is False
-        assert "not in the agent registry" in result["error"]
 
     @patch(f"{MODULE}._run_command")
-    async def test_registry_path_not_exist_fails(self, mock_run, workspace_dir):
-        nonexistent = workspace_dir / "does" / "not" / "exist"
-        with patch(f"{MODULE}.AGENT_REGISTRY", {"test-agent": nonexistent}):
-            result = await start_agent("test-agent")
+    async def test_with_initial_prompt(self, mock_run, tmp_path):
+        target = tmp_path / "ws" / "leo"
+        target.mkdir(parents=True)
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", "home": str(target)}])
+        mock_cache.get_working_directory = MagicMock(return_value=str(target))
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            mock_run.side_effect = [
+                (1, "", ""),  # has-session
+                (0, "", ""),  # new-session
+                (0, "", ""),  # send-keys claude
+                (0, "", ""),  # send-keys prompt
+                (0, "", ""),  # send-keys Enter
+            ]
+            with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                result = await start_agent("leo", "do the thing")
+                assert result["success"] is True
+                assert result["initial_prompt"] == "do the thing"
+                mock_sleep.assert_awaited_once_with(2)
+
+    @patch(f"{MODULE}._run_command")
+    async def test_cache_directory_not_exist(self, mock_run):
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(
+            return_value=[{"session": "leo", "home": "/nonexistent/path"}]
+        )
+        mock_cache.get_working_directory = MagicMock(return_value="/nonexistent/path")
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await start_agent("leo")
             assert result["success"] is False
             assert "does not exist" in result["error"]
-
-    @patch(f"{MODULE}._run_command")
-    async def test_registry_path_outside_workspace_succeeds(self, mock_run, tmp_path):
-        """Registry paths outside ~/ws/ (e.g. feynman, brunel) should bypass workspace check."""
-        outside_ws = tmp_path / "orchestration"
-        outside_ws.mkdir()
-        with patch(f"{MODULE}.AGENT_REGISTRY", {"feynman": outside_ws}):
-            mock_run.side_effect = [
-                (1, "", "session not found"),
-                (0, "", ""),
-                (0, "", ""),
-            ]
-            result = await start_agent("feynman")
-            assert result["success"] is True
-            assert result["working_directory"] == str(outside_ws)
 
 
 # ---------------------------------------------------------------------------
@@ -673,10 +601,10 @@ class TestRegisterAgentTools:
             assert name in registry._backend_handlers
             assert callable(registry._backend_handlers[name])
 
-    def test_start_agent_working_directory_not_required(self):
+    def test_start_agent_schema_has_no_working_directory(self):
         registry = ToolRegistry(ToolConfig())
         register_agent_tools(registry)
         schema = registry._backend_definitions["start_agent"].parameters_schema
-        required = schema.get("required", [])
-        assert "working_directory" not in required
-        assert "session_name" in required
+        properties = schema.get("properties", {})
+        assert "working_directory" not in properties
+        assert "session_name" in schema.get("required", [])

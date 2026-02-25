@@ -7,12 +7,9 @@ a context fragment.
 
 from __future__ import annotations
 
-import importlib.resources
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
-
-import yaml
 
 from lovely_assistant.app.assistant.models import PromptResult
 from lovely_assistant.services.history.models import WorkingMemory
@@ -74,25 +71,27 @@ def _communication_protocol_fragment() -> str:
     )
 
 
-def _ecosystem_fragment() -> str:
-    """Agent ecosystem context — loaded from roster data file."""
-    roster_path = importlib.resources.files("lovely_assistant.data").joinpath("agent_roster.yaml")
-    content = roster_path.read_text(encoding="utf-8")
-    data = yaml.safe_load(content)
-
-    agents = data.get("agents", [])
-    if not agents:
+def _ecosystem_fragment(registry_agents: list[dict[str, Any]] | None) -> str:
+    """Agent ecosystem context — built from backbone registry data."""
+    if not registry_agents:
         return ""
 
     lines = ["The Lovely Universe — agents you work with:"]
-    for agent in agents:
-        name = agent.get("name", "Unknown")
+    for agent in registry_agents:
+        display_name = agent.get("display_name") or agent.get("name", "Unknown")
         role = agent.get("role", "")
-        summary = agent.get("summary", "")
-        route_for = agent.get("route_for", "")
-        line = f"- {name} ({role}): {summary}"
-        if route_for:
-            line += f" → Route: {route_for}"
+        session = agent.get("session", "")
+        org = agent.get("org", "")
+        line = f"- {display_name}"
+        if role:
+            line += f" ({role}"
+            if org:
+                line += f", org: {org}"
+            line += ")"
+        elif org:
+            line += f" (org: {org})"
+        if session:
+            line += f" [session: {session}]"
         lines.append(line)
 
     return "\n".join(lines)
@@ -375,6 +374,7 @@ def build_system_prompt(
     machine_state: dict[str, Any] | None = None,
     mcp_summary: list[dict[str, Any]] | None = None,
     artifacts: dict[str, str] | None = None,
+    registry_agents: list[dict[str, Any]] | None = None,
 ) -> PromptResult:
     """Compose system prompt from module fragments.
 
@@ -386,6 +386,7 @@ def build_system_prompt(
         machine_state: Frontend XState machine state snapshot.
         mcp_summary: MCP server connection summary for prompt context.
         artifacts: DB-loaded artifact name→content map. Falls back to hardcoded if None/missing.
+        registry_agents: Agent data from backbone registry for ecosystem fragment.
 
     Returns:
         PromptResult with composed content and fragment metadata.
@@ -402,8 +403,8 @@ def build_system_prompt(
     if comm_protocol:
         named_fragments.append(("communication_protocol", comm_protocol))
 
-    # Semi-stable fragments (change infrequently) — DB artifact or hardcoded fallback
-    ecosystem_frag = _artifacts.get("ecosystem") or _ecosystem_fragment()
+    # Semi-stable fragments (change infrequently) — DB artifact or registry data
+    ecosystem_frag = _artifacts.get("ecosystem") or _ecosystem_fragment(registry_agents)
     if ecosystem_frag:
         named_fragments.append(("ecosystem", ecosystem_frag))
 

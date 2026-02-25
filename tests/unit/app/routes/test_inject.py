@@ -13,7 +13,6 @@ from httpx import ASGITransport, AsyncClient
 from lovely_assistant.app.routes.inject import router
 from lovely_assistant.services.database.models import InboxItemORM
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -105,9 +104,7 @@ class TestInjectMessage:
         """Inject with a known session_id stores to inbox and returns 'delivered'."""
         mock_row = _make_inbox_row()
         mock_db = _make_mock_db()
-        session_store = _make_mock_session_store(
-            sessions={"sess-1": {"turn_number": 3}}
-        )
+        session_store = _make_mock_session_store(sessions={"sess-1": {"turn_number": 3}})
         assistant = _make_mock_assistant(session_store=session_store)
 
         app = _make_app(db_service=mock_db, assistant_service=assistant)
@@ -121,9 +118,7 @@ class TestInjectMessage:
                 mock_repo_cls,
             )
 
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as c:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 response = await c.post(
                     "/assistant/inject",
                     json={
@@ -163,9 +158,7 @@ class TestInjectMessage:
                 mock_repo_cls,
             )
 
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as c:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 response = await c.post(
                     "/assistant/inject",
                     json={
@@ -203,9 +196,7 @@ class TestInjectMessage:
                 mock_repo_cls,
             )
 
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as c:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 response = await c.post(
                     "/assistant/inject",
                     json={
@@ -225,9 +216,7 @@ class TestInjectMessage:
         mock_db = _make_mock_db()
         app = _make_app(db_service=mock_db)
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             # Missing 'message'
             response = await c.post(
                 "/assistant/inject",
@@ -241,9 +230,7 @@ class TestInjectMessage:
         mock_db = _make_mock_db()
         app = _make_app(db_service=mock_db)
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.post(
                 "/assistant/inject",
                 json={"from": "backbone", "message": "Hello"},
@@ -255,9 +242,7 @@ class TestInjectMessage:
         """When database is not available, returns 503."""
         app = _make_app(db_service=None)
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.post(
                 "/assistant/inject",
                 json={
@@ -286,9 +271,7 @@ class TestInjectMessage:
                 mock_repo_cls,
             )
 
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as c:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 response = await c.post(
                     "/assistant/inject",
                     json={
@@ -322,9 +305,7 @@ class TestListSessionsBackbone:
 
         app = _make_app(assistant_service=assistant)
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.get("/assistant/sessions")
 
         assert response.status_code == 200
@@ -351,9 +332,7 @@ class TestListSessionsBackbone:
 
         app = _make_app(assistant_service=assistant)
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.get("/assistant/sessions")
 
         assert response.status_code == 200
@@ -364,9 +343,7 @@ class TestListSessionsBackbone:
         """When assistant service is not available, returns empty sessions."""
         app = _make_app(assistant_service=None)
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.get("/assistant/sessions")
 
         assert response.status_code == 200
@@ -378,9 +355,7 @@ class TestListSessionsBackbone:
         assistant = _make_mock_assistant(session_store=None)
         app = _make_app(assistant_service=assistant)
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.get("/assistant/sessions")
 
         assert response.status_code == 200
