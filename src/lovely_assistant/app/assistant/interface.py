@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+from pydantic_ai import DeferredToolRequests
 from pydantic_ai.usage import UsageLimits
 
 from lovely_assistant.app.assistant._prompt_builder import build_system_prompt
@@ -131,12 +132,16 @@ class AssistantService:
         resolved_model = self._llm.resolve_model(effective.default_model)
         usage_limits = UsageLimits(request_limit=effective.max_turns)
 
-        # 4. Build agent
+        # 4. Build agent — use union output type when frontend tools are registered
+        output_type: type | list[type] = str
+        if available_tools.frontend_tools:
+            output_type = [str, DeferredToolRequests]
+
         agent = self._llm.build_agent(
             system_prompt=prompt_result.content,
             toolsets=toolsets,
             model=resolved_model,
-            output_type=str,
+            output_type=output_type,
             thinking_budget=effective.thinking_budget,
             temperature=effective.temperature,
         )
@@ -148,7 +153,7 @@ class AssistantService:
             prompt_result=prompt_result,
             resolved_model=resolved_model,
             usage_limits=usage_limits,
-            output_type=str,
+            output_type=output_type,
             effective_config=effective,
             mcp_summary=mcp_summary,
         )

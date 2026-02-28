@@ -69,6 +69,7 @@ class ToolService:
         return {
             "healthy": True,
             "backend_tools": self._registry.backend_tool_count(),
+            "frontend_tools": self._registry.frontend_tool_count(),
         }
 
     def build_toolset(self, machine_state: dict[str, Any] | None = None) -> list:
@@ -140,6 +141,9 @@ class ToolService:
             ),
             get_time,
         )
+
+        # Frontend tools (always available, bypass page filtering)
+        self._registry.register_frontend_tools()
 
         # Agent management tools
         register_agent_tools(self._registry)

@@ -83,6 +83,7 @@ class EventCoordinator:
         session_id: str | None = None,
         error: bool = False,
         error_type: str | None = None,
+        usage: dict[str, int] | None = None,
     ) -> dict[str, Any] | None:
         """Emit final_response if not already emitted."""
         if self._final_response_emitted:
@@ -102,6 +103,7 @@ class EventCoordinator:
                 thinking_streamed=self._streamed_thinking,
                 error=error,
                 error_type=error_type,
+                usage=usage,
             )
         )
 

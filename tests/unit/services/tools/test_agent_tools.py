@@ -349,6 +349,17 @@ class TestStartAgent:
             assert "Unknown session" in result["error"]
             assert "leo" in result["error"]  # shows available sessions
 
+    async def test_empty_home_rejected(self):
+        """Empty home string from backbone should be treated as missing (#457)."""
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=[{"session": "repo-agent"}])
+        mock_cache.get_working_directory = MagicMock(return_value="")
+        mock_cache.get_available_sessions = MagicMock(return_value=["repo-agent"])
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await start_agent("repo-agent")
+            assert result["success"] is False
+            assert "Unknown session" in result["error"]
+
     @patch(f"{MODULE}._run_command")
     async def test_existing_session_rejected(self, mock_run, tmp_path):
         target = tmp_path / "ws" / "leo"

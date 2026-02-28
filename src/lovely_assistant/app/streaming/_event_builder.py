@@ -39,16 +39,24 @@ def make_tool_call_event(
 
 def make_tool_result_event(
     tool_name: str,
-    result: str,
+    output: str,
     call_id: str,
+    *,
+    duration_ms: float | None = None,
+    invalidates: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a tool_result event (backend tool execution result)."""
-    return {
+    event: dict[str, Any] = {
         "type": "tool_result",
         "tool_name": tool_name,
-        "result": result,
+        "output": output,
         "call_id": call_id,
     }
+    if duration_ms is not None:
+        event["duration_ms"] = round(duration_ms, 1)
+    if invalidates is not None:
+        event["invalidates"] = invalidates
+    return event
 
 
 def make_tool_error_event(
@@ -79,6 +87,7 @@ def make_final_response_event(
     thinking_streamed: bool = False,
     error: bool = False,
     error_type: str | None = None,
+    usage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Create a final_response event."""
     event: dict[str, Any] = {
@@ -95,6 +104,8 @@ def make_final_response_event(
         event["error"] = True
     if error_type is not None:
         event["error_type"] = error_type
+    if usage is not None:
+        event["usage"] = usage
     return event
 
 

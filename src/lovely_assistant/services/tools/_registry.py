@@ -10,6 +10,10 @@ from loguru import logger
 from pydantic_ai.toolsets import FunctionToolset
 
 from lovely_assistant.base.resilience import retry_with_backoff
+from lovely_assistant.services.tools._frontend_tools import (
+    build_frontend_toolset,
+    get_frontend_definitions,
+)
 from lovely_assistant.services.tools.config import ToolConfig
 from lovely_assistant.services.tools.exceptions import ToolValidationError
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
@@ -74,6 +78,34 @@ _MEETING_PAGES: frozenset[str] = frozenset({"meetings"})
 _REPO_PAGES: frozenset[str] = frozenset({"repos"})
 _CORE_ONLY_PAGES: frozenset[str] = frozenset({"flows"})
 
+# Tools that invalidate frontend data domains when executed.
+# The dashboard uses this to know which cached data to refresh.
+TOOL_INVALIDATES: dict[str, list[str]] = {
+    "create_meeting_room": ["meetings"],
+    "update_meeting_state": ["meetings"],
+    "send_meeting_message": ["meetings"],
+    "create_issue": ["tasks"],
+    "comment_on_issue": ["tasks"],
+    "close_issue": ["tasks"],
+    "start_agent": ["agents"],
+    "stop_agent": ["agents"],
+    "send_agent_message": ["agents"],
+    "approve_plan": ["agents"],
+    "reject_plan": ["agents"],
+    "manage_notes": ["notes"],
+    "manage_artifacts": ["artifacts"],
+    "add_schedule_item": ["schedule"],
+    "remove_schedule_item": ["schedule"],
+    "toggle_schedule_item": ["schedule"],
+    "onboard_repo": ["repos"],
+}
+
+
+def get_tool_invalidates(tool_name: str) -> list[str] | None:
+    """Return the list of data domains invalidated by a tool, or None."""
+    result = TOOL_INVALIDATES.get(tool_name)
+    return result if result else None
+
 
 class ToolRegistry:
     """Manages tool definitions and handlers, builds Pydantic AI toolsets per request."""
@@ -82,6 +114,7 @@ class ToolRegistry:
         self._config = config
         self._backend_handlers: dict[str, Callable] = {}
         self._backend_definitions: dict[str, ToolDefinition] = {}
+        self._frontend_definitions: list[ToolDefinition] = []
 
     def register_backend_tool(self, definition: ToolDefinition, handler: Callable) -> None:
         """Register a backend tool with its async handler function."""
@@ -94,6 +127,15 @@ class ToolRegistry:
         self._backend_definitions[definition.name] = definition
         self._backend_handlers[definition.name] = handler
         logger.debug("Registered backend tool", tool=definition.name)
+
+    def register_frontend_tools(self) -> None:
+        """Register frontend tools from the built-in schema definitions."""
+        self._frontend_definitions = get_frontend_definitions()
+        logger.debug(
+            "Registered frontend tools",
+            count=len(self._frontend_definitions),
+            names=[d.name for d in self._frontend_definitions],
+        )
 
     @staticmethod
     def _wrap_handler(handler: Callable, tool_name: str) -> Callable:
@@ -137,6 +179,7 @@ class ToolRegistry:
 
         Returns list of AbstractToolset instances:
         - FunctionToolset for backend tools (with real handlers, wrapped with safety net)
+        - ExternalToolset for frontend tools (deferred execution via DeferredToolRequests)
         """
         available = self._resolve_available_tools(machine_state)
         toolsets: list = []
@@ -153,9 +196,16 @@ class ToolRegistry:
                 )
             toolsets.append(func_toolset)
 
+        # Frontend tools — always appended, bypass page filtering
+        if self._frontend_definitions:
+            ext_toolset = build_frontend_toolset()
+            if ext_toolset is not None:
+                toolsets.append(ext_toolset)
+
         logger.debug(
             "[TOOLS] Built toolsets",
             backend=len(available.backend_tools),
+            frontend=len(self._frontend_definitions),
             toolsets=len(toolsets),
         )
         return toolsets
@@ -207,6 +257,10 @@ class ToolRegistry:
         """Number of registered backend tools."""
         return len(self._backend_definitions)
 
+    def frontend_tool_count(self) -> int:
+        """Number of registered frontend tools."""
+        return len(self._frontend_definitions)
+
     def configure_handler_deps(self, handler_name: str, deps: dict) -> None:
         """Set runtime dependency dict on a registered backend handler."""
         handler = self._backend_handlers.get(handler_name)
@@ -256,6 +310,7 @@ class ToolRegistry:
 
         return ToolSet(
             backend_tools=backend,
+            frontend_tools=self._frontend_definitions,
             page=page_name,
             filtered_out_count=total_before - total,
         )

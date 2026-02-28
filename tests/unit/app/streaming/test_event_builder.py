@@ -17,6 +17,7 @@ from lovely_assistant.app.streaming._event_builder import (
     make_thinking_delta_event,
     make_tool_call_event,
     make_tool_error_event,
+    make_tool_result_event,
     make_tool_status_event,
 )
 
@@ -432,3 +433,70 @@ class TestToolErrorEvent:
         )
         assert event["error"] == ""
         assert event["type"] == "tool_error"
+
+
+# --- Enriched tool result event tests ---
+
+
+class TestToolResultEventEnriched:
+    def test_basic_output_only(self):
+        event = make_tool_result_event("tool", "data", "call_1")
+        assert event["type"] == "tool_result"
+        assert event["tool_name"] == "tool"
+        assert event["output"] == "data"
+        assert event["call_id"] == "call_1"
+        assert "result" not in event
+
+    def test_with_duration_ms(self):
+        event = make_tool_result_event("tool", "data", "call_1", duration_ms=123.456)
+        assert event["duration_ms"] == 123.5
+
+    def test_with_invalidates(self):
+        event = make_tool_result_event("tool", "data", "call_1", invalidates=["agents"])
+        assert event["invalidates"] == ["agents"]
+
+    def test_without_optional_fields(self):
+        event = make_tool_result_event("tool", "data", "call_1")
+        assert "duration_ms" not in event
+        assert "invalidates" not in event
+
+    def test_with_all_fields(self):
+        event = make_tool_result_event(
+            "tool",
+            "data",
+            "call_1",
+            duration_ms=50.0,
+            invalidates=["agents", "sessions"],
+        )
+        assert event["duration_ms"] == 50.0
+        assert event["invalidates"] == ["agents", "sessions"]
+        assert event["output"] == "data"
+        assert event["call_id"] == "call_1"
+
+
+# --- Final response event with usage tests ---
+
+
+class TestFinalResponseEventUsage:
+    def test_with_usage(self):
+        usage = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+        event = make_final_response_event("done", "model", usage=usage)
+        assert event["usage"] == {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+
+    def test_without_usage(self):
+        event = make_final_response_event("done", "model")
+        assert "usage" not in event
+
+    def test_usage_with_other_fields(self):
+        usage = {"input_tokens": 200, "output_tokens": 80, "total_tokens": 280}
+        event = make_final_response_event(
+            "done",
+            "claude-3-5-sonnet",
+            session_id="sess-7",
+            streamed=True,
+            usage=usage,
+        )
+        assert event["session_id"] == "sess-7"
+        assert event["streamed"] is True
+        assert event["usage"] == usage
+        assert event["model"] == "claude-3-5-sonnet"

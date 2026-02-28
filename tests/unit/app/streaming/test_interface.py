@@ -711,7 +711,7 @@ class TestStreamBackendToolCalls:
         tool_result_events = [e for e in events if e["type"] == "tool_result"]
         assert len(tool_result_events) == 1
         assert tool_result_events[0]["tool_name"] == "list_agents"
-        assert tool_result_events[0]["result"] == "agent1, agent2"
+        assert tool_result_events[0]["output"] == "agent1, agent2"
         assert tool_result_events[0]["call_id"] == "call_002"
 
     @pytest.mark.asyncio
@@ -752,8 +752,8 @@ class TestStreamBackendToolCalls:
         assert len(tool_result_events) == 2
         assert tool_call_events[0]["tool_name"] == "list_agents"
         assert tool_call_events[1]["tool_name"] == "check_status"
-        assert tool_result_events[0]["result"] == "[leo, ike]"
-        assert tool_result_events[1]["result"] == "idle"
+        assert tool_result_events[0]["output"] == "[leo, ike]"
+        assert tool_result_events[1]["output"] == "idle"
 
     @pytest.mark.asyncio
     async def test_tool_call_before_tool_result_ordering(self):
@@ -802,7 +802,7 @@ class TestStreamBackendToolCalls:
 
         tool_result_events = [e for e in events if e["type"] == "tool_result"]
         assert len(tool_result_events) == 1
-        assert tool_result_events[0]["result"] == ""
+        assert tool_result_events[0]["output"] == ""
 
     @pytest.mark.asyncio
     async def test_tool_call_with_string_args(self):
@@ -1486,10 +1486,10 @@ class TestStreamToolCallInterleaving:
         assert relevant[3]["tool_name"] == "tool_b"
         assert relevant[4]["type"] == "tool_result"
         assert relevant[4]["tool_name"] == "tool_a"
-        assert relevant[4]["result"] == "result_a"
+        assert relevant[4]["output"] == "result_a"
         assert relevant[5]["type"] == "tool_result"
         assert relevant[5]["tool_name"] == "tool_b"
-        assert relevant[5]["result"] == "result_b"
+        assert relevant[5]["output"] == "result_b"
 
         # Verify no duplicate tool_call events from CallToolsNode
         tool_call_events = [e for e in events if e["type"] == "tool_call"]

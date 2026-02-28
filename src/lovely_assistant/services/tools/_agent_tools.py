@@ -167,7 +167,7 @@ async def start_agent(
         }
 
     working_directory = cache.get_working_directory(session_name)
-    if working_directory is None:
+    if not working_directory:
         available = cache.get_available_sessions()
         return {
             "error": (
