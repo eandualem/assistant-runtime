@@ -158,20 +158,6 @@ class TestToolsFragment:
         assert "get_time" in frag
         assert "Available tools:" in frag
 
-    def test_frontend_tools_marked(self):
-        ts = ToolSet(
-            frontend_tools=[
-                ToolDefinition(
-                    name="navigate",
-                    description="Send notification",
-                    parameters_schema={},
-                    category=ToolCategory.FRONTEND,
-                )
-            ]
-        )
-        frag = _tools_fragment(ts)
-        assert "(UI)" in frag
-
 
 class TestWorkingMemoryFragment:
     def test_no_memory(self):

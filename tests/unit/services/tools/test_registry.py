@@ -1,7 +1,7 @@
 """Tests for ToolRegistry — registration, toolset building, validation, and tool resolution."""
 
 import pytest
-from pydantic_ai.toolsets import ExternalToolset, FunctionToolset
+from pydantic_ai.toolsets import FunctionToolset
 
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.config import ToolConfig
@@ -30,20 +30,6 @@ def backend_definition():
 
 
 @pytest.fixture
-def frontend_definition():
-    return ToolDefinition(
-        name="navigate",
-        description="Navigate to a page.",
-        parameters_schema={
-            "type": "object",
-            "properties": {"message": {"type": "string"}},
-            "required": ["message"],
-        },
-        category=ToolCategory.FRONTEND,
-    )
-
-
-@pytest.fixture
 def dummy_handler():
     async def handler() -> str:
         return "dummy"
@@ -56,29 +42,10 @@ class TestRegistration:
         registry.register_backend_tool(backend_definition, dummy_handler)
         assert "get_time" in registry.get_tool_names()
 
-    def test_register_frontend_tool(self, registry, frontend_definition):
-        registry.register_frontend_tool(frontend_definition)
-        assert "navigate" in registry.get_tool_names()
-
     def test_duplicate_backend_rejected(self, registry, backend_definition, dummy_handler):
         registry.register_backend_tool(backend_definition, dummy_handler)
         with pytest.raises(ToolValidationError, match="already registered"):
             registry.register_backend_tool(backend_definition, dummy_handler)
-
-    def test_duplicate_frontend_rejected(self, registry, frontend_definition):
-        registry.register_frontend_tool(frontend_definition)
-        with pytest.raises(ToolValidationError, match="already registered"):
-            registry.register_frontend_tool(frontend_definition)
-
-    def test_wrong_category_backend(self, registry, frontend_definition, dummy_handler):
-        """Registering a frontend-categorized definition as a backend tool raises."""
-        with pytest.raises(ToolValidationError, match="Expected backend tool"):
-            registry.register_backend_tool(frontend_definition, dummy_handler)
-
-    def test_wrong_category_frontend(self, registry, backend_definition):
-        """Registering a backend-categorized definition as a frontend tool raises."""
-        with pytest.raises(ToolValidationError, match="Expected frontend tool"):
-            registry.register_frontend_tool(backend_definition)
 
 
 class TestBuildToolset:
@@ -92,47 +59,18 @@ class TestBuildToolset:
         assert len(toolsets) == 1
         assert isinstance(toolsets[0], FunctionToolset)
 
-    def test_frontend_only(self, registry, frontend_definition):
-        registry.register_frontend_tool(frontend_definition)
-        toolsets = registry.build_toolset()
-        assert len(toolsets) == 1
-        assert isinstance(toolsets[0], ExternalToolset)
-
-    def test_both(self, registry, backend_definition, frontend_definition, dummy_handler):
-        registry.register_backend_tool(backend_definition, dummy_handler)
-        registry.register_frontend_tool(frontend_definition)
-        toolsets = registry.build_toolset()
-        assert len(toolsets) == 2
-        types = {type(t) for t in toolsets}
-        assert FunctionToolset in types
-        assert ExternalToolset in types
-
-    def test_frontend_disabled(self, backend_definition, frontend_definition, dummy_handler):
-        """With enable_frontend_tools=False, only backend toolset is returned."""
-        config = ToolConfig(enable_frontend_tools=False)
-        registry = ToolRegistry(config)
-        registry.register_backend_tool(backend_definition, dummy_handler)
-        registry.register_frontend_tool(frontend_definition)
-
-        toolsets = registry.build_toolset()
-        assert len(toolsets) == 1
-        assert isinstance(toolsets[0], FunctionToolset)
-
 
 class TestGetAvailableTools:
     def test_empty(self, registry):
         result = registry.get_available_tools()
         assert isinstance(result, ToolSet)
         assert result.backend_tools == []
-        assert result.frontend_tools == []
 
-    def test_with_tools(self, registry, backend_definition, frontend_definition, dummy_handler):
+    def test_with_tools(self, registry, backend_definition, dummy_handler):
         registry.register_backend_tool(backend_definition, dummy_handler)
-        registry.register_frontend_tool(frontend_definition)
         result = registry.get_available_tools()
         assert len(result.backend_tools) == 1
-        assert len(result.frontend_tools) == 1
-        assert result.total_count == 2
+        assert result.total_count == 1
 
     def test_returns_toolset_type(self, registry):
         result = registry.get_available_tools()

@@ -16,6 +16,7 @@ from lovely_assistant.services.tools._meeting_tools import register_meeting_tool
 from lovely_assistant.services.tools._notes_tools import register_notes_tools
 from lovely_assistant.services.tools._plan_tools import register_plan_tools
 from lovely_assistant.services.tools._registry import ToolRegistry
+from lovely_assistant.services.tools._repo_tools import register_repo_tools
 from lovely_assistant.services.tools._schedule_tools import register_schedule_tools
 from lovely_assistant.services.tools._subagent_tools import register_subagent_tools
 from lovely_assistant.services.tools._telegram_tools import register_telegram_tools
@@ -53,7 +54,6 @@ class ToolService:
         logger.info(
             "Tool service started",
             backend_tools=self._registry.backend_tool_count(),
-            frontend_tools=self._registry.frontend_tool_count(),
         )
 
     async def stop(self) -> None:
@@ -69,7 +69,6 @@ class ToolService:
         return {
             "healthy": True,
             "backend_tools": self._registry.backend_tool_count(),
-            "frontend_tools": self._registry.frontend_tool_count(),
         }
 
     def build_toolset(self, machine_state: dict[str, Any] | None = None) -> list:
@@ -97,11 +96,6 @@ class ToolService:
         """Register a backend tool with its handler."""
         self._ensure_started()
         self._registry.register_backend_tool(definition, handler)
-
-    def register_frontend_tool(self, definition: ToolDefinition) -> None:
-        """Register a frontend tool definition."""
-        self._ensure_started()
-        self._registry.register_frontend_tool(definition)
 
     def get_subagent_toolsets(self) -> list:
         """Build toolsets for subagent execution (backend only, no run_subagent)."""
@@ -147,41 +141,6 @@ class ToolService:
             get_time,
         )
 
-        # Frontend tool: navigate
-        self._registry.register_frontend_tool(
-            ToolDefinition(
-                name="navigate",
-                description=(
-                    "Navigate the user to a specific dashboard page. "
-                    "Use this when you want to show the user relevant information on another page."
-                ),
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "route": {
-                            "type": "string",
-                            "enum": [
-                                "/",
-                                "/agents",
-                                "/sessions",
-                                "/tasks",
-                                "/flows",
-                                "/meetings",
-                                "/repos",
-                            ],
-                            "description": "Dashboard route path to navigate to",
-                        },
-                        "reason": {
-                            "type": "string",
-                            "description": "Brief explanation of why you're navigating (shown to user)",
-                        },
-                    },
-                    "required": ["route"],
-                },
-                category=ToolCategory.FRONTEND,
-            ),
-        )
-
         # Agent management tools
         register_agent_tools(self._registry)
 
@@ -202,6 +161,9 @@ class ToolService:
 
         # Plan management tools
         register_plan_tools(self._registry)
+
+        # Repo management tools
+        register_repo_tools(self._registry)
 
         # Artifact management tools
         register_artifact_tools(self._registry)

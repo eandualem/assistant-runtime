@@ -283,41 +283,36 @@ class TestDebugToolSelectionEvent:
         event = make_debug_tool_selection_event(
             page=None,
             backend_count=2,
-            frontend_count=1,
             filtered_out=0,
-            tool_names=["get_time", "list_agents", "navigate"],
+            tool_names=["get_time", "list_agents"],
         )
         assert event["type"] == "debug_tool_selection"
         assert event["page"] is None
         assert event["backend_count"] == 2
-        assert event["frontend_count"] == 1
         assert event["filtered_out"] == 0
-        assert len(event["tool_names"]) == 3
+        assert len(event["tool_names"]) == 2
 
     def test_with_filtering(self):
         event = make_debug_tool_selection_event(
             page="agents",
             backend_count=3,
-            frontend_count=0,
             filtered_out=5,
             tool_names=["get_agent_status", "list_sessions", "check_health"],
         )
         assert event["page"] == "agents"
         assert event["filtered_out"] == 5
-        assert event["frontend_count"] == 0
         assert event["tools"] is None
 
     def test_with_tool_details(self):
         tools = [
             {"name": "get_time", "description": "Get current time"},
-            {"name": "navigate", "description": "Send notification"},
+            {"name": "list_agents", "description": "List all agents"},
         ]
         event = make_debug_tool_selection_event(
             page=None,
-            backend_count=1,
-            frontend_count=1,
+            backend_count=2,
             filtered_out=0,
-            tool_names=["get_time", "navigate"],
+            tool_names=["get_time", "list_agents"],
             tools=tools,
         )
         assert event["tools"] == tools
@@ -329,30 +324,25 @@ class TestDebugAgentConfigEvent:
         event = make_debug_agent_config_event(
             model="claude-3-5-sonnet",
             output_type="str",
-            has_frontend_tools=False,
             thinking_budget=None,
         )
         assert event["type"] == "debug_agent_config"
         assert event["model"] == "claude-3-5-sonnet"
         assert event["output_type"] == "str"
-        assert event["has_frontend_tools"] is False
         assert event["thinking_budget"] is None
 
-    def test_with_frontend_tools_and_thinking(self):
+    def test_with_thinking(self):
         event = make_debug_agent_config_event(
             model="claude-3-opus",
-            output_type="union[str, DeferredToolRequests]",
-            has_frontend_tools=True,
+            output_type="str",
             thinking_budget=10000,
         )
-        assert event["has_frontend_tools"] is True
         assert event["thinking_budget"] == 10000
 
     def test_session_id_included(self):
         event = make_debug_agent_config_event(
             model="claude-3-5-sonnet",
             output_type="str",
-            has_frontend_tools=False,
             thinking_budget=None,
             session_id="sess-99",
         )
@@ -362,7 +352,6 @@ class TestDebugAgentConfigEvent:
         event = make_debug_agent_config_event(
             model="claude-3-5-sonnet",
             output_type="str",
-            has_frontend_tools=False,
             thinking_budget=None,
         )
         assert "session_id" not in event
@@ -371,17 +360,15 @@ class TestDebugAgentConfigEvent:
 class TestDebugToolExecutionEvent:
     def test_basic(self):
         event = make_debug_tool_execution_event(
-            tool_names=["get_time", "navigate"],
-            backend_count=1,
-            frontend_count=1,
+            tool_names=["get_time", "list_agents"],
+            backend_count=2,
         )
         assert event["type"] == "debug_tool_execution"
-        assert event["tool_names"] == ["get_time", "navigate"]
-        assert event["backend_count"] == 1
-        assert event["frontend_count"] == 1
+        assert event["tool_names"] == ["get_time", "list_agents"]
+        assert event["backend_count"] == 2
 
     def test_no_tools(self):
-        event = make_debug_tool_execution_event(tool_names=[], backend_count=0, frontend_count=0)
+        event = make_debug_tool_execution_event(tool_names=[], backend_count=0)
         assert event["tool_names"] == []
         assert event["backend_count"] == 0
 
@@ -407,18 +394,16 @@ class TestDebugUsageEvent:
 
 class TestDebugCompletedEvent:
     def test_basic(self):
-        event = make_debug_completed_event(has_deferred=False, duration_ms=123.456)
+        event = make_debug_completed_event(duration_ms=123.456)
         assert event["type"] == "debug_completed"
-        assert event["has_deferred"] is False
         assert event["duration_ms"] == 123.5
 
-    def test_with_deferred(self):
-        event = make_debug_completed_event(has_deferred=True, duration_ms=500.0)
-        assert event["has_deferred"] is True
+    def test_duration(self):
+        event = make_debug_completed_event(duration_ms=500.0)
         assert event["duration_ms"] == 500.0
 
     def test_duration_rounded(self):
-        event = make_debug_completed_event(has_deferred=False, duration_ms=99.999)
+        event = make_debug_completed_event(duration_ms=99.999)
         assert event["duration_ms"] == 100.0
 
 

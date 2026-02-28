@@ -6,15 +6,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic_ai.messages import ToolCallPart
-from pydantic_ai.result import DeferredToolRequests
 
 from lovely_assistant.app.assistant.config import AssistantConfig
 from lovely_assistant.app.assistant.exceptions import (
     AgentRunError,
     AssistantError,
-    ContinuationMismatchError,
-    SessionError,
 )
 from lovely_assistant.app.assistant.interface import AssistantService
 from lovely_assistant.app.assistant.models import AssistantRequest, RequestConfigOverride
@@ -23,7 +19,7 @@ from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition,
 # --- Fixtures ---
 
 
-def _make_tool_set(*, with_frontend: bool = False) -> ToolSet:
+def _make_tool_set() -> ToolSet:
     """Create a ToolSet for testing."""
     backend = [
         ToolDefinition(
@@ -33,17 +29,7 @@ def _make_tool_set(*, with_frontend: bool = False) -> ToolSet:
             category=ToolCategory.BACKEND,
         )
     ]
-    frontend = []
-    if with_frontend:
-        frontend = [
-            ToolDefinition(
-                name="navigate",
-                description="Notify UI",
-                parameters_schema={},
-                category=ToolCategory.FRONTEND,
-            )
-        ]
-    return ToolSet(backend_tools=backend, frontend_tools=frontend)
+    return ToolSet(backend_tools=backend)
 
 
 def _make_mock_run_result(output: Any) -> MagicMock:
@@ -157,7 +143,6 @@ class TestProcessNewMessage:
         assert result.content == "Hello!"
         assert result.session_id == "test-session"
         assert result.turn_number == 1
-        assert result.is_tool_call is False
 
     async def test_increments_turn_number(self, service, llm_service):
         await service.start()
@@ -294,340 +279,6 @@ class TestProcessNewMessage:
         assert call_args[0][0] == "Hello"
 
 
-# --- Deferred Tool Call Handling ---
-
-
-class TestDeferredToolCall:
-    async def test_returns_deferred_result(self, service, llm_service, tool_service):
-        """When agent returns DeferredToolRequests, result is a tool call."""
-        await service.start()
-
-        # Setup: frontend tools available so output_type includes DeferredToolRequests
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        # Agent returns DeferredToolRequests
-        deferred = DeferredToolRequests(
-            calls=[
-                ToolCallPart(
-                    tool_name="navigate",
-                    args={"message": "Hello!"},
-                    tool_call_id="tc-42",
-                )
-            ]
-        )
-        mock_result = _make_mock_run_result(deferred)
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=mock_result)
-
-        result = await service.process_message(
-            AssistantRequest(session_id="s1", message="notify the user")
-        )
-
-        assert result.is_tool_call is True
-        assert result.content is None
-        assert result.deferred_tool_request is not None
-        assert result.deferred_tool_request.tool_name == "navigate"
-        assert result.deferred_tool_request.request_id == "tc-42"
-        assert result.deferred_tool_request.arguments == {"message": "Hello!"}
-
-    async def test_stores_pending_tool_call(self, service, llm_service, tool_service):
-        """DeferredToolRequests stores pending state for continuation."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        deferred = DeferredToolRequests(
-            calls=[
-                ToolCallPart(
-                    tool_name="navigate",
-                    args={},
-                    tool_call_id="tc-99",
-                )
-            ]
-        )
-        mock_result = _make_mock_run_result(deferred)
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=mock_result)
-
-        await service.process_message(AssistantRequest(session_id="s1", message="do it"))
-
-        # Pending tool call should be stored
-        ctx = service._sessions.get_context("s1")
-        assert ctx["pending_tool_call"]["tool_call_id"] == "tc-99"
-        assert ctx["pending_tool_call"]["tool_name"] == "navigate"
-        assert "created_at" in ctx["pending_tool_call"]
-
-    async def test_output_type_includes_deferred_when_frontend_tools(
-        self, service, llm_service, tool_service
-    ):
-        """output_type should be [str, DeferredToolRequests] when frontend tools exist."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        await service.process_message(AssistantRequest(session_id="s1", message="hi"))
-
-        call_kwargs = llm_service.build_agent.call_args[1]
-        assert call_kwargs["output_type"] == [str, DeferredToolRequests]
-
-    async def test_output_type_str_when_no_frontend_tools(self, service, llm_service, tool_service):
-        """output_type should be str when no frontend tools."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=False)
-
-        await service.process_message(AssistantRequest(session_id="s1", message="hi"))
-
-        call_kwargs = llm_service.build_agent.call_args[1]
-        assert call_kwargs["output_type"] is str
-
-
-# --- Continuation Handling ---
-
-
-class TestContinuation:
-    async def test_continuation_with_pending(self, service, llm_service, tool_service):
-        """Continuation resumes agent with deferred tool results."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        # Step 1: Initial request returns deferred tool call
-        deferred = DeferredToolRequests(
-            calls=[
-                ToolCallPart(
-                    tool_name="navigate",
-                    args={},
-                    tool_call_id="tc-100",
-                )
-            ]
-        )
-        mock_result1 = _make_mock_run_result(deferred)
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=mock_result1)
-
-        await service.process_message(AssistantRequest(session_id="s1", message="do it"))
-
-        # Step 2: Continuation with tool result
-        mock_result2 = _make_mock_run_result("Done! Notification sent.")
-        agent.run = AsyncMock(return_value=mock_result2)
-
-        result = await service.process_message(
-            AssistantRequest(
-                session_id="s1",
-                message="",
-                tool_call_id="tc-100",
-                tool_result={"status": "displayed"},
-            )
-        )
-
-        assert result.content == "Done! Notification sent."
-        assert result.is_tool_call is False
-
-        # Verify agent.run was called with deferred_tool_results
-        call_kwargs = agent.run.call_args[1]
-        assert "deferred_tool_results" in call_kwargs
-
-    async def test_continuation_passes_is_continuation_to_history(
-        self, service, llm_service, history_service, tool_service
-    ):
-        """Continuation passes is_continuation=True to prepare_history."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        # Setup pending
-        deferred = DeferredToolRequests(
-            calls=[ToolCallPart(tool_name="navigate", args={}, tool_call_id="tc-1")]
-        )
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=_make_mock_run_result(deferred))
-        await service.process_message(AssistantRequest(session_id="s1", message="go"))
-
-        # Continuation
-        agent.run = AsyncMock(return_value=_make_mock_run_result("ok"))
-        await service.process_message(
-            AssistantRequest(session_id="s1", message="", tool_call_id="tc-1", tool_result="ok")
-        )
-
-        # Second call to prepare_history should have is_continuation=True
-        calls = history_service.prepare_history.call_args_list
-        assert len(calls) == 2
-        assert calls[1][1].get("is_continuation") is True
-
-    async def test_continuation_no_session_raises(self, service):
-        """Continuation for nonexistent session raises."""
-        await service.start()
-        with pytest.raises(SessionError, match="No session found"):
-            await service.process_message(
-                AssistantRequest(
-                    session_id="nonexistent",
-                    message="",
-                    tool_call_id="tc-1",
-                    tool_result="ok",
-                )
-            )
-
-    async def test_continuation_no_pending_raises(self, service):
-        """Continuation without pending tool call raises."""
-        await service.start()
-        # Create session but no pending tool call
-        service._sessions.get_context("s1")
-        with pytest.raises(SessionError, match="No pending tool call"):
-            await service.process_message(
-                AssistantRequest(
-                    session_id="s1",
-                    message="",
-                    tool_call_id="tc-1",
-                    tool_result="ok",
-                )
-            )
-
-    async def test_continuation_failure_raises(self, service, llm_service, tool_service):
-        """Agent failure during continuation raises AgentRunError."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        # Setup pending
-        deferred = DeferredToolRequests(
-            calls=[ToolCallPart(tool_name="navigate", args={}, tool_call_id="tc-1")]
-        )
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=_make_mock_run_result(deferred))
-        await service.process_message(AssistantRequest(session_id="s1", message="go"))
-
-        # Continuation fails
-        agent.run = AsyncMock(side_effect=RuntimeError("crash"))
-        with pytest.raises(AgentRunError, match="Continuation failed"):
-            await service.process_message(
-                AssistantRequest(session_id="s1", message="", tool_call_id="tc-1", tool_result="ok")
-            )
-
-
-# --- Continuation ID Validation ---
-
-
-class TestContinuationValidation:
-    async def test_continuation_id_mismatch_raises(self, service, llm_service, tool_service):
-        """Continuation with wrong tool_call_id raises ContinuationMismatchError."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        deferred = DeferredToolRequests(
-            calls=[ToolCallPart(tool_name="navigate", args={}, tool_call_id="tc-correct")]
-        )
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=_make_mock_run_result(deferred))
-        await service.process_message(AssistantRequest(session_id="s1", message="go"))
-
-        with pytest.raises(ContinuationMismatchError) as exc_info:
-            await service.process_message(
-                AssistantRequest(
-                    session_id="s1",
-                    message="",
-                    tool_call_id="tc-wrong",
-                    tool_result="ok",
-                )
-            )
-        assert exc_info.value.expected == "tc-correct"
-        assert exc_info.value.received == "tc-wrong"
-        assert exc_info.value.tool_name == "navigate"
-
-    async def test_continuation_expired_pending_raises(
-        self, llm_service, history_service, tool_service
-    ):
-        """Expired pending tool call raises SessionError (no pending)."""
-        config = AssistantConfig(pending_tool_call_timeout_minutes=1)
-        svc = AssistantService(
-            config=config,
-            llm_service=llm_service,
-            history_service=history_service,
-            tool_service=tool_service,
-        )
-        await svc.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        deferred = DeferredToolRequests(
-            calls=[ToolCallPart(tool_name="navigate", args={}, tool_call_id="tc-1")]
-        )
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=_make_mock_run_result(deferred))
-        await svc.process_message(AssistantRequest(session_id="s1", message="go"))
-
-        # Simulate expiry by manipulating created_at
-        import time
-
-        ctx = svc._sessions.get_context("s1")
-        ctx["pending_tool_call"]["created_at"] = time.time() - (2 * 60)  # 2 minutes ago
-
-        with pytest.raises(SessionError, match="No pending tool call"):
-            await svc.process_message(
-                AssistantRequest(session_id="s1", message="", tool_call_id="tc-1", tool_result="ok")
-            )
-
-
-# --- Rejected Multi-Tool Handling ---
-
-
-class TestRejectedMultiTool:
-    async def test_deferred_multiple_calls_stores_rejected_ids(
-        self, service, llm_service, tool_service
-    ):
-        """When LLM returns 3 deferred calls, rejected IDs for calls[1:] are stored."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        deferred = DeferredToolRequests(
-            calls=[
-                ToolCallPart(tool_name="navigate", args={}, tool_call_id="tc-a"),
-                ToolCallPart(tool_name="notify", args={}, tool_call_id="tc-b"),
-                ToolCallPart(tool_name="highlight", args={}, tool_call_id="tc-c"),
-            ]
-        )
-        mock_result = _make_mock_run_result(deferred)
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=mock_result)
-
-        await service.process_message(AssistantRequest(session_id="s1", message="do all"))
-
-        ctx = service._sessions.get_context("s1")
-        pending = ctx["pending_tool_call"]
-        assert pending["tool_call_id"] == "tc-a"
-        assert pending["rejected_call_ids"] == ["tc-b", "tc-c"]
-
-    async def test_continuation_injects_rejected_results(self, service, llm_service, tool_service):
-        """Continuation with rejected IDs builds DeferredToolResults with 3 entries."""
-        await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
-
-        # Step 1: 3 deferred calls → stores rejected IDs
-        deferred = DeferredToolRequests(
-            calls=[
-                ToolCallPart(tool_name="navigate", args={}, tool_call_id="tc-a"),
-                ToolCallPart(tool_name="notify", args={}, tool_call_id="tc-b"),
-                ToolCallPart(tool_name="highlight", args={}, tool_call_id="tc-c"),
-            ]
-        )
-        agent = llm_service.build_agent.return_value
-        agent.run = AsyncMock(return_value=_make_mock_run_result(deferred))
-        await service.process_message(AssistantRequest(session_id="s1", message="do all"))
-
-        # Step 2: Continuation — capture the deferred_tool_results passed to agent.run
-        mock_result2 = _make_mock_run_result("Done")
-        agent.run = AsyncMock(return_value=mock_result2)
-
-        await service.process_message(
-            AssistantRequest(
-                session_id="s1",
-                message="",
-                tool_call_id="tc-a",
-                tool_result={"status": "navigated"},
-            )
-        )
-
-        call_kwargs = agent.run.call_args[1]
-        deferred_results = call_kwargs["deferred_tool_results"]
-        assert len(deferred_results.calls) == 3
-        assert deferred_results.calls["tc-a"] == {"status": "navigated"}
-        assert deferred_results.calls["tc-b"]["error_code"] == "MULTIPLE_FRONTEND_TOOLS"
-        assert deferred_results.calls["tc-c"]["error_code"] == "MULTIPLE_FRONTEND_TOOLS"
-
-
 # --- Working Memory ---
 
 
@@ -727,26 +378,24 @@ class TestPrepareAgentContext:
 
         assert ctx.mcp_summary == mcp_data
 
-    async def test_frontend_tools_set_output_type(self, service, tool_service, request_msg):
-        """has_frontend_tools and output_type reflect available frontend tools."""
+    async def test_output_type_always_str(self, service, tool_service, request_msg):
+        """output_type is always str regardless of available tools."""
         await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=True)
+        tool_service.get_available_tools.return_value = _make_tool_set()
         session_context = service._sessions.get_context(request_msg.session_id)
 
         ctx = await service.prepare_agent_context(request_msg, session_context)
 
-        assert ctx.has_frontend_tools is True
-        assert ctx.output_type == [str, DeferredToolRequests]
+        assert ctx.output_type is str
 
-    async def test_no_frontend_tools_str_output(self, service, tool_service, request_msg):
+    async def test_output_type_str_without_frontend_tools(self, service, tool_service, request_msg):
         """Without frontend tools, output_type is str."""
         await service.start()
-        tool_service.get_available_tools.return_value = _make_tool_set(with_frontend=False)
+        tool_service.get_available_tools.return_value = _make_tool_set()
         session_context = service._sessions.get_context(request_msg.session_id)
 
         ctx = await service.prepare_agent_context(request_msg, session_context)
 
-        assert ctx.has_frontend_tools is False
         assert ctx.output_type is str
 
     async def test_per_request_config_override(self, llm_service, history_service, tool_service):

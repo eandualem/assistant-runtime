@@ -21,7 +21,6 @@ def _make_app(tool_service=None) -> FastAPI:
 
 def _make_tool_service(
     backend_names: list[str] | None = None,
-    frontend_names: list[str] | None = None,
     mcp_summary: list[dict] | None = None,
 ) -> MagicMock:
     svc = MagicMock()
@@ -32,13 +31,7 @@ def _make_tool_service(
         )
         for n in (backend_names or [])
     ]
-    frontend = [
-        ToolDefinition(
-            name=n, description=f"{n} desc", parameters_schema={}, category=ToolCategory.FRONTEND
-        )
-        for n in (frontend_names or [])
-    ]
-    svc.get_available_tools.return_value = ToolSet(backend_tools=backend, frontend_tools=frontend)
+    svc.get_available_tools.return_value = ToolSet(backend_tools=backend)
     svc.build_toolset.return_value = [MagicMock()] * (1 + len(mcp_summary or []))
     svc.get_mcp_summary = AsyncMock(return_value=mcp_summary)
     return svc
@@ -54,14 +47,6 @@ class TestDebugToolsEndpoint:
         data = resp.json()
         assert "get_time" in data["backend_tools"]
         assert "manage_notes" in data["backend_tools"]
-
-    async def test_returns_frontend_tools(self):
-        svc = _make_tool_service(frontend_names=["navigate"])
-        app = _make_app(svc)
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/api/debug/tools")
-        data = resp.json()
-        assert data["frontend_tools"] == ["navigate"]
 
     async def test_returns_mcp_section_with_tools(self):
         mcp = [

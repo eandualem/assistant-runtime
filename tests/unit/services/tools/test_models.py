@@ -1,12 +1,9 @@
-"""Tests for tool service data models — ToolCategory, ToolDefinition, ToolSet, DeferredToolRequest, ToolResult."""
-
-import re
+"""Tests for tool service data models — ToolCategory, ToolDefinition, ToolSet, ToolResult."""
 
 import pytest
 from pydantic import ValidationError
 
 from lovely_assistant.services.tools.models import (
-    DeferredToolRequest,
     ToolCategory,
     ToolDefinition,
     ToolResult,
@@ -17,11 +14,9 @@ from lovely_assistant.services.tools.models import (
 class TestToolCategory:
     def test_values(self):
         assert ToolCategory.BACKEND == "backend"
-        assert ToolCategory.FRONTEND == "frontend"
 
     def test_is_str(self):
         assert isinstance(ToolCategory.BACKEND, str)
-        assert isinstance(ToolCategory.FRONTEND, str)
 
 
 class TestToolDefinition:
@@ -52,7 +47,7 @@ class TestToolDefinition:
             name="test",
             description="A test tool",
             parameters_schema={},
-            category=ToolCategory.FRONTEND,
+            category=ToolCategory.BACKEND,
         )
         assert defn.timeout is None
 
@@ -80,19 +75,12 @@ class TestToolSet:
             parameters_schema={},
             category=ToolCategory.BACKEND,
         )
-        frontend = ToolDefinition(
-            name="navigate",
-            description="Notify",
-            parameters_schema={},
-            category=ToolCategory.FRONTEND,
-        )
-        ts = ToolSet(backend_tools=[backend], frontend_tools=[frontend])
-        assert ts.total_count == 2
+        ts = ToolSet(backend_tools=[backend])
+        assert ts.total_count == 1
         assert "get_time" in ts.tool_names
-        assert "navigate" in ts.tool_names
 
     def test_tool_names_order(self):
-        """Backend tool names appear before frontend tool names."""
+        """Tool names appear in insertion order."""
         b1 = ToolDefinition(
             name="backend_a",
             description="B-A",
@@ -105,40 +93,8 @@ class TestToolSet:
             parameters_schema={},
             category=ToolCategory.BACKEND,
         )
-        f1 = ToolDefinition(
-            name="frontend_x",
-            description="F-X",
-            parameters_schema={},
-            category=ToolCategory.FRONTEND,
-        )
-        ts = ToolSet(backend_tools=[b1, b2], frontend_tools=[f1])
-        assert ts.tool_names == ["backend_a", "backend_b", "frontend_x"]
-
-
-class TestDeferredToolRequest:
-    def test_creation(self):
-        req = DeferredToolRequest(
-            tool_name="ui_navigate",
-            arguments={"path": "/dashboard"},
-        )
-        assert req.tool_name == "ui_navigate"
-        assert req.arguments == {"path": "/dashboard"}
-
-    def test_auto_request_id(self):
-        req = DeferredToolRequest(tool_name="navigate")
-        assert req.request_id is not None
-        # UUID v4 format: 8-4-4-4-12 hex characters
-        uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-        assert uuid_pattern.match(req.request_id)
-
-    def test_unique_ids(self):
-        req1 = DeferredToolRequest(tool_name="tool_a")
-        req2 = DeferredToolRequest(tool_name="tool_b")
-        assert req1.request_id != req2.request_id
-
-    def test_default_arguments(self):
-        req = DeferredToolRequest(tool_name="navigate")
-        assert req.arguments == {}
+        ts = ToolSet(backend_tools=[b1, b2])
+        assert ts.tool_names == ["backend_a", "backend_b"]
 
 
 class TestToolResult:

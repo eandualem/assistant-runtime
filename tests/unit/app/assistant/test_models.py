@@ -14,7 +14,6 @@ from lovely_assistant.app.assistant.models import (
     _camel_to_snake,
     _normalize_keys,
 )
-from lovely_assistant.services.tools.models import DeferredToolRequest
 
 
 class TestCamelToSnake:
@@ -188,8 +187,6 @@ class TestAssistantRequest:
         assert req.session_id == "s1"
         assert req.message == "hello"
         assert req.machine_state is None
-        assert req.tool_call_id is None
-        assert req.tool_result is None
 
     def test_with_machine_state(self):
         req = AssistantRequest(
@@ -198,16 +195,6 @@ class TestAssistantRequest:
             machine_state={"current_state": "dashboard"},
         )
         assert req.machine_state == {"current_state": "dashboard"}
-
-    def test_continuation_request(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="",
-            tool_call_id="tc-123",
-            tool_result={"status": "ok"},
-        )
-        assert req.tool_call_id == "tc-123"
-        assert req.tool_result == {"status": "ok"}
 
 
 class TestTopLevelCamelCaseNormalization:
@@ -221,13 +208,6 @@ class TestTopLevelCamelCaseNormalization:
         assert req.session_id == "s1"
         assert req.machine_state is not None
         assert "active_page" in req.machine_state
-
-    def test_camel_case_tool_call_id(self):
-        req = AssistantRequest.model_validate(
-            {"sessionId": "s1", "message": "", "toolCallId": "tc-1", "toolResult": {"ok": True}}
-        )
-        assert req.tool_call_id == "tc-1"
-        assert req.tool_result == {"ok": True}
 
     def test_snake_case_passthrough(self):
         """Snake_case keys still work (idempotent normalization)."""
@@ -275,24 +255,6 @@ class TestAssistantResult:
             turn_number=1,
         )
         assert result.content == "Hello!"
-        assert result.deferred_tool_request is None
-        assert result.is_tool_call is False
-
-    def test_tool_call_result(self):
-        result = AssistantResult(
-            content=None,
-            model="anthropic:claude-sonnet-4-6",
-            deferred_tool_request=DeferredToolRequest(
-                request_id="tc-123",
-                tool_name="navigate",
-                arguments={"message": "Done"},
-            ),
-            session_id="s1",
-            turn_number=2,
-        )
-        assert result.content is None
-        assert result.is_tool_call is True
-        assert result.deferred_tool_request.tool_name == "navigate"
 
     def test_serialization(self):
         result = AssistantResult(
@@ -304,7 +266,6 @@ class TestAssistantResult:
         data = result.model_dump()
         assert data["content"] == "test"
         assert data["model"] == "anthropic:claude-sonnet-4-6"
-        assert data["deferred_tool_request"] is None
 
 
 class TestRequestConfigOverride:

@@ -101,7 +101,6 @@ class TestGetSession:
         data = response.json()
         assert data["session_id"] == "sess-1"
         assert data["turn_number"] == 2
-        assert data["has_pending_tool_call"] is False
         assert data["message_count"] == 0
 
     @pytest.mark.asyncio
@@ -113,20 +112,6 @@ class TestGetSession:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Session not found"
-
-    @pytest.mark.asyncio
-    async def test_get_session_with_pending_tool_call(self):
-        sessions = SessionStore()
-        sessions.get_context("sess-1")
-        sessions.set_pending_tool_call("sess-1", "call-1", "navigate")
-
-        app = _create_test_app(sessions=sessions)
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get("/api/sessions/sess-1")
-
-        assert response.status_code == 200
-        assert response.json()["has_pending_tool_call"] is True
 
     @pytest.mark.asyncio
     async def test_get_session_with_history(self):
@@ -149,7 +134,6 @@ class TestGetSession:
         db_context = {
             "turn_number": 5,
             "working_memory": None,
-            "pending_tool_call": None,
             "message_history": [MagicMock(), MagicMock()],
             "title": "DB session",
         }

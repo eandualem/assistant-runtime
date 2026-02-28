@@ -40,9 +40,3 @@ class AssistantConfig(BaseModel):
         le=168,
         description="Session TTL in hours.",
     )
-    pending_tool_call_timeout_minutes: int = Field(
-        default=10,
-        ge=1,
-        le=60,
-        description="Minutes before a pending frontend tool call expires.",
-    )

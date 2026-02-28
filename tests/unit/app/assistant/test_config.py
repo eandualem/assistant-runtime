@@ -15,7 +15,6 @@ class TestAssistantConfigDefaults:
         assert config.max_turns == 10
         assert config.enable_working_memory is True
         assert config.session_ttl_hours == 24
-        assert config.pending_tool_call_timeout_minutes == 10
 
     def test_custom_values(self):
         config = AssistantConfig(
@@ -107,23 +106,3 @@ class TestAssistantConfigValidation:
     def test_session_ttl_hours_boundary_max(self):
         config = AssistantConfig(session_ttl_hours=168)
         assert config.session_ttl_hours == 168
-
-    def test_pending_timeout_default(self):
-        config = AssistantConfig()
-        assert config.pending_tool_call_timeout_minutes == 10
-
-    def test_pending_timeout_below_min(self):
-        with pytest.raises(ValidationError):
-            AssistantConfig(pending_tool_call_timeout_minutes=0)
-
-    def test_pending_timeout_above_max(self):
-        with pytest.raises(ValidationError):
-            AssistantConfig(pending_tool_call_timeout_minutes=61)
-
-    def test_pending_timeout_boundary_min(self):
-        config = AssistantConfig(pending_tool_call_timeout_minutes=1)
-        assert config.pending_tool_call_timeout_minutes == 1
-
-    def test_pending_timeout_boundary_max(self):
-        config = AssistantConfig(pending_tool_call_timeout_minutes=60)
-        assert config.pending_tool_call_timeout_minutes == 60

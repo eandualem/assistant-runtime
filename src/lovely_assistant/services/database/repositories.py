@@ -109,7 +109,6 @@ class SessionRepository:
         turn_number: int = 0,
         message_history: list | None = None,
         working_memory: dict | None = None,
-        pending_tool_call: dict | None = None,
         expires_at: datetime | None = None,
     ) -> None:
         """Atomic INSERT ... ON CONFLICT DO UPDATE.
@@ -122,7 +121,6 @@ class SessionRepository:
             "turn_number": turn_number,
             "message_history": message_history or [],
             "working_memory": working_memory,
-            "pending_tool_call": pending_tool_call,
         }
         if expires_at is not None:
             values["expires_at"] = expires_at
@@ -134,7 +132,6 @@ class SessionRepository:
             "turn_number": stmt.excluded.turn_number,
             "message_history": stmt.excluded.message_history,
             "working_memory": stmt.excluded.working_memory,
-            "pending_tool_call": stmt.excluded.pending_tool_call,
             "updated_at": func.now(),
         }
         if expires_at is not None:

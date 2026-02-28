@@ -11,17 +11,14 @@ class TestToolConfigDefaults:
         config = ToolConfig()
         assert config.max_tools_per_request == 20
         assert config.tool_timeout_seconds == 30.0
-        assert config.enable_frontend_tools is True
 
     def test_custom_values(self):
         config = ToolConfig(
             max_tools_per_request=50,
             tool_timeout_seconds=120.0,
-            enable_frontend_tools=False,
         )
         assert config.max_tools_per_request == 50
         assert config.tool_timeout_seconds == 120.0
-        assert config.enable_frontend_tools is False
 
 
 class TestToolConfigValidation:

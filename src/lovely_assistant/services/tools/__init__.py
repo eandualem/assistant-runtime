@@ -9,7 +9,6 @@ from lovely_assistant.services.tools.exceptions import (
 )
 from lovely_assistant.services.tools.interface import ToolService
 from lovely_assistant.services.tools.models import (
-    DeferredToolRequest,
     ToolCategory,
     ToolDefinition,
     ToolResult,
@@ -17,7 +16,6 @@ from lovely_assistant.services.tools.models import (
 )
 
 __all__ = [
-    "DeferredToolRequest",
     "ToolCategory",
     "ToolConfig",
     "ToolDefinition",

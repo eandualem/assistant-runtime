@@ -21,7 +21,6 @@ async def chat(request: AssistantRequest, service: AssistantServiceDep) -> Assis
     logger.info(
         "Received chat request",
         session_id=request.session_id,
-        continuation=request.tool_call_id is not None,
     )
     return await service.process_message(request)
 
@@ -32,7 +31,6 @@ async def chat_stream(request: AssistantRequest, service: StreamingServiceDep) -
     logger.info(
         "Received chat stream request",
         session_id=request.session_id,
-        continuation=request.tool_call_id is not None,
     )
 
     async def event_generator():

@@ -53,7 +53,6 @@ async def get_session(session_id: str, service: AssistantServiceDep) -> dict:
     return {
         "session_id": session_id,
         "turn_number": ctx.get("turn_number", 0),
-        "has_pending_tool_call": ctx.get("pending_tool_call") is not None,
         "message_count": len(ctx.get("message_history", [])),
     }
 
