@@ -2,16 +2,14 @@
 
 from enum import StrEnum
 from typing import Any
-from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class ToolCategory(StrEnum):
     """Classification of tool execution location."""
 
     BACKEND = "backend"
-    FRONTEND = "frontend"
 
 
 class ToolDefinition(BaseModel):
@@ -30,31 +28,22 @@ class ToolSet(BaseModel):
     """Collection of tools available for a request."""
 
     backend_tools: list[ToolDefinition] = []
-    frontend_tools: list[ToolDefinition] = []
     page: str | None = None
     filtered_out_count: int = 0
 
     @property
     def total_count(self) -> int:
         """Total number of tools in this set."""
-        return len(self.backend_tools) + len(self.frontend_tools)
+        return len(self.backend_tools)
 
     @property
     def tool_names(self) -> list[str]:
         """All tool names in this set."""
-        return [t.name for t in self.backend_tools] + [t.name for t in self.frontend_tools]
-
-
-class DeferredToolRequest(BaseModel):
-    """A tool call that must be forwarded to the frontend via SSE."""
-
-    request_id: str = Field(default_factory=lambda: str(uuid4()))
-    tool_name: str
-    arguments: dict[str, Any] = {}
+        return [t.name for t in self.backend_tools]
 
 
 class ToolResult(BaseModel):
-    """Result of a tool execution (backend or deferred frontend)."""
+    """Result of a tool execution."""
 
     tool_name: str
     request_id: str

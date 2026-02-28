@@ -11,7 +11,6 @@ Durability contract:
 
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -47,12 +46,10 @@ class SessionStore:
         self,
         database_service: DatabaseService | None = None,
         session_ttl_hours: int = 24,
-        pending_tool_call_timeout_minutes: int = 10,
     ) -> None:
         self._sessions: dict[str, dict[str, Any]] = {}
         self._db: DatabaseService | None = database_service
         self._session_ttl_hours = session_ttl_hours
-        self._pending_timeout_minutes = pending_tool_call_timeout_minutes
 
     def get_context(self, session_id: str) -> dict[str, Any]:
         """Get or create session context (in-memory only — sync path)."""
@@ -60,7 +57,6 @@ class SessionStore:
             self._sessions[session_id] = {
                 "turn_number": 0,
                 "working_memory": None,
-                "pending_tool_call": None,
                 "message_history": [],
             }
         return self._sessions[session_id]
@@ -144,52 +140,6 @@ class SessionStore:
         ctx = self.get_context(session_id)
         ctx["turn_number"] = ctx.get("turn_number", 0) + 1
         return ctx["turn_number"]
-
-    def set_pending_tool_call(
-        self,
-        session_id: str,
-        tool_call_id: str,
-        tool_name: str,
-        *,
-        rejected_call_ids: list[str] | None = None,
-    ) -> None:
-        """Store a pending frontend tool call for continuation."""
-        ctx = self.get_context(session_id)
-        pending: dict[str, Any] = {
-            "tool_call_id": tool_call_id,
-            "tool_name": tool_name,
-            "created_at": time.time(),
-        }
-        if rejected_call_ids:
-            pending["rejected_call_ids"] = rejected_call_ids
-        ctx["pending_tool_call"] = pending
-
-    def clear_pending_tool_call(self, session_id: str) -> dict[str, Any] | None:
-        """Clear and return the pending tool call, if any.
-
-        Returns None if no pending call exists or if the pending call has expired.
-        """
-        ctx = self.get_context(session_id)
-        pending = ctx.get("pending_tool_call")
-        ctx["pending_tool_call"] = None
-        if pending is None:
-            return None
-
-        # Check expiry (backward-compat: old entries may lack created_at)
-        created_at = pending.get("created_at")
-        if created_at is not None:
-            elapsed_minutes = (time.time() - created_at) / 60
-            if elapsed_minutes > self._pending_timeout_minutes:
-                logger.warning(
-                    "Pending tool call expired",
-                    session_id=session_id,
-                    tool_name=pending.get("tool_name"),
-                    elapsed_minutes=round(elapsed_minutes, 1),
-                    timeout_minutes=self._pending_timeout_minutes,
-                )
-                return None
-
-        return pending
 
     def has_session(self, session_id: str) -> bool:
         """Check if a session exists in memory."""
@@ -320,7 +270,6 @@ class SessionStore:
                 return {
                     "turn_number": row.turn_number,
                     "working_memory": row.working_memory,
-                    "pending_tool_call": row.pending_tool_call,
                     "message_history": message_history,
                     "title": row.title,
                 }
@@ -371,7 +320,6 @@ class SessionStore:
         messages = ctx.get("message_history", [])
         serialized_history = serialize_messages(messages) if messages else []
         working_memory = self._jsonb_safe(ctx.get("working_memory"))
-        pending_tool_call = self._jsonb_safe(ctx.get("pending_tool_call"))
         expires_at = datetime.now(UTC) + timedelta(hours=self._session_ttl_hours)
 
         @retry_with_backoff(
@@ -392,7 +340,6 @@ class SessionStore:
                     turn_number=ctx.get("turn_number", 0),
                     message_history=serialized_history,
                     working_memory=working_memory,
-                    pending_tool_call=pending_tool_call,
                     expires_at=expires_at,
                 )
 

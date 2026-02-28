@@ -25,7 +25,6 @@ from pydantic_graph.nodes import End
 
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.config import AssistantConfig
-from lovely_assistant.app.assistant.exceptions import ContinuationMismatchError
 from lovely_assistant.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
 from lovely_assistant.app.settings import EffectiveConfig, RuntimeSettings
 from lovely_assistant.app.streaming.config import StreamingConfig
@@ -35,7 +34,7 @@ from lovely_assistant.app.streaming.exceptions import (
 )
 from lovely_assistant.app.streaming.interface import StreamingService
 from lovely_assistant.services.history.models import HistoryPreparationResult
-from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from lovely_assistant.services.tools.models import ToolSet
 
 # --- Helpers ---
 
@@ -62,7 +61,6 @@ def _make_default_agent_context(
         subagent_model=None,
         subagent_thinking_budget=None,
     )
-    has_frontend = len(tools.frontend_tools) > 0
     mock_agent = agent or MagicMock()
     return AgentSetupContext(
         agent=mock_agent,
@@ -71,8 +69,7 @@ def _make_default_agent_context(
         prompt_result=PromptResult(content="You are Jarvis.", fragments=[]),
         resolved_model=resolved_model,
         usage_limits=UsageLimits(request_limit=config.max_turns),
-        has_frontend_tools=has_frontend,
-        output_type=[str, object] if has_frontend else str,
+        output_type=str,
         effective_config=config,
         mcp_summary=None,
     )
@@ -376,251 +373,6 @@ class TestStreamWithImages:
         assert call_args[0][0] == "Hello there"
 
 
-class TestStreamWithTools:
-    @pytest.mark.asyncio
-    async def test_builds_agent_with_frontend_tools(self):
-        frontend_tools = ToolSet(
-            frontend_tools=[
-                ToolDefinition(
-                    name="navigate",
-                    description="Notify UI",
-                    parameters_schema={},
-                    category=ToolCategory.FRONTEND,
-                )
-            ]
-        )
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        ctx = _make_default_agent_context(available_tools=frontend_tools, agent=mock_agent)
-        service = _make_service(agent_context=ctx)
-        await service.start()
-
-        request = _make_request()
-        async for _ in service.stream_message(request):
-            pass
-
-        # Verify the context has frontend tools
-        assert ctx.has_frontend_tools is True
-        assert isinstance(ctx.output_type, list)
-
-
-class TestStreamDeferredToolRequests:
-    @pytest.mark.asyncio
-    async def test_deferred_tool_emits_tool_call_event(self):
-        sessions = SessionStore()
-
-        # Create a mock DeferredToolRequests output
-        mock_call = MagicMock()
-        mock_call.tool_call_id = "call_abc"
-        mock_call.tool_name = "navigate"
-        mock_call.args = {"message": "hello", "level": "info"}
-
-        mock_deferred = MagicMock()
-        mock_deferred.calls = [mock_call]
-
-        from pydantic_ai.result import DeferredToolRequests
-
-        mock_deferred.__class__ = DeferredToolRequests
-
-        mock_run = _MockAgentRun(nodes=[], output=mock_deferred)
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
-        )
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_call_events = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_call_events) == 1
-        assert tool_call_events[0]["tool_name"] == "navigate"
-        assert tool_call_events[0]["call_id"] == "call_abc"
-
-    @pytest.mark.asyncio
-    async def test_deferred_tool_stores_pending(self):
-        sessions = SessionStore()
-
-        mock_call = MagicMock()
-        mock_call.tool_call_id = "call_xyz"
-        mock_call.tool_name = "ui_navigate"
-        mock_call.args = {"path": "/agents"}
-
-        mock_deferred = MagicMock()
-        mock_deferred.calls = [mock_call]
-
-        from pydantic_ai.result import DeferredToolRequests
-
-        mock_deferred.__class__ = DeferredToolRequests
-
-        mock_run = _MockAgentRun(nodes=[], output=mock_deferred)
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
-        )
-        await service.start()
-
-        request = _make_request()
-        async for _ in service.stream_message(request):
-            pass
-
-        ctx = sessions.get_context("test-session")
-        assert ctx["pending_tool_call"]["tool_call_id"] == "call_xyz"
-        assert "created_at" in ctx["pending_tool_call"]
-
-    @pytest.mark.asyncio
-    async def test_deferred_tool_final_response_null_content(self):
-        sessions = SessionStore()
-
-        mock_call = MagicMock()
-        mock_call.tool_call_id = "call_123"
-        mock_call.tool_name = "navigate"
-        mock_call.args = {}
-
-        mock_deferred = MagicMock()
-        mock_deferred.calls = [mock_call]
-
-        from pydantic_ai.result import DeferredToolRequests
-
-        mock_deferred.__class__ = DeferredToolRequests
-
-        mock_run = _MockAgentRun(nodes=[], output=mock_deferred)
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
-        )
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"]
-        assert len(final) == 1
-        assert final[0]["content"] is None
-
-
-class TestStreamContinuation:
-    @pytest.mark.asyncio
-    async def test_continuation_requires_session(self):
-        service = _make_service()
-        await service.start()
-
-        request = _make_request(
-            tool_call_id="call_123",
-            tool_result="ok",
-        )
-        with pytest.raises(StreamSetupError, match="No session found"):
-            async for _ in service.stream_message(request):
-                pass
-
-    @pytest.mark.asyncio
-    async def test_continuation_requires_pending_tool_call(self):
-        sessions = SessionStore()
-        # Create session but no pending tool call
-        sessions.get_context("test-session")
-
-        service = _make_service(sessions=sessions)
-        await service.start()
-
-        request = _make_request(
-            tool_call_id="call_123",
-            tool_result="ok",
-        )
-        with pytest.raises(StreamSetupError, match="No pending tool call"):
-            async for _ in service.stream_message(request):
-                pass
-
-    @pytest.mark.asyncio
-    async def test_continuation_streams_successfully(self):
-        sessions = SessionStore()
-        sessions.get_context("test-session")
-        sessions.set_pending_tool_call("test-session", "call_123", "navigate")
-
-        mock_run = _MockAgentRun(nodes=[], output="Continued response")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
-        )
-        await service.start()
-
-        request = _make_request(
-            tool_call_id="call_123",
-            tool_result="Tool executed successfully",
-        )
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        types = [e["type"] for e in events]
-        assert "agent_status" in types
-        assert "final_response" in types
-
-        final = [e for e in events if e["type"] == "final_response"]
-        assert final[0]["content"] == "Continued response"
-
-
-class TestStreamContinuationValidation:
-    @pytest.mark.asyncio
-    async def test_stream_continuation_id_mismatch_raises(self):
-        """Streaming continuation with wrong tool_call_id raises ContinuationMismatchError."""
-        sessions = SessionStore()
-        sessions.get_context("test-session")
-        sessions.set_pending_tool_call("test-session", "call_correct", "navigate")
-
-        service = _make_service(sessions=sessions)
-        await service.start()
-
-        request = _make_request(
-            tool_call_id="call_wrong",
-            tool_result="ok",
-        )
-        with pytest.raises(ContinuationMismatchError) as exc_info:
-            async for _ in service.stream_message(request):
-                pass
-        assert exc_info.value.expected == "call_correct"
-        assert exc_info.value.received == "call_wrong"
-
-    @pytest.mark.asyncio
-    async def test_stream_continuation_with_rejected_ids(self):
-        """Streaming continuation with rejected IDs completes successfully."""
-        sessions = SessionStore()
-        sessions.get_context("test-session")
-        sessions.set_pending_tool_call(
-            "test-session", "call_a", "navigate", rejected_call_ids=["call_b", "call_c"]
-        )
-
-        mock_run = _MockAgentRun(nodes=[], output="Done with rejections")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
-        )
-        await service.start()
-
-        request = _make_request(
-            tool_call_id="call_a",
-            tool_result={"status": "ok"},
-        )
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"]
-        assert len(final) == 1
-        assert final[0]["content"] == "Done with rejections"
-
-
 class TestStreamSetupErrors:
     @pytest.mark.asyncio
     async def test_prepare_agent_context_failure_raises_setup_error(self):
@@ -892,7 +644,6 @@ class TestStreamDebugEvents:
         completed = [e for e in events if e["type"] == "debug_completed"][0]
         assert "duration_ms" in completed
         assert completed["duration_ms"] >= 0
-        assert completed["has_deferred"] is False
 
 
 class TestStreamBackendToolCalls:
@@ -962,41 +713,6 @@ class TestStreamBackendToolCalls:
         assert tool_result_events[0]["tool_name"] == "list_agents"
         assert tool_result_events[0]["result"] == "agent1, agent2"
         assert tool_result_events[0]["call_id"] == "call_002"
-
-    @pytest.mark.asyncio
-    async def test_frontend_tools_not_emitted_as_backend(self):
-        """Frontend (deferred) tools should NOT emit tool_call from _iterate_run."""
-        frontend_tools = ToolSet(
-            frontend_tools=[
-                ToolDefinition(
-                    name="navigate",
-                    description="Notify UI",
-                    parameters_schema={},
-                    category=ToolCategory.FRONTEND,
-                )
-            ]
-        )
-
-        tc = ToolCallPart(tool_name="navigate", args={"message": "hello"}, tool_call_id="call_003")
-        call_node = _make_call_tools_node([tc])
-
-        mock_run = _MockAgentRun(nodes=[call_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            agent_context=_make_default_agent_context(
-                available_tools=frontend_tools, agent=mock_agent
-            )
-        )
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_call_events = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_call_events) == 0
 
     @pytest.mark.asyncio
     async def test_multiple_backend_tools_emit_multiple_events(self):
@@ -1525,47 +1241,6 @@ class TestStreamTracePersistence:
         ]
         assert len(completed) == 1
 
-    @pytest.mark.asyncio
-    async def test_save_trace_for_continuation(self):
-        """Continuations also persist traces."""
-        mock_db = MagicMock()
-        mock_db_session = AsyncMock()
-        mock_db.session_context = MagicMock(return_value=mock_db_session)
-        mock_db_session.__aenter__ = AsyncMock(return_value=mock_db_session)
-        mock_db_session.__aexit__ = AsyncMock(return_value=None)
-        mock_db_session.add = MagicMock()
-        mock_db_session.flush = AsyncMock()
-
-        sessions = SessionStore()
-        sessions.get_context("test-session")
-        sessions.set_pending_tool_call("test-session", "call_123", "navigate")
-
-        mock_run = _MockAgentRun(nodes=[], output="Continued")
-        mock_run.result.usage.return_value = MagicMock(
-            request_tokens=0,
-            response_tokens=0,
-            requests=0,
-            total_tokens=0,
-        )
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            sessions=sessions,
-            database_service=mock_db,
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-
-        request = _make_request(
-            tool_call_id="call_123",
-            tool_result="Tool done",
-        )
-        async for _ in service.stream_message(request):
-            pass
-
-        mock_db.session_context.assert_called()
-
 
 class TestStreamTimeout:
     """Tests for streaming timeout enforcement via asyncio.timeout()."""
@@ -1755,52 +1430,6 @@ class TestStreamToolCallInterleaving:
 
         tool_call_events = [e for e in events if e["type"] == "tool_call"]
         assert len(tool_call_events) == 1
-
-    @pytest.mark.asyncio
-    async def test_frontend_tool_not_emitted_during_streaming(self):
-        """Frontend tool calls in _stream_node are skipped (not emitted)."""
-        frontend_tools = ToolSet(
-            frontend_tools=[
-                ToolDefinition(
-                    name="navigate",
-                    description="Nav",
-                    parameters_schema={},
-                    category=ToolCategory.FRONTEND,
-                )
-            ]
-        )
-
-        stream_events = [
-            PartStartEvent(
-                index=0,
-                part=ToolCallPart(
-                    tool_name="navigate",
-                    args={"path": "/agents"},
-                    tool_call_id="call_f1",
-                ),
-            ),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            agent_context=_make_default_agent_context(
-                available_tools=frontend_tools, agent=mock_agent
-            )
-        )
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_call_events = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_call_events) == 0
 
     @pytest.mark.asyncio
     async def test_interleaved_multi_tool_streaming(self):

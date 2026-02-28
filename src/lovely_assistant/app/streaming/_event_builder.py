@@ -186,7 +186,6 @@ def make_debug_history_event(
 def make_debug_tool_selection_event(
     page: str | None,
     backend_count: int,
-    frontend_count: int,
     filtered_out: int,
     tool_names: list[str],
     tools: list[dict[str, str]] | None = None,
@@ -196,7 +195,6 @@ def make_debug_tool_selection_event(
         "type": "debug_tool_selection",
         "page": page,
         "backend_count": backend_count,
-        "frontend_count": frontend_count,
         "filtered_out": filtered_out,
         "tool_names": tool_names,
         "tools": tools,
@@ -206,7 +204,6 @@ def make_debug_tool_selection_event(
 def make_debug_agent_config_event(
     model: str | None,
     output_type: str,
-    has_frontend_tools: bool,
     thinking_budget: int | None,
     temperature: float | None = None,
     session_id: str | None = None,
@@ -216,7 +213,6 @@ def make_debug_agent_config_event(
         "type": "debug_agent_config",
         "model": model,
         "output_type": output_type,
-        "has_frontend_tools": has_frontend_tools,
         "thinking_budget": thinking_budget,
         "temperature": temperature,
     }
@@ -228,14 +224,12 @@ def make_debug_agent_config_event(
 def make_debug_tool_execution_event(
     tool_names: list[str],
     backend_count: int,
-    frontend_count: int,
 ) -> dict[str, Any]:
     """Create a debug_tool_execution event — emitted after agent run."""
     return {
         "type": "debug_tool_execution",
         "tool_names": tool_names,
         "backend_count": backend_count,
-        "frontend_count": frontend_count,
     }
 
 
@@ -260,12 +254,10 @@ def make_debug_usage_event(
 
 
 def make_debug_completed_event(
-    has_deferred: bool,
     duration_ms: float,
 ) -> dict[str, Any]:
     """Create a debug_completed event — emitted in finally block."""
     return {
         "type": "debug_completed",
-        "has_deferred": has_deferred,
         "duration_ms": round(duration_ms, 1),
     }

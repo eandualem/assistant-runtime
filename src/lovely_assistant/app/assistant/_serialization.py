@@ -124,13 +124,22 @@ def messages_to_display_format(messages: list[ModelMessage]) -> list[dict[str, A
 
     for msg in messages:
         if isinstance(msg, ModelRequest):
-            user_texts = [
-                part.content
-                for part in msg.parts
-                if isinstance(part, UserPromptPart) and isinstance(part.content, str)
-            ]
-            if not user_texts:
+            user_texts: list[str] = []
+            has_user_prompt = False
+            for part in msg.parts:
+                if not isinstance(part, UserPromptPart):
+                    continue
+                has_user_prompt = True
+                if isinstance(part.content, str):
+                    user_texts.append(part.content)
+                elif isinstance(part.content, list):
+                    for item in part.content:
+                        if isinstance(item, str):
+                            user_texts.append(item)
+            if not has_user_prompt:
                 continue
+            if not user_texts:
+                user_texts.append("[Image attachment]")
             _flush_assistant()
             entry: dict[str, Any] = {
                 "role": "user",

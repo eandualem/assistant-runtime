@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic_ai.messages import ModelRequest, UserPromptPart
@@ -20,7 +20,6 @@ class TestSessionStore:
         ctx = store.get_context("s1")
         assert ctx["turn_number"] == 0
         assert ctx["working_memory"] is None
-        assert ctx["pending_tool_call"] is None
         assert ctx["message_history"] == []
 
     def test_get_context_returns_existing(self):
@@ -58,29 +57,6 @@ class TestSessionStore:
         messages = [{"role": "user", "content": "hi"}]
         store.save_history("s1", messages)
         assert store.get_history("s1") == messages
-
-    def test_set_pending_tool_call(self):
-        store = SessionStore()
-        store.set_pending_tool_call("s1", "tc-123", "navigate")
-        ctx = store.get_context("s1")
-        pending = ctx["pending_tool_call"]
-        assert pending["tool_call_id"] == "tc-123"
-        assert pending["tool_name"] == "navigate"
-        assert "created_at" in pending
-
-    def test_clear_pending_tool_call(self):
-        store = SessionStore()
-        store.set_pending_tool_call("s1", "tc-123", "navigate")
-        pending = store.clear_pending_tool_call("s1")
-        assert pending["tool_call_id"] == "tc-123"
-        assert pending["tool_name"] == "navigate"
-        # Now cleared
-        assert store.clear_pending_tool_call("s1") is None
-
-    def test_clear_pending_when_none(self):
-        store = SessionStore()
-        store.get_context("s1")
-        assert store.clear_pending_tool_call("s1") is None
 
 
 # --- Helpers for DB tests ---
@@ -130,7 +106,6 @@ class TestSessionStoreWithDb:
         db_session_data = {
             "turn_number": 3,
             "working_memory": "some memory",
-            "pending_tool_call": None,
             "message_history": [],
         }
         store._load_session_from_db = AsyncMock(return_value=db_session_data)
@@ -396,7 +371,6 @@ class TestSessionStoreWithDb:
         mock_row = MagicMock()
         mock_row.turn_number = 3
         mock_row.working_memory = None
-        mock_row.pending_tool_call = None
         mock_row.message_history = [{"bad": "data", "not_a_real": "message"}]
         mock_row.title = "Test session"
 
@@ -682,74 +656,6 @@ class TestSessionStoreCleanupExpired:
             await store.cleanup_expired()
 
 
-class TestPendingToolCallExpiry:
-    """Tests for pending tool call expiry and rejected call ID storage."""
-
-    def test_set_pending_stores_created_at(self):
-        """set_pending_tool_call stores a float timestamp."""
-        store = SessionStore()
-        store.set_pending_tool_call("s1", "tc-1", "navigate")
-        ctx = store.get_context("s1")
-        created_at = ctx["pending_tool_call"]["created_at"]
-        assert isinstance(created_at, float)
-
-    def test_set_pending_stores_rejected_call_ids(self):
-        """Rejected call IDs are stored when provided."""
-        store = SessionStore()
-        store.set_pending_tool_call("s1", "tc-1", "navigate", rejected_call_ids=["tc-2", "tc-3"])
-        ctx = store.get_context("s1")
-        assert ctx["pending_tool_call"]["rejected_call_ids"] == ["tc-2", "tc-3"]
-
-    def test_set_pending_no_rejected_ids_omits_key(self):
-        """When no rejected IDs, the key is absent from the stored dict."""
-        store = SessionStore()
-        store.set_pending_tool_call("s1", "tc-1", "navigate")
-        ctx = store.get_context("s1")
-        assert "rejected_call_ids" not in ctx["pending_tool_call"]
-
-    def test_clear_pending_returns_none_when_expired(self):
-        """Expired pending tool call returns None."""
-        store = SessionStore(pending_tool_call_timeout_minutes=5)
-        store.set_pending_tool_call("s1", "tc-1", "navigate")
-
-        # Simulate 6 minutes elapsed
-        with patch("lovely_assistant.app.assistant._session_store.time") as mock_time:
-            # set_pending used real time.time(), so we need to override the clear check
-            created_at = store.get_context("s1")["pending_tool_call"]["created_at"]
-            mock_time.time.return_value = created_at + (6 * 60)  # 6 minutes later
-            result = store.clear_pending_tool_call("s1")
-
-        assert result is None
-
-    def test_clear_pending_returns_valid_when_not_expired(self):
-        """Non-expired pending tool call returns the stored dict."""
-        store = SessionStore(pending_tool_call_timeout_minutes=10)
-        store.set_pending_tool_call("s1", "tc-1", "navigate")
-
-        # Simulate 3 minutes elapsed
-        with patch("lovely_assistant.app.assistant._session_store.time") as mock_time:
-            created_at = store.get_context("s1")["pending_tool_call"]["created_at"]
-            mock_time.time.return_value = created_at + (3 * 60)  # 3 minutes later
-            result = store.clear_pending_tool_call("s1")
-
-        assert result is not None
-        assert result["tool_call_id"] == "tc-1"
-
-    def test_clear_pending_no_created_at_backward_compat(self):
-        """Old dict without created_at still returns (backward compat)."""
-        store = SessionStore()
-        # Manually set an old-format pending tool call (no created_at)
-        ctx = store.get_context("s1")
-        ctx["pending_tool_call"] = {
-            "tool_call_id": "tc-old",
-            "tool_name": "navigate",
-        }
-
-        result = store.clear_pending_tool_call("s1")
-        assert result is not None
-        assert result["tool_call_id"] == "tc-old"
-
-
 class TestSessionStoreDbRetry:
     """Tests for retry behavior on transient DB errors in _persist_to_db and _load_session_from_db."""
 
@@ -834,7 +740,6 @@ class TestSessionStoreDbRetry:
         mock_row = MagicMock()
         mock_row.turn_number = 5
         mock_row.working_memory = None
-        mock_row.pending_tool_call = None
         mock_row.message_history = []
         mock_row.title = "Loaded session"
 

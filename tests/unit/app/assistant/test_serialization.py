@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelRequest,
     ModelResponse,
     SystemPromptPart,
@@ -655,3 +656,65 @@ class TestMessagesToDisplayFormat:
         # Backward compat: text concatenates all text parts, tool_calls has both
         assert entry["text"] == "Starting checks.Alpha passed. Now beta.All checks passed."
         assert len(entry["tool_calls"]) == 2
+
+    def test_user_message_with_multimodal_content(self):
+        """User message with text + image (list content) should extract text."""
+        screenshot = BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg")
+        msg = ModelRequest(
+            parts=[UserPromptPart(content=["What is this?", screenshot])],
+        )
+        result = messages_to_display_format([msg])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        assert result[0]["text"] == "What is this?"
+
+    def test_user_message_image_only_gets_placeholder(self):
+        """User message with only image content (no text) should get placeholder."""
+        screenshot = BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg")
+        msg = ModelRequest(
+            parts=[UserPromptPart(content=[screenshot])],
+        )
+        result = messages_to_display_format([msg])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        assert result[0]["text"] == "[Image attachment]"
+
+    def test_user_message_multimodal_multi_text_segments(self):
+        """User message with multiple text segments in list content."""
+        screenshot = BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg")
+        msg = ModelRequest(
+            parts=[UserPromptPart(content=["Hello", screenshot, "World"])],
+        )
+        result = messages_to_display_format([msg])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "user"
+        assert result[0]["text"] == "Hello\nWorld"
+
+    def test_multi_turn_with_multimodal_user_messages(self):
+        """Full conversation with multimodal user messages should preserve all turns."""
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        screenshot = BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg")
+        messages = [
+            ModelRequest(
+                parts=[UserPromptPart(content=["Question 1", screenshot])],
+            ),
+            ModelResponse(parts=[TextPart(content="Answer 1")], timestamp=ts),
+            ModelRequest(
+                parts=[UserPromptPart(content=["Question 2", screenshot])],
+            ),
+            ModelResponse(parts=[TextPart(content="Answer 2")], timestamp=ts),
+        ]
+        result = messages_to_display_format(messages)
+
+        assert len(result) == 4
+        assert result[0]["role"] == "user"
+        assert result[0]["text"] == "Question 1"
+        assert result[1]["role"] == "assistant"
+        assert result[1]["text"] == "Answer 1"
+        assert result[2]["role"] == "user"
+        assert result[2]["text"] == "Question 2"
+        assert result[3]["role"] == "assistant"
+        assert result[3]["text"] == "Answer 2"

@@ -34,7 +34,6 @@ class SessionORM(Base):
     turn_number: Mapped[int] = mapped_column(Integer, default=0)
     message_history: Mapped[list] = mapped_column(JSONB, default=list)
     working_memory: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    pending_tool_call: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

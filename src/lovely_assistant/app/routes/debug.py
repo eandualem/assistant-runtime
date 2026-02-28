@@ -47,7 +47,6 @@ async def debug_tools(request: Request) -> dict[str, Any]:
 
     return {
         "backend_tools": [t.name for t in available.backend_tools],
-        "frontend_tools": [t.name for t in available.frontend_tools],
         "mcp": mcp_section,
         "toolsets_count": len(toolsets),
         "mcp_prompt_fragment": mcp_prompt_fragment or None,

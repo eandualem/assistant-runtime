@@ -10,8 +10,6 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai.messages import BinaryContent, ImageUrl, UserContent
 
-from lovely_assistant.services.tools.models import DeferredToolRequest
-
 # --- camelCase → snake_case normalization ---
 
 _CAMEL_RE_1 = re.compile(r"([A-Z]+)([A-Z][a-z])")
@@ -86,8 +84,7 @@ class AgentSetupContext:
     prompt_result: PromptResult
     resolved_model: str
     usage_limits: Any  # pydantic_ai.usage.UsageLimits
-    has_frontend_tools: bool
-    output_type: Any  # str | list[type]
+    output_type: Any  # str
     effective_config: Any  # EffectiveConfig
     mcp_summary: list[dict[str, Any]] | None
 
@@ -118,9 +115,6 @@ class AssistantRequest(BaseModel):
     images: list[str] = Field(default_factory=list)
     machine_state: dict[str, Any] | None = None
     config: RequestConfigOverride | None = None
-    # For continuations (frontend returning tool result):
-    tool_call_id: str | None = None
-    tool_result: Any = None
 
     @model_validator(mode="before")
     @classmethod
@@ -207,17 +201,7 @@ def _warn_if_no_vision(model: str) -> None:
 class AssistantResult(BaseModel):
     """Output from a single assistant interaction."""
 
-    content: str | None = Field(
-        default=None, description="Text response (None if deferred tool call)"
-    )
+    content: str = Field(description="Text response")
     model: str = Field(description="Model used for this turn")
-    deferred_tool_request: DeferredToolRequest | None = Field(
-        default=None, description="Frontend tool call to execute"
-    )
     session_id: str
     turn_number: int
-
-    @property
-    def is_tool_call(self) -> bool:
-        """Whether this result is a deferred tool call (not text)."""
-        return self.deferred_tool_request is not None

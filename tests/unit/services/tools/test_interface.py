@@ -42,9 +42,7 @@ class TestLifecycle:
         await service.start()
         health = await service.health_check()
         assert "backend_tools" in health
-        assert "frontend_tools" in health
         assert isinstance(health["backend_tools"], int)
-        assert isinstance(health["frontend_tools"], int)
 
     async def test_start_registers_default_tools(self, service):
         await service.start()
@@ -79,8 +77,8 @@ class TestLifecycle:
         assert "list_agent_plans" in tool_names
         assert "approve_plan" in tool_names
         assert "reject_plan" in tool_names
-        # Navigation frontend tool
-        assert "navigate" in tool_names
+        # Artifact management tool
+        assert "manage_artifacts" in tool_names
 
 
 class TestNotStartedGuard:
@@ -110,22 +108,12 @@ class TestNotStartedGuard:
         with pytest.raises(ToolError, match="not started"):
             service.register_backend_tool(defn, handler)
 
-    def test_register_frontend_before_start(self, service):
-        defn = ToolDefinition(
-            name="test",
-            description="Test",
-            parameters_schema={},
-            category=ToolCategory.FRONTEND,
-        )
-        with pytest.raises(ToolError, match="not started"):
-            service.register_frontend_tool(defn)
-
 
 class TestDelegation:
     async def test_build_toolset(self, service):
         await service.start()
         toolsets = service.build_toolset()
-        # Not empty because placeholders are registered (get_time + navigate)
+        # Not empty because default tools are registered (get_time, agent tools, etc.)
         assert isinstance(toolsets, list)
         assert len(toolsets) > 0
 
@@ -134,8 +122,8 @@ class TestDelegation:
         result = service.get_available_tools()
         assert isinstance(result, ToolSet)
         assert (
-            result.total_count >= 23
-        )  # 1 backend + 1 frontend + 5 agent + 1 notes + 5 github + 4 meeting + 3 schedule + 1 telegram + 3 plan
+            result.total_count >= 24
+        )  # 1 get_time + 5 agent + 1 notes + 1 artifact + 5 github + 4 meeting + 3 schedule + 1 telegram + 3 plan
 
     async def test_validate_registered_tool(self, service):
         await service.start()
@@ -162,23 +150,6 @@ class TestDelegation:
         tool_names = service._registry.get_tool_names()
         assert "custom_backend" in tool_names
 
-    async def test_register_additional_frontend(self, service):
-        await service.start()
-
-        defn = ToolDefinition(
-            name="custom_frontend",
-            description="A custom frontend tool",
-            parameters_schema={
-                "type": "object",
-                "properties": {"action": {"type": "string"}},
-            },
-            category=ToolCategory.FRONTEND,
-        )
-        service.register_frontend_tool(defn)
-
-        tool_names = service._registry.get_tool_names()
-        assert "custom_frontend" in tool_names
-
 
 class TestStateDrivenToolFiltering:
     """Tests for page-based tool filtering via machine_state."""
@@ -186,20 +157,20 @@ class TestStateDrivenToolFiltering:
     async def test_no_machine_state_returns_all(self, service):
         await service.start()
         result = service.get_available_tools(machine_state=None)
-        assert result.total_count == 25
+        assert result.total_count == 27
 
     async def test_home_page_returns_all(self, service):
         await service.start()
         state = {"active_page": {"name": "home"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 25
+        assert result.total_count == 27
 
     async def test_agents_page_core_and_agent_and_plan(self, service):
         await service.start()
         state = {"active_page": {"name": "agents"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 16  # 8 core + 5 agent + 3 plan
-        names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
+        assert result.total_count == 15  # 7 core + 5 agent + 3 plan
+        names = {t.name for t in result.backend_tools}
         assert "list_agents" in names
         assert "get_time" in names
         assert "manage_notes" in names
@@ -214,22 +185,20 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "sessions"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 16  # 8 core + 5 agent + 3 plan
-        names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
+        assert result.total_count == 15  # 7 core + 5 agent + 3 plan
+        names = {t.name for t in result.backend_tools}
         assert "start_agent" in names
-        assert "navigate" in names
         assert "approve_plan" in names
 
     async def test_tasks_page_core_and_github(self, service):
         await service.start()
         state = {"active_page": {"name": "tasks"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 13  # 8 core + 5 github
-        names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
+        assert result.total_count == 12  # 7 core + 5 github
+        names = {t.name for t in result.backend_tools}
         # Core tools present
         assert "get_time" in names
         assert "manage_notes" in names
-        assert "navigate" in names
         assert "add_schedule_item" in names
         # GitHub tools present
         assert "create_issue" in names
@@ -244,14 +213,13 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "meetings"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 12  # 8 core + 4 meeting
-        names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
+        assert result.total_count == 11  # 7 core + 4 meeting
+        names = {t.name for t in result.backend_tools}
         assert "create_meeting_room" in names
         assert "list_meeting_rooms" in names
         assert "send_meeting_message" in names
         assert "update_meeting_state" in names
         assert "get_time" in names
-        assert "navigate" in names
         assert "add_schedule_item" in names
         # Agent tools excluded
         assert "list_agents" not in names
@@ -260,32 +228,46 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "flows"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 8  # 8 core
-        names = {t.name for t in result.backend_tools} | {t.name for t in result.frontend_tools}
+        assert result.total_count == 7  # 7 core
+        names = {t.name for t in result.backend_tools}
         assert "get_time" in names
         assert "add_schedule_item" in names
+        assert "list_agents" not in names
+
+    async def test_repos_page_core_and_repo(self, service):
+        await service.start()
+        state = {"active_page": {"name": "repos"}}
+        result = service.get_available_tools(machine_state=state)
+        assert result.total_count == 10  # 7 core + 3 repo
+        names = {t.name for t in result.backend_tools}
+        assert "onboard_repo" in names
+        assert "check_repo_status" in names
+        assert "list_repos" in names
+        assert "get_time" in names
+        assert "add_schedule_item" in names
+        # Agent tools excluded
         assert "list_agents" not in names
 
     async def test_unknown_page_returns_all(self, service):
         await service.start()
         state = {"active_page": {"name": "exotic_dashboard"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 25
+        assert result.total_count == 27
 
     async def test_missing_active_page_returns_all(self, service):
         await service.start()
         state = {"some_other_key": "value"}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 25
+        assert result.total_count == 27
 
     async def test_tool_count_warning(self):
         low_max_config = ToolConfig(max_tools_per_request=2)
         svc = ToolService(config=low_max_config)
         await svc.start()
-        # meetings page gives 11 tools which exceeds max=2
+        # meetings page gives tools which exceeds max=2
         state = {"active_page": {"name": "meetings"}}
         result = svc.get_available_tools(machine_state=state)
-        assert result.total_count == 12  # still returns them, just warns
+        assert result.total_count == 11  # still returns them, just warns
 
 
 class TestSubagentIntegration:

@@ -10,7 +10,6 @@ from httpx import ASGITransport, AsyncClient
 
 from lovely_assistant.app.assistant.models import AssistantResult
 from lovely_assistant.main import create_app
-from lovely_assistant.services.tools.models import DeferredToolRequest
 
 
 def _create_test_app(
@@ -54,33 +53,6 @@ class TestChatEndpoint:
         assert data["turn_number"] == 1
 
     @pytest.mark.asyncio
-    async def test_chat_deferred_tool_call(self):
-        mock_service = AsyncMock()
-        mock_service.process_message.return_value = AssistantResult(
-            content=None,
-            model="test-model",
-            deferred_tool_request=DeferredToolRequest(
-                request_id="req-1",
-                tool_name="navigate",
-                arguments={"message": "done"},
-            ),
-            session_id="sess-1",
-            turn_number=1,
-        )
-        app = _create_test_app(assistant_service=mock_service)
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post(
-                "/api/chat",
-                json={"session_id": "sess-1", "message": "Do something"},
-            )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["content"] is None
-        assert data["deferred_tool_request"]["tool_name"] == "navigate"
-
-    @pytest.mark.asyncio
     async def test_chat_with_machine_state(self):
         mock_service = AsyncMock()
         mock_service.process_message.return_value = AssistantResult(
@@ -114,31 +86,6 @@ class TestChatEndpoint:
             response = await client.post("/api/chat", json={"bad": "data"})
 
         assert response.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_chat_continuation(self):
-        mock_service = AsyncMock()
-        mock_service.process_message.return_value = AssistantResult(
-            content="Continued",
-            model="test-model",
-            session_id="sess-1",
-            turn_number=2,
-        )
-        app = _create_test_app(assistant_service=mock_service)
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post(
-                "/api/chat",
-                json={
-                    "session_id": "sess-1",
-                    "message": "Continue",
-                    "tool_call_id": "call-1",
-                    "tool_result": "Tool done",
-                },
-            )
-
-        assert response.status_code == 200
-        assert response.json()["content"] == "Continued"
 
 
 class TestChatStreamEndpoint:

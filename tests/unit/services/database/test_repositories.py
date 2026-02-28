@@ -304,7 +304,6 @@ class TestUpsert:
             turn_number=5,
             message_history=[{"role": "user", "content": "hi"}],
             working_memory={"goal": "test"},
-            pending_tool_call={"id": "tc-1"},
             expires_at=expires,
         )
 

@@ -251,7 +251,6 @@ class TestPublicApiExports:
 
     def test_tools_exports(self):
         from lovely_assistant.services.tools import (
-            DeferredToolRequest,
             ToolConfig,
             ToolDefinition,
             ToolService,
@@ -260,7 +259,6 @@ class TestPublicApiExports:
         assert ToolService is not None
         assert ToolConfig is not None
         assert ToolDefinition is not None
-        assert DeferredToolRequest is not None
 
     def test_assistant_exports(self):
         from lovely_assistant.app.assistant import (

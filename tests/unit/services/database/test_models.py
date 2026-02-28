@@ -33,7 +33,6 @@ class TestSessionORMColumns:
             "turn_number",
             "message_history",
             "working_memory",
-            "pending_tool_call",
             "created_at",
             "updated_at",
             "expires_at",
@@ -87,16 +86,6 @@ class TestSessionORMColumns:
 
     def test_working_memory_is_nullable(self):
         col = self._col("working_memory")
-        assert col.nullable is True
-
-    # --- pending_tool_call ---
-
-    def test_pending_tool_call_is_jsonb(self):
-        col = self._col("pending_tool_call")
-        assert isinstance(col.type, JSONB)
-
-    def test_pending_tool_call_is_nullable(self):
-        col = self._col("pending_tool_call")
         assert col.nullable is True
 
     # --- created_at ---

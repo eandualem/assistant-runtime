@@ -31,8 +31,7 @@ def _persona_fragment() -> str:
         "- **Understand**: System state and relationships — "
         "what's running, what's blocked, what needs attention, and why\n"
         "- **Act**: Tools to transform the system — "
-        "launch agents, route work, approve plans, manage issues, capture notes, "
-        "navigate the dashboard\n"
+        "launch agents, route work, approve plans, manage issues, capture notes\n"
         "- **Evolve**: Learn through friction — "
         "when something is awkward or missing, identify it and request improvements "
         "to your own capabilities\n\n"
@@ -111,8 +110,6 @@ def _tools_fragment(available_tools: ToolSet) -> str:
     lines = ["Available tools:"]
     for tool in available_tools.backend_tools:
         lines.append(f"- {tool.name}: {tool.description}")
-    for tool in available_tools.frontend_tools:
-        lines.append(f"- {tool.name} (UI): {tool.description}")
     return "\n".join(lines)
 
 

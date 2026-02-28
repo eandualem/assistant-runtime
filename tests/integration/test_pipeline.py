@@ -5,8 +5,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic_ai.messages import ToolCallPart
-from pydantic_ai.result import DeferredToolRequests
 
 from lovely_assistant.app.assistant.models import AssistantRequest
 
@@ -104,76 +102,3 @@ class TestAssistantPipeline:
 
         prompt = build_mock.call_args[1]["system_prompt"]
         assert "agents page" in prompt
-
-
-class TestDeferredToolRoundTrip:
-    @pytest.mark.asyncio
-    async def test_deferred_then_continuation(self, wired_services):
-        """First call returns deferred tool request, continuation completes."""
-        assistant = wired_services["assistant_service"]
-
-        # Step 1: Agent returns DeferredToolRequests
-        mock_call = MagicMock(spec=ToolCallPart)
-        mock_call.tool_call_id = "call-round-trip"
-        mock_call.tool_name = "navigate"
-        mock_call.args = {"message": "hello"}
-
-        mock_deferred = MagicMock()
-        mock_deferred.__class__ = DeferredToolRequests
-        mock_deferred.calls = [mock_call]
-
-        mock_agent1 = _make_mock_agent(mock_deferred)
-
-        with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent1):
-            # Need frontend tools for output_type to include DeferredToolRequests
-            from lovely_assistant.services.tools.models import (
-                ToolCategory,
-                ToolDefinition,
-                ToolSet,
-            )
-
-            with patch.object(
-                wired_services["tool_service"],
-                "get_available_tools",
-                return_value=ToolSet(
-                    frontend_tools=[
-                        ToolDefinition(
-                            name="navigate",
-                            description="Notify",
-                            parameters_schema={},
-                            category=ToolCategory.FRONTEND,
-                        )
-                    ]
-                ),
-            ):
-                result1 = await assistant.process_message(
-                    AssistantRequest(session_id="integ-defer", message="Notify user")
-                )
-
-        assert result1.is_tool_call
-        assert result1.deferred_tool_request.tool_name == "navigate"
-
-        # Verify pending tool call was stored
-        sessions = assistant._sessions
-        ctx = sessions.get_context("integ-defer")
-        assert ctx["pending_tool_call"]["tool_call_id"] == "call-round-trip"
-
-        # Step 2: Continuation with tool result
-        mock_agent2 = _make_mock_agent("Notification sent")
-
-        with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent2):
-            result2 = await assistant.process_message(
-                AssistantRequest(
-                    session_id="integ-defer",
-                    message="Continue",
-                    tool_call_id="call-round-trip",
-                    tool_result="User notified",
-                )
-            )
-
-        assert result2.content == "Notification sent"
-        assert result2.turn_number == 2
-
-        # Pending tool call should be cleared
-        ctx = sessions.get_context("integ-defer")
-        assert ctx["pending_tool_call"] is None
