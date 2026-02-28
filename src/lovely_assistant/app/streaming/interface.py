@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+from pydantic_ai import DeferredToolRequests, DeferredToolResults
 from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
 from pydantic_ai.messages import (
     PartDeltaEvent,
@@ -49,6 +50,7 @@ from lovely_assistant.app.streaming.exceptions import (
     StreamingError,
     StreamSetupError,
 )
+from lovely_assistant.services.tools._registry import get_tool_invalidates
 
 if TYPE_CHECKING:
     from lovely_assistant.app.assistant.config import AssistantConfig
@@ -129,8 +131,177 @@ class StreamingService:
         if not self._started:
             raise StreamingError("Streaming service not started")
 
-        async for event in self._stream_new_message(request):
-            yield event
+        if request.is_continuation:
+            async for event in self._stream_continuation(request):
+                yield event
+        else:
+            async for event in self._stream_new_message(request):
+                yield event
+
+    async def _stream_continuation(
+        self, request: AssistantRequest
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream a continuation — frontend returning a tool result."""
+        coordinator = EventCoordinator(self._config.max_events_per_stream)
+        emit_debug = self._config.emit_debug_events
+        start_time = time.monotonic()
+
+        try:
+            session_id = request.session_id
+            session_context = await self._sessions.get_context_async(session_id)
+
+            if emit_debug:
+                yield coordinator.track_debug(
+                    make_debug_request_event(
+                        session_id=session_id,
+                        message=request.message or "(continuation)",
+                        is_continuation=True,
+                        has_machine_state=request.machine_state is not None,
+                        machine_state=request.machine_state,
+                    )
+                )
+
+            # Build agent context (tools, prompt, etc.)
+            ctx = await self._assistant_service.prepare_agent_context(request, session_context)
+            resolved_model = ctx.resolved_model
+
+            # Load history and build deferred results
+            history = self._sessions.get_history(session_id)
+            history_result = await self._history.prepare_history_with_metadata(
+                history, session_context
+            )
+            prepared_history = history_result.history
+
+            deferred = DeferredToolResults(calls={request.tool_call_id: request.tool_result})
+
+        except Exception as e:
+            raise StreamSetupError(f"Continuation setup failed: {e}") from e
+
+        # Streaming phase
+        started = coordinator.try_started()
+        if started:
+            yield started
+
+        _history_saved = False
+        try:
+            async with asyncio.timeout(self._config.stream_timeout_seconds):
+                async with ctx.agent.iter(
+                    None,
+                    message_history=prepared_history if prepared_history else None,
+                    usage_limits=ctx.usage_limits,
+                    deferred_tool_results=deferred,
+                ) as run:
+                    async for event in self._iterate_run(run, coordinator, resolved_model):
+                        yield event
+
+            await self._sessions.save_history_async(session_id, list(run.result.all_messages()))
+            _history_saved = True
+
+            # Clear pending tool call state
+            session_context.pop("pending_tool_call_id", None)
+            session_context.pop("pending_tool_name", None)
+
+            # Extract usage
+            usage_dict: dict[str, int] | None = None
+            try:
+                usage = run.result.usage()
+                usage_dict = {
+                    "input_tokens": usage.request_tokens or 0,
+                    "output_tokens": usage.response_tokens or 0,
+                    "total_tokens": usage.total_tokens or 0,
+                }
+            except Exception:
+                pass
+
+            # Handle output (same DeferredToolRequests check as new message path)
+            output = run.result.output
+            if isinstance(output, DeferredToolRequests):
+                for call in output.tool_calls:
+                    try:
+                        args = call.args_as_dict()
+                    except Exception:
+                        args = {}
+                    yield coordinator.track(
+                        make_tool_call_event(call.tool_name, args, call.tool_call_id)
+                    )
+                    session_context["pending_tool_call_id"] = call.tool_call_id
+                    session_context["pending_tool_name"] = call.tool_name
+                    break
+
+                final = coordinator.try_final_response(
+                    None, resolved_model, session_id=session_id, usage=usage_dict
+                )
+            else:
+                final = coordinator.try_final_response(
+                    str(output), resolved_model, session_id=session_id, usage=usage_dict
+                )
+            if final:
+                yield final
+
+            logger.info(
+                "[STREAM] Continuation completed",
+                session_id=session_id,
+                model=resolved_model,
+                duration_ms=(time.monotonic() - start_time) * 1000,
+            )
+
+        except TimeoutError:
+            logger.error(
+                "[STREAM] Continuation timed out",
+                session_id=session_id,
+                timeout=self._config.stream_timeout_seconds,
+            )
+            yield coordinator.track(
+                make_error_event(
+                    f"Continuation timed out after {self._config.stream_timeout_seconds}s",
+                    error_type="timeout",
+                    terminal=True,
+                    retry_allowed=True,
+                )
+            )
+        except StreamingError:
+            raise
+        except Exception as e:
+            logger.error(
+                "[STREAM] Continuation failed",
+                session_id=session_id,
+                error_type=e.__class__.__name__,
+                error=str(e),
+            )
+            yield coordinator.track(
+                make_error_event(
+                    f"Continuation failed: {e.__class__.__name__}: {e}",
+                    error_type="internal",
+                    terminal=True,
+                    retry_allowed=False,
+                )
+            )
+        finally:
+            if not _history_saved:
+                try:
+                    if "run" in dir() and hasattr(run, "result") and run.result is not None:
+                        await self._sessions.save_history_async(
+                            session_id, list(run.result.all_messages())
+                        )
+                except Exception:
+                    pass
+
+            completed = coordinator.try_completed()
+            if completed:
+                yield completed
+
+            duration_ms = (time.monotonic() - start_time) * 1000
+            if emit_debug:
+                yield coordinator.track_debug(make_debug_completed_event(duration_ms=duration_ms))
+
+            screenshot = request.images[0] if request.images else None
+            await self._save_trace(
+                session_id,
+                coordinator.debug_events,
+                user_message=request.message or "(continuation)",
+                duration_ms=duration_ms,
+                screenshot=screenshot,
+            )
 
     async def _stream_new_message(self, request: AssistantRequest) -> AsyncIterator[dict[str, Any]]:
         """Stream a fresh user message."""
@@ -277,20 +448,61 @@ class StreamingService:
                 except Exception as e:
                     logger.debug("Failed to extract usage stats", error=str(e))
 
+            # Extract usage for final_response
+            usage_dict: dict[str, int] | None = None
+            try:
+                usage = run.result.usage()
+                usage_dict = {
+                    "input_tokens": usage.request_tokens or 0,
+                    "output_tokens": usage.response_tokens or 0,
+                    "total_tokens": usage.total_tokens or 0,
+                }
+            except Exception:
+                pass
+
             # Handle output
             output = run.result.output
-            final = coordinator.try_final_response(
-                str(output), resolved_model, session_id=session_id
-            )
-            if final:
-                yield final
-            logger.info(
-                "[STREAM] Streaming request completed",
-                session_id=session_id,
-                model=resolved_model,
-                duration_ms=(time.monotonic() - start_time) * 1000,
-                output_type=type(output).__name__,
-            )
+
+            if isinstance(output, DeferredToolRequests):
+                # Frontend tool call — emit tool_call events and signal deferred
+                for call in output.tool_calls:
+                    try:
+                        args = call.args_as_dict()
+                    except Exception:
+                        args = {}
+                    yield coordinator.track(
+                        make_tool_call_event(call.tool_name, args, call.tool_call_id)
+                    )
+
+                    # Store pending state for continuation
+                    session_context["pending_tool_call_id"] = call.tool_call_id
+                    session_context["pending_tool_name"] = call.tool_name
+                    break  # Single frontend tool per turn
+
+                final = coordinator.try_final_response(
+                    None, resolved_model, session_id=session_id, usage=usage_dict
+                )
+                if final:
+                    yield final
+                logger.info(
+                    "[STREAM] Deferred tool request emitted",
+                    session_id=session_id,
+                    model=resolved_model,
+                    duration_ms=(time.monotonic() - start_time) * 1000,
+                )
+            else:
+                final = coordinator.try_final_response(
+                    str(output), resolved_model, session_id=session_id, usage=usage_dict
+                )
+                if final:
+                    yield final
+                logger.info(
+                    "[STREAM] Streaming request completed",
+                    session_id=session_id,
+                    model=resolved_model,
+                    duration_ms=(time.monotonic() - start_time) * 1000,
+                    output_type=type(output).__name__,
+                )
 
         except TimeoutError:
             logger.error(
@@ -394,8 +606,10 @@ class StreamingService:
                         make_tool_call_event(tc.tool_name, args, tc.tool_call_id)
                     )
 
-                # Execute tools
+                # Execute tools (timed)
+                tool_start = time.monotonic()
                 next_node = await run.next(node)
+                tool_duration_ms = (time.monotonic() - tool_start) * 1000
 
                 # Emit tool_result or tool_error events
                 if isinstance(next_node, ModelRequestNode) and all_calls:
@@ -409,7 +623,13 @@ class StreamingService:
                         else:
                             result_str = str(raw_content) if raw_content is not None else ""
                             yield coordinator.track(
-                                make_tool_result_event(tc.tool_name, result_str, tc.tool_call_id)
+                                make_tool_result_event(
+                                    tc.tool_name,
+                                    result_str,
+                                    tc.tool_call_id,
+                                    duration_ms=tool_duration_ms,
+                                    invalidates=get_tool_invalidates(tc.tool_name),
+                                )
                             )
 
                     # Check for RetryPromptPart (Pydantic AI validation failures)

@@ -115,6 +115,13 @@ class AssistantRequest(BaseModel):
     images: list[str] = Field(default_factory=list)
     machine_state: dict[str, Any] | None = None
     config: RequestConfigOverride | None = None
+    tool_call_id: str | None = None
+    tool_result: Any | None = None
+
+    @property
+    def is_continuation(self) -> bool:
+        """Whether this is a continuation request (frontend returning a tool result)."""
+        return self.tool_call_id is not None
 
     @model_validator(mode="before")
     @classmethod

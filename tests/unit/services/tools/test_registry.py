@@ -3,7 +3,7 @@
 import pytest
 from pydantic_ai.toolsets import FunctionToolset
 
-from lovely_assistant.services.tools._registry import ToolRegistry
+from lovely_assistant.services.tools._registry import ToolRegistry, get_tool_invalidates
 from lovely_assistant.services.tools.config import ToolConfig
 from lovely_assistant.services.tools.exceptions import ToolValidationError
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
@@ -285,3 +285,38 @@ class TestSafetyWrapper:
         assert "bad args" in result["error"]
         # Should be called only once — no retries for ValueError
         assert call_count == 1
+
+
+class TestToolInvalidates:
+    def test_known_tool_returns_list(self):
+        result = get_tool_invalidates("create_issue")
+        assert result == ["tasks"]
+
+    def test_unknown_tool_returns_none(self):
+        result = get_tool_invalidates("get_time")
+        assert result is None
+
+    def test_agent_tools_invalidate_agents(self):
+        result = get_tool_invalidates("start_agent")
+        assert result == ["agents"]
+
+    def test_meeting_tools_invalidate_meetings(self):
+        result = get_tool_invalidates("create_meeting_room")
+        assert result == ["meetings"]
+
+
+class TestFrontendToolRegistration:
+    def test_register_frontend_tools(self, registry):
+        registry.register_frontend_tools()
+        assert registry.frontend_tool_count() == 3
+
+    def test_frontend_tools_in_available_tools(self, registry):
+        registry.register_frontend_tools()
+        result = registry.get_available_tools()
+        assert len(result.frontend_tools) == 3
+
+    def test_frontend_tools_bypass_page_filter(self, registry):
+        registry.register_frontend_tools()
+        machine_state = {"active_page": {"name": "flows"}}
+        result = registry.get_available_tools(machine_state=machine_state)
+        assert len(result.frontend_tools) == 3

@@ -186,7 +186,7 @@ class SessionStore:
 
             repo = SessionRepository(db_session)
             rows = await repo.list_all(limit=limit, offset=offset)
-            return [
+            db_results = [
                 {
                     "session_id": row.id,
                     "title": row.title,
@@ -196,6 +196,19 @@ class SessionStore:
                 }
                 for row in rows
             ]
+
+            # Overlay in-memory data on DB results — active sessions may have
+            # newer message counts/titles not yet persisted to DB.
+            for result in db_results:
+                sid = result["session_id"]
+                if sid in self._sessions:
+                    ctx = self._sessions[sid]
+                    result["message_count"] = len(ctx.get("message_history", []))
+                    result["turn_number"] = ctx.get("turn_number", result["turn_number"])
+                    if ctx.get("title"):
+                        result["title"] = ctx["title"]
+
+            return db_results
 
     def _evict_if_needed(self) -> None:
         """Evict oldest half of in-memory sessions if above threshold."""

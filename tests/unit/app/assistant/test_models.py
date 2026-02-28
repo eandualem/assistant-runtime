@@ -197,6 +197,32 @@ class TestAssistantRequest:
         assert req.machine_state == {"current_state": "dashboard"}
 
 
+class TestAssistantRequestContinuation:
+    def test_is_continuation_when_tool_call_id_present(self):
+        req = AssistantRequest(session_id="s", message="", tool_call_id="call_1")
+        assert req.is_continuation is True
+
+    def test_is_not_continuation_without_tool_call_id(self):
+        req = AssistantRequest(session_id="s", message="hi")
+        assert req.is_continuation is False
+
+    def test_tool_result_field_accepted(self):
+        req = AssistantRequest(
+            session_id="s",
+            message="",
+            tool_call_id="call_1",
+            tool_result={"success": True},
+        )
+        assert req.tool_result == {"success": True}
+
+    def test_camel_case_normalization_for_continuation(self):
+        req = AssistantRequest(
+            **{"sessionId": "s", "message": "", "toolCallId": "c1", "toolResult": 42}
+        )
+        assert req.tool_call_id == "c1"
+        assert req.tool_result == 42
+
+
 class TestTopLevelCamelCaseNormalization:
     """Tests that the model_validator normalizes camelCase top-level keys."""
 

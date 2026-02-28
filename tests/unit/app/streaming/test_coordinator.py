@@ -303,3 +303,22 @@ class TestCoordinatorDebugEventsCollection:
         coord.track(make_thinking_delta_event("thinking"))
         assert len(coord.debug_events) == 1
         assert coord.debug_events[0]["type"] == "debug_request"
+
+
+class TestCoordinatorUsage:
+    def test_try_final_response_with_usage(self):
+        coord = EventCoordinator(max_events=100)
+        event = coord.try_final_response(
+            "done",
+            "model",
+            usage={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+        )
+        assert event is not None
+        assert "usage" in event
+        assert event["usage"] == {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+
+    def test_try_final_response_without_usage(self):
+        coord = EventCoordinator(max_events=100)
+        event = coord.try_final_response("done", "model")
+        assert event is not None
+        assert "usage" not in event
