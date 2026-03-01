@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_graph.nodes import End
@@ -22,6 +22,24 @@ from lovely_assistant.config import AppSettings
 from lovely_assistant.services.history.interface import HistoryService
 from lovely_assistant.services.llm.interface import LlmService
 from lovely_assistant.services.tools.interface import ToolService
+
+# Required artifacts for integration tests (no DB available)
+_INTEGRATION_ARTIFACTS = {
+    "persona": "You are Jarvis, the operational assistant for the Lovely Universe.",
+    "communication_protocol": "Messages may arrive with envelope tags indicating their source.",
+    "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
+}
+
+
+@pytest.fixture(autouse=True)
+def _mock_artifact_loading():
+    """Patch artifact loading for all integration tests — no DB available."""
+    with patch.object(
+        AssistantService,
+        "_load_active_artifacts",
+        new=AsyncMock(return_value=_INTEGRATION_ARTIFACTS),
+    ):
+        yield
 
 
 def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:

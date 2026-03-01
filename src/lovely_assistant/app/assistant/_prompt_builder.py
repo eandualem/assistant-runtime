@@ -15,85 +15,11 @@ from lovely_assistant.app.assistant.models import PromptResult
 from lovely_assistant.services.history.models import WorkingMemory
 from lovely_assistant.services.tools.models import ToolSet
 
+# --- Required artifacts ---
+
+_REQUIRED_ARTIFACTS = ("persona", "communication_protocol", "ecosystem")
+
 # --- Fragment builders ---
-
-
-def _persona_fragment() -> str:
-    """Core identity and operational philosophy for Jarvis."""
-    return (
-        "You are Jarvis — Elias's operational nervous system for the Lovely Universe.\n\n"
-        "You are not a chatbot. You are not a command executor. You are a force multiplier — "
-        "an entity with visibility, context, agency, and self-improvement capability, "
-        "operating in service of Elias's intentionality.\n\n"
-        "Your four capabilities:\n"
-        "- **See**: Dashboard visibility across the entire agent ecosystem — "
-        "sessions, issues, plans, services, workspace state\n"
-        "- **Understand**: System state and relationships — "
-        "what's running, what's blocked, what needs attention, and why\n"
-        "- **Act**: Tools to transform the system — "
-        "launch agents, route work, approve plans, manage issues, capture notes\n"
-        "- **Evolve**: Learn through friction — "
-        "when something is awkward or missing, identify it and request improvements "
-        "to your own capabilities\n\n"
-        "Everything flows through you — plans, notes, decisions, actions, friction. "
-        "Elias tells you what he wants; you make operational complexity disappear "
-        "behind natural language. You don't wait to be asked — you anticipate, "
-        "surface what matters, and act.\n\n"
-        "You orchestrate and execute at Elias's layer. Deep expertise — strategy, "
-        "architecture, code, specs — routes to the right specialist. "
-        "You know who to route to and when.\n\n"
-        "Tone: Direct, anticipatory, has perspective. You are a partner, not a tool. "
-        "You have opinions informed by what you see. You evolve through every interaction."
-    )
-
-
-def _communication_protocol_fragment() -> str:
-    """Communication protocol — envelope parsing and Response Medium Rule."""
-    return (
-        "## Communication Protocol\n\n"
-        "Messages may arrive with envelope tags indicating their source:\n"
-        "- `[via:telegram from:elias]` — Elias messaged via Telegram\n"
-        "- `[via:tmux from:{agent}]` — An agent sent a direct message\n"
-        "- `[via:room room:{room_id} from:{sender}]` — A message from a meeting room\n"
-        "- `[via:backbone]` — System notification from the backbone\n"
-        "- No tag — Elias is typing directly in the dashboard\n\n"
-        "**Response Medium Rule:** Respond through the same channel you were reached on.\n"
-        "- If `[via:telegram]`: After processing, use the `respond_telegram` tool to send your response\n"
-        "- If `[via:tmux from:{agent}]`: After processing, use `send_agent_message` to reply to that agent\n"
-        "- If `[via:room room:{room_id} from:{sender}]`: After processing, use "
-        "`send_meeting_message(room_id=room_id, message=your_response)` to post your response "
-        "back to the room transcript so all participants can see it\n"
-        "- If no tag (dashboard): Respond normally in chat (default behavior)\n\n"
-        "Always process the request fully first (use tools, think, etc.), then respond via the "
-        "correct channel. The dashboard chat shows all activity regardless of channel — "
-        "this is your workspace log."
-    )
-
-
-def _ecosystem_fragment(registry_agents: list[dict[str, Any]] | None) -> str:
-    """Agent ecosystem context — built from backbone registry data."""
-    if not registry_agents:
-        return ""
-
-    lines = ["The Lovely Universe — agents you work with:"]
-    for agent in registry_agents:
-        display_name = agent.get("display_name") or agent.get("name", "Unknown")
-        role = agent.get("role", "")
-        session = agent.get("session", "")
-        org = agent.get("org", "")
-        line = f"- {display_name}"
-        if role:
-            line += f" ({role}"
-            if org:
-                line += f", org: {org}"
-            line += ")"
-        elif org:
-            line += f" (org: {org})"
-        if session:
-            line += f" [session: {session}]"
-        lines.append(line)
-
-    return "\n".join(lines)
 
 
 def _datetime_fragment() -> str:
@@ -370,8 +296,7 @@ def build_system_prompt(
     session_context: dict[str, Any],
     machine_state: dict[str, Any] | None = None,
     mcp_summary: list[dict[str, Any]] | None = None,
-    artifacts: dict[str, str] | None = None,
-    registry_agents: list[dict[str, Any]] | None = None,
+    artifacts: dict[str, str],
 ) -> PromptResult:
     """Compose system prompt from module fragments.
 
@@ -382,31 +307,32 @@ def build_system_prompt(
         session_context: Session context dict (may contain working memory).
         machine_state: Frontend XState machine state snapshot.
         mcp_summary: MCP server connection summary for prompt context.
-        artifacts: DB-loaded artifact name→content map. Falls back to hardcoded if None/missing.
-        registry_agents: Agent data from backbone registry for ecosystem fragment.
+        artifacts: DB-loaded artifact name→content map. Must contain persona,
+            communication_protocol, and ecosystem.
 
     Returns:
         PromptResult with composed content and fragment metadata.
+
+    Raises:
+        ValueError: If a required artifact is missing or empty.
     """
+    # Validate required artifacts
+    for name in _REQUIRED_ARTIFACTS:
+        if not artifacts.get(name):
+            raise ValueError(f"Missing required artifact: {name}")
+
     # Collect named fragments
     named_fragments: list[tuple[str, str]] = []
-    _artifacts = artifacts or {}
 
-    # Stable fragments (cacheable) — DB artifact or hardcoded fallback
-    persona_content = _artifacts.get("persona") or _persona_fragment()
-    named_fragments.append(("persona", persona_content))
+    # Stable fragments (cacheable) — from DB artifacts
+    named_fragments.append(("persona", artifacts["persona"]))
+    named_fragments.append(("communication_protocol", artifacts["communication_protocol"]))
 
-    comm_protocol = _artifacts.get("communication_protocol") or _communication_protocol_fragment()
-    if comm_protocol:
-        named_fragments.append(("communication_protocol", comm_protocol))
+    # Semi-stable fragments — from DB artifacts
+    named_fragments.append(("ecosystem", artifacts["ecosystem"]))
 
-    # Semi-stable fragments (change infrequently) — DB artifact or registry data
-    ecosystem_frag = _artifacts.get("ecosystem") or _ecosystem_fragment(registry_agents)
-    if ecosystem_frag:
-        named_fragments.append(("ecosystem", ecosystem_frag))
-
-    # Scratchpad — only from DB (no hardcoded fallback)
-    scratchpad_content = _artifacts.get("scratchpad")
+    # Scratchpad — optional
+    scratchpad_content = artifacts.get("scratchpad")
     if scratchpad_content:
         named_fragments.append(("scratchpad", scratchpad_content))
 

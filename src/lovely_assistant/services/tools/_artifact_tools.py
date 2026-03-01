@@ -15,7 +15,7 @@ async def manage_artifacts(
     name: str = "",
     content: str = "",
 ) -> dict[str, Any]:
-    """Manage versioned prompt artifacts (persona, ecosystem, scratchpad).
+    """Manage versioned prompt artifacts (persona, communication_protocol, ecosystem, scratchpad).
 
     Supports list, view, propose_edit, and update_scratchpad actions.
     """
@@ -161,9 +161,9 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="manage_artifacts",
             description=(
-                "Manage versioned prompt artifacts (persona, ecosystem, scratchpad). "
-                "Supports list, view, propose_edit (for persona/ecosystem — requires Elias approval), "
-                "and update_scratchpad (auto-approved). "
+                "Manage versioned prompt artifacts (persona, communication_protocol, ecosystem, scratchpad). "
+                "Supports list, view, propose_edit (for persona/communication_protocol/ecosystem — "
+                "requires Elias approval), and update_scratchpad (auto-approved). "
                 "Use update_scratchpad to persist observations, patterns, and operational notes "
                 "that should influence your behavior across conversations."
             ),
@@ -179,7 +179,7 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
                         "type": "string",
                         "description": (
                             "Artifact name (required for view/propose_edit). "
-                            "Known artifacts: persona, ecosystem, scratchpad"
+                            "Known artifacts: persona, communication_protocol, ecosystem, scratchpad"
                         ),
                     },
                     "content": {

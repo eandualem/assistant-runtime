@@ -15,13 +15,12 @@ from lovely_assistant.services.tools.models import ToolCategory
 
 
 class TestFrontendToolSchemas:
-    def test_has_exactly_three_entries(self):
-        assert len(FRONTEND_TOOL_SCHEMAS) == 3
+    def test_has_exactly_two_entries(self):
+        assert len(FRONTEND_TOOL_SCHEMAS) == 2
 
     def test_expected_tool_names_present(self):
         assert "navigate" in FRONTEND_TOOL_SCHEMAS
         assert "ui_send_event" in FRONTEND_TOOL_SCHEMAS
-        assert "inspect_trace_screenshot" in FRONTEND_TOOL_SCHEMAS
 
     def test_each_schema_has_description(self):
         for name, schema in FRONTEND_TOOL_SCHEMAS.items():
@@ -57,9 +56,9 @@ class TestBuildFrontendToolset:
 
 
 class TestGetFrontendDefinitions:
-    def test_returns_three_definitions(self):
+    def test_returns_two_definitions(self):
         definitions = get_frontend_definitions()
-        assert len(definitions) == 3
+        assert len(definitions) == 2
 
     def test_all_have_frontend_category(self):
         definitions = get_frontend_definitions()
@@ -94,7 +93,3 @@ class TestGetFrontendDefinitions:
         names = [defn.name for defn in definitions]
         assert "ui_send_event" in names
 
-    def test_inspect_trace_screenshot_definition_present(self):
-        definitions = get_frontend_definitions()
-        names = [defn.name for defn in definitions]
-        assert "inspect_trace_screenshot" in names

@@ -29,6 +29,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_graph.nodes import End
 
+from lovely_assistant.app.assistant._serialization import sanitize_image_tool_returns
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.models import AssistantRequest, _build_user_prompt
 from lovely_assistant.app.streaming._coordinator import EventCoordinator
@@ -52,6 +53,10 @@ from lovely_assistant.app.streaming.exceptions import (
     StreamSetupError,
 )
 from lovely_assistant.services.tools._registry import get_tool_invalidates
+from lovely_assistant.services.tools._screen_tools import (
+    clear_current_screenshot,
+    set_current_screenshot,
+)
 from lovely_assistant.services.tracing import create_request_trace, create_span
 
 if TYPE_CHECKING:
@@ -189,6 +194,10 @@ class StreamingService:
         )
         trace_cm.__enter__()
 
+        # Store screenshot for look_at_screen tool (request-scoped ContextVar)
+        if request.images:
+            set_current_screenshot(request.images[0])
+
         # Streaming phase
         started = coordinator.try_started()
         if started:
@@ -206,7 +215,9 @@ class StreamingService:
                     async for event in self._iterate_run(run, coordinator, resolved_model):
                         yield event
 
-            await self._sessions.save_history_async(session_id, list(run.result.all_messages()))
+            await self._sessions.save_history_async(
+                session_id, sanitize_image_tool_returns(list(run.result.all_messages()))
+            )
             _history_saved = True
 
             # Clear pending tool call state
@@ -283,11 +294,14 @@ class StreamingService:
                 )
             )
         finally:
+            clear_current_screenshot()
+
             if not _history_saved:
                 try:
                     if "run" in dir() and hasattr(run, "result") and run.result is not None:
                         await self._sessions.save_history_async(
-                            session_id, list(run.result.all_messages())
+                            session_id,
+                            sanitize_image_tool_returns(list(run.result.all_messages())),
                         )
                 except Exception:
                     pass
@@ -426,7 +440,11 @@ class StreamingService:
         if started:
             yield started
 
-        user_prompt = _build_user_prompt(request.message, request.images, resolved_model)
+        # Store screenshot for look_at_screen tool (request-scoped ContextVar)
+        if request.images:
+            set_current_screenshot(request.images[0])
+
+        user_prompt = _build_user_prompt(request.message)
         _history_saved = False
         try:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
@@ -439,7 +457,9 @@ class StreamingService:
                         yield event
 
             # Save history after run completes (async = persists to DB)
-            await self._sessions.save_history_async(session_id, list(run.result.all_messages()))
+            await self._sessions.save_history_async(
+                session_id, sanitize_image_tool_returns(list(run.result.all_messages()))
+            )
             _history_saved = True
 
             # Debug: tool execution
@@ -552,12 +572,15 @@ class StreamingService:
                 )
             )
         finally:
+            clear_current_screenshot()
+
             # Backup history save if normal path didn't execute
             if not _history_saved:
                 try:
                     if "run" in dir() and hasattr(run, "result") and run.result is not None:
                         await self._sessions.save_history_async(
-                            session_id, list(run.result.all_messages())
+                            session_id,
+                            sanitize_image_tool_returns(list(run.result.all_messages())),
                         )
                         logger.debug("Backup history save succeeded", session_id=session_id)
                 except Exception:
@@ -600,6 +623,7 @@ class StreamingService:
     ) -> AsyncIterator[dict[str, Any]]:
         """Iterate over agent run nodes, yielding SSE events."""
         _streamed_tool_ids: set[str] = set()
+        _pending_image_sanitize = False
         while True:
             node = run.next_node
             if isinstance(node, End):
@@ -607,6 +631,13 @@ class StreamingService:
             if isinstance(node, ModelRequestNode):
                 async for event in self._stream_node(node, run, coordinator, _streamed_tool_ids):
                     yield event
+                # Deferred sanitization: strip image after the LLM has seen it.
+                # look_at_screen sets the flag at CallToolsNode time; we wait
+                # until this ModelRequestNode finishes streaming (LLM consumed
+                # the image) before replacing BinaryContent with a placeholder.
+                if _pending_image_sanitize:
+                    sanitize_image_tool_returns(run.ctx.state.message_history)
+                    _pending_image_sanitize = False
                 # Advance to next node
                 node = await run.next(node)
             elif isinstance(node, CallToolsNode):
@@ -667,6 +698,12 @@ class StreamingService:
                                     retry_id,
                                 )
                             )
+
+                # Flag deferred sanitization: the image must survive until
+                # the next ModelRequestNode streams (LLM sees it), then gets
+                # stripped so subsequent tool rounds don't resend the image.
+                if any(tc.tool_name == "look_at_screen" for tc in all_calls):
+                    _pending_image_sanitize = True
             else:
                 # Unknown node type — advance
                 node = await run.next(node)

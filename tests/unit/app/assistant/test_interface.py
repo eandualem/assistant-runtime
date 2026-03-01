@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -15,6 +15,23 @@ from lovely_assistant.app.assistant.exceptions import (
 from lovely_assistant.app.assistant.interface import AssistantService
 from lovely_assistant.app.assistant.models import AssistantRequest, RequestConfigOverride
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+
+_MOCK_ARTIFACTS = {
+    "persona": "You are Jarvis, the operational assistant.",
+    "communication_protocol": "Messages may arrive with envelope tags.",
+    "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
+}
+
+
+@pytest.fixture(autouse=True)
+def _mock_artifact_loading():
+    """Patch artifact loading for all tests — no DB in unit tests."""
+    with patch.object(
+        AssistantService,
+        "_load_active_artifacts",
+        new=AsyncMock(return_value=_MOCK_ARTIFACTS),
+    ):
+        yield
 
 # --- Fixtures ---
 
@@ -254,8 +271,8 @@ class TestProcessNewMessage:
         call_kwargs = agent.run.call_args.kwargs
         assert call_kwargs["usage_limits"].request_limit == 7
 
-    async def test_images_passed_to_agent_run_as_list(self, service, llm_service):
-        """When images are provided, agent.run() receives a list (not string)."""
+    async def test_images_not_auto_attached_to_prompt(self, service, llm_service):
+        """Images are NOT auto-attached — prompt is always plain string."""
         await service.start()
         req = AssistantRequest(
             session_id="s1",
@@ -266,8 +283,8 @@ class TestProcessNewMessage:
         agent = llm_service.build_agent.return_value
         call_args = agent.run.call_args
         user_prompt = call_args[0][0]
-        assert isinstance(user_prompt, list)
-        assert user_prompt[0] == "What's in this image?"
+        assert isinstance(user_prompt, str)
+        assert user_prompt == "What's in this image?"
 
     async def test_no_images_passes_plain_string(self, service, llm_service):
         """When no images, agent.run() receives plain string."""
@@ -448,7 +465,7 @@ class TestPrepareAgentContext:
         await svc.start()
 
         # Patch _load_active_artifacts to confirm it's called
-        svc._load_active_artifacts = AsyncMock(return_value={"rules": "Be helpful"})
+        svc._load_active_artifacts = AsyncMock(return_value=_MOCK_ARTIFACTS)
         session_context = svc._sessions.get_context("s1")
         req = AssistantRequest(session_id="s1", message="hi")
 
@@ -456,12 +473,20 @@ class TestPrepareAgentContext:
 
         svc._load_active_artifacts.assert_awaited_once()
 
-    async def test_no_db_artifacts_none(self, service, request_msg):
-        """Without database_service, artifacts are None (graceful fallback)."""
-        await service.start()
-        assert service._database_service is None
+    async def test_no_db_raises_assistant_error(self, llm_service, history_service, tool_service):
+        """Without database_service, _load_active_artifacts returns None → AssistantError."""
+        svc = AssistantService(
+            config=AssistantConfig(),
+            llm_service=llm_service,
+            history_service=history_service,
+            tool_service=tool_service,
+        )
+        await svc.start()
 
-        session_context = service._sessions.get_context(request_msg.session_id)
-        # Should not raise — _load_active_artifacts returns None
-        ctx = await service.prepare_agent_context(request_msg, session_context)
-        assert ctx is not None
+        # Override instance to simulate DB unavailable (returns None)
+        svc._load_active_artifacts = AsyncMock(return_value=None)
+
+        session_context = svc._sessions.get_context("s1")
+        req = AssistantRequest(session_id="s1", message="hi")
+        with pytest.raises(AssistantError, match="artifact store unavailable"):
+            await svc.prepare_agent_context(req, session_context)

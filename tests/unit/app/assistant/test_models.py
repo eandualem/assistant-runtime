@@ -1,10 +1,6 @@
 """Tests for assistant module request/response models."""
 
-import base64
-from unittest.mock import patch
-
 import pytest
-from pydantic_ai.messages import BinaryContent, ImageUrl
 
 from lovely_assistant.app.assistant.models import (
     AssistantRequest,
@@ -335,104 +331,17 @@ class TestRequestConfigOverride:
         assert req.config is None
 
 
-# --- Minimal valid JPEG for data URI tests ---
-_TINY_JPEG = base64.b64encode(
-    bytes(
-        [
-            0xFF,
-            0xD8,
-            0xFF,
-            0xE0,
-            0x00,
-            0x10,
-            0x4A,
-            0x46,
-            0x49,
-            0x46,
-            0x00,
-            0x01,
-            0x01,
-            0x00,
-            0x00,
-            0x01,
-            0x00,
-            0x01,
-            0x00,
-            0x00,
-            0xFF,
-            0xD9,
-        ]
-    )
-).decode()
-VALID_DATA_URI = f"data:image/jpeg;base64,{_TINY_JPEG}"
-
-
 class TestBuildUserPrompt:
-    """Tests for _build_user_prompt — converts message + images into Pydantic AI user prompt."""
+    """Tests for _build_user_prompt — returns message string (images handled by look_at_screen tool)."""
 
-    def test_no_images_returns_string(self):
-        result = _build_user_prompt("hello", [])
+    def test_returns_message_string(self):
+        result = _build_user_prompt("hello")
         assert result == "hello"
         assert isinstance(result, str)
 
-    def test_valid_data_uri_returns_list(self):
-        result = _build_user_prompt("describe this", [VALID_DATA_URI])
-        assert isinstance(result, list)
-        assert len(result) == 2
-        assert result[0] == "describe this"
-        assert isinstance(result[1], BinaryContent)
-
-    def test_valid_https_url_returns_list(self):
-        url = "https://example.com/photo.jpg"
-        result = _build_user_prompt("what is this?", [url])
-        assert isinstance(result, list)
-        assert len(result) == 2
-        assert result[0] == "what is this?"
-        assert isinstance(result[1], ImageUrl)
-        assert result[1].url == url
-
-    def test_multiple_images(self):
-        images = [VALID_DATA_URI, "https://example.com/img.png"]
-        result = _build_user_prompt("check these", images)
-        assert isinstance(result, list)
-        assert len(result) == 3
-        assert result[0] == "check these"
-        assert isinstance(result[1], BinaryContent)
-        assert isinstance(result[2], ImageUrl)
-
-    def test_invalid_scheme_skipped(self):
-        result = _build_user_prompt("hi", ["http://example.com/img.jpg"])
-        assert result == "hi"
-        assert isinstance(result, str)
-
-    def test_malformed_data_uri_skipped(self):
-        result = _build_user_prompt("hi", ["data:invalid"])
-        assert result == "hi"
-        assert isinstance(result, str)
-
-    def test_all_invalid_returns_string(self):
-        result = _build_user_prompt("hi", ["http://x.com/a.jpg", "ftp://bad", "data:invalid"])
-        assert result == "hi"
-        assert isinstance(result, str)
-
-    def test_mixed_valid_invalid(self):
-        images = ["https://example.com/good.png", "http://example.com/bad.jpg"]
-        result = _build_user_prompt("check", images)
-        assert isinstance(result, list)
-        assert len(result) == 2
-        assert result[0] == "check"
-        assert isinstance(result[1], ImageUrl)
-
-    def test_non_vision_model_warns(self):
-        with patch("lovely_assistant.app.assistant.models.logger") as mock_logger:
-            _build_user_prompt("hi", [VALID_DATA_URI], model="openrouter:deepseek/deepseek-v3.2")
-        assert mock_logger.warning.called
-
-    def test_unknown_model_no_warning(self):
-        with patch("lovely_assistant.app.assistant.models.logger") as mock_logger:
-            result = _build_user_prompt("hi", [VALID_DATA_URI], model="unknown:fake-model-9000")
-        assert not mock_logger.warning.called
-        assert isinstance(result, list)
+    def test_empty_message(self):
+        result = _build_user_prompt("")
+        assert result == ""
 
     def test_images_field_defaults_empty(self):
         req = AssistantRequest(session_id="s1", message="hi")

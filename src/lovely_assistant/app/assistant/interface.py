@@ -13,6 +13,7 @@ from pydantic_ai import DeferredToolRequests
 from pydantic_ai.usage import UsageLimits
 
 from lovely_assistant.app.assistant._prompt_builder import build_system_prompt
+from lovely_assistant.app.assistant._serialization import sanitize_image_tool_returns
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.config import AssistantConfig
 from lovely_assistant.app.assistant.exceptions import (
@@ -26,6 +27,10 @@ from lovely_assistant.app.assistant.models import (
     _build_user_prompt,
 )
 from lovely_assistant.app.settings import RuntimeSettings, resolve_effective_config
+from lovely_assistant.services.tools._screen_tools import (
+    clear_current_screenshot,
+    set_current_screenshot,
+)
 from lovely_assistant.services.tracing import create_request_trace, create_span
 
 if TYPE_CHECKING:
@@ -112,13 +117,11 @@ class AssistantService:
             available_tools = self._tools.get_available_tools(request.machine_state)
             toolsets = self._tools.build_toolset(request.machine_state)
 
-            # 2. MCP + artifacts + registry + system prompt
+            # 2. MCP + artifacts + system prompt
             mcp_summary = await self._tools.get_mcp_summary()
             artifacts = await self._load_active_artifacts()
-
-            from lovely_assistant.services.tools._agent_registry_cache import get_registry_cache
-
-            registry_agents = await get_registry_cache().get_agents()
+            if artifacts is None:
+                raise AssistantError("Cannot build system prompt: artifact store unavailable")
 
             prompt_result = build_system_prompt(
                 available_tools=available_tools,
@@ -126,7 +129,6 @@ class AssistantService:
                 machine_state=request.machine_state,
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
-                registry_agents=registry_agents,
             )
 
             # 3. Config resolution
@@ -216,7 +218,9 @@ class AssistantService:
                 )
 
             # 4. Run the agent
-            user_prompt = _build_user_prompt(request.message, request.images, ctx.resolved_model)
+            user_prompt = _build_user_prompt(request.message)
+            if request.images:
+                set_current_screenshot(request.images[0])
             try:
                 result = await ctx.agent.run(
                     user_prompt,
@@ -232,9 +236,13 @@ class AssistantService:
                     error=str(e),
                 )
                 raise AgentRunError(f"Agent execution failed: {e}") from e
+            finally:
+                clear_current_screenshot()
 
-            # 5. Save message history (persists to DB)
-            await sessions.save_history_async(session_id, list(result.all_messages()))
+            # 5. Save message history (persists to DB, with image data stripped)
+            await sessions.save_history_async(
+                session_id, sanitize_image_tool_returns(list(result.all_messages()))
+            )
 
             # 6. Handle output
             output = result.output

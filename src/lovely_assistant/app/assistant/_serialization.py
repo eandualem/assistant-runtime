@@ -12,6 +12,7 @@ from typing import Any
 
 from loguru import logger
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelRequest,
@@ -90,6 +91,45 @@ def _sanitize_history(history: list[Any]) -> list[Any]:
             f"Sanitized {sanitized_count} tool return part(s) with rogue FileUrl reconstructions"
         )
     return history
+
+
+def _is_synthetic_binary_user_prompt(part: Any) -> bool:
+    """Check if a part is a synthetic UserPromptPart created by Pydantic AI for BinaryContent.
+
+    When a tool returns BinaryContent, Pydantic AI creates a UserPromptPart
+    with ``content=[text_ref, BinaryContent(...)]`` so the model can "see" the
+    file. These are framework artifacts, not real user messages.
+    """
+    return (
+        isinstance(part, UserPromptPart)
+        and isinstance(part.content, list)
+        and any(isinstance(item, BinaryContent) for item in part.content)
+    )
+
+
+def sanitize_image_tool_returns(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Strip image data from look_at_screen tool returns.
+
+    The ``look_at_screen`` tool returns a BinaryContent image. Pydantic AI
+    wraps this in two parts within the same ModelRequest:
+    1. A ``ToolReturnPart`` with ``tool_name="look_at_screen"`` — replace content
+       with a text placeholder
+    2. A synthetic ``UserPromptPart`` whose content is a list containing
+       ``BinaryContent`` — **remove entirely** (otherwise it renders as a ghost
+       user message in the chat UI)
+
+    This prevents base64 image data from accumulating in history and avoids
+    UI artifacts.
+    """
+    for msg in messages:
+        if not isinstance(msg, ModelRequest):
+            continue
+        for part in msg.parts:
+            if isinstance(part, ToolReturnPart) and part.tool_name == "look_at_screen":
+                part.content = "[Inspected current screen]"
+        # Remove synthetic UserPromptParts with BinaryContent (ghost messages)
+        msg.parts = [p for p in msg.parts if not _is_synthetic_binary_user_prompt(p)]
+    return messages
 
 
 def messages_to_display_format(messages: list[ModelMessage]) -> list[dict[str, Any]]:
