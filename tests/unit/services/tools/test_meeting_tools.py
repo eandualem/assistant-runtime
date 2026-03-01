@@ -31,7 +31,7 @@ class TestCreateMeetingRoom:
             201,
             {
                 "id": "room-1",
-                "topic": "Sprint planning",
+                "title": "Sprint planning",
                 "state": "active",
                 "participants": ["leo", "ike"],
             },
@@ -76,7 +76,7 @@ class TestCreateMeetingRoom:
     async def test_with_description(self, mock_req):
         mock_req.return_value = (
             201,
-            {"id": "room-2", "topic": "Review", "state": "active", "participants": ["leo"]},
+            {"id": "room-2", "title": "Review", "state": "active", "participants": ["leo"]},
         )
 
         result = await create_meeting_room(
@@ -88,7 +88,8 @@ class TestCreateMeetingRoom:
 
         call_kwargs = mock_req.call_args
         json_body = call_kwargs.kwargs.get("json_body") or call_kwargs[1].get("json_body")
-        assert json_body["context"] == "Architecture review"
+        assert json_body["description"] == "Architecture review"
+        assert json_body["moderator"] == "elias"
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +106,7 @@ class TestListMeetingRooms:
                 "items": [
                     {
                         "id": "room-1",
-                        "topic": "Sprint",
+                        "title": "Sprint",
                         "state": "active",
                         "participants": ["leo", "ike"],
                         "created_at": "2026-02-19T10:00:00Z",

@@ -35,9 +35,10 @@ async def create_meeting_room(
         "POST",
         "/api/rooms",
         json_body={
-            "topic": title.strip(),
+            "title": title.strip(),
+            "description": description,
+            "moderator": moderator,
             "participants": participants,
-            "context": description,
         },
     )
 
@@ -52,7 +53,7 @@ async def create_meeting_room(
 
     return {
         "id": data.get("id"),
-        "title": data.get("topic", title.strip()),
+        "title": data.get("title", title.strip()),
         "state": data.get("state", "active"),
         "participants": data.get("participants", participants),
         "success": True,
@@ -80,7 +81,7 @@ async def list_meeting_rooms(state: str = "") -> dict[str, Any]:
     rooms = [
         {
             "id": room.get("id"),
-            "title": room.get("topic", ""),
+            "title": room.get("title", ""),
             "state": room.get("state", "unknown"),
             "participant_count": len(room.get("participants", [])),
             "created_at": room.get("created_at"),
