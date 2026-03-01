@@ -25,6 +25,7 @@ from lovely_assistant.services.llm.factory import register_llm
 from lovely_assistant.services.mcp.factory import register_mcp
 from lovely_assistant.services.media.factory import register_media
 from lovely_assistant.services.tools.factory import register_tools
+from lovely_assistant.services.tracing import initialize_tracing, shutdown_tracing
 
 
 @asynccontextmanager
@@ -37,6 +38,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Pydantic Settings' env_file only populates model fields, not os.environ.
     # LLM providers use os.getenv() for API keys, so they need this.
     load_dotenv()
+
+    if initialize_tracing():
+        logger.info("Langfuse tracing enabled")
+
     settings = AppSettings()
     setup_logging(json_output=settings.log_json, level=settings.log_level)
 
@@ -86,6 +91,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     await lifecycle.stop_all()
+    shutdown_tracing()
     logger.info("Application stopped")
 
 

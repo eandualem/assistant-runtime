@@ -26,6 +26,7 @@ from lovely_assistant.app.assistant.models import (
     _build_user_prompt,
 )
 from lovely_assistant.app.settings import RuntimeSettings, resolve_effective_config
+from lovely_assistant.services.tracing import create_request_trace, create_span
 
 if TYPE_CHECKING:
     from lovely_assistant.services.database.interface import DatabaseService
@@ -106,45 +107,48 @@ class AssistantService:
 
         Shared by both AssistantService and StreamingService to prevent drift.
         """
-        # 1. Tools
-        available_tools = self._tools.get_available_tools(request.machine_state)
-        toolsets = self._tools.build_toolset(request.machine_state)
+        with create_span("agent-setup"):
+            # 1. Tools
+            available_tools = self._tools.get_available_tools(request.machine_state)
+            toolsets = self._tools.build_toolset(request.machine_state)
 
-        # 2. MCP + artifacts + registry + system prompt
-        mcp_summary = await self._tools.get_mcp_summary()
-        artifacts = await self._load_active_artifacts()
+            # 2. MCP + artifacts + registry + system prompt
+            mcp_summary = await self._tools.get_mcp_summary()
+            artifacts = await self._load_active_artifacts()
 
-        from lovely_assistant.services.tools._agent_registry_cache import get_registry_cache
+            from lovely_assistant.services.tools._agent_registry_cache import get_registry_cache
 
-        registry_agents = await get_registry_cache().get_agents()
+            registry_agents = await get_registry_cache().get_agents()
 
-        prompt_result = build_system_prompt(
-            available_tools=available_tools,
-            session_context=session_context,
-            machine_state=request.machine_state,
-            mcp_summary=mcp_summary,
-            artifacts=artifacts,
-            registry_agents=registry_agents,
-        )
+            prompt_result = build_system_prompt(
+                available_tools=available_tools,
+                session_context=session_context,
+                machine_state=request.machine_state,
+                mcp_summary=mcp_summary,
+                artifacts=artifacts,
+                registry_agents=registry_agents,
+            )
 
-        # 3. Config resolution
-        effective = resolve_effective_config(self._config, self._runtime_settings, request.config)
-        resolved_model = self._llm.resolve_model(effective.default_model)
-        usage_limits = UsageLimits(request_limit=effective.max_turns)
+            # 3. Config resolution
+            effective = resolve_effective_config(
+                self._config, self._runtime_settings, request.config
+            )
+            resolved_model = self._llm.resolve_model(effective.default_model)
+            usage_limits = UsageLimits(request_limit=effective.max_turns)
 
-        # 4. Build agent — use union output type when frontend tools are registered
-        output_type: type | list[type] = str
-        if available_tools.frontend_tools:
-            output_type = [str, DeferredToolRequests]
+            # 4. Build agent — use union output type when frontend tools are registered
+            output_type: type | list[type] = str
+            if available_tools.frontend_tools:
+                output_type = [str, DeferredToolRequests]
 
-        agent = self._llm.build_agent(
-            system_prompt=prompt_result.content,
-            toolsets=toolsets,
-            model=resolved_model,
-            output_type=output_type,
-            thinking_budget=effective.thinking_budget,
-            temperature=effective.temperature,
-        )
+            agent = self._llm.build_agent(
+                system_prompt=prompt_result.content,
+                toolsets=toolsets,
+                model=resolved_model,
+                output_type=output_type,
+                thinking_budget=effective.thinking_budget,
+                temperature=effective.temperature,
+            )
 
         return AgentSetupContext(
             agent=agent,
@@ -198,46 +202,55 @@ class AssistantService:
             temperature=ctx.effective_config.temperature,
         )
 
-        # 3. Prepare history
-        history = sessions.get_history(session_id)
-        prepared_history, _context_modified = await self._history.prepare_history(
-            history, session_context
-        )
+        with create_request_trace(
+            session_id=session_id,
+            model=ctx.resolved_model,
+            is_continuation=False,
+            input_message=request.message,
+        ) as trace:
+            # 3. Prepare history
+            history = sessions.get_history(session_id)
+            with create_span("history-preparation"):
+                prepared_history, _context_modified = await self._history.prepare_history(
+                    history, session_context
+                )
 
-        # 4. Run the agent
-        user_prompt = _build_user_prompt(request.message, request.images, ctx.resolved_model)
-        try:
-            result = await ctx.agent.run(
-                user_prompt,
-                message_history=prepared_history if prepared_history else None,
-                usage_limits=ctx.usage_limits,
-            )
-        except Exception as e:
-            logger.exception(
-                "Assistant request failed",
+            # 4. Run the agent
+            user_prompt = _build_user_prompt(request.message, request.images, ctx.resolved_model)
+            try:
+                result = await ctx.agent.run(
+                    user_prompt,
+                    message_history=prepared_history if prepared_history else None,
+                    usage_limits=ctx.usage_limits,
+                )
+            except Exception as e:
+                logger.exception(
+                    "Assistant request failed",
+                    session_id=session_id,
+                    model=ctx.resolved_model,
+                    duration_ms=(time.monotonic() - started_at) * 1000,
+                    error=str(e),
+                )
+                raise AgentRunError(f"Agent execution failed: {e}") from e
+
+            # 5. Save message history (persists to DB)
+            await sessions.save_history_async(session_id, list(result.all_messages()))
+
+            # 6. Handle output
+            output = result.output
+            usage = self._safe_usage(result)
+            logger.info(
+                "Assistant request completed",
                 session_id=session_id,
                 model=ctx.resolved_model,
                 duration_ms=(time.monotonic() - started_at) * 1000,
-                error=str(e),
+                output_type=type(output).__name__,
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+                total_tokens=usage.get("total_tokens"),
             )
-            raise AgentRunError(f"Agent execution failed: {e}") from e
 
-        # 5. Save message history (persists to DB)
-        await sessions.save_history_async(session_id, list(result.all_messages()))
-
-        # 6. Handle output
-        output = result.output
-        usage = self._safe_usage(result)
-        logger.info(
-            "Assistant request completed",
-            session_id=session_id,
-            model=ctx.resolved_model,
-            duration_ms=(time.monotonic() - started_at) * 1000,
-            output_type=type(output).__name__,
-            input_tokens=usage.get("input_tokens"),
-            output_tokens=usage.get("output_tokens"),
-            total_tokens=usage.get("total_tokens"),
-        )
+            trace.update_output(str(output))
 
         # 7. Extract working memory delta (fire-and-forget style)
         if ctx.effective_config.enable_working_memory:

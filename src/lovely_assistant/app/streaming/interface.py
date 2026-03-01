@@ -7,6 +7,7 @@ responses as SSE event dicts. The caller (HTTP layer) serializes to SSE format.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -51,6 +52,7 @@ from lovely_assistant.app.streaming.exceptions import (
     StreamSetupError,
 )
 from lovely_assistant.services.tools._registry import get_tool_invalidates
+from lovely_assistant.services.tracing import create_request_trace, create_span
 
 if TYPE_CHECKING:
     from lovely_assistant.app.assistant.config import AssistantConfig
@@ -167,15 +169,25 @@ class StreamingService:
 
             # Load history and build deferred results
             history = self._sessions.get_history(session_id)
-            history_result = await self._history.prepare_history_with_metadata(
-                history, session_context
-            )
+            with create_span("history-preparation"):
+                history_result = await self._history.prepare_history_with_metadata(
+                    history, session_context
+                )
             prepared_history = history_result.history
 
             deferred = DeferredToolResults(calls={request.tool_call_id: request.tool_result})
 
         except Exception as e:
             raise StreamSetupError(f"Continuation setup failed: {e}") from e
+
+        # Root trace — manual context manager (generator cannot use `with`)
+        trace_cm = create_request_trace(
+            session_id=session_id,
+            model=resolved_model,
+            is_continuation=True,
+            input_message=request.message or "(continuation)",
+        )
+        trace_cm.__enter__()
 
         # Streaming phase
         started = coordinator.try_started()
@@ -297,6 +309,9 @@ class StreamingService:
                 screenshot=screenshot,
             )
 
+            with contextlib.suppress(Exception):
+                trace_cm.__exit__(None, None, None)
+
     async def _stream_new_message(self, request: AssistantRequest) -> AsyncIterator[dict[str, Any]]:
         """Stream a fresh user message."""
         coordinator = EventCoordinator(self._config.max_events_per_stream)
@@ -376,9 +391,10 @@ class StreamingService:
                 )
 
             history = self._sessions.get_history(session_id)
-            history_result = await self._history.prepare_history_with_metadata(
-                history, session_context
-            )
+            with create_span("history-preparation"):
+                history_result = await self._history.prepare_history_with_metadata(
+                    history, session_context
+                )
             prepared_history = history_result.history
 
             # Debug: history
@@ -394,6 +410,16 @@ class StreamingService:
                 )
         except Exception as e:
             raise StreamSetupError(f"Stream setup failed: {e}") from e
+
+        # Root trace — manual context manager (generator cannot use `with`)
+        trace_cm = create_request_trace(
+            session_id=session_id,
+            model=resolved_model,
+            is_continuation=False,
+            input_message=request.message,
+            metadata={"has_images": bool(request.images)},
+        )
+        trace_cm.__enter__()
 
         # Streaming phase
         started = coordinator.try_started()
@@ -562,6 +588,9 @@ class StreamingService:
                 duration_ms=duration_ms,
                 screenshot=screenshot,
             )
+
+            with contextlib.suppress(Exception):
+                trace_cm.__exit__(None, None, None)
 
     async def _iterate_run(
         self,
