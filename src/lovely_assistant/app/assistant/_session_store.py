@@ -5,8 +5,10 @@ In-memory dict acts as hot cache; DB is the durable backing store when available
 
 Durability contract:
 - When DB writes/reads succeed, session state is durable across restarts.
-- When DB is unavailable or retries are exhausted, operation continues in-memory
-  and the process enters a best-effort, non-durable mode until DB recovers.
+- When DB load fails after retries, the error propagates — callers get a clear
+  error instead of silently losing conversation history.
+- DB write failures (_persist_to_db) are still best-effort — the session continues
+  in-memory. Write failures don't lose existing conversation state.
 """
 
 from __future__ import annotations
@@ -287,24 +289,7 @@ class SessionStore:
                     "title": row.title,
                 }
 
-        try:
-            return await _load()
-        except _DB_RETRYABLE_EXCEPTIONS as e:
-            logger.warning(
-                "Transient DB error loading session; continuing in-memory only",
-                session_id=session_id,
-                error_type=type(e).__name__,
-                error=str(e),
-            )
-            return None
-        except Exception as e:
-            logger.error(
-                "Unexpected error loading session from DB",
-                session_id=session_id,
-                error_type=type(e).__name__,
-                error=str(e),
-            )
-            return None
+        return await _load()
 
     @staticmethod
     def _jsonb_safe(value: object) -> object:

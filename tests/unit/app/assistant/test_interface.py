@@ -33,6 +33,7 @@ def _mock_artifact_loading():
     ):
         yield
 
+
 # --- Fixtures ---
 
 

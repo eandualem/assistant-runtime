@@ -147,14 +147,42 @@ def _render_sessions_data(data: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _format_value(value: Any, indent: int = 2) -> str:
+    """Format a value readably for the LLM — lists as bullets, dicts as key-value pairs."""
+    prefix = " " * indent
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        if not value:
+            return "(none)"
+        lines: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                # Compact dict items on one line: "key1: val1, key2: val2"
+                parts = [f"{k}: {_format_value(v, 0)}" for k, v in item.items()]
+                lines.append(f"{prefix}- {', '.join(parts)}")
+            else:
+                lines.append(f"{prefix}- {item}")
+        return "\n".join(lines)
+    if isinstance(value, dict):
+        if not value:
+            return "(empty)"
+        parts = [f"{k}: {_format_value(v, 0)}" for k, v in value.items()]
+        return ", ".join(parts)
+    return str(value)
+
+
 def _render_generic_data(data: dict[str, Any]) -> list[str]:
-    """Render unknown page data as key-value pairs."""
+    """Render page data as readable key-value pairs. No truncation — trust the dashboard."""
     lines: list[str] = []
     for key, value in data.items():
-        val_str = str(value)
-        if len(val_str) > 100:
-            val_str = val_str[:100] + "..."
-        lines.append(f"  {key}: {val_str}")
+        formatted = _format_value(value)
+        if "\n" in formatted:
+            # Multi-line value (list of items) — header then indented items
+            lines.append(f"  {key}:")
+            lines.append(formatted)
+        else:
+            lines.append(f"  {key}: {formatted}")
     return lines
 
 
@@ -166,17 +194,28 @@ _PAGE_RENDERERS = {
 
 
 def _render_background(background: dict[str, Any]) -> str:
-    """Render background summaries as a one-liner."""
+    """Render background summaries as a one-liner.
+
+    Expected structure per entry: {"state": "idle", "summary": {"entityCount": 5}}.
+    Falls back gracefully for flat dicts.
+    """
     if not background:
         return ""
     parts = []
     for key, value in background.items():
         if isinstance(value, dict):
-            summary_items = [f"{v} {k}" for k, v in value.items() if isinstance(v, int)]
+            state = value.get("state", "")
+            summary = value.get("summary", {})
+            # If no "summary" sub-dict, treat the whole dict as summary (flat structure)
+            if not isinstance(summary, dict):
+                summary = {}
+            if not summary and "state" not in value:
+                summary = value
+            summary_items = [f"{v} {k}" for k, v in summary.items() if isinstance(v, (int, float))]
+            label = f"{key} ({state})" if state else key
             if summary_items:
-                parts.append(f"{key} ({', '.join(summary_items)})")
-            else:
-                parts.append(key)
+                label += f" — {', '.join(summary_items)}"
+            parts.append(label)
         else:
             parts.append(f"{key} ({value})")
     if not parts:
@@ -207,19 +246,37 @@ def _dashboard_context_fragment(machine_state: dict[str, Any] | None) -> str:
         if page_lines:
             sections.extend(page_lines)
 
-    # Available actions
-    available_actions = machine_state.get("available_actions", [])
+    # Available actions (nested inside active_page per PageAwareContext)
+    available_actions = active_page.get("available_actions", [])
     if available_actions:
-        action_strs = []
+        action_lines = ["Available UI actions:"]
         for action in available_actions:
             if isinstance(action, dict):
                 event_type = action.get("event_type", "")
                 label = action.get("label", "")
-                action_strs.append(f"{event_type} ({label})" if label else event_type)
+                line = f"- {event_type} ({label})" if label else f"- {event_type}"
+                # Include parameter definitions so the agent knows the payload shape
+                params = action.get("params", [])
+                if params:
+                    param_strs = []
+                    for p in params:
+                        if isinstance(p, dict):
+                            p_name = p.get("name", "?")
+                            p_type = p.get("type", "")
+                            p_req = p.get("required", False)
+                            desc = f"{p_name} ({p_type}" if p_type else p_name
+                            if p_type:
+                                desc += ", required)" if p_req else ")"
+                            elif p_req:
+                                desc += " (required)"
+                            param_strs.append(desc)
+                    if param_strs:
+                        line += f" — params: {', '.join(param_strs)}"
+                action_lines.append(line)
             else:
-                action_strs.append(str(action))
-        if action_strs:
-            sections.append(f"Available UI actions: {', '.join(action_strs)}")
+                action_lines.append(f"- {action}")
+        if len(action_lines) > 1:
+            sections.append("\n".join(action_lines))
 
     # Background summaries
     background = machine_state.get("background", {})

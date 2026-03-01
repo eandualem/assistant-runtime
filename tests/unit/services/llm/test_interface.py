@@ -132,15 +132,13 @@ class TestBuildAgent:
 
         assert isinstance(agent, Agent)
 
-    def test_build_agent_normalizes_model(self, service):
-        """Slash-separated model IDs are normalized."""
-        agent = service.build_agent(
-            model="Anthropic/Claude-Sonnet-4-6",
-            system_prompt="Test",
-        )
-        from pydantic_ai import Agent
-
-        assert isinstance(agent, Agent)
+    def test_build_agent_rejects_invalid_model_format(self, service):
+        """Non-lowercase model IDs are rejected with a clear error."""
+        with pytest.raises(ProviderConfigError, match="must be lowercase"):
+            service.build_agent(
+                model="Anthropic/Claude-Sonnet-4-6",
+                system_prompt="Test",
+            )
 
 
 class TestExecuteLlmCall:

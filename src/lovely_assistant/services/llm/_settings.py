@@ -1,7 +1,7 @@
 """Internal model settings construction for Pydantic AI agents.
 
 Translated from arclio-assistant's agent_factory.py (build_model_settings)
-and agent_config.py (normalize_model_id, validation, constants).
+and agent_config.py (validation, constants).
 
 Not part of the public module API — imported only by interface.py.
 """
@@ -24,47 +24,51 @@ _DEFAULT_TEMPERATURE = 0.1
 _THINKING_TEMPERATURE = 1.0
 
 
-def normalize_model_id(model_id: str) -> str:
-    """Normalize a model ID to Pydantic AI's canonical colon-separated format.
-
-    Handles:
-    - Lowercase and strip whitespace
-    - Legacy slash separator (anthropic/model -> anthropic:model)
-    - Google provider prefix (google: -> google-gla:)
-    """
-    if not model_id:
-        return ""
-
-    normalized = model_id.lower().strip()
-
-    # Convert legacy slash separator to colon (first slash only)
-    if "/" in normalized and ":" not in normalized:
-        normalized = normalized.replace("/", ":", 1)
-
-    # Handle legacy Google provider prefix
-    if normalized.startswith("google:"):
-        normalized = "google-gla:" + normalized[len("google:") :]
-
-    return normalized
-
-
-def _is_valid_model_format(model_id: str) -> bool:
-    """Check if a model ID has valid provider:model-name format."""
-    if not model_id or ":" not in model_id:
-        return False
-    parts = model_id.split(":", 1)
-    return bool(parts[0]) and bool(parts[1])
-
-
 def validate_model_id(model_id: str) -> str:
-    """Normalize and validate a model identifier. Raises ProviderConfigError on invalid format."""
-    normalized = normalize_model_id(model_id)
-    if not _is_valid_model_format(normalized):
+    """Validate a model identifier. Raises ProviderConfigError on invalid format.
+
+    Model IDs must be lowercase, colon-separated (provider:model-name).
+    No normalization — wrong format is an error.
+    """
+    if not model_id or not model_id.strip():
+        raise ProviderConfigError("Model ID cannot be empty")
+
+    model_id = model_id.strip()
+
+    # Reject non-lowercase
+    if model_id != model_id.lower():
+        raise ProviderConfigError(
+            f"Model ID must be lowercase: '{model_id}'. Use '{model_id.lower()}'"
+        )
+
+    # Reject slash separator (when no colon present — openrouter uses slashes after the colon)
+    if "/" in model_id and ":" not in model_id:
+        raise ProviderConfigError(
+            f"Model ID must use colon separator: '{model_id}'. "
+            f"Use '{model_id.replace('/', ':', 1)}'"
+        )
+
+    # Reject legacy google: prefix
+    if model_id.startswith("google:"):
+        raise ProviderConfigError(
+            f"Use 'google-gla:' prefix, not 'google:': '{model_id}'. "
+            f"Use 'google-gla:{model_id[len('google:'):]}'"
+        )
+
+    # Validate colon-separated format
+    if ":" not in model_id:
         raise ProviderConfigError(
             f"Invalid model ID: '{model_id}'. "
             f"Must use 'provider:model-name' format (e.g., 'anthropic:claude-sonnet-4-6')."
         )
-    return normalized
+    parts = model_id.split(":", 1)
+    if not parts[0] or not parts[1]:
+        raise ProviderConfigError(
+            f"Invalid model ID: '{model_id}'. "
+            f"Must use 'provider:model-name' format (e.g., 'anthropic:claude-sonnet-4-6')."
+        )
+
+    return model_id
 
 
 def build_model_settings(
