@@ -224,36 +224,124 @@ class TestDashboardContextFragment:
         assert "settings page" in frag
         assert "theme" in frag
 
+    def test_generic_renderer_no_truncation(self):
+        """Long values are NOT truncated — the dashboard curates what it sends."""
+        long_transcript = "Speaker A said something very important. " * 20  # ~820 chars
+        state = {
+            "active_page": {
+                "name": "meetings",
+                "data": {"transcript": long_transcript},
+            }
+        }
+        frag = _dashboard_context_fragment(state)
+        # The full transcript should be present, not truncated
+        assert long_transcript in frag
+        assert "..." not in frag
+
+    def test_generic_renderer_lists_as_bullets(self):
+        """Lists are rendered as bullet points, not Python repr."""
+        state = {
+            "active_page": {
+                "name": "meetings",
+                "data": {
+                    "rooms": [
+                        {"name": "standup", "participants": 3},
+                        {"name": "planning", "participants": 5},
+                    ]
+                },
+            }
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "standup" in frag
+        assert "planning" in frag
+        assert "- " in frag  # bullet point formatting
+
     def test_background_summary(self):
         state = {
             "active_page": {"name": "tasks", "data": {}},
             "background": {
+                "agents": {"state": "idle", "summary": {"entityCount": 5}},
+                "sessions": {"state": "loaded", "summary": {"sessionCount": 3}},
+            },
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Background:" in frag
+        assert "agents (idle)" in frag
+        assert "sessions (loaded)" in frag
+        assert "5 entityCount" in frag
+        assert "3 sessionCount" in frag
+
+    def test_background_flat_dict_fallback(self):
+        """Background entries without state/summary sub-structure still render."""
+        state = {
+            "active_page": {"name": "tasks", "data": {}},
+            "background": {
                 "agents": {"online": 5, "offline": 2},
-                "sessions": {"active": 3},
             },
         }
         frag = _dashboard_context_fragment(state)
         assert "Background:" in frag
         assert "agents" in frag
-        assert "sessions" in frag
+        assert "5 online" in frag
 
     def test_available_actions(self):
+        state = {
+            "active_page": {
+                "name": "tasks",
+                "data": {},
+                "available_actions": [
+                    {"event_type": "NAVIGATE", "label": "Go to agents"},
+                    {"event_type": "REFRESH", "label": ""},
+                ],
+            },
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Available UI actions:" in frag
+        assert "- NAVIGATE (Go to agents)" in frag
+        assert "- REFRESH" in frag
+
+    def test_available_actions_with_params(self):
+        """Actions with params render parameter names and types for the agent."""
+        state = {
+            "active_page": {
+                "name": "meetings",
+                "data": {},
+                "available_actions": [
+                    {
+                        "event_type": "user.selectRoom",
+                        "label": "Select Room",
+                        "params": [
+                            {"name": "id", "type": "string", "required": True},
+                        ],
+                    },
+                    {
+                        "event_type": "user.createRoom",
+                        "label": "Create Room",
+                        "params": [
+                            {"name": "title", "type": "string", "required": True},
+                        ],
+                    },
+                ],
+            },
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "user.selectRoom (Select Room) — params: id (string, required)" in frag
+        assert "user.createRoom (Create Room) — params: title (string, required)" in frag
+
+    def test_empty_actions(self):
+        state = {
+            "active_page": {"name": "tasks", "data": {}, "available_actions": []},
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Available UI actions" not in frag
+
+    def test_available_actions_not_read_from_top_level(self):
+        """available_actions at top level of machine_state should be ignored."""
         state = {
             "active_page": {"name": "tasks", "data": {}},
             "available_actions": [
                 {"event_type": "NAVIGATE", "label": "Go to agents"},
-                {"event_type": "REFRESH", "label": ""},
             ],
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "Available UI actions:" in frag
-        assert "NAVIGATE" in frag
-        assert "REFRESH" in frag
-
-    def test_empty_actions(self):
-        state = {
-            "active_page": {"name": "tasks", "data": {}},
-            "available_actions": [],
         }
         frag = _dashboard_context_fragment(state)
         assert "Available UI actions" not in frag
@@ -619,9 +707,7 @@ class TestArtifactIntegration:
             )
 
     def test_missing_communication_protocol_raises_error(self):
-        with pytest.raises(
-            ValueError, match="Missing required artifact: communication_protocol"
-        ):
+        with pytest.raises(ValueError, match="Missing required artifact: communication_protocol"):
             build_system_prompt(
                 available_tools=ToolSet(),
                 session_context={},
@@ -655,9 +741,7 @@ class TestArtifactIntegration:
             )
 
     def test_empty_communication_protocol_raises(self):
-        with pytest.raises(
-            ValueError, match="Missing required artifact: communication_protocol"
-        ):
+        with pytest.raises(ValueError, match="Missing required artifact: communication_protocol"):
             build_system_prompt(
                 available_tools=ToolSet(),
                 session_context={},

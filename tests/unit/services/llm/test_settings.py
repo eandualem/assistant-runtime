@@ -5,59 +5,47 @@ import pytest
 from lovely_assistant.services.llm._settings import (
     _RESPONSE_MAX_TOKENS,
     build_model_settings,
-    normalize_model_id,
     validate_model_id,
 )
 from lovely_assistant.services.llm.exceptions import ProviderConfigError
 
 
-class TestNormalizeModelId:
-    """normalize_model_id tests — translated from arclio-assistant."""
-
-    def test_empty_string(self):
-        assert normalize_model_id("") == ""
-
-    def test_already_canonical(self):
-        assert normalize_model_id("anthropic:claude-sonnet-4-6") == "anthropic:claude-sonnet-4-6"
-
-    def test_slash_to_colon(self):
-        assert normalize_model_id("anthropic/claude-sonnet-4-6") == "anthropic:claude-sonnet-4-6"
-
-    def test_uppercase_normalized(self):
-        assert normalize_model_id("Anthropic:Claude-Sonnet-4-6") == "anthropic:claude-sonnet-4-6"
-
-    def test_whitespace_stripped(self):
-        assert (
-            normalize_model_id("  anthropic:claude-sonnet-4-6  ") == "anthropic:claude-sonnet-4-6"
-        )
-
-    def test_google_prefix_rewritten(self):
-        assert normalize_model_id("google:gemini-3-flash") == "google-gla:gemini-3-flash"
-
-    def test_google_slash_rewritten(self):
-        assert normalize_model_id("google/gemini-3-flash") == "google-gla:gemini-3-flash"
-
-    def test_google_gla_untouched(self):
-        assert normalize_model_id("google-gla:gemini-3-flash") == "google-gla:gemini-3-flash"
-
-    def test_openrouter_untouched(self):
-        assert (
-            normalize_model_id("openrouter:anthropic/claude-3") == "openrouter:anthropic/claude-3"
-        )
-
-
 class TestValidateModelId:
-    """validate_model_id tests."""
+    """validate_model_id tests — strict validation, no normalization."""
 
     def test_valid_model(self):
         assert validate_model_id("anthropic:claude-sonnet-4-6") == "anthropic:claude-sonnet-4-6"
 
-    def test_normalizes_before_validation(self):
-        assert validate_model_id("Anthropic/Claude-Sonnet-4-6") == "anthropic:claude-sonnet-4-6"
+    def test_openrouter_with_slash_after_colon(self):
+        assert (
+            validate_model_id("openrouter:anthropic/claude-3") == "openrouter:anthropic/claude-3"
+        )
+
+    def test_google_gla_accepted(self):
+        assert validate_model_id("google-gla:gemini-3-flash") == "google-gla:gemini-3-flash"
+
+    def test_whitespace_stripped(self):
+        assert validate_model_id("  anthropic:claude-sonnet-4-6  ") == "anthropic:claude-sonnet-4-6"
 
     def test_empty_string_raises(self):
-        with pytest.raises(ProviderConfigError, match="Invalid model ID"):
+        with pytest.raises(ProviderConfigError, match="cannot be empty"):
             validate_model_id("")
+
+    def test_whitespace_only_raises(self):
+        with pytest.raises(ProviderConfigError, match="cannot be empty"):
+            validate_model_id("   ")
+
+    def test_uppercase_raises(self):
+        with pytest.raises(ProviderConfigError, match="must be lowercase"):
+            validate_model_id("Anthropic:claude-sonnet-4-6")
+
+    def test_slash_separator_raises(self):
+        with pytest.raises(ProviderConfigError, match="colon separator"):
+            validate_model_id("anthropic/claude-sonnet-4-6")
+
+    def test_google_prefix_raises(self):
+        with pytest.raises(ProviderConfigError, match="google-gla"):
+            validate_model_id("google:gemini-3-flash")
 
     def test_no_colon_raises(self):
         with pytest.raises(ProviderConfigError, match="Invalid model ID"):
@@ -228,12 +216,9 @@ class TestBuildModelSettingsGoogle:
         assert isinstance(settings, dict)
         assert settings["temperature"] == 0.1
 
-    def test_normalized_google_prefix(self):
-        """Models normalized from google: to google-gla: should hit the Google branch."""
-        from lovely_assistant.services.llm._settings import normalize_model_id
-
-        normalized = normalize_model_id("google:gemini-3-flash-preview")
-        settings = build_model_settings(model_id=normalized, thinking_budget=5000)
+    def test_google_gla_prefix_with_thinking(self):
+        """google-gla: prefix should hit the Google branch with thinking config."""
+        settings = build_model_settings(model_id="google-gla:gemini-3-flash-preview", thinking_budget=5000)
         assert isinstance(settings, dict)
         assert settings["google_thinking_config"] == {
             "include_thoughts": True,

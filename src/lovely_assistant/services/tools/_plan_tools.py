@@ -33,6 +33,7 @@ def _read_all_state_files() -> list[tuple[str, dict[str, Any]]]:
             if isinstance(data, dict):
                 results.append((state_file.stem, data))
         except (json.JSONDecodeError, OSError):
+            logger.warning("Failed to read state file", path=str(state_file))
             continue
 
     return results
@@ -46,7 +47,10 @@ def _get_agent_state(session_name: str) -> dict[str, Any] | None:
         if isinstance(data, dict):
             return data
         return None
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError):
+        logger.warning("Failed to read agent state file", session=session_name)
         return None
 
 

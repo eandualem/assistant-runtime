@@ -1345,13 +1345,13 @@ class TestStreamTimeout:
         assert final[0]["content"] == "Fast response"
 
 
-class TestStreamToolCallInterleaving:
-    """Tests that tool_call events are emitted during streaming (_stream_node)
-    at the correct position, rather than being batched by _iterate_run."""
+class TestStreamToolCallTiming:
+    """Tests that tool_call events are emitted from CallToolsNode with complete
+    arguments, NOT during _stream_node (where args are still empty)."""
 
     @pytest.mark.asyncio
-    async def test_tool_call_emitted_during_streaming_at_correct_position(self):
-        """Tool call events interleave with text deltas in stream order."""
+    async def test_tool_call_emitted_after_streaming_with_complete_args(self):
+        """Tool call events appear after text deltas, with full arguments."""
         tc = ToolCallPart(tool_name="get_status", args={"agent": "leo"}, tool_call_id="call_s1")
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content="Let me check.")),
@@ -1385,24 +1385,27 @@ class TestStreamToolCallInterleaving:
 
         relevant = [e for e in events if e["type"] in ("text_delta", "tool_call", "tool_result")]
         assert len(relevant) == 4
+        # Text deltas come first (from streaming)
         assert relevant[0]["type"] == "text_delta"
         assert relevant[0]["content"] == "Let me check."
-        assert relevant[1]["type"] == "tool_call"
-        assert relevant[1]["tool_name"] == "get_status"
-        assert relevant[1]["call_id"] == "call_s1"
-        assert relevant[2]["type"] == "text_delta"
-        assert relevant[2]["content"] == "Now checking Ada."
+        assert relevant[1]["type"] == "text_delta"
+        assert relevant[1]["content"] == "Now checking Ada."
+        # tool_call after streaming with complete args (from CallToolsNode)
+        assert relevant[2]["type"] == "tool_call"
+        assert relevant[2]["tool_name"] == "get_status"
+        assert relevant[2]["arguments"] == {"agent": "leo"}
+        assert relevant[2]["call_id"] == "call_s1"
+        # tool_result last
         assert relevant[3]["type"] == "tool_result"
         assert relevant[3]["tool_name"] == "get_status"
 
     @pytest.mark.asyncio
-    async def test_tool_call_not_duplicated_in_call_tools_node(self):
-        """A tool call streamed from _stream_node is NOT re-emitted by CallToolsNode."""
+    async def test_tool_call_not_duplicated(self):
+        """Each tool call emits exactly one tool_call event."""
         tc = ToolCallPart(tool_name="get_status", args={"agent": "leo"}, tool_call_id="call_s1")
         stream_events = [
             PartStartEvent(index=0, part=TextPart(content="Let me check.")),
             PartStartEvent(index=1, part=tc),
-            PartStartEvent(index=2, part=TextPart(content="Now checking Ada.")),
         ]
         model_node = MagicMock(spec=ModelRequestNode)
         model_node.request = MagicMock(spec=ModelRequest, parts=[])
@@ -1433,9 +1436,9 @@ class TestStreamToolCallInterleaving:
         assert len(tool_call_events) == 1
 
     @pytest.mark.asyncio
-    async def test_interleaved_multi_tool_streaming(self):
-        """Multiple tool calls interleave correctly with text deltas."""
-        tc_a = ToolCallPart(tool_name="tool_a", args={}, tool_call_id="call_a1")
+    async def test_multi_tool_calls_emitted_with_complete_args(self):
+        """Multiple tool calls all get complete arguments from CallToolsNode."""
+        tc_a = ToolCallPart(tool_name="tool_a", args={"key": "val_a"}, tool_call_id="call_a1")
         tc_b = ToolCallPart(tool_name="tool_b", args={"x": 1}, tool_call_id="call_b1")
 
         stream_events = [
@@ -1477,14 +1480,19 @@ class TestStreamToolCallInterleaving:
 
         relevant = [e for e in events if e["type"] in ("text_delta", "tool_call", "tool_result")]
         assert len(relevant) == 6
+        # Text deltas from streaming
         assert relevant[0]["type"] == "text_delta"
         assert relevant[0]["content"] == "First"
-        assert relevant[1]["type"] == "tool_call"
-        assert relevant[1]["tool_name"] == "tool_a"
-        assert relevant[2]["type"] == "text_delta"
-        assert relevant[2]["content"] == "Second"
+        assert relevant[1]["type"] == "text_delta"
+        assert relevant[1]["content"] == "Second"
+        # tool_call events from CallToolsNode with complete args
+        assert relevant[2]["type"] == "tool_call"
+        assert relevant[2]["tool_name"] == "tool_a"
+        assert relevant[2]["arguments"] == {"key": "val_a"}
         assert relevant[3]["type"] == "tool_call"
         assert relevant[3]["tool_name"] == "tool_b"
+        assert relevant[3]["arguments"] == {"x": 1}
+        # tool_result events
         assert relevant[4]["type"] == "tool_result"
         assert relevant[4]["tool_name"] == "tool_a"
         assert relevant[4]["output"] == "result_a"
@@ -1492,7 +1500,6 @@ class TestStreamToolCallInterleaving:
         assert relevant[5]["tool_name"] == "tool_b"
         assert relevant[5]["output"] == "result_b"
 
-        # Verify no duplicate tool_call events from CallToolsNode
         tool_call_events = [e for e in events if e["type"] == "tool_call"]
         assert len(tool_call_events) == 2
 
@@ -1763,11 +1770,9 @@ class TestLookAtScreenDeferredSanitization:
         call_order: list[str] = []
         original_stream_node = StreamingService._stream_node
 
-        async def recording_stream_node(node, run, coordinator, streamed_tool_ids):
+        async def recording_stream_node(node, run, coordinator):
             call_order.append("stream_start")
-            async for event in original_stream_node(
-                service, node, run, coordinator, streamed_tool_ids
-            ):
+            async for event in original_stream_node(service, node, run, coordinator):
                 yield event
             call_order.append("stream_end")
 

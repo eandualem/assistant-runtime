@@ -218,30 +218,19 @@ def messages_to_display_format(messages: list[ModelMessage]) -> list[dict[str, A
 def _build_assistant_entry(segments: list[dict[str, Any]], timestamp: str | None) -> dict[str, Any]:
     """Build an assistant display entry from ordered segments.
 
-    Produces both the ordered ``segments`` array (for position-aware rendering)
-    and backward-compatible flat ``text``/``thinking``/``tool_calls`` fields.
+    Produces the ordered ``segments`` array (for position-aware rendering)
+    and a concatenated ``text`` summary field.
     """
     text_parts: list[str] = []
-    thinking_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-
     for seg in segments:
         if seg["kind"] == "text":
             text_parts.append(seg["text"])
-        elif seg["kind"] == "thinking":
-            thinking_parts.append(seg["text"])
-        elif seg["kind"] == "tool_group":
-            tool_calls.extend(seg["tools"])
 
     entry: dict[str, Any] = {
         "role": "assistant",
         "text": "".join(text_parts),
         "segments": segments,
     }
-    if thinking_parts:
-        entry["thinking"] = "".join(thinking_parts)
-    if tool_calls:
-        entry["tool_calls"] = tool_calls
     if timestamp is not None:
         entry["timestamp"] = timestamp
     return entry

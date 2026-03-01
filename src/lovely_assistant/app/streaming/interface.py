@@ -24,7 +24,6 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
-    ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_graph.nodes import End
@@ -622,14 +621,13 @@ class StreamingService:
         model: str,
     ) -> AsyncIterator[dict[str, Any]]:
         """Iterate over agent run nodes, yielding SSE events."""
-        _streamed_tool_ids: set[str] = set()
         _pending_image_sanitize = False
         while True:
             node = run.next_node
             if isinstance(node, End):
                 break
             if isinstance(node, ModelRequestNode):
-                async for event in self._stream_node(node, run, coordinator, _streamed_tool_ids):
+                async for event in self._stream_node(node, run, coordinator):
                     yield event
                 # Deferred sanitization: strip image after the LLM has seen it.
                 # look_at_screen sets the flag at CallToolsNode time; we wait
@@ -641,10 +639,12 @@ class StreamingService:
                 # Advance to next node
                 node = await run.next(node)
             elif isinstance(node, CallToolsNode):
-                # Emit tool_call events for tools not already streamed
+                # Emit tool_call events with complete arguments.
+                # Tool calls are NOT emitted during _stream_node() because
+                # at PartStartEvent time the args are still empty. Here,
+                # model_response.tool_calls has the fully accumulated args.
                 all_calls = list(node.model_response.tool_calls)
-                new_calls = [tc for tc in all_calls if tc.tool_call_id not in _streamed_tool_ids]
-                for tc in new_calls:
+                for tc in all_calls:
                     try:
                         args = tc.args_as_dict()
                     except Exception:
@@ -713,23 +713,22 @@ class StreamingService:
         node: ModelRequestNode,
         run: Any,
         coordinator: EventCoordinator,
-        streamed_tool_ids: set[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream events from a single ModelRequestNode.
 
-        Handles PartStartEvent (first chunk of a new part), PartDeltaEvent
-        (incremental updates), and ToolCallPart (inline tool calls).
+        Handles PartStartEvent (first chunk of a new part) and PartDeltaEvent
+        (incremental updates) for text and thinking content.
 
-        ToolCallPart events are emitted during streaming to preserve the
-        positional interleaving of text and tool calls (e.g., [text, tool,
-        text, tool] instead of [text, text, tool, tool]).
+        ToolCallPart events are NOT emitted here — at PartStartEvent time the
+        arguments are still empty (streaming deltas haven't arrived yet).
+        Tool calls are emitted from the CallToolsNode handler in _iterate_run()
+        where model_response.tool_calls has complete arguments.
 
         Large PartStartEvent payloads (common with Gemini thinking) are chunked
         into smaller SSE events to avoid buffering delays at the browser.
         """
         threshold = self._config.part_start_chunk_threshold
         chunk_size = self._config.part_start_chunk_size
-        _streamed = streamed_tool_ids if streamed_tool_ids is not None else set()
 
         async with node.stream(run.ctx) as stream:
             async for event in stream:
@@ -750,17 +749,7 @@ class StreamingService:
                             chunk_size,
                         ):
                             yield e
-                    elif isinstance(event.part, ToolCallPart):
-                        try:
-                            args = event.part.args_as_dict()
-                        except Exception:
-                            args = {}
-                        yield coordinator.track(
-                            make_tool_call_event(
-                                event.part.tool_name, args, event.part.tool_call_id
-                            )
-                        )
-                        _streamed.add(event.part.tool_call_id)
+                    # ToolCallPart deliberately skipped — see docstring
                 elif isinstance(event, PartDeltaEvent):
                     if isinstance(event.delta, ThinkingPartDelta) and event.delta.content_delta:
                         yield coordinator.emit_thinking_delta(event.delta.content_delta)

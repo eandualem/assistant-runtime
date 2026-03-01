@@ -185,7 +185,7 @@ class TestMessagesToDisplayFormat:
         entry = result[0]
         assert entry["role"] == "assistant"
         assert entry["text"] == "Here is the answer."
-        assert entry["thinking"] == "Let me consider..."
+        assert "thinking" not in entry  # Flat fields removed — use segments
         assert entry["segments"] == [
             {"kind": "thinking", "text": "Let me consider..."},
             {"kind": "text", "text": "Here is the answer."},
@@ -219,8 +219,8 @@ class TestMessagesToDisplayFormat:
         assert len(result) == 1
         entry = result[0]
         assert entry["role"] == "assistant"
-        assert len(entry["tool_calls"]) == 1
-        tc = entry["tool_calls"][0]
+        assert "tool_calls" not in entry  # Flat fields removed — use segments
+        tc = entry["segments"][0]["tools"][0]
         assert tc["name"] == "get_status"
         assert tc["input"] == {"agent": "leo"}
         assert tc["id"] == call_id
@@ -254,7 +254,8 @@ class TestMessagesToDisplayFormat:
         result = messages_to_display_format([resp])
 
         assert len(result) == 1
-        tc = result[0]["tool_calls"][0]
+        assert "tool_calls" not in result[0]  # Flat fields removed — use segments
+        tc = result[0]["segments"][0]["tools"][0]
         assert tc["name"] == "restart_agent"
         assert "output" not in tc
         assert result[0]["segments"] == [
@@ -511,7 +512,8 @@ class TestMessagesToDisplayFormat:
         # No tool_group segments should be present
         assert all(seg["kind"] != "tool_group" for seg in entry["segments"])
 
-    def test_segments_backward_compat_flat_fields(self):
+    def test_segments_no_flat_fields(self):
+        """Flat thinking/tool_calls fields are not produced — only segments."""
         ts = datetime(2026, 1, 1, tzinfo=UTC)
         messages = [
             ModelResponse(
@@ -542,14 +544,13 @@ class TestMessagesToDisplayFormat:
         assert len(result) == 1
         entry = result[0]
 
-        # Backward-compatible flat fields
+        # text summary is preserved
         assert entry["text"] == "Here's what I found."
-        assert entry["thinking"] == "Hmm..."
-        assert len(entry["tool_calls"]) == 1
-        assert entry["tool_calls"][0]["name"] == "check"
-        assert entry["tool_calls"][0]["output"] == "all good"
+        # Flat fields are NOT present
+        assert "thinking" not in entry
+        assert "tool_calls" not in entry
 
-        # Ordered segments field
+        # Ordered segments field has everything
         assert entry["segments"] == [
             {"kind": "thinking", "text": "Hmm..."},
             {"kind": "text", "text": "Here's what I found."},
@@ -654,9 +655,9 @@ class TestMessagesToDisplayFormat:
             },
             {"kind": "text", "text": "All checks passed."},
         ]
-        # Backward compat: text concatenates all text parts, tool_calls has both
+        # text concatenates all text parts; tool_calls flat field no longer present
         assert entry["text"] == "Starting checks.Alpha passed. Now beta.All checks passed."
-        assert len(entry["tool_calls"]) == 2
+        assert "tool_calls" not in entry
 
     def test_user_message_with_multimodal_content(self):
         """User message with text + image (list content) should extract text."""

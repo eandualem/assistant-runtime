@@ -760,8 +760,8 @@ class TestSessionStoreDbRetry:
         assert result["turn_number"] == 5
         assert call_count == 2
 
-    async def test_load_gives_up_returns_none(self):
-        """_load_session_from_db returns None after exhausting retries."""
+    async def test_load_propagates_error_after_retries(self):
+        """_load_session_from_db raises after exhausting retries — no silent fallback."""
         from sqlalchemy.exc import OperationalError
 
         mock_db = _make_mock_db()
@@ -774,5 +774,5 @@ class TestSessionStoreDbRetry:
         mock_db.session_context = _always_fail
 
         store = SessionStore(database_service=mock_db)
-        result = await store._load_session_from_db("s1")
-        assert result is None
+        with pytest.raises(OperationalError):
+            await store._load_session_from_db("s1")

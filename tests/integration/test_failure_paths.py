@@ -36,16 +36,15 @@ async def test_session_store_persist_failure_keeps_in_memory_state():
 
 
 @pytest.mark.asyncio
-async def test_session_store_load_failure_falls_back_to_new_context():
-    """When DB read fails, store returns a fresh in-memory context."""
+async def test_session_store_load_failure_propagates_error():
+    """When DB read fails, error propagates instead of silently creating blank context."""
     store = SessionStore(database_service=_FailingDatabaseService())
 
-    missing = await store.get_context_if_exists_async("session-2")
-    assert missing is None
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await store.get_context_if_exists_async("session-2")
 
-    context = await store.get_context_async("session-2")
-    assert context["turn_number"] == 0
-    assert context["message_history"] == []
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await store.get_context_async("session-2")
 
 
 @pytest.mark.asyncio

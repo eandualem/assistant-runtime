@@ -92,4 +92,3 @@ class TestGetFrontendDefinitions:
         definitions = get_frontend_definitions()
         names = [defn.name for defn in definitions]
         assert "ui_send_event" in names
-
