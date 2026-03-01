@@ -216,17 +216,11 @@ class StreamingService:
             # Handle output (same DeferredToolRequests check as new message path)
             output = run.result.output
             if isinstance(output, DeferredToolRequests):
-                for call in output.tool_calls:
-                    try:
-                        args = call.args_as_dict()
-                    except Exception:
-                        args = {}
-                    yield coordinator.track(
-                        make_tool_call_event(call.tool_name, args, call.tool_call_id)
-                    )
-                    session_context["pending_tool_call_id"] = call.tool_call_id
-                    session_context["pending_tool_name"] = call.tool_name
-                    break
+                # tool_call already emitted during _iterate_run() — just store pending state
+                if output.calls:
+                    first = output.calls[0]
+                    session_context["pending_tool_call_id"] = first.tool_call_id
+                    session_context["pending_tool_name"] = first.tool_name
 
                 final = coordinator.try_final_response(
                     None, resolved_model, session_id=session_id, usage=usage_dict
@@ -464,20 +458,13 @@ class StreamingService:
             output = run.result.output
 
             if isinstance(output, DeferredToolRequests):
-                # Frontend tool call — emit tool_call events and signal deferred
-                for call in output.tool_calls:
-                    try:
-                        args = call.args_as_dict()
-                    except Exception:
-                        args = {}
-                    yield coordinator.track(
-                        make_tool_call_event(call.tool_name, args, call.tool_call_id)
-                    )
-
-                    # Store pending state for continuation
-                    session_context["pending_tool_call_id"] = call.tool_call_id
-                    session_context["pending_tool_name"] = call.tool_name
-                    break  # Single frontend tool per turn
+                # Frontend tool call — store pending state for continuation.
+                # The tool_call SSE event was already emitted during
+                # _iterate_run() (via _stream_node or CallToolsNode handler).
+                if output.calls:
+                    first = output.calls[0]
+                    session_context["pending_tool_call_id"] = first.tool_call_id
+                    session_context["pending_tool_name"] = first.tool_name
 
                 final = coordinator.try_final_response(
                     None, resolved_model, session_id=session_id, usage=usage_dict
@@ -611,7 +598,9 @@ class StreamingService:
                 next_node = await run.next(node)
                 tool_duration_ms = (time.monotonic() - tool_start) * 1000
 
-                # Emit tool_result or tool_error events
+                # Emit tool_result (always) and tool_error (on failure) events.
+                # Dashboard needs tool_result to transition tool cards out of
+                # "running" state — even when the tool errored.
                 if isinstance(next_node, ModelRequestNode) and all_calls:
                     for tc in all_calls:
                         raw_content = self._extract_tool_result_raw(next_node, tc.tool_call_id)
@@ -620,17 +609,22 @@ class StreamingService:
                             yield coordinator.track(
                                 make_tool_error_event(tc.tool_name, error_msg, tc.tool_call_id)
                             )
-                        else:
-                            result_str = str(raw_content) if raw_content is not None else ""
-                            yield coordinator.track(
-                                make_tool_result_event(
-                                    tc.tool_name,
-                                    result_str,
-                                    tc.tool_call_id,
-                                    duration_ms=tool_duration_ms,
-                                    invalidates=get_tool_invalidates(tc.tool_name),
-                                )
+                        result_str = (
+                            error_msg
+                            if is_error
+                            else str(raw_content)
+                            if raw_content is not None
+                            else ""
+                        )
+                        yield coordinator.track(
+                            make_tool_result_event(
+                                tc.tool_name,
+                                result_str,
+                                tc.tool_call_id,
+                                duration_ms=tool_duration_ms,
+                                invalidates=get_tool_invalidates(tc.tool_name),
                             )
+                        )
 
                     # Check for RetryPromptPart (Pydantic AI validation failures)
                     for part in next_node.request.parts:

@@ -1573,11 +1573,12 @@ class TestToolErrorDetection:
         assert error_events[0]["tool_name"] == "get_time"
         assert error_events[0]["error"] == "API unavailable"
 
-        # No tool_result events for this tool
+        # tool_result also emitted (dashboard needs it to close the tool card)
         result_events = [
             e for e in events if e["type"] == "tool_result" and e["tool_name"] == "get_time"
         ]
-        assert len(result_events) == 0
+        assert len(result_events) == 1
+        assert result_events[0]["output"] == "API unavailable"
 
 
 class TestStreamFinalResponseMetadata:
