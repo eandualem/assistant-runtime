@@ -18,6 +18,7 @@ from lovely_assistant.base.resilience import retry_with_backoff
 from lovely_assistant.services.llm._settings import build_model_settings, validate_model_id
 from lovely_assistant.services.llm.config import _PROVIDER_ENV_VAR_MAP, LLMConfig, ProviderConfig
 from lovely_assistant.services.llm.exceptions import ProviderConfigError, classify_llm_error
+from lovely_assistant.services.tracing import create_span
 
 
 def _collect_retryable_llm_exceptions() -> tuple[type[Exception], ...]:
@@ -266,9 +267,16 @@ class LlmService:
 
             return LLMResult(content=result.output, model=resolved_model)
 
-        try:
-            return await _run_with_retry()
-        except ProviderConfigError:
-            raise
-        except Exception as e:
-            raise classify_llm_error(e) from e
+        with create_span(
+            "standalone-llm-call",
+            input_data=user_prompt,
+            metadata={"model": resolved_model},
+        ) as span:
+            try:
+                llm_result = await _run_with_retry()
+                span.update_output(llm_result.content)
+                return llm_result
+            except ProviderConfigError:
+                raise
+            except Exception as e:
+                raise classify_llm_error(e) from e

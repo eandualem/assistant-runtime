@@ -8,5 +8,5 @@ class ToolConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    max_tools_per_request: int = Field(default=20, ge=1, le=100)
+    max_tools_per_request: int = Field(default=40, ge=1, le=100)
     tool_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
