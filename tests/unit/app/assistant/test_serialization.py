@@ -22,6 +22,7 @@ from lovely_assistant.app.assistant._serialization import (
     _sanitize_tool_return_content,
     deserialize_messages,
     messages_to_display_format,
+    sanitize_image_tool_returns,
     serialize_messages,
 )
 
@@ -718,3 +719,123 @@ class TestMessagesToDisplayFormat:
         assert result[2]["text"] == "Question 2"
         assert result[3]["role"] == "assistant"
         assert result[3]["text"] == "Answer 2"
+
+
+# --- sanitize_image_tool_returns ---
+
+
+class TestSanitizeImageToolReturns:
+    def test_messages_without_look_at_screen_pass_through_unchanged(self):
+        """Regular messages without look_at_screen should pass through unmodified."""
+        msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="get_time",
+                    content="2026-01-01",
+                    tool_call_id="tc_1",
+                ),
+                UserPromptPart(content="hello"),
+            ]
+        )
+        result = sanitize_image_tool_returns([msg])
+
+        assert len(result) == 1
+        req = result[0]
+        assert isinstance(req, ModelRequest)
+        assert isinstance(req.parts[0], ToolReturnPart)
+        assert req.parts[0].content == "2026-01-01"
+        assert isinstance(req.parts[1], UserPromptPart)
+        assert req.parts[1].content == "hello"
+
+    def test_look_at_screen_tool_return_content_replaced(self):
+        """ToolReturnPart with tool_name='look_at_screen' gets content replaced."""
+        msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="look_at_screen",
+                    content="some binary data",
+                    tool_call_id="tc_1",
+                ),
+            ]
+        )
+        result = sanitize_image_tool_returns([msg])
+
+        assert len(result) == 1
+        req = result[0]
+        assert isinstance(req, ModelRequest)
+        part = req.parts[0]
+        assert isinstance(part, ToolReturnPart)
+        assert part.content == "[Inspected current screen]"
+
+    def test_synthetic_user_prompt_with_binary_content_removed(self):
+        """Synthetic UserPromptPart with BinaryContent is removed entirely (not replaced)."""
+        msg = ModelRequest(
+            parts=[
+                UserPromptPart(
+                    content=[
+                        "This is file xyz:",
+                        BinaryContent(data=b"\xff\xd8", media_type="image/jpeg"),
+                    ]
+                ),
+            ]
+        )
+        result = sanitize_image_tool_returns([msg])
+
+        assert len(result) == 1
+        req = result[0]
+        assert isinstance(req, ModelRequest)
+        # The synthetic UserPromptPart should be completely removed
+        assert len(req.parts) == 0
+
+    def test_other_tool_returns_and_user_prompts_not_affected(self):
+        """Non-look_at_screen ToolReturnParts and plain string UserPromptParts are unchanged."""
+        msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="get_time",
+                    content="2026-01-01",
+                    tool_call_id="tc_2",
+                ),
+                UserPromptPart(content="hello"),
+            ]
+        )
+        result = sanitize_image_tool_returns([msg])
+
+        assert len(result) == 1
+        req = result[0]
+        assert isinstance(req, ModelRequest)
+        tool_part = req.parts[0]
+        assert isinstance(tool_part, ToolReturnPart)
+        assert tool_part.tool_name == "get_time"
+        assert tool_part.content == "2026-01-01"
+        user_part = req.parts[1]
+        assert isinstance(user_part, UserPromptPart)
+        assert user_part.content == "hello"
+
+    def test_both_tool_return_and_user_prompt_sanitized_in_same_message(self):
+        """ToolReturnPart content replaced, synthetic UserPromptPart removed entirely."""
+        msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="look_at_screen",
+                    content="raw screenshot bytes",
+                    tool_call_id="tc_3",
+                ),
+                UserPromptPart(
+                    content=[
+                        "Screenshot:",
+                        BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg"),
+                    ]
+                ),
+            ]
+        )
+        result = sanitize_image_tool_returns([msg])
+
+        assert len(result) == 1
+        req = result[0]
+        assert isinstance(req, ModelRequest)
+        # Only the ToolReturnPart should remain — synthetic UserPromptPart removed
+        assert len(req.parts) == 1
+        tool_part = req.parts[0]
+        assert isinstance(tool_part, ToolReturnPart)
+        assert tool_part.content == "[Inspected current screen]"

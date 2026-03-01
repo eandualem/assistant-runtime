@@ -60,16 +60,6 @@ FRONTEND_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "required": ["event_type"],
         },
     },
-    "inspect_trace_screenshot": {
-        "description": (
-            "Capture and return a screenshot of the current dashboard state. "
-            "Use this when you need to visually inspect what the user sees."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {},
-        },
-    },
 }
 
 

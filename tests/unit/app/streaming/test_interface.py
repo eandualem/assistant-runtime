@@ -27,6 +27,7 @@ from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.config import AssistantConfig
 from lovely_assistant.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
 from lovely_assistant.app.settings import EffectiveConfig, RuntimeSettings
+from lovely_assistant.app.streaming._coordinator import EventCoordinator
 from lovely_assistant.app.streaming.config import StreamingConfig
 from lovely_assistant.app.streaming.exceptions import (
     StreamingError,
@@ -336,8 +337,8 @@ class TestStreamNewMessage:
 
 class TestStreamWithImages:
     @pytest.mark.asyncio
-    async def test_images_passed_to_agent_iter(self):
-        """When images are provided, agent.iter() receives a list prompt."""
+    async def test_images_not_auto_attached_to_prompt(self):
+        """Images are NOT auto-attached — prompt is always plain string."""
         mock_run = _MockAgentRun(nodes=[], output="Done")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
@@ -353,8 +354,8 @@ class TestStreamWithImages:
 
         call_args = mock_agent.iter.call_args
         user_prompt = call_args[0][0]
-        assert isinstance(user_prompt, list)
-        assert user_prompt[0] == "What's here?"
+        assert isinstance(user_prompt, str)
+        assert user_prompt == "What's here?"
 
     @pytest.mark.asyncio
     async def test_no_images_passes_plain_string(self):
@@ -1669,3 +1670,148 @@ class TestStreamFinalResponseMetadata:
 
         final = [e for e in events if e["type"] == "final_response"][0]
         assert final["thinking_streamed"] is True
+
+
+class TestLookAtScreenDeferredSanitization:
+    """Image sanitization is deferred until after the next ModelRequestNode streams.
+
+    The bug: sanitize_image_tool_returns() was called immediately after CallToolsNode,
+    stripping the image BEFORE the LLM saw it. The fix defers sanitization to after
+    the next ModelRequestNode completes streaming.
+    """
+
+    @pytest.mark.asyncio
+    async def test_image_sanitized_after_model_request(self):
+        """After _iterate_run, look_at_screen images are sanitized from history."""
+        from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
+
+        tc = ToolCallPart(tool_name="look_at_screen", args={}, tool_call_id="call_screen")
+        call_node = _make_call_tools_node([tc])
+        tr = ToolReturnPart(
+            tool_name="look_at_screen",
+            content="screenshot bytes",
+            tool_call_id="call_screen",
+            timestamp=datetime.now(UTC),
+        )
+        next_model_node = _make_model_request_node([tr])
+
+        # Build message_history with BinaryContent (what Pydantic AI puts there)
+        image = BinaryContent(data=b"fake-png", media_type="image/png")
+        history_request = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="look_at_screen",
+                    content=image,
+                    tool_call_id="call_screen",
+                    timestamp=datetime.now(UTC),
+                ),
+                UserPromptPart(content=["Reference: look_at_screen", image]),
+            ]
+        )
+        message_history = [history_request]
+
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="I see a dashboard")
+        mock_run.ctx.state.message_history = message_history
+
+        service = _make_service()
+        await service.start()
+        coordinator = EventCoordinator(100)
+
+        _ = [e async for e in service._iterate_run(mock_run, coordinator, "test-model")]
+
+        # After _iterate_run, ToolReturnPart content should be the placeholder
+        tool_return = history_request.parts[0]
+        assert tool_return.content == "[Inspected current screen]"
+        # Synthetic UserPromptPart with BinaryContent should be removed
+        assert len(history_request.parts) == 1
+
+    @pytest.mark.asyncio
+    async def test_image_survives_until_model_streams(self):
+        """The image stays in history while ModelRequestNode streams (LLM sees it)."""
+        from unittest.mock import patch
+
+        from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
+
+        tc = ToolCallPart(tool_name="look_at_screen", args={}, tool_call_id="call_screen")
+        call_node = _make_call_tools_node([tc])
+        tr = ToolReturnPart(
+            tool_name="look_at_screen",
+            content="screenshot bytes",
+            tool_call_id="call_screen",
+            timestamp=datetime.now(UTC),
+        )
+        next_model_node = _make_model_request_node([tr])
+
+        image = BinaryContent(data=b"fake-png", media_type="image/png")
+        history_request = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="look_at_screen",
+                    content=image,
+                    tool_call_id="call_screen",
+                    timestamp=datetime.now(UTC),
+                ),
+                UserPromptPart(content=["Reference: look_at_screen", image]),
+            ]
+        )
+        message_history = [history_request]
+
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="I see a dashboard")
+        mock_run.ctx.state.message_history = message_history
+
+        # Track call ordering: stream_node vs sanitize
+        call_order: list[str] = []
+        original_stream_node = StreamingService._stream_node
+
+        async def recording_stream_node(node, run, coordinator, streamed_tool_ids):
+            call_order.append("stream_start")
+            async for event in original_stream_node(
+                service, node, run, coordinator, streamed_tool_ids
+            ):
+                yield event
+            call_order.append("stream_end")
+
+        service = _make_service()
+        await service.start()
+        coordinator = EventCoordinator(100)
+
+        with (
+            patch.object(service, "_stream_node", recording_stream_node),
+            patch(
+                "lovely_assistant.app.streaming.interface.sanitize_image_tool_returns",
+                side_effect=lambda msgs: (call_order.append("sanitize"), msgs)[1],
+            ),
+        ):
+            _ = [e async for e in service._iterate_run(mock_run, coordinator, "test-model")]
+
+        # Sanitization must happen AFTER the model streams (LLM saw the image)
+        assert call_order == ["stream_start", "stream_end", "sanitize"]
+
+    @pytest.mark.asyncio
+    async def test_no_sanitization_without_look_at_screen(self):
+        """Regular tool calls don't trigger deferred sanitization."""
+        from unittest.mock import patch
+
+        tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_001")
+        call_node = _make_call_tools_node([tc])
+        tr = ToolReturnPart(
+            tool_name="list_agents",
+            content="[agent1]",
+            tool_call_id="call_001",
+            timestamp=datetime.now(UTC),
+        )
+        next_model_node = _make_model_request_node([tr])
+
+        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
+        mock_run.ctx.state.message_history = []
+
+        service = _make_service()
+        await service.start()
+        coordinator = EventCoordinator(100)
+
+        with patch(
+            "lovely_assistant.app.streaming.interface.sanitize_image_tool_returns"
+        ) as mock_sanitize:
+            _ = [e async for e in service._iterate_run(mock_run, coordinator, "test-model")]
+
+        mock_sanitize.assert_not_called()

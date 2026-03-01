@@ -6,9 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_ai.messages import BinaryContent, ImageUrl, UserContent
 
 # --- camelCase → snake_case normalization ---
 
@@ -154,55 +152,13 @@ class AssistantRequest(BaseModel):
         return data
 
 
-def _build_user_prompt(
-    message: str,
-    images: list[str],
-    model: str | None = None,
-) -> str | list[UserContent]:
-    """Convert message + images into a Pydantic AI user prompt.
+def _build_user_prompt(message: str) -> str:
+    """Build the user prompt string for the LLM.
 
-    Returns plain ``str`` when no images (zero behavioral change to existing path).
-    Returns ``list[UserContent]`` when valid images are present.
+    Images are NOT auto-attached — the agent uses the ``look_at_screen``
+    tool for on-demand visual inspection instead.
     """
-    if not images:
-        return message
-
-    # Vision capability warning (advisory only — don't block)
-    if model is not None:
-        _warn_if_no_vision(model)
-
-    converted: list[UserContent] = []
-    for img in images:
-        try:
-            if img.startswith("data:"):
-                converted.append(BinaryContent.from_data_uri(img))
-            elif img.startswith("https://"):
-                converted.append(ImageUrl(url=img))
-            else:
-                logger.warning("Skipping image with unsupported scheme", image_prefix=img[:30])
-        except Exception as e:
-            logger.warning("Skipping malformed image", error=str(e))
-
-    if not converted:
-        return message
-
-    return [message, *converted]
-
-
-def _warn_if_no_vision(model: str) -> None:
-    """Log a warning if the model is known to lack vision capability."""
-    from lovely_assistant.app.models_registry import MODEL_CATALOG
-
-    for entry in MODEL_CATALOG:
-        if entry.id == model:
-            if "vision" not in entry.capabilities:
-                logger.warning(
-                    "Model may not support vision",
-                    model=model,
-                    capabilities=entry.capabilities,
-                )
-            return
-    # Model not in catalog — don't warn (registry isn't exhaustive)
+    return message
 
 
 class AssistantResult(BaseModel):

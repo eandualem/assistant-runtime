@@ -308,15 +308,15 @@ class TestToolInvalidates:
 class TestFrontendToolRegistration:
     def test_register_frontend_tools(self, registry):
         registry.register_frontend_tools()
-        assert registry.frontend_tool_count() == 3
+        assert registry.frontend_tool_count() == 2
 
     def test_frontend_tools_in_available_tools(self, registry):
         registry.register_frontend_tools()
         result = registry.get_available_tools()
-        assert len(result.frontend_tools) == 3
+        assert len(result.frontend_tools) == 2
 
     def test_frontend_tools_bypass_page_filter(self, registry):
         registry.register_frontend_tools()
         machine_state = {"active_page": {"name": "flows"}}
         result = registry.get_available_tools(machine_state=machine_state)
-        assert len(result.frontend_tools) == 3
+        assert len(result.frontend_tools) == 2

@@ -18,6 +18,7 @@ from lovely_assistant.services.tools._plan_tools import register_plan_tools
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools._repo_tools import register_repo_tools
 from lovely_assistant.services.tools._schedule_tools import register_schedule_tools
+from lovely_assistant.services.tools._screen_tools import register_screen_tools
 from lovely_assistant.services.tools._subagent_tools import register_subagent_tools
 from lovely_assistant.services.tools._telegram_tools import register_telegram_tools
 from lovely_assistant.services.tools._video_tools import register_video_tools
@@ -168,6 +169,9 @@ class ToolService:
 
         # Repo management tools
         register_repo_tools(self._registry)
+
+        # Screen inspection tools (look_at_screen)
+        register_screen_tools(self._registry)
 
         # Artifact management tools
         register_artifact_tools(self._registry)

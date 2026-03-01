@@ -1,12 +1,11 @@
 """Tests for the system prompt builder."""
 
+import pytest
+
 from lovely_assistant.app.assistant._prompt_builder import (
-    _communication_protocol_fragment,
     _dashboard_context_fragment,
     _datetime_fragment,
-    _ecosystem_fragment,
     _mcp_connections_fragment,
-    _persona_fragment,
     _smart_hints,
     _tools_fragment,
     _working_memory_fragment,
@@ -16,116 +15,11 @@ from lovely_assistant.app.assistant.models import PromptResult
 from lovely_assistant.services.history.models import WorkingMemory
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
-
-class TestPersonaFragment:
-    def test_contains_identity(self):
-        frag = _persona_fragment()
-        assert "Jarvis" in frag
-        assert "operational nervous system" in frag
-
-    def test_contains_behavioral_instruction(self):
-        frag = _persona_fragment()
-        assert "direct" in frag.lower()
-        assert "anticipat" in frag.lower()
-
-    def test_action_oriented(self):
-        frag = _persona_fragment()
-        assert "force multiplier" in frag.lower()
-        assert "agency" in frag.lower()
-
-    def test_assistant_first_model(self):
-        frag = _persona_fragment()
-        assert "everything flows through you" in frag.lower()
-
-
-class TestCommunicationProtocolFragment:
-    def test_contains_envelope_tags(self):
-        frag = _communication_protocol_fragment()
-        assert "[via:telegram from:elias]" in frag
-        assert "[via:tmux from:{agent}]" in frag
-        assert "[via:backbone]" in frag
-
-    def test_contains_response_medium_rule(self):
-        frag = _communication_protocol_fragment()
-        assert "Response Medium Rule" in frag
-
-    def test_mentions_respond_telegram_tool(self):
-        frag = _communication_protocol_fragment()
-        assert "respond_telegram" in frag
-
-    def test_mentions_send_agent_message_tool(self):
-        frag = _communication_protocol_fragment()
-        assert "send_agent_message" in frag
-
-    def test_non_empty(self):
-        frag = _communication_protocol_fragment()
-        assert len(frag) > 0
-
-
-SAMPLE_AGENTS = [
-    {
-        "name": "leo",
-        "display_name": "Leo",
-        "role": "Strategy Co-Architect",
-        "session": "leo",
-        "type": "entity",
-    },
-    {
-        "name": "ike",
-        "display_name": "Ike",
-        "role": "Core Orchestrator",
-        "session": "ike",
-        "type": "entity",
-    },
-    {
-        "name": "feynman",
-        "display_name": "Feynman",
-        "role": "Orchestration Optimizer",
-        "session": "feynman",
-        "type": "entity",
-    },
-]
-
-
-class TestEcosystemFragment:
-    def test_contains_agents(self):
-        frag = _ecosystem_fragment(SAMPLE_AGENTS)
-        assert "Leo" in frag
-        assert "Ike" in frag
-        assert "Feynman" in frag
-
-    def test_contains_session_info(self):
-        frag = _ecosystem_fragment(SAMPLE_AGENTS)
-        assert "[session: leo]" in frag
-
-    def test_format(self):
-        frag = _ecosystem_fragment(SAMPLE_AGENTS)
-        assert frag.startswith("The Lovely Universe")
-        assert len(frag) > 0
-
-    def test_none_returns_empty(self):
-        frag = _ecosystem_fragment(None)
-        assert frag == ""
-
-    def test_empty_list_returns_empty(self):
-        frag = _ecosystem_fragment([])
-        assert frag == ""
-
-    def test_includes_role(self):
-        frag = _ecosystem_fragment(SAMPLE_AGENTS)
-        assert "Strategy Co-Architect" in frag
-
-    def test_includes_org_when_present(self):
-        agents = [
-            {
-                "display_name": "agent-backbone",
-                "role": "Coding Agent",
-                "session": "agent-backbone",
-                "org": "WF",
-            },
-        ]
-        frag = _ecosystem_fragment(agents)
-        assert "org: WF" in frag
+REQUIRED_ARTIFACTS = {
+    "persona": "You are Jarvis, the operational assistant.",
+    "communication_protocol": "Messages may arrive with envelope tags.",
+    "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
+}
 
 
 class TestDatetimeFragment:
@@ -490,6 +384,7 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
         )
         assert "Jarvis" in result.content
 
@@ -497,14 +392,15 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
         )
-        assert "Response Medium Rule" in result.content
-        assert "respond_telegram" in result.content
+        assert "envelope tags" in result.content
 
     def test_contains_datetime(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
         )
         assert "Current time:" in result.content
 
@@ -522,6 +418,7 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ts,
             session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
         )
         assert "test_tool" in result.content
 
@@ -535,6 +432,7 @@ class TestBuildSystemPrompt:
                     "data": {"sessions": [{"name": "leo", "state": "idle"}]},
                 },
             },
+            artifacts=REQUIRED_ARTIFACTS,
         )
         assert "agents page" in result.content
 
@@ -542,6 +440,7 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={"working_memory": WorkingMemory(active_goal="Deploy v2")},
+            artifacts=REQUIRED_ARTIFACTS,
         )
         assert "Deploy v2" in result.content
 
@@ -560,6 +459,7 @@ class TestBuildSystemPrompt:
                     },
                 },
             },
+            artifacts=REQUIRED_ARTIFACTS,
         )
         assert "Hints:" in result.content
         assert "Idle agents" in result.content
@@ -569,6 +469,7 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
         )
         # Fragments joined by double newline
         assert "\n\n" in result.content
@@ -577,6 +478,7 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
         )
         assert isinstance(result, PromptResult)
         assert isinstance(result.content, str)
@@ -604,7 +506,7 @@ class TestBuildSystemPrompt:
                     "data": {"sessions": [{"name": "leo", "state": "idle"}]},
                 },
             },
-            registry_agents=SAMPLE_AGENTS,
+            artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
         assert "persona" in fragment_names
@@ -624,24 +526,25 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
-        # Minimum: persona + communication_protocol + datetime (always present)
+        # Minimum: persona + communication_protocol + ecosystem + datetime (always present)
         assert "persona" in fragment_names
         assert "communication_protocol" in fragment_names
+        assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
-        # No ecosystem (no registry_agents), tools, dashboard_context, etc.
-        assert "ecosystem" not in fragment_names
+        # No tools, dashboard_context, etc. when not provided
         assert "tools" not in fragment_names
         assert "dashboard_context" not in fragment_names
         assert "smart_hints" not in fragment_names
         assert "working_memory" not in fragment_names
 
-    def test_ecosystem_included_with_registry_agents(self):
+    def test_ecosystem_included_from_artifact(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
-            registry_agents=SAMPLE_AGENTS,
+            artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
         assert "ecosystem" in fragment_names
@@ -649,108 +552,130 @@ class TestBuildSystemPrompt:
 
 
 class TestArtifactIntegration:
-    """Tests for DB artifact loading in prompt builder."""
+    """Tests for DB artifact validation in prompt builder."""
 
-    def test_artifacts_override_persona(self):
+    def test_all_artifacts_appear_in_prompt(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
-            artifacts={"persona": "Custom persona content"},
+            artifacts={
+                "persona": "I am TestBot",
+                "communication_protocol": "Custom protocol rules",
+                "ecosystem": "Test agents here",
+                "scratchpad": "Test scratchpad",
+            },
         )
-        assert "Custom persona content" in result.content
-        # Should NOT contain the hardcoded persona
-        assert "operational nervous system" not in result.content
-
-    def test_artifacts_override_ecosystem(self):
-        result = build_system_prompt(
-            available_tools=ToolSet(),
-            session_context={},
-            artifacts={"ecosystem": "Custom ecosystem agents"},
-        )
-        assert "Custom ecosystem agents" in result.content
+        assert "I am TestBot" in result.content
+        assert "Custom protocol rules" in result.content
+        assert "Test agents here" in result.content
+        assert "Test scratchpad" in result.content
+        fragment_names = [f["name"] for f in result.fragments]
+        assert "persona" in fragment_names
+        assert "communication_protocol" in fragment_names
+        assert "ecosystem" in fragment_names
+        assert "scratchpad" in fragment_names
 
     def test_scratchpad_appears_when_present(self):
+        artifacts = {**REQUIRED_ARTIFACTS, "scratchpad": "Remember: Elias prefers dark mode"}
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
-            artifacts={"scratchpad": "Remember: Elias prefers dark mode"},
+            artifacts=artifacts,
         )
         assert "Remember: Elias prefers dark mode" in result.content
         fragment_names = [f["name"] for f in result.fragments]
         assert "scratchpad" in fragment_names
 
     def test_empty_scratchpad_excluded(self):
+        artifacts = {**REQUIRED_ARTIFACTS, "scratchpad": ""}
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
-            artifacts={"scratchpad": ""},
+            artifacts=artifacts,
         )
         fragment_names = [f["name"] for f in result.fragments]
         assert "scratchpad" not in fragment_names
 
-    def test_none_artifacts_falls_back_to_hardcoded_persona(self):
-        result = build_system_prompt(
-            available_tools=ToolSet(),
-            session_context={},
-            artifacts=None,
-        )
-        # Should contain hardcoded persona
-        assert "Jarvis" in result.content
-        assert "operational nervous system" in result.content
-
-    def test_missing_persona_key_falls_back_to_hardcoded(self):
-        result = build_system_prompt(
-            available_tools=ToolSet(),
-            session_context={},
-            artifacts={"scratchpad": "some notes"},
-        )
-        # Persona should fall back to hardcoded
-        assert "Jarvis" in result.content
-        assert "operational nervous system" in result.content
-
-    def test_missing_ecosystem_key_falls_back_to_registry(self):
-        result = build_system_prompt(
-            available_tools=ToolSet(),
-            session_context={},
-            artifacts={"persona": "Custom"},
-            registry_agents=SAMPLE_AGENTS,
-        )
-        # Ecosystem should fall back to registry data
-        assert "Leo" in result.content
-
-    def test_communication_protocol_artifact_override(self):
-        result = build_system_prompt(
-            available_tools=ToolSet(),
-            session_context={},
-            artifacts={"communication_protocol": "Custom protocol rules"},
-        )
-        assert "Custom protocol rules" in result.content
-        # Should NOT contain the hardcoded protocol
-        assert "Response Medium Rule" not in result.content
-
-    def test_communication_protocol_falls_back_to_hardcoded(self):
-        result = build_system_prompt(
-            available_tools=ToolSet(),
-            session_context={},
-            artifacts={"persona": "Custom"},
-        )
-        # Communication protocol should fall back to hardcoded
-        assert "Response Medium Rule" in result.content
-
-    def test_all_artifacts_override(self):
+    def test_communication_protocol_content_appears(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
             artifacts={
-                "persona": "I am TestBot",
-                "ecosystem": "Test agents here",
-                "scratchpad": "Test scratchpad",
+                **REQUIRED_ARTIFACTS,
+                "communication_protocol": "Custom protocol rules here",
             },
         )
-        assert "I am TestBot" in result.content
-        assert "Test agents here" in result.content
-        assert "Test scratchpad" in result.content
-        fragment_names = [f["name"] for f in result.fragments]
-        assert "persona" in fragment_names
-        assert "ecosystem" in fragment_names
-        assert "scratchpad" in fragment_names
+        assert "Custom protocol rules here" in result.content
+
+    def test_missing_persona_raises_error(self):
+        with pytest.raises(ValueError, match="Missing required artifact: persona"):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "communication_protocol": "protocol",
+                    "ecosystem": "ecosystem",
+                },
+            )
+
+    def test_missing_communication_protocol_raises_error(self):
+        with pytest.raises(
+            ValueError, match="Missing required artifact: communication_protocol"
+        ):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "persona": "persona",
+                    "ecosystem": "ecosystem",
+                },
+            )
+
+    def test_missing_ecosystem_raises_error(self):
+        with pytest.raises(ValueError, match="Missing required artifact: ecosystem"):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "persona": "persona",
+                    "communication_protocol": "protocol",
+                },
+            )
+
+    def test_empty_persona_raises(self):
+        with pytest.raises(ValueError, match="Missing required artifact: persona"):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "persona": "",
+                    "communication_protocol": "protocol",
+                    "ecosystem": "ecosystem",
+                },
+            )
+
+    def test_empty_communication_protocol_raises(self):
+        with pytest.raises(
+            ValueError, match="Missing required artifact: communication_protocol"
+        ):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "persona": "persona",
+                    "communication_protocol": "",
+                    "ecosystem": "ecosystem",
+                },
+            )
+
+    def test_empty_ecosystem_raises(self):
+        with pytest.raises(ValueError, match="Missing required artifact: ecosystem"):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "persona": "persona",
+                    "communication_protocol": "protocol",
+                    "ecosystem": "",
+                },
+            )

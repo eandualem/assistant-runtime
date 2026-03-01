@@ -30,6 +30,7 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "generate_video",
         "run_subagent",
         "respond_telegram",
+        "look_at_screen",
     }
 )
 _AGENT_TOOL_NAMES: frozenset[str] = frozenset(
