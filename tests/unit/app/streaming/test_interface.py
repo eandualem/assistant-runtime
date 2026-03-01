@@ -1820,3 +1820,53 @@ class TestLookAtScreenDeferredSanitization:
             _ = [e async for e in service._iterate_run(mock_run, coordinator, "test-model")]
 
         mock_sanitize.assert_not_called()
+
+
+class TestContinuationHistory:
+    """Verify that the continuation path passes is_continuation=True to history preparation."""
+
+    @pytest.mark.asyncio
+    async def test_continuation_passes_is_continuation_flag(self):
+        """_stream_continuation must pass is_continuation=True so dangling tool calls are preserved."""
+        mock_run = _MockAgentRun(nodes=[], output="Continued response")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+
+        request = _make_request(
+            message="",
+            tool_call_id="call_ui_send_event_001",
+            tool_result={"status": "ok"},
+        )
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        # Verify prepare_history_with_metadata was called with is_continuation=True
+        history_mock = service._history
+        history_mock.prepare_history_with_metadata.assert_called_once()
+        call_kwargs = history_mock.prepare_history_with_metadata.call_args
+        assert call_kwargs.kwargs.get("is_continuation") is True
+
+    @pytest.mark.asyncio
+    async def test_new_message_does_not_pass_is_continuation(self):
+        """_stream_new_message must NOT pass is_continuation=True (default False)."""
+        mock_run = _MockAgentRun(nodes=[], output="Fresh response")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+
+        request = _make_request(message="Hello")
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        history_mock = service._history
+        history_mock.prepare_history_with_metadata.assert_called_once()
+        call_kwargs = history_mock.prepare_history_with_metadata.call_args
+        # Should not have is_continuation=True (either absent or False)
+        assert call_kwargs.kwargs.get("is_continuation", False) is False

@@ -175,7 +175,7 @@ class StreamingService:
             history = self._sessions.get_history(session_id)
             with create_span("history-preparation"):
                 history_result = await self._history.prepare_history_with_metadata(
-                    history, session_context
+                    history, session_context, is_continuation=True
                 )
             prepared_history = history_result.history
 
