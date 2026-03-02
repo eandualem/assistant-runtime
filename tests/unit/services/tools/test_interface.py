@@ -165,11 +165,11 @@ class TestStateDrivenToolFiltering:
         result = service.get_available_tools(machine_state=state)
         assert result.total_count == 30  # 27 backend + 3 frontend
 
-    async def test_agents_page_core_and_agent_and_plan(self, service):
+    async def test_agents_page_core_and_plan(self, service):
         await service.start()
         state = {"active_page": {"name": "agents"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 18  # 7 core + 5 agent + 3 plan + 3 frontend
+        assert result.total_count == 18  # 12 core (incl agent) + 3 plan + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "list_agents" in names
         assert "get_time" in names
@@ -181,11 +181,11 @@ class TestStateDrivenToolFiltering:
         assert "reject_plan" in names
         assert "add_schedule_item" in names
 
-    async def test_sessions_page_core_and_agent_and_plan(self, service):
+    async def test_sessions_page_core_and_plan(self, service):
         await service.start()
         state = {"active_page": {"name": "sessions"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 18  # 7 core + 5 agent + 3 plan + 3 frontend
+        assert result.total_count == 18  # 12 core (incl agent) + 3 plan + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "start_agent" in names
         assert "approve_plan" in names
@@ -194,7 +194,7 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "tasks"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 15  # 7 core + 5 github + 3 frontend
+        assert result.total_count == 20  # 12 core (incl agent) + 5 github + 3 frontend
         names = {t.name for t in result.backend_tools}
         # Core tools present
         assert "get_time" in names
@@ -206,14 +206,14 @@ class TestStateDrivenToolFiltering:
         assert "get_issue_details" in names
         assert "comment_on_issue" in names
         assert "close_issue" in names
-        # Agent tools excluded
-        assert "list_agents" not in names
+        # Agent tools now in core — available on all pages
+        assert "list_agents" in names
 
     async def test_meetings_page_core_and_meeting(self, service):
         await service.start()
         state = {"active_page": {"name": "meetings"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 14  # 7 core + 4 meeting + 3 frontend
+        assert result.total_count == 19  # 12 core (incl agent) + 4 meeting + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "create_meeting_room" in names
         assert "list_meeting_rooms" in names
@@ -221,32 +221,32 @@ class TestStateDrivenToolFiltering:
         assert "update_meeting_state" in names
         assert "get_time" in names
         assert "add_schedule_item" in names
-        # Agent tools excluded
-        assert "list_agents" not in names
+        # Agent tools now in core — available on all pages
+        assert "list_agents" in names
 
     async def test_flows_page_core_only(self, service):
         await service.start()
         state = {"active_page": {"name": "flows"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 10  # 7 core + 3 frontend
+        assert result.total_count == 15  # 12 core (incl agent) + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "get_time" in names
         assert "add_schedule_item" in names
-        assert "list_agents" not in names
+        assert "list_agents" in names
 
     async def test_repos_page_core_and_repo(self, service):
         await service.start()
         state = {"active_page": {"name": "repos"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 13  # 7 core + 3 repo + 3 frontend
+        assert result.total_count == 18  # 12 core (incl agent) + 3 repo + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "onboard_repo" in names
         assert "check_repo_status" in names
         assert "list_repos" in names
         assert "get_time" in names
         assert "add_schedule_item" in names
-        # Agent tools excluded
-        assert "list_agents" not in names
+        # Agent tools now in core — available on all pages
+        assert "list_agents" in names
 
     async def test_unknown_page_returns_all(self, service):
         await service.start()
@@ -267,7 +267,7 @@ class TestStateDrivenToolFiltering:
         # meetings page gives tools which exceeds max=2
         state = {"active_page": {"name": "meetings"}}
         result = svc.get_available_tools(machine_state=state)
-        assert result.total_count == 14  # still returns them, just warns (11 backend + 3 frontend)
+        assert result.total_count == 19  # still returns them, just warns (16 backend + 3 frontend)
 
 
 class TestSubagentIntegration:

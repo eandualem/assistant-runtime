@@ -7,9 +7,10 @@ a context fragment.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
+
+from loguru import logger
 
 from lovely_assistant.app.assistant.models import PromptResult
 from lovely_assistant.services.history.models import WorkingMemory
@@ -75,78 +76,6 @@ def _working_memory_fragment(session_context: dict[str, Any]) -> str:
     return ""
 
 
-# --- Page renderers ---
-
-_PAGE_RENDERERS: dict[str, Callable[[dict[str, Any]], list[str]]] = {}
-
-
-def _render_tasks_data(data: dict[str, Any]) -> list[str]:
-    """Render tasks page context."""
-    lines: list[str] = []
-    issues = data.get("issues", [])
-    if issues:
-        lines.append(f"{len(issues)} issues loaded:")
-        for issue in issues:
-            num = issue.get("number", "?")
-            title = issue.get("title", "Untitled")
-            state = issue.get("state", "")
-            labels = issue.get("labels", [])
-            label_str = f" [{', '.join(labels)}]" if labels else ""
-            lines.append(f"  #{num} {title} ({state}){label_str}")
-
-    selected = data.get("selected_issue")
-    if selected:
-        title = selected.get("title", "Untitled")
-        body = selected.get("body", "")
-        if len(body) > 200:
-            body = body[:200] + "..."
-        comment_count = selected.get("comment_count", 0)
-        lines.append(f"Selected issue: {title}")
-        if body:
-            lines.append(f"  Body: {body}")
-        lines.append(f"  Comments: {comment_count}")
-
-    filters = data.get("active_filters")
-    if filters:
-        lines.append(f"Active filters: {', '.join(f'{k}={v}' for k, v in filters.items())}")
-
-    return lines
-
-
-def _render_agents_data(data: dict[str, Any]) -> list[str]:
-    """Render agents page context."""
-    lines: list[str] = []
-    sessions = data.get("sessions", [])
-    if sessions:
-        for s in sessions:
-            name = s.get("name", "unknown")
-            state = s.get("state", "unknown")
-            ctx = s.get("context")
-            ctx_str = f" — {ctx}" if ctx else ""
-            lines.append(f"  {name}: {state}{ctx_str}")
-        # Count summary
-        by_state: dict[str, int] = {}
-        for s in sessions:
-            st = s.get("state", "unknown")
-            by_state[st] = by_state.get(st, 0) + 1
-        summary_parts = [f"{count} {state}" for state, count in sorted(by_state.items())]
-        lines.append(f"Summary: {', '.join(summary_parts)}")
-    return lines
-
-
-def _render_sessions_data(data: dict[str, Any]) -> list[str]:
-    """Render sessions page context."""
-    lines: list[str] = []
-    sessions = data.get("sessions", [])
-    if sessions:
-        for s in sessions:
-            name = s.get("name", "unknown")
-            state = s.get("state", "unknown")
-            lines.append(f"  {name}: {state}")
-        lines.append(f"{len(sessions)} sessions total")
-    return lines
-
-
 def _format_value(value: Any, indent: int = 2) -> str:
     """Format a value readably for the LLM — lists as bullets, dicts as key-value pairs."""
     prefix = " " * indent
@@ -186,13 +115,6 @@ def _render_generic_data(data: dict[str, Any]) -> list[str]:
     return lines
 
 
-_PAGE_RENDERERS = {
-    "tasks": _render_tasks_data,
-    "agents": _render_agents_data,
-    "sessions": _render_sessions_data,
-}
-
-
 def _render_background(background: dict[str, Any]) -> str:
     """Render background summaries as a one-liner.
 
@@ -230,6 +152,7 @@ def _dashboard_context_fragment(machine_state: dict[str, Any] | None) -> str:
 
     active_page = machine_state.get("active_page")
     if not active_page:
+        logger.warning("machine_state present but missing active_page — possible dashboard bug")
         return ""
 
     sections: list[str] = []
@@ -238,13 +161,26 @@ def _dashboard_context_fragment(machine_state: dict[str, Any] | None) -> str:
     page_name = active_page.get("name", "unknown")
     sections.append(f"You are on the {page_name} page.")
 
-    # Page-specific data
+    # Page data (generic structure-aware rendering for all pages)
     page_data = active_page.get("data", {})
     if page_data:
-        renderer = _PAGE_RENDERERS.get(page_name, _render_generic_data)
-        page_lines = renderer(page_data)
+        page_lines = _render_generic_data(page_data)
         if page_lines:
             sections.extend(page_lines)
+
+    # Navigation targets
+    navigation = machine_state.get("navigation", [])
+    if navigation:
+        nav_lines = ["Navigation:"]
+        for target in navigation:
+            if isinstance(target, dict):
+                name = target.get("name", "unknown")
+                desc = target.get("description", "")
+                nav_lines.append(f"- {name} — {desc}" if desc else f"- {name}")
+            else:
+                nav_lines.append(f"- {target}")
+        if len(nav_lines) > 1:
+            sections.append("\n".join(nav_lines))
 
     # Available actions (nested inside active_page per PageAwareContext)
     available_actions = active_page.get("available_actions", [])

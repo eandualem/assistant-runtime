@@ -88,8 +88,14 @@ def make_final_response_event(
     error: bool = False,
     error_type: str | None = None,
     usage: dict[str, int] | None = None,
+    pending_tool_call: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a final_response event."""
+    """Create a final_response event.
+
+    When ``pending_tool_call`` is provided (deferred frontend tool), the
+    frontend should execute the tool and send a continuation request with
+    the ``call_id`` and the tool result.
+    """
     event: dict[str, Any] = {
         "type": "final_response",
         "content": content,
@@ -106,6 +112,8 @@ def make_final_response_event(
         event["error_type"] = error_type
     if usage is not None:
         event["usage"] = usage
+    if pending_tool_call is not None:
+        event["pending_tool_call"] = pending_tool_call
     return event
 
 
