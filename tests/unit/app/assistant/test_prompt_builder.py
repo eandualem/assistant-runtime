@@ -134,6 +134,7 @@ class TestDashboardContextFragment:
         assert _dashboard_context_fragment({"something": "else"}) == ""
 
     def test_tasks_page_renders_issues(self):
+        """Tasks page uses generic renderer — issues rendered as structured key-value pairs."""
         state = {
             "active_page": {
                 "name": "tasks",
@@ -147,11 +148,13 @@ class TestDashboardContextFragment:
         }
         frag = _dashboard_context_fragment(state)
         assert "tasks page" in frag
-        assert "#42 Fix bug" in frag
-        assert "#43 Add feature" in frag
-        assert "2 issues loaded" in frag
+        assert "number: 42" in frag
+        assert "title: Fix bug" in frag
+        assert "number: 43" in frag
+        assert "title: Add feature" in frag
 
     def test_tasks_page_renders_selected_issue(self):
+        """Selected issue rendered generically — no custom format."""
         state = {
             "active_page": {
                 "name": "tasks",
@@ -165,11 +168,12 @@ class TestDashboardContextFragment:
             }
         }
         frag = _dashboard_context_fragment(state)
-        assert "Important bug" in frag
+        assert "title: Important bug" in frag
         assert "This needs fixing" in frag
-        assert "Comments: 3" in frag
+        assert "comment_count: 3" in frag
 
     def test_agents_page_renders_sessions(self):
+        """Agents page uses generic renderer — sessions as structured items."""
         state = {
             "active_page": {
                 "name": "agents",
@@ -183,11 +187,14 @@ class TestDashboardContextFragment:
         }
         frag = _dashboard_context_fragment(state)
         assert "agents page" in frag
-        assert "leo: idle" in frag
-        assert "ike: processing" in frag
+        assert "name: leo" in frag
+        assert "state: idle" in frag
+        assert "name: ike" in frag
+        assert "state: processing" in frag
         assert "Working on #50" in frag
 
     def test_sessions_page_renders(self):
+        """Sessions page uses generic renderer."""
         state = {
             "active_page": {
                 "name": "sessions",
@@ -200,7 +207,7 @@ class TestDashboardContextFragment:
         }
         frag = _dashboard_context_fragment(state)
         assert "sessions page" in frag
-        assert "feynman: idle" in frag
+        assert "name: feynman" in frag
 
     def test_home_page_renders(self):
         state = {
@@ -360,6 +367,65 @@ class TestDashboardContextFragment:
         state = {"active_page": {"name": "agents"}}
         frag = _dashboard_context_fragment(state)
         assert "agents page" in frag
+
+    def test_missing_active_page_logs_warning(self):
+        """machine_state present but no active_page triggers a warning log."""
+        from io import StringIO
+
+        from loguru import logger
+
+        sink = StringIO()
+        handler_id = logger.add(sink, format="{message}", level="WARNING")
+        try:
+            frag = _dashboard_context_fragment({"something": "else"})
+            assert frag == ""
+            assert "missing active_page" in sink.getvalue()
+        finally:
+            logger.remove(handler_id)
+
+    def test_navigation_targets(self):
+        """Navigation entries with name and description render as bullets."""
+        state = {
+            "active_page": {"name": "home", "data": {}},
+            "navigation": [
+                {"route": "/agents", "name": "Agents", "description": "Monitor agent sessions"},
+                {"route": "/tasks", "name": "Tasks", "description": "View GitHub issues"},
+            ],
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Navigation:" in frag
+        assert "- Agents — Monitor agent sessions" in frag
+        assert "- Tasks — View GitHub issues" in frag
+
+    def test_navigation_targets_no_description(self):
+        """Navigation entries without description render name only."""
+        state = {
+            "active_page": {"name": "home", "data": {}},
+            "navigation": [
+                {"route": "/settings", "name": "Settings"},
+            ],
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Navigation:" in frag
+        assert "- Settings" in frag
+        assert "— " not in frag.split("Navigation:")[1]
+
+    def test_empty_navigation_omitted(self):
+        """Empty navigation list produces no Navigation section."""
+        state = {
+            "active_page": {"name": "home", "data": {}},
+            "navigation": [],
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Navigation:" not in frag
+
+    def test_no_navigation_key_omitted(self):
+        """Missing navigation key produces no Navigation section."""
+        state = {
+            "active_page": {"name": "home", "data": {}},
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Navigation:" not in frag
 
 
 class TestSmartHints:

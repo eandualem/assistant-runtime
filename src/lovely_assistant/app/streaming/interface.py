@@ -239,13 +239,27 @@ class StreamingService:
             output = run.result.output
             if isinstance(output, DeferredToolRequests):
                 # tool_call already emitted during _iterate_run() — just store pending state
+                pending_info: dict[str, Any] | None = None
                 if output.calls:
                     first = output.calls[0]
                     session_context["pending_tool_call_id"] = first.tool_call_id
                     session_context["pending_tool_name"] = first.tool_name
+                    try:
+                        args = first.args_as_dict()
+                    except Exception:
+                        args = {}
+                    pending_info = {
+                        "tool_name": first.tool_name,
+                        "call_id": first.tool_call_id,
+                        "arguments": args,
+                    }
 
                 final = coordinator.try_final_response(
-                    None, resolved_model, session_id=session_id, usage=usage_dict
+                    None,
+                    resolved_model,
+                    session_id=session_id,
+                    usage=usage_dict,
+                    pending_tool_call=pending_info,
                 )
             else:
                 final = coordinator.try_final_response(
@@ -506,13 +520,27 @@ class StreamingService:
                 # Frontend tool call — store pending state for continuation.
                 # The tool_call SSE event was already emitted during
                 # _iterate_run() (via _stream_node or CallToolsNode handler).
+                pending_info: dict[str, Any] | None = None
                 if output.calls:
                     first = output.calls[0]
                     session_context["pending_tool_call_id"] = first.tool_call_id
                     session_context["pending_tool_name"] = first.tool_name
+                    try:
+                        args = first.args_as_dict()
+                    except Exception:
+                        args = {}
+                    pending_info = {
+                        "tool_name": first.tool_name,
+                        "call_id": first.tool_call_id,
+                        "arguments": args,
+                    }
 
                 final = coordinator.try_final_response(
-                    None, resolved_model, session_id=session_id, usage=usage_dict
+                    None,
+                    resolved_model,
+                    session_id=session_id,
+                    usage=usage_dict,
+                    pending_tool_call=pending_info,
                 )
                 if final:
                     yield final
@@ -520,6 +548,7 @@ class StreamingService:
                     "[STREAM] Deferred tool request emitted",
                     session_id=session_id,
                     model=resolved_model,
+                    tool_name=first.tool_name if output.calls else None,
                     duration_ms=(time.monotonic() - start_time) * 1000,
                 )
             else:

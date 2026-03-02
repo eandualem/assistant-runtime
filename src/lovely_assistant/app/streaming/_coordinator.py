@@ -84,6 +84,7 @@ class EventCoordinator:
         error: bool = False,
         error_type: str | None = None,
         usage: dict[str, int] | None = None,
+        pending_tool_call: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Emit final_response if not already emitted."""
         if self._final_response_emitted:
@@ -104,6 +105,7 @@ class EventCoordinator:
                 error=error,
                 error_type=error_type,
                 usage=usage,
+                pending_tool_call=pending_tool_call,
             )
         )
 

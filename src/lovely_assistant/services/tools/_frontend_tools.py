@@ -41,19 +41,33 @@ FRONTEND_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "ui_send_event": {
         "description": (
             "Send an event to the dashboard's XState machine. "
-            "Use this to trigger UI actions like opening modals, "
-            "refreshing data, or changing view states."
+            "Use this to trigger UI actions like selecting items, "
+            "filtering views, refreshing data, or changing state. "
+            "Only use events listed in the 'Available UI actions' section "
+            "of your context — those are the valid events for the current page and state. "
+            "The data object fields MUST use the exact param names shown in the "
+            "available actions list. Wrong field names cause silent failures "
+            "(the event dispatches but the machine reads undefined values)."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "event_type": {
                     "type": "string",
-                    "description": "The XState event type to send",
+                    "description": (
+                        "The XState event type to send (e.g., 'user.selectRoom', "
+                        "'user.setFilter'). Must be one of the events listed in "
+                        "'Available UI actions' in your context."
+                    ),
                 },
                 "data": {
                     "type": "object",
-                    "description": "Event payload data (optional)",
+                    "description": (
+                        "Event payload — field names MUST match the param names "
+                        "from 'Available UI actions' exactly. For example, if the "
+                        "action lists 'id (string, required)', use {\"id\": \"value\"}, "
+                        "NOT {\"roomId\": \"value\"} or other variants."
+                    ),
                     "default": {},
                 },
             },

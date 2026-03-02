@@ -31,10 +31,7 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "run_subagent",
         "respond_telegram",
         "look_at_screen",
-    }
-)
-_AGENT_TOOL_NAMES: frozenset[str] = frozenset(
-    {
+        # Agent tools are cross-cutting — check/manage agents from any page
         "list_agents",
         "check_agent_state",
         "start_agent",
@@ -274,8 +271,14 @@ class ToolRegistry:
         Filtering logic:
         - No machine_state or no active_page → all tools
         - home page or unknown page → all tools
-        - agents/sessions pages → core + agent tools
-        - tasks/meetings/flows/repos → core tools only
+        - agents/sessions pages → core + plan tools
+        - tasks page → core + github tools
+        - meetings page → core + meeting tools
+        - repos page → core + repo tools
+        - flows page → core only
+
+        Agent tools (list_agents, check_agent_state, start/stop/send) are in
+        core — available on every page.
         """
         backend = list(self._backend_definitions.values())
         total_before = len(backend)
@@ -286,7 +289,7 @@ class ToolRegistry:
             page_name = machine_state["active_page"].get("name")
             if page_name and page_name != "home":
                 if page_name in _AGENT_PAGES:
-                    allowed = _CORE_TOOL_NAMES | _AGENT_TOOL_NAMES | _PLAN_TOOL_NAMES
+                    allowed = _CORE_TOOL_NAMES | _PLAN_TOOL_NAMES
                     backend = [t for t in backend if t.name in allowed]
                 elif page_name in _GITHUB_PAGES:
                     allowed = _CORE_TOOL_NAMES | _GITHUB_TOOL_NAMES
