@@ -11,6 +11,7 @@ from typing import Any
 from loguru import logger
 
 from lovely_assistant.services.tools._agent_registry_cache import get_registry_cache
+from lovely_assistant.services.tools._backbone_client import backbone_error, backbone_request
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
@@ -147,66 +148,43 @@ async def check_agent_state(session_name: str) -> dict[str, Any]:
 
 async def start_agent(
     session_name: str,
+    runtime: str = "claude",
+    model: str | None = None,
+    resume: bool = False,
     initial_prompt: str = "",
 ) -> dict[str, Any]:
-    """Start a new agent in a tmux session.
+    """Start a new agent in a tmux session via the backbone start endpoint.
 
-    Working directory is resolved from the backbone agent registry.
+    The backbone handles working directory resolution, command construction,
+    and tmux session creation. After the session starts, an optional initial
+    prompt is sent directly via tmux send-keys.
     """
     error = _validate_session_name(session_name)
     if error:
         return {"error": error, "success": False}
 
-    # Resolve working directory from backbone registry
-    cache = get_registry_cache()
-    agents = await cache.get_agents()
-    if agents is None:
-        return {
-            "error": "Agent registry unavailable — cannot resolve working directory",
-            "success": False,
-        }
+    # Delegate to backbone start endpoint
+    body: dict[str, Any] = {"runtime": runtime}
+    if model is not None:
+        body["model"] = model
+    if resume:
+        body["resume"] = True
 
-    working_directory = cache.get_working_directory(session_name)
-    if not working_directory:
-        available = cache.get_available_sessions()
-        return {
-            "error": (
-                f"Unknown session '{session_name}' — not in agent registry. "
-                f"Available sessions: {', '.join(available) if available else 'none'}"
-            ),
-            "success": False,
-        }
-
-    # Backbone may return tilde-prefixed paths (e.g. ~/ws/core/bell)
-    working_directory = str(Path(working_directory).expanduser())
-
-    if not Path(working_directory).is_dir():
-        return {
-            "error": f"Registry directory does not exist: {working_directory}",
-            "success": False,
-        }
-
-    # Check if session already exists
-    rc, _, _ = await _run_command(["tmux", "has-session", "-t", session_name])
-    if rc == 0:
-        return {
-            "error": f"Session '{session_name}' already exists",
-            "success": False,
-        }
-
-    # Create new session
-    rc, _, stderr = await _run_command(
-        ["tmux", "new-session", "-d", "-s", session_name, "-c", working_directory]
+    status, data = await backbone_request(
+        "POST",
+        f"/api/agents/{session_name}/start",
+        json_body=body,
     )
-    if rc != 0:
-        return {"error": f"Failed to create session: {stderr}", "success": False}
 
-    # Start Claude in the session
-    rc, _, stderr = await _run_command(["tmux", "send-keys", "-t", session_name, "claude", "Enter"])
-    if rc != 0:
-        return {"error": f"Failed to start claude: {stderr}", "success": False}
+    if status == -1:
+        return {"error": backbone_error(data), "success": False}
 
-    # Send initial prompt if provided (with delay to let claude start)
+    if status != 200:
+        return {"error": backbone_error(data), "success": False}
+
+    working_directory = data.get("working_directory", "")
+
+    # Send initial prompt if provided (with delay to let the CLI start)
     if initial_prompt:
         await asyncio.sleep(2)
         rc, _, stderr = await _run_command(
@@ -215,9 +193,17 @@ async def start_agent(
         if rc == 0:
             await _run_command(["tmux", "send-keys", "-t", session_name, "Enter"])
 
-    logger.info("Started agent session", session=session_name, directory=working_directory)
+    logger.info(
+        "Started agent session",
+        session=session_name,
+        runtime=runtime,
+        directory=working_directory,
+    )
     return {
         "session_name": session_name,
+        "runtime": runtime,
+        "model": model,
+        "resume": resume,
         "working_directory": working_directory,
         "initial_prompt": initial_prompt or None,
         "success": True,
@@ -346,10 +332,11 @@ def register_agent_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="start_agent",
             description=(
-                "Start a new AI agent in a tmux session. Creates the session, "
-                "launches Claude, and optionally sends an initial prompt. "
-                "Working directory is resolved automatically from the agent registry. "
-                "Use list_agents to see available session names."
+                "Start a new AI agent in a tmux session. Delegates to the backbone "
+                "start endpoint which handles working directory resolution and session "
+                "creation. Supports runtime selection (claude, aider, gemini), model "
+                "override, and resume mode. Optionally sends an initial prompt after "
+                "the CLI starts. Use list_agents to see available session names."
             ),
             parameters_schema={
                 "type": "object",
@@ -358,9 +345,23 @@ def register_agent_tools(registry: ToolRegistry) -> None:
                         "type": "string",
                         "description": "Name for the new tmux session (must be a known agent)",
                     },
+                    "runtime": {
+                        "type": "string",
+                        "description": "AI CLI runtime to use (e.g. claude, aider, gemini)",
+                        "default": "claude",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model override for the runtime (e.g. opus, sonnet). Optional — uses runtime default if omitted.",
+                    },
+                    "resume": {
+                        "type": "boolean",
+                        "description": "Resume the most recent conversation instead of starting fresh",
+                        "default": False,
+                    },
                     "initial_prompt": {
                         "type": "string",
-                        "description": "Optional prompt to send after Claude starts",
+                        "description": "Optional prompt to send after the CLI starts",
                         "default": "",
                     },
                 },

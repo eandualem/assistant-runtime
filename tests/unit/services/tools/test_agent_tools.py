@@ -312,103 +312,118 @@ class TestCheckAgentState:
 
 
 class TestStartAgent:
+    @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
+    async def test_success_basic(self, mock_backbone):
+        mock_backbone.return_value = (
+            200,
+            {"working_directory": "/Users/elias/ws/leo", "session": "leo"},
+        )
+
+        result = await start_agent("leo")
+        assert result["success"] is True
+        assert result["session_name"] == "leo"
+        assert result["runtime"] == "claude"
+        assert result["model"] is None
+        assert result["resume"] is False
+        assert result["working_directory"] == "/Users/elias/ws/leo"
+        assert result["initial_prompt"] is None
+
+        # Verify backbone was called with correct args
+        mock_backbone.assert_awaited_once_with(
+            "POST",
+            "/api/agents/leo/start",
+            json_body={"runtime": "claude"},
+        )
+
+    @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
+    async def test_success_with_runtime_and_model(self, mock_backbone):
+        mock_backbone.return_value = (
+            200,
+            {"working_directory": "/Users/elias/ws/leo"},
+        )
+
+        result = await start_agent("leo", runtime="aider", model="sonnet")
+        assert result["success"] is True
+        assert result["runtime"] == "aider"
+        assert result["model"] == "sonnet"
+
+        mock_backbone.assert_awaited_once_with(
+            "POST",
+            "/api/agents/leo/start",
+            json_body={"runtime": "aider", "model": "sonnet"},
+        )
+
+    @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
+    async def test_success_with_resume(self, mock_backbone):
+        mock_backbone.return_value = (
+            200,
+            {"working_directory": "/Users/elias/ws/leo"},
+        )
+
+        result = await start_agent("leo", resume=True)
+        assert result["success"] is True
+        assert result["resume"] is True
+
+        mock_backbone.assert_awaited_once_with(
+            "POST",
+            "/api/agents/leo/start",
+            json_body={"runtime": "claude", "resume": True},
+        )
+
     @patch(f"{MODULE}._run_command")
-    async def test_success_from_cache(self, mock_run, tmp_path):
-        target = tmp_path / "ws" / "leo"
-        target.mkdir(parents=True)
-        mock_cache = MagicMock()
-        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", "home": str(target)}])
-        mock_cache.get_working_directory = MagicMock(return_value=str(target))
-        mock_cache.get_available_sessions = MagicMock(return_value=["leo", "ike"])
-        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
-            mock_run.side_effect = [
-                (1, "", "session not found"),  # has-session
-                (0, "", ""),  # new-session
-                (0, "", ""),  # send-keys claude
-            ]
-            result = await start_agent("leo")
+    @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
+    async def test_success_with_initial_prompt(self, mock_backbone, mock_run):
+        mock_backbone.return_value = (
+            200,
+            {"working_directory": "/Users/elias/ws/leo"},
+        )
+        mock_run.side_effect = [
+            (0, "", ""),  # send-keys prompt
+            (0, "", ""),  # send-keys Enter
+        ]
+
+        with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await start_agent("leo", initial_prompt="do the thing")
             assert result["success"] is True
-            assert result["working_directory"] == str(target)
+            assert result["initial_prompt"] == "do the thing"
+            mock_sleep.assert_awaited_once_with(2)
 
-    async def test_registry_unavailable(self):
-        mock_cache = MagicMock()
-        mock_cache.get_agents = AsyncMock(return_value=None)
-        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
-            result = await start_agent("leo")
-            assert result["success"] is False
-            assert "registry unavailable" in result["error"].lower()
+    @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
+    async def test_backbone_unavailable(self, mock_backbone):
+        mock_backbone.return_value = (
+            -1,
+            {"error": "Request timed out: POST /api/agents/leo/start", "success": False},
+        )
 
-    async def test_unknown_session(self):
-        mock_cache = MagicMock()
-        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo"}])
-        mock_cache.get_working_directory = MagicMock(return_value=None)
-        mock_cache.get_available_sessions = MagicMock(return_value=["leo"])
-        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
-            result = await start_agent("unknown-agent")
-            assert result["success"] is False
-            assert "Unknown session" in result["error"]
-            assert "leo" in result["error"]  # shows available sessions
+        result = await start_agent("leo")
+        assert result["success"] is False
+        assert "timed out" in result["error"].lower()
 
-    async def test_empty_home_rejected(self):
-        """Empty home string from backbone should be treated as missing (#457)."""
-        mock_cache = MagicMock()
-        mock_cache.get_agents = AsyncMock(return_value=[{"session": "repo-agent"}])
-        mock_cache.get_working_directory = MagicMock(return_value="")
-        mock_cache.get_available_sessions = MagicMock(return_value=["repo-agent"])
-        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
-            result = await start_agent("repo-agent")
-            assert result["success"] is False
-            assert "Unknown session" in result["error"]
+    @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
+    async def test_backbone_400_unknown_runtime(self, mock_backbone):
+        mock_backbone.return_value = (
+            400,
+            {"error": "Unknown runtime 'zsh'. Available: claude, aider, gemini"},
+        )
 
-    @patch(f"{MODULE}._run_command")
-    async def test_existing_session_rejected(self, mock_run, tmp_path):
-        target = tmp_path / "ws" / "leo"
-        target.mkdir(parents=True)
-        mock_cache = MagicMock()
-        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", "home": str(target)}])
-        mock_cache.get_working_directory = MagicMock(return_value=str(target))
-        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
-            mock_run.return_value = (0, "", "")  # has-session succeeds
-            result = await start_agent("leo")
-            assert result["success"] is False
-            assert "already exists" in result["error"]
+        result = await start_agent("leo", runtime="zsh")
+        assert result["success"] is False
+        assert "Unknown runtime" in result["error"]
 
-    async def test_invalid_name(self):
+    @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
+    async def test_backbone_404_unknown_session(self, mock_backbone):
+        mock_backbone.return_value = (
+            404,
+            {"error": "Agent 'nonexistent' not found in registry"},
+        )
+
+        result = await start_agent("nonexistent")
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
+
+    async def test_invalid_session_name(self):
         result = await start_agent("-bad-name")
         assert result["success"] is False
-
-    @patch(f"{MODULE}._run_command")
-    async def test_with_initial_prompt(self, mock_run, tmp_path):
-        target = tmp_path / "ws" / "leo"
-        target.mkdir(parents=True)
-        mock_cache = MagicMock()
-        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", "home": str(target)}])
-        mock_cache.get_working_directory = MagicMock(return_value=str(target))
-        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
-            mock_run.side_effect = [
-                (1, "", ""),  # has-session
-                (0, "", ""),  # new-session
-                (0, "", ""),  # send-keys claude
-                (0, "", ""),  # send-keys prompt
-                (0, "", ""),  # send-keys Enter
-            ]
-            with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                result = await start_agent("leo", "do the thing")
-                assert result["success"] is True
-                assert result["initial_prompt"] == "do the thing"
-                mock_sleep.assert_awaited_once_with(2)
-
-    @patch(f"{MODULE}._run_command")
-    async def test_cache_directory_not_exist(self, mock_run):
-        mock_cache = MagicMock()
-        mock_cache.get_agents = AsyncMock(
-            return_value=[{"session": "leo", "home": "/nonexistent/path"}]
-        )
-        mock_cache.get_working_directory = MagicMock(return_value="/nonexistent/path")
-        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
-            result = await start_agent("leo")
-            assert result["success"] is False
-            assert "does not exist" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -612,10 +627,14 @@ class TestRegisterAgentTools:
             assert name in registry._backend_handlers
             assert callable(registry._backend_handlers[name])
 
-    def test_start_agent_schema_has_no_working_directory(self):
+    def test_start_agent_schema_has_new_params(self):
         registry = ToolRegistry(ToolConfig())
         register_agent_tools(registry)
         schema = registry._backend_definitions["start_agent"].parameters_schema
         properties = schema.get("properties", {})
         assert "working_directory" not in properties
         assert "session_name" in schema.get("required", [])
+        assert "runtime" in properties
+        assert "model" in properties
+        assert "resume" in properties
+        assert "initial_prompt" in properties
