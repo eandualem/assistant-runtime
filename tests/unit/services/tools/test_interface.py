@@ -79,6 +79,9 @@ class TestLifecycle:
         assert "reject_plan" in tool_names
         # Artifact management tool
         assert "manage_artifacts" in tool_names
+        # Skill management tools
+        assert "list_skills" in tool_names
+        assert "read_skill" in tool_names
 
 
 class TestNotStartedGuard:
@@ -122,8 +125,8 @@ class TestDelegation:
         result = service.get_available_tools()
         assert isinstance(result, ToolSet)
         assert (
-            result.total_count >= 24
-        )  # 1 get_time + 5 agent + 1 notes + 1 artifact + 5 github + 4 meeting + 3 schedule + 1 telegram + 3 plan
+            result.total_count >= 26
+        )  # 1 get_time + 5 agent + 1 notes + 1 artifact + 5 github + 4 meeting + 3 schedule + 1 telegram + 3 plan + 2 skill
 
     async def test_validate_registered_tool(self, service):
         await service.start()
@@ -157,19 +160,19 @@ class TestStateDrivenToolFiltering:
     async def test_no_machine_state_returns_all(self, service):
         await service.start()
         result = service.get_available_tools(machine_state=None)
-        assert result.total_count == 30  # 27 backend + 3 frontend
+        assert result.total_count == 32  # 29 backend + 3 frontend
 
     async def test_home_page_returns_all(self, service):
         await service.start()
         state = {"active_page": {"name": "home"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 30  # 27 backend + 3 frontend
+        assert result.total_count == 32  # 29 backend + 3 frontend
 
     async def test_agents_page_core_and_plan(self, service):
         await service.start()
         state = {"active_page": {"name": "agents"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 18  # 12 core (incl agent) + 3 plan + 3 frontend
+        assert result.total_count == 20  # 14 core (incl agent+skills) + 3 plan + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "list_agents" in names
         assert "get_time" in names
@@ -180,12 +183,14 @@ class TestStateDrivenToolFiltering:
         assert "list_agent_plans" in names
         assert "reject_plan" in names
         assert "add_schedule_item" in names
+        assert "list_skills" in names
+        assert "read_skill" in names
 
     async def test_sessions_page_core_and_plan(self, service):
         await service.start()
         state = {"active_page": {"name": "sessions"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 18  # 12 core (incl agent) + 3 plan + 3 frontend
+        assert result.total_count == 20  # 14 core (incl agent+skills) + 3 plan + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "start_agent" in names
         assert "approve_plan" in names
@@ -194,7 +199,7 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "tasks"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 20  # 12 core (incl agent) + 5 github + 3 frontend
+        assert result.total_count == 22  # 14 core (incl agent+skills) + 5 github + 3 frontend
         names = {t.name for t in result.backend_tools}
         # Core tools present
         assert "get_time" in names
@@ -213,7 +218,7 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "meetings"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 19  # 12 core (incl agent) + 4 meeting + 3 frontend
+        assert result.total_count == 21  # 14 core (incl agent+skills) + 4 meeting + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "create_meeting_room" in names
         assert "list_meeting_rooms" in names
@@ -228,7 +233,7 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "flows"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 15  # 12 core (incl agent) + 3 frontend
+        assert result.total_count == 17  # 14 core (incl agent+skills) + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "get_time" in names
         assert "add_schedule_item" in names
@@ -238,7 +243,7 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "repos"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 18  # 12 core (incl agent) + 3 repo + 3 frontend
+        assert result.total_count == 20  # 14 core (incl agent+skills) + 3 repo + 3 frontend
         names = {t.name for t in result.backend_tools}
         assert "onboard_repo" in names
         assert "check_repo_status" in names
@@ -252,13 +257,13 @@ class TestStateDrivenToolFiltering:
         await service.start()
         state = {"active_page": {"name": "exotic_dashboard"}}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 30  # 27 backend + 3 frontend
+        assert result.total_count == 32  # 29 backend + 3 frontend
 
     async def test_missing_active_page_returns_all(self, service):
         await service.start()
         state = {"some_other_key": "value"}
         result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 30  # 27 backend + 3 frontend
+        assert result.total_count == 32  # 29 backend + 3 frontend
 
     async def test_tool_count_warning(self):
         low_max_config = ToolConfig(max_tools_per_request=2)
@@ -267,7 +272,7 @@ class TestStateDrivenToolFiltering:
         # meetings page gives tools which exceeds max=2
         state = {"active_page": {"name": "meetings"}}
         result = svc.get_available_tools(machine_state=state)
-        assert result.total_count == 19  # still returns them, just warns (16 backend + 3 frontend)
+        assert result.total_count == 21  # still returns them, just warns (18 backend + 3 frontend)
 
 
 class TestSubagentIntegration:

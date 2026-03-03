@@ -88,7 +88,6 @@ class TestAppStartup:
         route_paths = [r.path for r in app.routes if hasattr(r, "path")]
         assert "/health" in route_paths
         assert "/api/chat" in route_paths
-        assert "/api/chat/stream" in route_paths
         assert "/api/sessions/{session_id}" in route_paths
         assert "/api/settings" in route_paths
         assert "/api/models" in route_paths
@@ -103,7 +102,6 @@ class TestAppStartup:
 
         assert "GET" in routes_by_path.get("/health", set())
         assert "POST" in routes_by_path.get("/api/chat", set())
-        assert "POST" in routes_by_path.get("/api/chat/stream", set())
         assert "GET" in routes_by_path.get("/api/sessions/{session_id}", set())
         assert "DELETE" in routes_by_path.get("/api/sessions/{session_id}", set())
         assert "GET" in routes_by_path.get("/api/settings", set())

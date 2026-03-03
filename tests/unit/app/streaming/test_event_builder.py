@@ -5,10 +5,11 @@ from lovely_assistant.app.streaming._event_builder import (
     make_agent_status_event,
     make_debug_agent_config_event,
     make_debug_completed_event,
+    make_debug_final_response_event,
     make_debug_history_event,
     make_debug_request_event,
     make_debug_system_prompt_event,
-    make_debug_tool_execution_event,
+    make_debug_thinking_event,
     make_debug_tool_selection_event,
     make_debug_usage_event,
     make_error_event,
@@ -319,6 +320,33 @@ class TestDebugToolSelectionEvent:
         assert event["tools"] == tools
         assert len(event["tools"]) == 2
 
+    def test_with_parameters_schema(self):
+        tools = [
+            {
+                "name": "get_time",
+                "description": "Get current time",
+                "parameters_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "read_skill",
+                "description": "Read a skill",
+                "parameters_schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+            },
+        ]
+        event = make_debug_tool_selection_event(
+            page=None,
+            backend_count=2,
+            filtered_out=0,
+            tool_names=["get_time", "read_skill"],
+            tools=tools,
+        )
+        assert event["tools"][0]["parameters_schema"] == {"type": "object", "properties": {}}
+        assert "required" in event["tools"][1]["parameters_schema"]
+
 
 class TestDebugAgentConfigEvent:
     def test_basic(self):
@@ -358,20 +386,34 @@ class TestDebugAgentConfigEvent:
         assert "session_id" not in event
 
 
-class TestDebugToolExecutionEvent:
+class TestDebugThinkingEvent:
     def test_basic(self):
-        event = make_debug_tool_execution_event(
-            tool_names=["get_time", "list_agents"],
-            backend_count=2,
-        )
-        assert event["type"] == "debug_tool_execution"
-        assert event["tool_names"] == ["get_time", "list_agents"]
-        assert event["backend_count"] == 2
+        event = make_debug_thinking_event("Let me reason about this...")
+        assert event["type"] == "debug_thinking"
+        assert event["content"] == "Let me reason about this..."
 
-    def test_no_tools(self):
-        event = make_debug_tool_execution_event(tool_names=[], backend_count=0)
-        assert event["tool_names"] == []
-        assert event["backend_count"] == 0
+    def test_empty_content(self):
+        event = make_debug_thinking_event("")
+        assert event["type"] == "debug_thinking"
+        assert event["content"] == ""
+
+
+class TestDebugFinalResponseEvent:
+    def test_basic(self):
+        event = make_debug_final_response_event("Hello world", "claude-3-5-sonnet")
+        assert event["type"] == "debug_final_response"
+        assert event["content"] == "Hello world"
+        assert event["model"] == "claude-3-5-sonnet"
+        assert "usage" not in event
+
+    def test_with_usage(self):
+        usage = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+        event = make_debug_final_response_event("response", "model-1", usage=usage)
+        assert event["usage"] == usage
+
+    def test_without_usage(self):
+        event = make_debug_final_response_event("response", "model-1")
+        assert "usage" not in event
 
 
 class TestDebugUsageEvent:

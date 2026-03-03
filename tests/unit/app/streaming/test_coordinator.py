@@ -305,6 +305,84 @@ class TestCoordinatorDebugEventsCollection:
         assert coord.debug_events[0]["type"] == "debug_request"
 
 
+class TestCoordinatorAccumulation:
+    def test_accumulated_thinking_empty_initially(self):
+        coord = EventCoordinator(max_events=100)
+        assert coord.accumulated_thinking == ""
+
+    def test_accumulated_thinking_accumulates(self):
+        coord = EventCoordinator(max_events=100)
+        coord.emit_thinking_delta("first ")
+        coord.emit_thinking_delta("second")
+        assert coord.accumulated_thinking == "first second"
+
+    def test_accumulated_response_empty_initially(self):
+        coord = EventCoordinator(max_events=100)
+        assert coord.accumulated_response == ""
+
+    def test_accumulated_response_accumulates(self):
+        coord = EventCoordinator(max_events=100)
+        coord.emit_text_delta("Hello ")
+        coord.emit_text_delta("world")
+        assert coord.accumulated_response == "Hello world"
+
+    def test_buffers_independent(self):
+        coord = EventCoordinator(max_events=100)
+        coord.emit_thinking_delta("thinking")
+        coord.emit_text_delta("response")
+        assert coord.accumulated_thinking == "thinking"
+        assert coord.accumulated_response == "response"
+
+
+class TestCoordinatorFlushThinking:
+    def test_flush_empty_returns_none(self):
+        coord = EventCoordinator(max_events=100)
+        assert coord.flush_thinking() is None
+
+    def test_flush_returns_debug_thinking_event(self):
+        coord = EventCoordinator(max_events=100)
+        coord.emit_thinking_delta("some reasoning")
+        event = coord.flush_thinking()
+        assert event is not None
+        assert event["type"] == "debug_thinking"
+        assert event["content"] == "some reasoning"
+
+    def test_flush_clears_buffer(self):
+        coord = EventCoordinator(max_events=100)
+        coord.emit_thinking_delta("thinking")
+        coord.flush_thinking()
+        # Second flush returns None — buffer was cleared
+        assert coord.flush_thinking() is None
+
+    def test_flush_adds_to_debug_events(self):
+        coord = EventCoordinator(max_events=100)
+        coord.emit_thinking_delta("reasoning")
+        coord.flush_thinking()
+        assert len(coord.debug_events) == 1
+        assert coord.debug_events[0]["type"] == "debug_thinking"
+
+    def test_multiple_flushes_produce_separate_events(self):
+        """Key test: proves per-iteration separation of thinking."""
+        coord = EventCoordinator(max_events=100)
+        # Iteration 1: some thinking
+        coord.emit_thinking_delta("first thought")
+        coord.flush_thinking()
+        # Iteration 2: more thinking
+        coord.emit_thinking_delta("second thought")
+        coord.flush_thinking()
+        assert len(coord.debug_events) == 2
+        assert coord.debug_events[0]["content"] == "first thought"
+        assert coord.debug_events[1]["content"] == "second thought"
+
+    def test_flush_concatenates_multiple_deltas(self):
+        coord = EventCoordinator(max_events=100)
+        coord.emit_thinking_delta("part one ")
+        coord.emit_thinking_delta("part two")
+        event = coord.flush_thinking()
+        assert event is not None
+        assert event["content"] == "part one part two"
+
+
 class TestCoordinatorUsage:
     def test_try_final_response_with_usage(self):
         coord = EventCoordinator(max_events=100)

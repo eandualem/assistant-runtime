@@ -17,9 +17,7 @@ class TestValidateModelId:
         assert validate_model_id("anthropic:claude-sonnet-4-6") == "anthropic:claude-sonnet-4-6"
 
     def test_openrouter_with_slash_after_colon(self):
-        assert (
-            validate_model_id("openrouter:anthropic/claude-3") == "openrouter:anthropic/claude-3"
-        )
+        assert validate_model_id("openrouter:anthropic/claude-3") == "openrouter:anthropic/claude-3"
 
     def test_google_gla_accepted(self):
         assert validate_model_id("google-gla:gemini-3-flash") == "google-gla:gemini-3-flash"
@@ -218,7 +216,9 @@ class TestBuildModelSettingsGoogle:
 
     def test_google_gla_prefix_with_thinking(self):
         """google-gla: prefix should hit the Google branch with thinking config."""
-        settings = build_model_settings(model_id="google-gla:gemini-3-flash-preview", thinking_budget=5000)
+        settings = build_model_settings(
+            model_id="google-gla:gemini-3-flash-preview", thinking_budget=5000
+        )
         assert isinstance(settings, dict)
         assert settings["google_thinking_config"] == {
             "include_thoughts": True,

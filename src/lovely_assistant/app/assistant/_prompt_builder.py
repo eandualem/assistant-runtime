@@ -29,17 +29,6 @@ def _datetime_fragment() -> str:
     return f"Current time: {now.strftime('%Y-%m-%d %H:%M UTC')} ({now.strftime('%A')})"
 
 
-def _tools_fragment(available_tools: ToolSet) -> str:
-    """Available tools context."""
-    if available_tools.total_count == 0:
-        return ""
-
-    lines = ["Available tools:"]
-    for tool in available_tools.backend_tools:
-        lines.append(f"- {tool.name}: {tool.description}")
-    return "\n".join(lines)
-
-
 def _mcp_connections_fragment(mcp_summary: list[dict[str, Any]] | None) -> str:
     """Compact summary of connected MCP integrations with tool names."""
     if not mcp_summary:
@@ -328,10 +317,6 @@ def build_system_prompt(
     scratchpad_content = artifacts.get("scratchpad")
     if scratchpad_content:
         named_fragments.append(("scratchpad", scratchpad_content))
-
-    tools_frag = _tools_fragment(available_tools)
-    if tools_frag:
-        named_fragments.append(("tools", tools_frag))
 
     mcp_frag = _mcp_connections_fragment(mcp_summary)
     if mcp_frag:

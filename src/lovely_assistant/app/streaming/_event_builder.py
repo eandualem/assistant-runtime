@@ -207,7 +207,7 @@ def make_debug_tool_selection_event(
     backend_count: int,
     filtered_out: int,
     tool_names: list[str],
-    tools: list[dict[str, str]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create a debug_tool_selection event — emitted after tool resolution."""
     return {
@@ -240,16 +240,21 @@ def make_debug_agent_config_event(
     return event
 
 
-def make_debug_tool_execution_event(
-    tool_names: list[str],
-    backend_count: int,
+def make_debug_thinking_event(content: str) -> dict[str, Any]:
+    """Create a debug_thinking event — accumulated thinking content for trace."""
+    return {"type": "debug_thinking", "content": content}
+
+
+def make_debug_final_response_event(
+    content: str,
+    model: str,
+    usage: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Create a debug_tool_execution event — emitted after agent run."""
-    return {
-        "type": "debug_tool_execution",
-        "tool_names": tool_names,
-        "backend_count": backend_count,
-    }
+    """Create a debug_final_response event — accumulated response for trace."""
+    event: dict[str, Any] = {"type": "debug_final_response", "content": content, "model": model}
+    if usage is not None:
+        event["usage"] = usage
+    return event
 
 
 def make_debug_usage_event(

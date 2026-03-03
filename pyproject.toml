@@ -12,7 +12,7 @@ license = {text = "MIT"}
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
-    "sse-starlette>=2.0.0",
+    "python-socketio>=5.11",
     "pydantic-ai[mcp]>=1.50.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",

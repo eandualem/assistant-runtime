@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import socketio
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -138,4 +139,15 @@ def create_app() -> FastAPI:
     return app
 
 
-app = create_app()
+def create_asgi_app() -> socketio.ASGIApp:
+    """Create the full ASGI application with Socket.IO wrapper."""
+    from lovely_assistant.app.socketio_server import create_sio
+
+    fastapi_app = create_app()
+    sio = create_sio()
+    sio.fastapi_app = fastapi_app
+    fastapi_app.state.sio = sio
+    return socketio.ASGIApp(sio, fastapi_app)
+
+
+app = create_asgi_app()

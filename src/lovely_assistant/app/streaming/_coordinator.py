@@ -15,6 +15,7 @@ from loguru import logger
 
 from lovely_assistant.app.streaming._event_builder import (
     make_agent_status_event,
+    make_debug_thinking_event,
     make_final_response_event,
     make_text_delta_event,
     make_thinking_delta_event,
@@ -38,6 +39,8 @@ class EventCoordinator:
         self._debug_events: list[dict[str, Any]] = []
         self._streamed_text = False
         self._streamed_thinking = False
+        self._thinking_buffer: list[str] = []
+        self._response_buffer: list[str] = []
 
     @property
     def event_count(self) -> int:
@@ -112,12 +115,26 @@ class EventCoordinator:
     def emit_text_delta(self, content: str) -> dict[str, Any]:
         """Create, track, and return a text_delta event. Sets streamed_text flag."""
         self._streamed_text = True
+        self._response_buffer.append(content)
         return self._track(make_text_delta_event(content))
 
     def emit_thinking_delta(self, content: str) -> dict[str, Any]:
         """Create, track, and return a thinking_delta event. Sets streamed_thinking flag."""
         self._streamed_thinking = True
+        self._thinking_buffer.append(content)
         return self._track(make_thinking_delta_event(content))
+
+    def flush_thinking(self) -> dict[str, Any] | None:
+        """Flush current thinking buffer as a debug_thinking trace event.
+
+        Returns the event if buffer had content, None otherwise.
+        Clears the buffer so each flush captures only one iteration's thinking.
+        """
+        if not self._thinking_buffer:
+            return None
+        content = "".join(self._thinking_buffer)
+        self._thinking_buffer.clear()
+        return self.track_debug(make_debug_thinking_event(content))
 
     def track(self, event: dict[str, Any]) -> dict[str, Any]:
         """Track a regular event (thinking_delta, text_delta, tool_*, error)."""
@@ -133,6 +150,16 @@ class EventCoordinator:
     def debug_events(self) -> list[dict[str, Any]]:
         """All collected debug events for trace persistence."""
         return self._debug_events
+
+    @property
+    def accumulated_thinking(self) -> str:
+        """Full thinking content accumulated from all thinking_delta events."""
+        return "".join(self._thinking_buffer)
+
+    @property
+    def accumulated_response(self) -> str:
+        """Full response content accumulated from all text_delta events."""
+        return "".join(self._response_buffer)
 
     def _track(self, event: dict[str, Any]) -> dict[str, Any]:
         """Increment counter and enforce limit."""

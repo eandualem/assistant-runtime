@@ -65,8 +65,8 @@ FRONTEND_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     "description": (
                         "Event payload — field names MUST match the param names "
                         "from 'Available UI actions' exactly. For example, if the "
-                        "action lists 'id (string, required)', use {\"id\": \"value\"}, "
-                        "NOT {\"roomId\": \"value\"} or other variants."
+                        'action lists \'id (string, required)\', use {"id": "value"}, '
+                        'NOT {"roomId": "value"} or other variants.'
                     ),
                     "default": {},
                 },
