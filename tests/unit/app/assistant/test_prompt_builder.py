@@ -7,7 +7,6 @@ from lovely_assistant.app.assistant._prompt_builder import (
     _datetime_fragment,
     _mcp_connections_fragment,
     _smart_hints,
-    _tools_fragment,
     _working_memory_fragment,
     build_system_prompt,
 )
@@ -30,27 +29,6 @@ class TestDatetimeFragment:
     def test_contains_current_time(self):
         frag = _datetime_fragment()
         assert "Current time:" in frag
-
-
-class TestToolsFragment:
-    def test_empty_tools(self):
-        ts = ToolSet()
-        assert _tools_fragment(ts) == ""
-
-    def test_backend_tools(self):
-        ts = ToolSet(
-            backend_tools=[
-                ToolDefinition(
-                    name="get_time",
-                    description="Get current time",
-                    parameters_schema={},
-                    category=ToolCategory.BACKEND,
-                )
-            ]
-        )
-        frag = _tools_fragment(ts)
-        assert "get_time" in frag
-        assert "Available tools:" in frag
 
 
 class TestWorkingMemoryFragment:
@@ -558,7 +536,8 @@ class TestBuildSystemPrompt:
         )
         assert "Current time:" in result.content
 
-    def test_includes_tools_when_present(self):
+    def test_tools_not_in_prompt_text(self):
+        """Tools are registered natively with the agent, not duplicated in the system prompt."""
         ts = ToolSet(
             backend_tools=[
                 ToolDefinition(
@@ -574,7 +553,9 @@ class TestBuildSystemPrompt:
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
-        assert "test_tool" in result.content
+        assert "test_tool" not in result.content
+        fragment_names = [f["name"] for f in result.fragments]
+        assert "tools" not in fragment_names
 
     def test_includes_machine_state(self):
         result = build_system_prompt(
@@ -666,15 +647,27 @@ class TestBuildSystemPrompt:
         assert "persona" in fragment_names
         assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
-        assert "tools" in fragment_names
         assert "dashboard_context" in fragment_names
         assert "working_memory" in fragment_names
+        assert "tools" not in fragment_names
         # Each fragment has name and char_count
         for frag in result.fragments:
             assert "name" in frag
             assert "char_count" in frag
             assert isinstance(frag["char_count"], int)
             assert frag["char_count"] > 0
+
+    def test_working_memory_in_fragments(self):
+        """Working memory content appears as a named fragment in the system prompt."""
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={"working_memory": WorkingMemory(active_goal="Ship v3")},
+            artifacts=REQUIRED_ARTIFACTS,
+        )
+        fragment_names = [f["name"] for f in result.fragments]
+        assert "working_memory" in fragment_names
+        wm_frag = next(f for f in result.fragments if f["name"] == "working_memory")
+        assert "Ship v3" in wm_frag["content"]
 
     def test_minimal_fragments(self):
         result = build_system_prompt(

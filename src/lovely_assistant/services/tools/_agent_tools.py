@@ -262,7 +262,7 @@ async def send_agent_message(session_name: str, message: str) -> dict[str, Any]:
         state_warning = f"Agent is currently {state['state']} — message will be queued"
 
     # Send with envelope tag
-    envelope = f"[via:lovely-assistant from:elias] {message.strip()}"
+    envelope = f"[via:jarvis from:jarvis] {message.strip()}"
     rc, _, stderr = await _run_command(["tmux", "send-keys", "-t", session_name, "-l", envelope])
     if rc != 0:
         return {"error": f"Failed to send message: {stderr}", "success": False}
@@ -399,7 +399,7 @@ def register_agent_tools(registry: ToolRegistry) -> None:
             name="send_agent_message",
             description=(
                 "Send a message to a running agent session. Prepends the "
-                "[via:lovely-assistant from:elias] envelope tag automatically. "
+                "[via:jarvis from:jarvis] envelope tag automatically. "
                 "Warns if the agent is currently busy."
             ),
             parameters_schema={

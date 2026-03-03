@@ -52,7 +52,7 @@ def validate_model_id(model_id: str) -> str:
     if model_id.startswith("google:"):
         raise ProviderConfigError(
             f"Use 'google-gla:' prefix, not 'google:': '{model_id}'. "
-            f"Use 'google-gla:{model_id[len('google:'):]}'"
+            f"Use 'google-gla:{model_id[len('google:') :]}'"
         )
 
     # Validate colon-separated format

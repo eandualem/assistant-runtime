@@ -35,10 +35,10 @@ from lovely_assistant.app.streaming._coordinator import EventCoordinator
 from lovely_assistant.app.streaming._event_builder import (
     make_debug_agent_config_event,
     make_debug_completed_event,
+    make_debug_final_response_event,
     make_debug_history_event,
     make_debug_request_event,
     make_debug_system_prompt_event,
-    make_debug_tool_execution_event,
     make_debug_tool_selection_event,
     make_debug_usage_event,
     make_error_event,
@@ -211,7 +211,9 @@ class StreamingService:
                     usage_limits=ctx.usage_limits,
                     deferred_tool_results=deferred,
                 ) as run:
-                    async for event in self._iterate_run(run, coordinator, resolved_model):
+                    async for event in self._iterate_run(
+                        run, coordinator, resolved_model, emit_debug=emit_debug
+                    ):
                         yield event
 
             await self._sessions.save_history_async(
@@ -319,6 +321,29 @@ class StreamingService:
                 except Exception:
                     pass
 
+            # Flush any unflushed thinking (error path safety net)
+            if emit_debug:
+                coordinator.flush_thinking()
+            if emit_debug and coordinator.accumulated_response:
+                usage_for_trace: dict[str, int] | None = None
+                try:
+                    if "run" in dir() and hasattr(run, "result") and run.result is not None:
+                        u = run.result.usage()
+                        usage_for_trace = {
+                            "input_tokens": u.request_tokens or 0,
+                            "output_tokens": u.response_tokens or 0,
+                            "total_tokens": u.total_tokens or 0,
+                        }
+                except Exception:
+                    pass
+                yield coordinator.track_debug(
+                    make_debug_final_response_event(
+                        coordinator.accumulated_response,
+                        resolved_model if "resolved_model" in locals() else "unknown",
+                        usage=usage_for_trace,
+                    )
+                )
+
             completed = coordinator.try_completed()
             if completed:
                 yield completed
@@ -349,7 +374,7 @@ class StreamingService:
         try:
             session_id = request.session_id
             session_context = await self._sessions.get_context_async(session_id)
-            self._sessions.increment_turn(session_id)
+            turn_number = self._sessions.increment_turn(session_id)
 
             # Debug: request
             if emit_debug:
@@ -378,7 +403,11 @@ class StreamingService:
                         filtered_out=available_tools.filtered_out_count,
                         tool_names=available_tools.tool_names,
                         tools=[
-                            {"name": t.name, "description": t.description}
+                            {
+                                "name": t.name,
+                                "description": t.description,
+                                "parameters_schema": t.parameters_schema,
+                            }
                             for t in available_tools.backend_tools
                         ],
                     )
@@ -466,7 +495,9 @@ class StreamingService:
                     message_history=prepared_history if prepared_history else None,
                     usage_limits=ctx.usage_limits,
                 ) as run:
-                    async for event in self._iterate_run(run, coordinator, resolved_model):
+                    async for event in self._iterate_run(
+                        run, coordinator, resolved_model, emit_debug=emit_debug
+                    ):
                         yield event
 
             # Save history after run completes (async = persists to DB)
@@ -474,15 +505,6 @@ class StreamingService:
                 session_id, sanitize_image_tool_returns(list(run.result.all_messages()))
             )
             _history_saved = True
-
-            # Debug: tool execution
-            if emit_debug:
-                yield coordinator.track_debug(
-                    make_debug_tool_execution_event(
-                        tool_names=available_tools.tool_names,
-                        backend_count=len(available_tools.backend_tools),
-                    )
-                )
 
             # Debug: usage
             if emit_debug:
@@ -617,6 +639,38 @@ class StreamingService:
                         session_id=session_id,
                     )
 
+            # Working memory delta (mirrors non-streaming path, best-effort)
+            try:
+                if ctx.effective_config.enable_working_memory:
+                    await self._assistant_service._update_working_memory(
+                        session_id, session_context, turn_number
+                    )
+            except Exception as e:
+                logger.debug("Working memory update failed in streaming path", error=str(e))
+
+            # Flush any unflushed thinking (error path safety net)
+            if emit_debug:
+                coordinator.flush_thinking()
+            if emit_debug and coordinator.accumulated_response:
+                usage_for_trace: dict[str, int] | None = None
+                try:
+                    if "run" in dir() and hasattr(run, "result") and run.result is not None:
+                        u = run.result.usage()
+                        usage_for_trace = {
+                            "input_tokens": u.request_tokens or 0,
+                            "output_tokens": u.response_tokens or 0,
+                            "total_tokens": u.total_tokens or 0,
+                        }
+                except Exception:
+                    pass
+                yield coordinator.track_debug(
+                    make_debug_final_response_event(
+                        coordinator.accumulated_response,
+                        resolved_model if "resolved_model" in locals() else "unknown",
+                        usage=usage_for_trace,
+                    )
+                )
+
             completed = coordinator.try_completed()
             if completed:
                 yield completed
@@ -648,6 +702,8 @@ class StreamingService:
         run: Any,
         coordinator: EventCoordinator,
         model: str,
+        *,
+        emit_debug: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Iterate over agent run nodes, yielding SSE events."""
         _pending_image_sanitize = False
@@ -658,6 +714,9 @@ class StreamingService:
             if isinstance(node, ModelRequestNode):
                 async for event in self._stream_node(node, run, coordinator):
                     yield event
+                # Flush this iteration's thinking into the trace (chronological position)
+                if emit_debug:
+                    coordinator.flush_thinking()
                 # Deferred sanitization: strip image after the LLM has seen it.
                 # look_at_screen sets the flag at CallToolsNode time; we wait
                 # until this ModelRequestNode finishes streaming (LLM consumed
@@ -678,9 +737,9 @@ class StreamingService:
                         args = tc.args_as_dict()
                     except Exception:
                         args = {}
-                    yield coordinator.track(
-                        make_tool_call_event(tc.tool_name, args, tc.tool_call_id)
-                    )
+                    evt = make_tool_call_event(tc.tool_name, args, tc.tool_call_id)
+                    coordinator.track_debug(evt)
+                    yield coordinator.track(evt)
 
                 # Execute tools (timed)
                 tool_start = time.monotonic()
@@ -695,9 +754,11 @@ class StreamingService:
                         raw_content = self._extract_tool_result_raw(next_node, tc.tool_call_id)
                         is_error, error_msg = self._is_tool_error(raw_content)
                         if is_error:
-                            yield coordinator.track(
-                                make_tool_error_event(tc.tool_name, error_msg, tc.tool_call_id)
+                            err_evt = make_tool_error_event(
+                                tc.tool_name, error_msg, tc.tool_call_id
                             )
+                            coordinator.track_debug(err_evt)
+                            yield coordinator.track(err_evt)
                         result_str = (
                             error_msg
                             if is_error
@@ -705,28 +766,28 @@ class StreamingService:
                             if raw_content is not None
                             else ""
                         )
-                        yield coordinator.track(
-                            make_tool_result_event(
-                                tc.tool_name,
-                                result_str,
-                                tc.tool_call_id,
-                                duration_ms=tool_duration_ms,
-                                invalidates=get_tool_invalidates(tc.tool_name),
-                            )
+                        res_evt = make_tool_result_event(
+                            tc.tool_name,
+                            result_str,
+                            tc.tool_call_id,
+                            duration_ms=tool_duration_ms,
+                            invalidates=get_tool_invalidates(tc.tool_name),
                         )
+                        coordinator.track_debug(res_evt)
+                        yield coordinator.track(res_evt)
 
                     # Check for RetryPromptPart (Pydantic AI validation failures)
                     for part in next_node.request.parts:
                         if isinstance(part, RetryPromptPart):
                             retry_tool = getattr(part, "tool_name", None) or "unknown"
                             retry_id = getattr(part, "tool_call_id", None) or ""
-                            yield coordinator.track(
-                                make_tool_error_event(
-                                    retry_tool,
-                                    str(part.content) if part.content else "Validation failed",
-                                    retry_id,
-                                )
+                            retry_evt = make_tool_error_event(
+                                retry_tool,
+                                str(part.content) if part.content else "Validation failed",
+                                retry_id,
                             )
+                            coordinator.track_debug(retry_evt)
+                            yield coordinator.track(retry_evt)
 
                 # Flag deferred sanitization: the image must survive until
                 # the next ModelRequestNode streams (LLM sees it), then gets

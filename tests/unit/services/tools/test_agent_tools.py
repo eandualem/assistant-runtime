@@ -538,7 +538,7 @@ class TestSendAgentMessage:
         # The second call is send-keys -l with the envelope
         send_call = mock_run.call_args_list[1]
         args = send_call[0][0]  # positional args to _run_command
-        assert "[via:lovely-assistant from:elias]" in args[-1]
+        assert "[via:jarvis from:jarvis]" in args[-1]
         assert "hello" in args[-1]
 
     @patch(f"{MODULE}._run_command")

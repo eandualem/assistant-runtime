@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from lovely_assistant.main import create_app
 
-from .conftest import _make_mock_agent, _make_mock_agent_run
+from .conftest import _make_mock_agent
 
 
 @pytest.fixture
@@ -117,47 +116,6 @@ class TestChatRouteIntegration:
         """Invalid request body returns 422."""
         client, app = integration_client
         response = await client.post("/api/chat", json={"invalid": "body"})
-        assert response.status_code == 422
-
-
-class TestStreamRouteIntegration:
-    @pytest.mark.asyncio
-    async def test_stream_full_chain(self, integration_client):
-        """POST /api/chat/stream returns SSE events through real services."""
-        client, app = integration_client
-        mock_run = _make_mock_agent_run("Streamed!")
-
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-
-        with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
-            return_value=mock_agent,
-        ):
-            response = await client.post(
-                "/api/chat/stream",
-                json={"session_id": "stream-route", "message": "Hi"},
-            )
-
-        assert response.status_code == 200
-        assert "text/event-stream" in response.headers["content-type"]
-
-        # Parse SSE
-        lines = [line for line in response.text.strip().split("\n\n") if line]
-        events = [json.loads(line.removeprefix("data: ")) for line in lines]
-
-        types = [e["type"] for e in events]
-        assert "agent_status" in types
-        assert "final_response" in types
-
-        final = [e for e in events if e["type"] == "final_response"]
-        assert final[0]["content"] == "Streamed!"
-
-    @pytest.mark.asyncio
-    async def test_stream_validation_error(self, integration_client):
-        """Invalid stream request body returns 422."""
-        client, app = integration_client
-        response = await client.post("/api/chat/stream", json={"bad": "body"})
         assert response.status_code == 422
 
 

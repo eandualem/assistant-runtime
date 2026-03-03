@@ -17,6 +17,7 @@ from pydantic_ai.messages import (
     TextPart,
     TextPartDelta,
     ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -539,7 +540,6 @@ class TestStreamDebugEvents:
         assert "debug_tool_selection" in types
         assert "debug_agent_config" in types
         assert "debug_history" in types
-        assert "debug_tool_execution" in types
         assert "debug_usage" in types
         assert "debug_completed" in types
 
@@ -1870,3 +1870,250 @@ class TestContinuationHistory:
         call_kwargs = history_mock.prepare_history_with_metadata.call_args
         # Should not have is_continuation=True (either absent or False)
         assert call_kwargs.kwargs.get("is_continuation", False) is False
+
+
+class TestStreamTraceChronologicalOrder:
+    """Verify thinking is flushed per iteration for chronological trace ordering."""
+
+    @pytest.mark.asyncio
+    async def test_thinking_flushed_per_iteration(self):
+        """Two model iterations produce two separate debug_thinking events at correct positions.
+
+        Simulates: ModelRequestNode(thinking) → CallToolsNode → ModelRequestNode(thinking + text).
+        Expected trace order: debug_thinking(iter1), tool_call, tool_result, debug_thinking(iter2).
+        """
+        # Iteration 1: ModelRequestNode with thinking
+        stream_events_1 = [
+            PartStartEvent(index=0, part=ThinkingPart(content="First thought")),
+        ]
+        model_node_1 = MagicMock(spec=ModelRequestNode)
+        model_node_1.request = MagicMock(spec=ModelRequest, parts=[])
+        model_node_1.stream = MagicMock(
+            side_effect=lambda *a, **kw: _events_stream(stream_events_1)
+        )
+
+        # CallToolsNode
+        tc = ToolCallPart(tool_name="get_status", args={"agent": "leo"}, tool_call_id="call_1")
+        call_node = _make_call_tools_node([tc])
+
+        # Tool result node
+        tr = ToolReturnPart(
+            tool_name="get_status",
+            content="idle",
+            tool_call_id="call_1",
+            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        # Iteration 2: ModelRequestNode with thinking + text
+        stream_events_2 = [
+            PartStartEvent(index=0, part=ThinkingPart(content="Second thought")),
+            PartStartEvent(index=1, part=TextPart(content="Final answer")),
+        ]
+        model_node_2 = MagicMock(spec=ModelRequestNode)
+        model_node_2.request = MagicMock(spec=ModelRequest, parts=[tr])
+        model_node_2.stream = MagicMock(
+            side_effect=lambda *a, **kw: _events_stream(stream_events_2)
+        )
+
+        mock_run = _MockAgentRun(
+            nodes=[model_node_1, call_node, model_node_2], output="Final answer"
+        )
+        service = _make_service()
+        await service.start()
+        coordinator = EventCoordinator(1000)
+
+        # Collect all events from _iterate_run with emit_debug=True
+        events = [
+            e
+            async for e in service._iterate_run(
+                mock_run, coordinator, "test-model", emit_debug=True
+            )
+        ]
+
+        # SSE events should include thinking_delta, tool_call, tool_result, text_delta
+        sse_types = [e["type"] for e in events]
+        assert "thinking_delta" in sse_types
+        assert "tool_call" in sse_types
+        assert "tool_result" in sse_types
+        assert "text_delta" in sse_types
+
+        # Debug events (trace) should have two separate debug_thinking events
+        debug_events = coordinator.debug_events
+        debug_thinking = [e for e in debug_events if e["type"] == "debug_thinking"]
+        assert len(debug_thinking) == 2
+        assert debug_thinking[0]["content"] == "First thought"
+        assert debug_thinking[1]["content"] == "Second thought"
+
+        # Verify chronological order in the trace:
+        # debug_thinking(iter1) should come before tool_call
+        # tool_call/tool_result should come before debug_thinking(iter2)
+        debug_types = [e["type"] for e in debug_events]
+        idx_think_1 = debug_types.index("debug_thinking")
+        idx_tool_call = debug_types.index("tool_call")
+        idx_tool_result = debug_types.index("tool_result")
+        # Find second debug_thinking
+        idx_think_2 = len(debug_types) - 1 - debug_types[::-1].index("debug_thinking")
+        assert idx_think_1 < idx_tool_call < idx_tool_result < idx_think_2
+
+    @pytest.mark.asyncio
+    async def test_no_thinking_no_debug_event(self):
+        """When a ModelRequestNode has no thinking, no debug_thinking event is added."""
+        stream_events = [
+            PartStartEvent(index=0, part=TextPart(content="Direct answer")),
+        ]
+        model_node = MagicMock(spec=ModelRequestNode)
+        model_node.request = MagicMock(spec=ModelRequest, parts=[])
+        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
+
+        mock_run = _MockAgentRun(nodes=[model_node], output="Direct answer")
+        service = _make_service()
+        await service.start()
+        coordinator = EventCoordinator(100)
+
+        _ = [
+            e
+            async for e in service._iterate_run(
+                mock_run, coordinator, "test-model", emit_debug=True
+            )
+        ]
+
+        debug_thinking = [e for e in coordinator.debug_events if e["type"] == "debug_thinking"]
+        assert len(debug_thinking) == 0
+
+    @pytest.mark.asyncio
+    async def test_emit_debug_false_skips_flush(self):
+        """When emit_debug=False, flush_thinking is not called (backward compat)."""
+        stream_events = [
+            PartStartEvent(index=0, part=ThinkingPart(content="Some reasoning")),
+            PartStartEvent(index=1, part=TextPart(content="Answer")),
+        ]
+        model_node = MagicMock(spec=ModelRequestNode)
+        model_node.request = MagicMock(spec=ModelRequest, parts=[])
+        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
+
+        mock_run = _MockAgentRun(nodes=[model_node], output="Answer")
+        service = _make_service()
+        await service.start()
+        coordinator = EventCoordinator(100)
+
+        _ = [
+            e
+            async for e in service._iterate_run(
+                mock_run, coordinator, "test-model", emit_debug=False
+            )
+        ]
+
+        # No debug events should be in the trace
+        debug_thinking = [e for e in coordinator.debug_events if e["type"] == "debug_thinking"]
+        assert len(debug_thinking) == 0
+        # With emit_debug=False, flush_thinking() is NOT called, so buffer retains content
+        assert coordinator.accumulated_thinking == "Some reasoning"
+
+    @pytest.mark.asyncio
+    async def test_thinking_deltas_accumulated_across_chunks(self):
+        """Multiple thinking deltas within one iteration are concatenated in the flush."""
+        stream_events = [
+            PartStartEvent(index=0, part=ThinkingPart(content="Start ")),
+            PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta="middle ")),
+            PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta="end")),
+            PartStartEvent(index=1, part=TextPart(content="Answer")),
+        ]
+        model_node = MagicMock(spec=ModelRequestNode)
+        model_node.request = MagicMock(spec=ModelRequest, parts=[])
+        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
+
+        mock_run = _MockAgentRun(nodes=[model_node], output="Answer")
+        service = _make_service()
+        await service.start()
+        coordinator = EventCoordinator(100)
+
+        _ = [
+            e
+            async for e in service._iterate_run(
+                mock_run, coordinator, "test-model", emit_debug=True
+            )
+        ]
+
+        debug_thinking = [e for e in coordinator.debug_events if e["type"] == "debug_thinking"]
+        assert len(debug_thinking) == 1
+        assert debug_thinking[0]["content"] == "Start middle end"
+
+
+# --- Working memory in streaming path tests ---
+
+
+class TestStreamingWorkingMemory:
+    @pytest.mark.asyncio
+    async def test_working_memory_called_after_stream(self):
+        """_update_working_memory is called in the finally block of _stream_new_message."""
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        service._assistant_service._update_working_memory = AsyncMock()
+        await service.start()
+        request = _make_request()
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        service._assistant_service._update_working_memory.assert_called_once()
+        call_args = service._assistant_service._update_working_memory.call_args
+        assert call_args[0][0] == "test-session"  # session_id
+        assert isinstance(call_args[0][1], dict)  # session_context
+        assert isinstance(call_args[0][2], int)  # turn_number
+
+    @pytest.mark.asyncio
+    async def test_working_memory_skipped_when_disabled(self):
+        """_update_working_memory is NOT called when enable_working_memory=False."""
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        config = EffectiveConfig(
+            default_model=None,
+            thinking_budget=None,
+            temperature=None,
+            max_turns=10,
+            enable_working_memory=False,
+            summarization_model=None,
+            working_memory_model=None,
+            default_image_model=None,
+            default_video_model=None,
+            subagent_model=None,
+            subagent_thinking_budget=None,
+        )
+        service = _make_service(
+            agent_context=_make_default_agent_context(agent=mock_agent, effective_config=config)
+        )
+        service._assistant_service._update_working_memory = AsyncMock()
+        await service.start()
+        request = _make_request()
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        service._assistant_service._update_working_memory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_working_memory_failure_does_not_break_stream(self):
+        """_update_working_memory failure is best-effort — stream still completes."""
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        service._assistant_service._update_working_memory = AsyncMock(
+            side_effect=RuntimeError("memory extraction boom")
+        )
+        await service.start()
+        request = _make_request()
+
+        events = []
+        async for event in service.stream_message(request):
+            events.append(event)
+
+        # Stream should still complete normally
+        types = [e["type"] for e in events]
+        assert "agent_status" in types
+        assert "final_response" in types

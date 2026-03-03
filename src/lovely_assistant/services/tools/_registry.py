@@ -31,6 +31,9 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "run_subagent",
         "respond_telegram",
         "look_at_screen",
+        # Skill tools are cross-cutting — inspect skills from any page
+        "list_skills",
+        "read_skill",
         # Agent tools are cross-cutting — check/manage agents from any page
         "list_agents",
         "check_agent_state",
