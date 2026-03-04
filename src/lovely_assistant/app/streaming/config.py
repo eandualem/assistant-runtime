@@ -1,4 +1,4 @@
-"""Configuration for the SSE streaming module."""
+"""Configuration for the streaming module."""
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,7 +34,7 @@ class StreamingConfig(BaseModel):
         default=100,
         ge=20,
         le=2000,
-        description="Max chars per SSE event when chunking large PartStartEvent content.",
+        description="Max chars per event when chunking large PartStartEvent content.",
     )
     part_start_chunk_threshold: int = Field(
         default=200,

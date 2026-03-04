@@ -3,7 +3,7 @@
 Frontend tools are executed by the Lovely Console, not the backend.
 They use Pydantic AI's ExternalToolset + DeferredToolRequests pattern:
 1. LLM decides to call a frontend tool
-2. Backend emits tool_call SSE event with call_id
+2. Backend emits tool_call event with call_id
 3. Frontend executes the tool (navigation, UI event, etc.)
 4. Frontend sends a continuation request with the result
 5. Backend resumes the agent with the tool result

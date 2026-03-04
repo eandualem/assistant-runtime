@@ -115,7 +115,6 @@ class TestOnAssistantMessage:
     @pytest.mark.asyncio
     async def test_starts_task(self):
         ns = AssistantNamespace("/assistant")
-        ns.enter_room = MagicMock()
         ns.emit = AsyncMock()
 
         # Mock streaming service
@@ -141,16 +140,12 @@ class TestOnAssistantMessage:
         # Wait for task to complete
         await ns._active_streams["sess-1"]
 
-        # Room was joined
-        ns.enter_room.assert_called_with("sid-1", "session:sess-1")
-
-        # Events were emitted
+        # Events were emitted via to=sid
         assert ns.emit.call_count >= 3
 
     @pytest.mark.asyncio
     async def test_rejects_duplicate_stream(self):
         ns = AssistantNamespace("/assistant")
-        ns.enter_room = MagicMock()
         ns.emit = AsyncMock()
 
         # Simulate an active stream
@@ -172,7 +167,7 @@ class TestOnAssistantMessage:
             await ns._active_streams["sess-1"]
 
     @pytest.mark.asyncio
-    async def test_validates_request(self):
+    async def test_validates_request_missing_fields(self):
         ns = AssistantNamespace("/assistant")
         ns.emit = AsyncMock()
 
@@ -184,27 +179,24 @@ class TestOnAssistantMessage:
         assert args[0][1]["type"] == "validation"
 
     @pytest.mark.asyncio
-    async def test_auto_joins_room(self):
+    async def test_catches_pydantic_validation_error(self):
+        """Pydantic validation errors (e.g., invalid config) are caught and reported."""
         ns = AssistantNamespace("/assistant")
-        ns.enter_room = MagicMock()
         ns.emit = AsyncMock()
 
-        mock_service = MagicMock()
-
-        async def mock_stream(request):
-            return
-            yield  # noqa: RET504 — make it an async generator
-
-        mock_service.stream_message = mock_stream
-
-        mock_server = MagicMock()
-        mock_server.fastapi_app.state.streaming_service = mock_service
-        ns.server = mock_server
-
-        data = {"session_id": "sess-2", "message": "Hello"}
+        # config with extra="forbid" should reject unknown fields
+        data = {
+            "session_id": "sess-1",
+            "message": "Hello",
+            "config": {"not_a_real_field": "boom"},
+        }
         await ns.on_assistant_message("sid-1", data)
 
-        ns.enter_room.assert_called_with("sid-1", "session:sess-2")
+        ns.emit.assert_called_once()
+        args = ns.emit.call_args
+        assert args[0][0] == "assistant:error"
+        assert args[0][1]["type"] == "validation"
+        assert args[1]["to"] == "sid-1"
 
 
 class TestOnAssistantCancel:
@@ -239,7 +231,7 @@ class TestOnAssistantCancel:
 
 class TestRunStream:
     @pytest.mark.asyncio
-    async def test_emits_events_to_room(self):
+    async def test_emits_events_to_sid(self):
         ns = AssistantNamespace("/assistant")
         ns.emit = AsyncMock()
 
@@ -259,7 +251,7 @@ class TestRunStream:
         request = AssistantRequest(session_id="sess-1", message="Hello")
         await ns._run_stream("sid-1", "sess-1", request)
 
-        # Verify events were emitted to room
+        # Verify events were emitted to sid
         calls = ns.emit.call_args_list
         assert len(calls) == 4
 
@@ -269,9 +261,9 @@ class TestRunStream:
         assert calls[2][0][0] == "assistant:final_response"
         assert calls[3][0][0] == "assistant:status"
 
-        # Check room targeting
+        # Check sid targeting (to=sid, not room=room)
         for call in calls:
-            assert call[1]["room"] == "session:sess-1"
+            assert call[1]["to"] == "sid-1"
 
     @pytest.mark.asyncio
     async def test_maps_debug_events(self):
@@ -322,6 +314,8 @@ class TestRunStream:
         assert calls[0][0][0] == "assistant:status"
         assert calls[1][0][0] == "assistant:error"
         assert calls[1][0][1]["type"] == "cancelled"
+        # Error emitted to sid
+        assert calls[1][1]["to"] == "sid-1"
 
     @pytest.mark.asyncio
     async def test_handles_exception(self):
@@ -347,11 +341,12 @@ class TestRunStream:
         assert calls[0][0][0] == "assistant:error"
         assert calls[0][0][1]["type"] == "internal"
         assert "LLM exploded" in calls[0][0][1]["message"]
+        # Error emitted to sid
+        assert calls[0][1]["to"] == "sid-1"
 
     @pytest.mark.asyncio
     async def test_cleans_up_task_reference(self):
         ns = AssistantNamespace("/assistant")
-        ns.enter_room = MagicMock()
         ns.emit = AsyncMock()
 
         mock_service = MagicMock()

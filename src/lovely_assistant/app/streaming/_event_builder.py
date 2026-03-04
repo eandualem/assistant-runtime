@@ -1,6 +1,6 @@
-"""Pure event factory functions — build SSE event dicts.
+"""Pure event factory functions — build streaming event dicts.
 
-No state, no side effects. Each function returns a dict ready for SSE serialization.
+No state, no side effects. Each function returns a dict ready for serialization.
 """
 
 from __future__ import annotations
