@@ -1,4 +1,4 @@
-"""Streaming module — SSE streaming for assistant responses."""
+"""Streaming module — event streaming for assistant responses."""
 
 from lovely_assistant.app.streaming.config import StreamingConfig
 from lovely_assistant.app.streaming.deps import StreamingServiceDep

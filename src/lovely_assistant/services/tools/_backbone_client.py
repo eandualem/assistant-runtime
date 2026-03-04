@@ -26,7 +26,7 @@ async def backbone_request(
     Returns (-1, error_dict) on permanent network error.
     Env vars are read at call time (not import time) so load_dotenv() in lifespan works.
     """
-    backbone_url = os.environ.get("BACKBONE_URL", "http://127.0.0.1:9877")
+    backbone_url = os.environ.get("BACKBONE_URL", "http://127.0.0.1:7120")
     backbone_api_key = os.environ.get("BACKBONE_API_KEY", "")
 
     headers: dict[str, str] = {"Accept": "application/json"}

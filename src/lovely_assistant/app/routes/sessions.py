@@ -59,8 +59,19 @@ async def get_session(session_id: str, service: AssistantServiceDep) -> dict:
 
 @router.get("/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, service: AssistantServiceDep) -> list[dict]:
-    """Get display-ready message history for a session."""
-    ctx = await _get_session_context(session_id, service.get_session_store())
+    """Get display-ready message history for a session.
+
+    Returns empty list for sessions with no history (including new sessions
+    that haven't sent a message yet). The frontend creates sessions in its
+    own registry before the backend sees any messages, so unknown session IDs
+    are a normal state — not an error.
+    """
+    sessions = service.get_session_store()
+    if sessions is None:
+        return []
+    ctx = await sessions.get_context_if_exists_async(session_id)
+    if ctx is None:
+        return []
     return messages_to_display_format(ctx.get("message_history", []))
 
 

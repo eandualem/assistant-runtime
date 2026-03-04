@@ -23,7 +23,7 @@ install:
 # --- Development ---
 dev:
 	@echo "${CYAN}Starting dev server...${RESET}"
-	uv run uvicorn lovely_assistant.main:app --reload --host 0.0.0.0 --port 8000
+	uv run uvicorn lovely_assistant.main:app --reload --host 0.0.0.0 --port $${PORT:-7100}
 
 # --- Code Quality ---
 lint:

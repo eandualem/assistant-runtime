@@ -264,8 +264,9 @@ class TestGetSessionMessages:
         assert response.json() == []
 
     @pytest.mark.asyncio
-    async def test_get_messages_not_found(self):
-        """Unknown session with DB returning None gives 404."""
+    async def test_get_messages_unknown_session_returns_empty(self):
+        """Unknown session returns empty list (not 404) — frontend creates
+        sessions before the backend sees any messages."""
         sessions = SessionStore()
         sessions._load_session_from_db = AsyncMock(return_value=None)
 
@@ -274,20 +275,20 @@ class TestGetSessionMessages:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/nonexistent/messages")
 
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Session not found"
+        assert response.status_code == 200
+        assert response.json() == []
 
     @pytest.mark.asyncio
     async def test_get_messages_no_session_store(self):
-        """When session store is None (service not started), returns 404."""
+        """When session store is None (service not started), returns empty list."""
         app = _create_test_app()
         app.state.assistant_service.get_session_store.return_value = None
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/sessions/sess-1/messages")
 
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Session not found"
+        assert response.status_code == 200
+        assert response.json() == []
 
 
 class TestGetSessionTraces:

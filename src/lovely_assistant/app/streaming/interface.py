@@ -1,7 +1,7 @@
-"""StreamingService — SSE streaming orchestrator.
+"""StreamingService — streaming orchestrator.
 
 Wraps the same pipeline as AssistantService but uses agent.iter() to stream
-responses as SSE event dicts. The caller (HTTP layer) serializes to SSE format.
+responses as event dicts. The caller (Socket.IO layer) emits events to clients.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 
 
 class StreamingService:
-    """SSE streaming orchestrator. Implements LifecycleAware."""
+    """Streaming orchestrator. Implements LifecycleAware."""
 
     def __init__(
         self,
@@ -119,7 +119,7 @@ class StreamingService:
         return {"healthy": self._started}
 
     async def stream_message(self, request: AssistantRequest) -> AsyncIterator[dict[str, Any]]:
-        """Stream a response as SSE event dicts.
+        """Stream a response as event dicts.
 
         Orchestrates: tools → prompt → agent.iter() → stream events.
 
@@ -127,7 +127,7 @@ class StreamingService:
             request: The assistant request.
 
         Yields:
-            SSE event dicts for the caller to serialize.
+            Event dicts for the caller to emit via Socket.IO.
 
         Raises:
             StreamingError: If the service is not started.
@@ -540,7 +540,7 @@ class StreamingService:
 
             if isinstance(output, DeferredToolRequests):
                 # Frontend tool call — store pending state for continuation.
-                # The tool_call SSE event was already emitted during
+                # The tool_call event was already emitted during
                 # _iterate_run() (via _stream_node or CallToolsNode handler).
                 pending_info: dict[str, Any] | None = None
                 if output.calls:
@@ -705,7 +705,7 @@ class StreamingService:
         *,
         emit_debug: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Iterate over agent run nodes, yielding SSE events."""
+        """Iterate over agent run nodes, yielding streaming events."""
         _pending_image_sanitize = False
         while True:
             node = run.next_node
@@ -815,7 +815,7 @@ class StreamingService:
         where model_response.tool_calls has complete arguments.
 
         Large PartStartEvent payloads (common with Gemini thinking) are chunked
-        into smaller SSE events to avoid buffering delays at the browser.
+        into smaller events to avoid buffering delays at the browser.
         """
         threshold = self._config.part_start_chunk_threshold
         chunk_size = self._config.part_start_chunk_size
@@ -853,7 +853,7 @@ class StreamingService:
         threshold: int,
         chunk_size: int,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield content as one or more SSE events, chunking if above threshold."""
+        """Yield content as one or more events, chunking if above threshold."""
         if len(content) <= threshold:
             yield emit_fn(content)
             return

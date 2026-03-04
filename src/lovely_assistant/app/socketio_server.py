@@ -1,7 +1,7 @@
 """Socket.IO server — real-time transport layer for assistant streaming.
 
-Replaces SSE with bidirectional socket.io communication. The AssistantNamespace
-consumes StreamingService's async generator and emits events to session rooms.
+The AssistantNamespace consumes StreamingService's async generator and emits
+events directly to the requesting client (to=sid).
 """
 
 from __future__ import annotations
@@ -41,7 +41,9 @@ def create_sio() -> socketio.AsyncServer:
 class AssistantNamespace(socketio.AsyncNamespace):
     """Socket.IO namespace for assistant streaming.
 
-    Handles session room management, message streaming, and cancellation.
+    Handles message streaming and cancellation. Events are emitted directly
+    to the requesting client via to=sid (1:1 model, matching the backbone's
+    terminal namespace pattern).
     """
 
     def __init__(self, namespace: str = "/assistant") -> None:
@@ -72,7 +74,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
         logger.info("Client joined session room", sid=sid, session_id=session_id)
 
     async def on_assistant_message(self, sid: str, data: dict[str, Any]) -> None:
-        """Handle incoming chat message — start streaming to session room."""
+        """Handle incoming chat message — start streaming to client."""
         if not isinstance(data, dict) or "session_id" not in data or "message" not in data:
             await self.emit(
                 "assistant:error",
@@ -82,7 +84,6 @@ class AssistantNamespace(socketio.AsyncNamespace):
             return
 
         session_id = data["session_id"]
-        room = f"session:{session_id}"
 
         # Guard: reject if stream already active for this session
         if session_id in self._active_streams:
@@ -93,11 +94,19 @@ class AssistantNamespace(socketio.AsyncNamespace):
             )
             return
 
-        # Auto-join room
-        self.enter_room(sid, room)
-
-        # Build request
-        request = AssistantRequest(**data)
+        # Build request — catch Pydantic validation errors
+        try:
+            request = AssistantRequest(**data)
+        except Exception as e:
+            logger.error(
+                "Request validation failed", sid=sid, session_id=session_id, error=str(e)
+            )
+            await self.emit(
+                "assistant:error",
+                {"type": "validation", "message": f"Invalid request: {e}"},
+                to=sid,
+            )
+            return
 
         # Start streaming task
         task = asyncio.create_task(self._run_stream(sid, session_id, request))
@@ -116,8 +125,9 @@ class AssistantNamespace(socketio.AsyncNamespace):
             logger.info("Stream cancelled by client", sid=sid, session_id=session_id)
 
     async def _run_stream(self, sid: str, session_id: str, request: AssistantRequest) -> None:
-        """Consume StreamingService generator and emit events to the session room."""
-        room = f"session:{session_id}"
+        """Consume StreamingService generator and emit events to the client."""
+        logger.info("[STREAM] _run_stream started", sid=sid, session_id=session_id)
+        event_count = 0
         try:
             async for event in self._streaming_service.stream_message(request):
                 event_type = event.get("type", "")
@@ -128,17 +138,31 @@ class AssistantNamespace(socketio.AsyncNamespace):
                         socket_event = "assistant:debug"
                     else:
                         socket_event = "assistant:unknown"
-                await self.emit(socket_event, event, room=room)
+                await self.emit(socket_event, event, to=sid)
+                event_count += 1
+            logger.info(
+                "[STREAM] _run_stream completed",
+                sid=sid,
+                session_id=session_id,
+                events_emitted=event_count,
+            )
         except asyncio.CancelledError:
+            logger.info("[STREAM] _run_stream cancelled", sid=sid, session_id=session_id)
             await self.emit(
                 "assistant:error",
                 {"type": "cancelled", "message": "Stream cancelled"},
-                room=room,
+                to=sid,
             )
         except Exception as e:
-            logger.error("Stream failed", session_id=session_id, error=str(e))
+            logger.error(
+                "[STREAM] _run_stream failed",
+                sid=sid,
+                session_id=session_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
             await self.emit(
                 "assistant:error",
                 {"type": "internal", "message": f"Stream failed: {e}"},
-                room=room,
+                to=sid,
             )
