@@ -21,6 +21,7 @@ from lovely_assistant.services.tools._schedule_tools import register_schedule_to
 from lovely_assistant.services.tools._screen_tools import register_screen_tools
 from lovely_assistant.services.tools._skill_tools import register_skill_tools
 from lovely_assistant.services.tools._subagent_tools import register_subagent_tools
+from lovely_assistant.services.tools._swarm_tools import register_swarm_tools
 from lovely_assistant.services.tools._telegram_tools import register_telegram_tools
 from lovely_assistant.services.tools._telemetry_tools import register_telemetry_tools
 from lovely_assistant.services.tools._video_tools import register_video_tools
@@ -165,6 +166,9 @@ class ToolService:
 
         # Backbone telemetry and delivery status tools
         register_telemetry_tools(self._registry)
+
+        # Backbone swarm management tools
+        register_swarm_tools(self._registry)
 
         # Telegram messaging tools
         register_telegram_tools(self._registry)
