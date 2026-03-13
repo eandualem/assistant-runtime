@@ -98,9 +98,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
         try:
             request = AssistantRequest(**data)
         except Exception as e:
-            logger.error(
-                "Request validation failed", sid=sid, session_id=session_id, error=str(e)
-            )
+            logger.error("Request validation failed", sid=sid, session_id=session_id, error=str(e))
             await self.emit(
                 "assistant:error",
                 {"type": "validation", "message": f"Invalid request: {e}"},

@@ -16,9 +16,7 @@ async def list_models(
     capability: str | None = Query(
         default=None, description="Filter by capability tag (e.g. text, vision, image-generation)"
     ),
-    provider: str | None = Query(
-        default=None, description="Filter by provider (e.g. anthropic, openai, fal)"
-    ),
+    provider: str | None = Query(default=None, description="Filter by provider name"),
 ) -> dict[str, Any]:
     """Return available models, provider status, and current defaults."""
     models = get_models(capability=capability, provider=provider)

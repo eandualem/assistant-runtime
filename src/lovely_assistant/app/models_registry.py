@@ -47,7 +47,6 @@ _REGISTRY_PROVIDER_ENV_MAP: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
-    "fal": "FAL_KEY",
     "runway": "RUNWAYML_API_SECRET",
     "luma": "LUMAAI_API_KEY",
 }
@@ -57,7 +56,6 @@ _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "openai": "OpenAI",
     "google": "Google",
     "openrouter": "OpenRouter",
-    "fal": "fal.ai",
     "runway": "Runway",
     "luma": "Luma",
 }
@@ -288,31 +286,6 @@ MODEL_CATALOG: list[ModelEntry] = [
         capabilities=["image-generation"],
         description="Speed-optimized Google image generation",
     ),
-    # --- fal.ai image generation ---
-    ModelEntry(
-        id="fal:flux-2-pro",
-        provider="fal",
-        name="FLUX 2 Pro",
-        capability="flagship",
-        capabilities=["image-generation"],
-        description="Professional-grade FLUX image generation",
-    ),
-    ModelEntry(
-        id="fal:flux-2",
-        provider="fal",
-        name="FLUX 2",
-        capability="balanced",
-        capabilities=["image-generation"],
-        description="Standard FLUX image generation",
-    ),
-    ModelEntry(
-        id="fal:flux-schnell",
-        provider="fal",
-        name="FLUX Schnell",
-        capability="fast",
-        capabilities=["image-generation"],
-        description="Ultra-fast FLUX image generation",
-    ),
     # --- Runway video generation ---
     ModelEntry(
         id="runway:gen4.5",
@@ -346,24 +319,6 @@ MODEL_CATALOG: list[ModelEntry] = [
         capability="fast",
         capabilities=["video-generation"],
         description="Fast Luma video generation",
-    ),
-    # --- OpenAI video generation ---
-    ModelEntry(
-        id="openai:sora-2",
-        provider="openai",
-        name="Sora 2",
-        capability="flagship",
-        capabilities=["video-generation"],
-        description="OpenAI's video generation model",
-    ),
-    # --- Google video generation ---
-    ModelEntry(
-        id="google:veo-2.0-generate-exp",
-        provider="google",
-        name="Veo 2.0",
-        capability="balanced",
-        capabilities=["video-generation"],
-        description="Google's experimental video generation model",
     ),
 ]
 

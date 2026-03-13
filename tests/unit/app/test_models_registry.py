@@ -13,6 +13,7 @@ from lovely_assistant.app.models_registry import (
     get_models,
     get_provider_info,
 )
+from lovely_assistant.services.media.interface import _PROVIDER_GENERATORS, _VIDEO_PROVIDERS
 
 
 class TestModelCatalog:
@@ -94,10 +95,21 @@ class TestGetModels:
         assert len(result) > 0
         assert all(m.provider == "anthropic" for m in result)
 
-    def test_filter_by_provider_fal(self):
-        result = get_models(provider="fal")
+    def test_filter_by_provider_openai(self):
+        result = get_models(provider="openai")
         assert len(result) > 0
-        assert all(m.provider == "fal" for m in result)
+        assert all(m.provider == "openai" for m in result)
+
+    def test_media_generation_models_use_supported_providers(self):
+        image_providers = {
+            m.provider for m in MODEL_CATALOG if "image-generation" in m.capabilities
+        }
+        video_providers = {
+            m.provider for m in MODEL_CATALOG if "video-generation" in m.capabilities
+        }
+
+        assert image_providers <= set(_PROVIDER_GENERATORS)
+        assert video_providers <= set(_VIDEO_PROVIDERS)
 
     def test_combined_filter(self):
         result = get_models(capability="text", provider="anthropic")
@@ -120,7 +132,6 @@ class TestGetProviderInfo:
         assert "openai" in info
         assert "google" in info
         assert "openrouter" in info
-        assert "fal" in info
         assert "runway" in info
         assert "luma" in info
 
@@ -141,10 +152,10 @@ class TestGetProviderInfo:
         info = get_provider_info()
         assert info["anthropic"].configured is True
 
-    def test_configured_when_env_set_fal(self, monkeypatch):
-        monkeypatch.setenv("FAL_KEY", "fal-test")
+    def test_configured_when_env_set_openai(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
         info = get_provider_info()
-        assert info["fal"].configured is True
+        assert info["openai"].configured is True
 
     def test_configured_when_env_set_runway(self, monkeypatch):
         monkeypatch.setenv("RUNWAYML_API_SECRET", "runway-test")

@@ -13,7 +13,8 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "python-socketio>=5.11",
-    "pydantic-ai[mcp]>=1.50.0",
+    "python-dotenv>=1.0.0",
+    "pydantic-ai>=1.50.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "httpx>=0.27.0",
@@ -34,7 +35,6 @@ dev = [
     "pytest-asyncio>=1.0.0",
     "pytest-mock>=3.10.0",
     "ruff>=0.14.0",
-    "httpx>=0.27.0",
 ]
 
 [tool.pytest.ini_options]
