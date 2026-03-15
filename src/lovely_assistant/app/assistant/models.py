@@ -105,6 +105,20 @@ class RequestConfigOverride(BaseModel):
     subagent_thinking_budget: int | None = Field(default=None, ge=1, le=100_000)
 
 
+# Top-level keys that may carry screenshot data from the frontend.
+# Includes both camelCase and snake_case variants since Pydantic v2 runs
+# mode="before" validators in reverse definition order (this validator
+# may execute before normalize_camel_case).
+_SCREENSHOT_TOP_LEVEL_KEYS = (
+    "screenshot",
+    "image",
+    "image_data_uri",
+    "imageDataUri",
+    "data_uri",
+    "dataUri",
+)
+
+
 class AssistantRequest(BaseModel):
     """Input for a single assistant interaction."""
 
@@ -148,6 +162,30 @@ class AssistantRequest(BaseModel):
         cfg = data.get("config")
         if isinstance(cfg, dict):
             data = {**data, "config": {_camel_to_snake(k): v for k, v in cfg.items()}}
+
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def fold_screenshot_into_images(cls, data: Any) -> Any:
+        """Capture top-level screenshot fields and fold them into images[].
+
+        If a recognized top-level key holds a data URI string, prepend it
+        to images[] so extract_screenshot_data_uri() can find it.
+        Checks both camelCase and snake_case variants since validator
+        ordering with normalize_camel_case is not guaranteed.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        for key in _SCREENSHOT_TOP_LEVEL_KEYS:
+            value = data.get(key)
+            if isinstance(value, str) and value.startswith("data:image/"):
+                existing = data.get("images") or []
+                if not isinstance(existing, list):
+                    existing = [existing]
+                data = {**data, "images": [value, *existing]}
+                break  # first match wins
 
         return data
 

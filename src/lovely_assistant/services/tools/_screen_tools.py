@@ -8,7 +8,9 @@ no DB dependency).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextvars import ContextVar
+from typing import Any
 
 from loguru import logger
 from pydantic_ai.messages import BinaryContent
@@ -17,6 +19,14 @@ from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
 _current_screenshot: ContextVar[str | None] = ContextVar("_current_screenshot", default=None)
+_SCREENSHOT_KEYS = (
+    "screenshot",
+    "image",
+    "image_data_uri",
+    "imageDataUri",
+    "data_uri",
+    "dataUri",
+)
 
 
 def set_current_screenshot(data_uri: str) -> None:
@@ -29,6 +39,42 @@ def clear_current_screenshot() -> None:
     _current_screenshot.set(None)
 
 
+def _find_screenshot_data_uri(value: Any) -> str | None:
+    """Recursively search common payload shapes for an image data URI."""
+    if isinstance(value, str):
+        return value if value.startswith("data:image/") else None
+    if isinstance(value, dict):
+        for key in _SCREENSHOT_KEYS:
+            if key in value:
+                found = _find_screenshot_data_uri(value[key])
+                if found is not None:
+                    return found
+        for child in value.values():
+            found = _find_screenshot_data_uri(child)
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for item in value:
+            found = _find_screenshot_data_uri(item)
+            if found is not None:
+                return found
+    return None
+
+
+def extract_screenshot_data_uri(
+    *,
+    images: Sequence[str] | None = None,
+    tool_result: Any | None = None,
+) -> str | None:
+    """Resolve the freshest screenshot from request images or continuation payloads."""
+    if images:
+        for image in images:
+            if isinstance(image, str) and image:
+                return image
+    return _find_screenshot_data_uri(tool_result)
+
+
 async def _look_at_screen() -> BinaryContent | dict[str, str]:
     """Inspect the current dashboard screenshot.
 
@@ -38,7 +84,12 @@ async def _look_at_screen() -> BinaryContent | dict[str, str]:
     data_uri = _current_screenshot.get()
     if data_uri is None:
         return {
-            "error": "No screenshot available for this request.",
+            "error": (
+                "No screenshot available for this request. "
+                "The frontend must include the screenshot as a data URI in "
+                "images[], or as a top-level 'screenshot' field in the request. "
+                "After UI navigation, the next message must include a fresh capture."
+            ),
             "error_code": "NO_SCREENSHOT",
         }
     try:

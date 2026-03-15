@@ -346,3 +346,85 @@ class TestBuildUserPrompt:
     def test_images_field_defaults_empty(self):
         req = AssistantRequest(session_id="s1", message="hi")
         assert req.images == []
+
+
+class TestScreenshotFolding:
+    """Tests for fold_screenshot_into_images validator."""
+
+    _DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+
+    def test_screenshot_field_folded_into_images(self):
+        req = AssistantRequest.model_validate(
+            {"session_id": "s1", "message": "hi", "screenshot": self._DATA_URI}
+        )
+        assert len(req.images) == 1
+        assert req.images[0] == self._DATA_URI
+
+    def test_camel_case_image_data_uri_folded(self):
+        """imageDataUri (camelCase) normalizes to image_data_uri, then folds."""
+        req = AssistantRequest.model_validate(
+            {"sessionId": "s1", "message": "hi", "imageDataUri": self._DATA_URI}
+        )
+        assert len(req.images) == 1
+        assert req.images[0] == self._DATA_URI
+
+    def test_image_field_folded(self):
+        req = AssistantRequest.model_validate(
+            {"session_id": "s1", "message": "hi", "image": self._DATA_URI}
+        )
+        assert len(req.images) == 1
+        assert req.images[0] == self._DATA_URI
+
+    def test_data_uri_field_folded(self):
+        req = AssistantRequest.model_validate(
+            {"session_id": "s1", "message": "hi", "data_uri": self._DATA_URI}
+        )
+        assert len(req.images) == 1
+        assert req.images[0] == self._DATA_URI
+
+    def test_non_data_uri_not_folded(self):
+        """A screenshot field that is NOT a data URI should not be folded."""
+        req = AssistantRequest.model_validate(
+            {"session_id": "s1", "message": "hi", "screenshot": "https://example.com/img.png"}
+        )
+        assert req.images == []
+
+    def test_plain_text_not_folded(self):
+        req = AssistantRequest.model_validate(
+            {"session_id": "s1", "message": "hi", "screenshot": "just some text"}
+        )
+        assert req.images == []
+
+    def test_screenshot_prepended_to_existing_images(self):
+        existing_image = "data:image/jpeg;base64,/9j/4AAQ=="
+        req = AssistantRequest.model_validate(
+            {
+                "session_id": "s1",
+                "message": "hi",
+                "images": [existing_image],
+                "screenshot": self._DATA_URI,
+            }
+        )
+        assert len(req.images) == 2
+        assert req.images[0] == self._DATA_URI
+        assert req.images[1] == existing_image
+
+    def test_no_screenshot_fields_images_empty(self):
+        req = AssistantRequest.model_validate(
+            {"session_id": "s1", "message": "hi"}
+        )
+        assert req.images == []
+
+    def test_only_first_matching_key_used(self):
+        """When multiple screenshot keys are present, only the first match inserts."""
+        req = AssistantRequest.model_validate(
+            {
+                "session_id": "s1",
+                "message": "hi",
+                "screenshot": self._DATA_URI,
+                "image": "data:image/png;base64,OTHER==",
+            }
+        )
+        # Only the first key in _SCREENSHOT_TOP_LEVEL_KEYS order is used
+        assert len(req.images) == 1
+        assert req.images[0] == self._DATA_URI

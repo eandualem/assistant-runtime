@@ -12,6 +12,7 @@ from lovely_assistant.services.tools._screen_tools import (
     _current_screenshot,
     _look_at_screen,
     clear_current_screenshot,
+    extract_screenshot_data_uri,
     register_screen_tools,
     set_current_screenshot,
 )
@@ -106,7 +107,8 @@ class TestLookAtScreenNoScreenshot:
 
     async def test_error_message(self):
         result = await _look_at_screen()
-        assert result["error"] == "No screenshot available for this request."
+        assert "No screenshot available" in result["error"]
+        assert "screenshot" in result["error"]
 
     async def test_error_code(self):
         result = await _look_at_screen()
@@ -163,6 +165,33 @@ class TestLookAtScreenInvalidDataUri:
         set_current_screenshot("data:invalid")
         result = await _look_at_screen()
         assert result["error_code"] == "INVALID_SCREENSHOT"
+
+
+class TestExtractScreenshotDataUri:
+    """Continuation payloads may carry screenshots outside top-level request.images."""
+
+    def test_prefers_request_images(self):
+        result = extract_screenshot_data_uri(
+            images=["data:image/png;base64,top-level"],
+            tool_result={"screenshot": "data:image/png;base64,nested"},
+        )
+        assert result == "data:image/png;base64,top-level"
+
+    def test_extracts_direct_screenshot_field(self):
+        result = extract_screenshot_data_uri(
+            tool_result={"screenshot": "data:image/png;base64,from-result"}
+        )
+        assert result == "data:image/png;base64,from-result"
+
+    def test_extracts_nested_image_data_uri_field(self):
+        result = extract_screenshot_data_uri(
+            tool_result={"result": {"imageDataUri": "data:image/png;base64,nested"}}
+        )
+        assert result == "data:image/png;base64,nested"
+
+    def test_returns_none_when_no_image_data_uri_present(self):
+        result = extract_screenshot_data_uri(tool_result={"status": "ok"})
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
