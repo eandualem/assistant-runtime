@@ -106,9 +106,63 @@ async def list_agents() -> dict[str, Any]:
             entry["role"] = info.get("role")
             entry["type"] = info.get("type")
             entry["home"] = info.get("home")
+            entry["runtime"] = info.get("runtime")
         sessions.append(entry)
 
     return {"sessions": sessions, "count": len(sessions), "success": True}
+
+
+# Infrastructure sessions to exclude from get_active_agents.
+_INFRASTRUCTURE_SESSIONS = frozenset(
+    {
+        "gateway",
+        "prefect",
+        "telegram-bot",
+        "backbone-worker",
+        "ngrok",
+    }
+)
+
+
+async def get_active_agents() -> dict[str, Any]:
+    """List active AI agents, excluding infrastructure and offline sessions.
+
+    Uses the backbone registry API which provides runtime, state, and
+    entity metadata. Filters out infrastructure sessions, unknown state,
+    and offline agents.
+    """
+    cache = get_registry_cache()
+    agents = await cache.get_agents()
+    if agents is None:
+        return {"error": "Backbone agent registry unavailable", "success": False}
+
+    active = []
+    for agent in agents:
+        session = agent.get("session", "")
+        # Skip infrastructure
+        if session in _INFRASTRUCTURE_SESSIONS:
+            continue
+        # Skip offline
+        if not agent.get("online"):
+            continue
+        # Skip unknown state (no state file, not a real agent session)
+        state = agent.get("state", "unknown")
+        if state == "unknown" and agent.get("runtime") is None:
+            continue
+
+        active.append(
+            {
+                "session_name": session,
+                "display_name": agent.get("display_name") or session,
+                "role": agent.get("role", ""),
+                "type": agent.get("type", ""),
+                "state": state,
+                "runtime": agent.get("runtime"),
+                "current_issue": agent.get("current_issue"),
+            }
+        )
+
+    return {"agents": active, "count": len(active), "success": True}
 
 
 async def check_agent_state(session_name: str) -> dict[str, Any]:
@@ -296,14 +350,30 @@ def register_agent_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="list_agents",
             description=(
-                "List all running AI agent sessions. Returns session names, "
-                "current state (idle/processing/blocked), entity name, current task, "
-                "and registered working directory (if known)."
+                "List ALL tmux sessions including infrastructure. Returns session names, "
+                "state, entity, runtime, role, type, and home directory. "
+                "Prefer get_active_agents for a clean view of actual AI agents."
             ),
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,
         ),
         list_agents,
+    )
+
+    registry.register_backend_tool(
+        ToolDefinition(
+            name="get_active_agents",
+            description=(
+                "List active AI agents — the primary tool for checking agent status. "
+                "Returns only actual agents (named entities + coding agents) that are "
+                "online, excluding infrastructure sessions (gateway, prefect, ngrok, etc.). "
+                "Each agent includes: session_name, display_name, role, type, state, "
+                "runtime (claude/codex/aider/gemini), and current_issue."
+            ),
+            parameters_schema={"type": "object", "properties": {}},
+            category=ToolCategory.BACKEND,
+        ),
+        get_active_agents,
     )
 
     registry.register_backend_tool(
@@ -421,4 +491,4 @@ def register_agent_tools(registry: ToolRegistry) -> None:
         send_agent_message,
     )
 
-    logger.info("Registered agent management tools", count=5)
+    logger.info("Registered agent management tools", count=6)

@@ -591,6 +591,7 @@ class TestRegisterAgentTools:
 
         names = registry.get_tool_names()
         assert "list_agents" in names
+        assert "get_active_agents" in names
         assert "check_agent_state" in names
         assert "start_agent" in names
         assert "stop_agent" in names
@@ -599,7 +600,7 @@ class TestRegisterAgentTools:
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
         register_agent_tools(registry)
-        assert len(registry._backend_definitions) == 5
+        assert len(registry._backend_definitions) == 6
 
     def test_all_are_backend(self):
         registry = ToolRegistry(ToolConfig())
