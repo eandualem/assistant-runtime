@@ -109,12 +109,15 @@ class TestCoordinatorEventLimit:
         coord.track(make_text_delta_event("3"))
         assert coord.event_count == 3
 
-    def test_protocol_events_count_toward_limit(self):
+    def test_terminal_events_bypass_limit(self):
+        """try_completed() and try_final_response() bypass the event limit."""
         coord = EventCoordinator(max_events=2)
         coord.try_started()
         coord.track(make_text_delta_event("text"))
-        with pytest.raises(EventLimitError):
-            coord.try_completed()
+        # At limit — regular track would raise, but terminal events must not
+        completed = coord.try_completed()
+        assert completed is not None
+        assert completed["status"] == "completed"
 
 
 class TestCoordinatorFullProtocol:

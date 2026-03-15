@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
@@ -30,10 +30,7 @@ from lovely_assistant.app.assistant.models import AgentSetupContext, AssistantRe
 from lovely_assistant.app.settings import EffectiveConfig, RuntimeSettings
 from lovely_assistant.app.streaming._coordinator import EventCoordinator
 from lovely_assistant.app.streaming.config import StreamingConfig
-from lovely_assistant.app.streaming.exceptions import (
-    StreamingError,
-    StreamSetupError,
-)
+from lovely_assistant.app.streaming.exceptions import StreamingError
 from lovely_assistant.app.streaming.interface import StreamingService
 from lovely_assistant.services.history.models import HistoryPreparationResult
 from lovely_assistant.services.tools.models import ToolSet
@@ -377,7 +374,8 @@ class TestStreamWithImages:
 
 class TestStreamSetupErrors:
     @pytest.mark.asyncio
-    async def test_prepare_agent_context_failure_raises_setup_error(self):
+    async def test_prepare_agent_context_failure_emits_lifecycle_envelope(self):
+        """Setup failures emit started → final_response(error) → error → completed."""
         service = _make_service()
         await service.start()
 
@@ -386,21 +384,28 @@ class TestStreamSetupErrors:
         )
         request = _make_request()
 
-        with pytest.raises(StreamSetupError, match="Stream setup failed"):
-            async for _ in service.stream_message(request):
-                pass
+        events = [e async for e in service.stream_message(request)]
+
+        # Must contain lifecycle envelope so frontend exits "thinking"
+        assert any(e.get("status") == "started" for e in events)
+        assert any(e.get("status") == "completed" for e in events)
+        assert any(e.get("type") == "final_response" for e in events)
+        assert any(e.get("type") == "error" for e in events)
 
     @pytest.mark.asyncio
-    async def test_history_failure_raises_setup_error(self):
+    async def test_history_failure_emits_lifecycle_envelope(self):
+        """History setup failure emits full lifecycle envelope."""
         service = _make_service()
         await service.start()
 
         service._history.prepare_history_with_metadata.side_effect = RuntimeError("history fail")
         request = _make_request()
 
-        with pytest.raises(StreamSetupError, match="Stream setup failed"):
-            async for _ in service.stream_message(request):
-                pass
+        events = [e async for e in service.stream_message(request)]
+
+        assert any(e.get("status") == "started" for e in events)
+        assert any(e.get("status") == "completed" for e in events)
+        assert any(e.get("type") == "error" for e in events)
 
 
 class TestStreamExecutionErrors:
@@ -1870,6 +1875,54 @@ class TestContinuationHistory:
         call_kwargs = history_mock.prepare_history_with_metadata.call_args
         # Should not have is_continuation=True (either absent or False)
         assert call_kwargs.kwargs.get("is_continuation", False) is False
+
+
+class TestContinuationScreenshots:
+    """Continuation requests can supply fresh screenshots via tool_result payloads."""
+
+    @pytest.mark.asyncio
+    async def test_continuation_uses_screenshot_from_tool_result_payload(self):
+        mock_run = _MockAgentRun(nodes=[], output="Continued response")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+
+        request = _make_request(
+            message="",
+            tool_call_id="call_navigate_001",
+            tool_result={
+                "status": "ok",
+                "result": {"imageDataUri": "data:image/png;base64,fresh-screen"},
+            },
+        )
+
+        with patch("lovely_assistant.app.streaming.interface.set_current_screenshot") as mock_set:
+            async for _event in service.stream_message(request):
+                pass
+
+        mock_set.assert_called_once_with("data:image/png;base64,fresh-screen")
+
+    @pytest.mark.asyncio
+    async def test_continuation_prefers_explicit_request_images(self):
+        mock_run = _MockAgentRun(nodes=[], output="Continued response")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+
+        request = _make_request(
+            message="",
+            images=["data:image/png;base64,top-level"],
+            tool_call_id="call_navigate_001",
+            tool_result={"screenshot": "data:image/png;base64,from-result"},
+        )
+
+        with patch("lovely_assistant.app.streaming.interface.set_current_screenshot") as mock_set:
+            async for _event in service.stream_message(request):
+                pass
+
+        mock_set.assert_called_once_with("data:image/png;base64,top-level")
 
 
 class TestStreamTraceChronologicalOrder:
