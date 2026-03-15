@@ -7,7 +7,6 @@ responses as event dicts. The caller (Socket.IO layer) emits events to clients.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -234,8 +233,13 @@ class StreamingService:
                     "output_tokens": usage.response_tokens or 0,
                     "total_tokens": usage.total_tokens or 0,
                 }
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "Failed to extract continuation usage stats",
+                    session_id=session_id,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
 
             # Handle output (same DeferredToolRequests check as new message path)
             output = run.result.output
@@ -248,7 +252,15 @@ class StreamingService:
                     session_context["pending_tool_name"] = first.tool_name
                     try:
                         args = first.args_as_dict()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to parse deferred tool arguments in continuation",
+                            session_id=session_id,
+                            tool_name=first.tool_name,
+                            tool_call_id=first.tool_call_id,
+                            error_type=type(e).__name__,
+                            error=str(e),
+                        )
                         args = {}
                     pending_info = {
                         "tool_name": first.tool_name,
@@ -318,8 +330,13 @@ class StreamingService:
                             session_id,
                             sanitize_image_tool_returns(list(run.result.all_messages())),
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        "Backup history save failed in continuation path",
+                        session_id=session_id,
+                        error_type=type(e).__name__,
+                        error=str(e),
+                    )
 
             # Flush any unflushed thinking (error path safety net)
             if emit_debug:
@@ -334,8 +351,13 @@ class StreamingService:
                             "output_tokens": u.response_tokens or 0,
                             "total_tokens": u.total_tokens or 0,
                         }
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        "Failed to extract continuation usage stats for debug trace",
+                        session_id=session_id,
+                        error_type=type(e).__name__,
+                        error=str(e),
+                    )
                 yield coordinator.track_debug(
                     make_debug_final_response_event(
                         coordinator.accumulated_response,
@@ -361,8 +383,15 @@ class StreamingService:
                 screenshot=screenshot,
             )
 
-            with contextlib.suppress(Exception):
+            try:
                 trace_cm.__exit__(None, None, None)
+            except Exception as e:
+                logger.debug(
+                    "Failed to close continuation trace context",
+                    session_id=session_id,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
 
     async def _stream_new_message(self, request: AssistantRequest) -> AsyncIterator[dict[str, Any]]:
         """Stream a fresh user message."""
@@ -532,8 +561,13 @@ class StreamingService:
                     "output_tokens": usage.response_tokens or 0,
                     "total_tokens": usage.total_tokens or 0,
                 }
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "Failed to extract streaming usage stats",
+                    session_id=session_id,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
 
             # Handle output
             output = run.result.output
@@ -549,7 +583,15 @@ class StreamingService:
                     session_context["pending_tool_name"] = first.tool_name
                     try:
                         args = first.args_as_dict()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to parse deferred tool arguments",
+                            session_id=session_id,
+                            tool_name=first.tool_name,
+                            tool_call_id=first.tool_call_id,
+                            error_type=type(e).__name__,
+                            error=str(e),
+                        )
                         args = {}
                     pending_info = {
                         "tool_name": first.tool_name,
@@ -661,8 +703,13 @@ class StreamingService:
                             "output_tokens": u.response_tokens or 0,
                             "total_tokens": u.total_tokens or 0,
                         }
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        "Failed to extract streaming usage stats for debug trace",
+                        session_id=session_id,
+                        error_type=type(e).__name__,
+                        error=str(e),
+                    )
                 yield coordinator.track_debug(
                     make_debug_final_response_event(
                         coordinator.accumulated_response,
@@ -694,8 +741,15 @@ class StreamingService:
                 screenshot=screenshot,
             )
 
-            with contextlib.suppress(Exception):
+            try:
                 trace_cm.__exit__(None, None, None)
+            except Exception as e:
+                logger.debug(
+                    "Failed to close streaming trace context",
+                    session_id=session_id,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
 
     async def _iterate_run(
         self,
@@ -735,7 +789,14 @@ class StreamingService:
                 for tc in all_calls:
                     try:
                         args = tc.args_as_dict()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to parse tool call arguments while streaming",
+                            tool_name=tc.tool_name,
+                            tool_call_id=tc.tool_call_id,
+                            error_type=type(e).__name__,
+                            error=str(e),
+                        )
                         args = {}
                     evt = make_tool_call_event(tc.tool_name, args, tc.tool_call_id)
                     coordinator.track_debug(evt)
@@ -869,8 +930,13 @@ class StreamingService:
             for part in next_node.request.parts:
                 if isinstance(part, ToolReturnPart) and part.tool_call_id == tool_call_id:
                     return str(part.content) if part.content is not None else ""
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(
+                "Failed to extract tool result content",
+                tool_call_id=tool_call_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
         return ""
 
     @staticmethod
@@ -880,8 +946,13 @@ class StreamingService:
             for part in next_node.request.parts:
                 if isinstance(part, ToolReturnPart) and part.tool_call_id == tool_call_id:
                     return part.content
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(
+                "Failed to extract raw tool result content",
+                tool_call_id=tool_call_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
         return None
 
     @staticmethod
