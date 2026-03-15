@@ -43,3 +43,12 @@ class OAuthDeviceCodeError(OAuthError):
 
     def __init__(self, message: str = "Device code flow error", **kwargs) -> None:
         super().__init__(message, **kwargs)
+
+
+class OAuthCodexSyncError(OAuthError):
+    """Failed to sync OAuth state from the local Codex CLI."""
+
+    def __init__(self, message: str = "Codex CLI sync failed", **kwargs) -> None:
+        kwargs.setdefault("severity", "medium")
+        kwargs.setdefault("retry_allowed", False)
+        super().__init__(message, **kwargs)

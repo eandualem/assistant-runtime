@@ -155,6 +155,50 @@ class TestBuildModelSettings:
         assert isinstance(settings, dict)
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS  # not inflated
 
+    def test_openai_gpt5_defaults_without_reasoning(self):
+        settings = build_model_settings(model_id="openai:gpt-5.4")
+        assert isinstance(settings, dict)
+        assert settings["temperature"] == 0.1
+        assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
+        assert settings["openai_previous_response_id"] == "auto"
+        assert settings["openai_send_reasoning_ids"] is False
+        assert "openai_reasoning_effort" not in settings
+        assert "openai_reasoning_summary" not in settings
+
+    @pytest.mark.parametrize(
+        ("thinking_budget", "expected_effort"),
+        [
+            (1_000, "low"),
+            (5_000, "medium"),
+            (20_000, "high"),
+            (40_000, "xhigh"),
+        ],
+    )
+    def test_openai_gpt5_thinking_budget_maps_reasoning_effort(
+        self, thinking_budget, expected_effort
+    ):
+        settings = build_model_settings(
+            model_id="openai:gpt-5.4",
+            thinking_budget=thinking_budget,
+        )
+        assert isinstance(settings, dict)
+        assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
+        assert settings["openai_previous_response_id"] == "auto"
+        assert settings["openai_send_reasoning_ids"] is False
+        assert settings["openai_reasoning_effort"] == expected_effort
+        assert settings["openai_reasoning_summary"] == "detailed"
+
+    def test_openai_gpt5_pro_uses_fixed_high_reasoning_effort(self):
+        settings = build_model_settings(
+            model_id="openai:gpt-5.4-pro",
+            thinking_budget=1_000,
+        )
+        assert isinstance(settings, dict)
+        assert settings["openai_previous_response_id"] == "auto"
+        assert settings["openai_send_reasoning_ids"] is False
+        assert settings["openai_reasoning_effort"] == "high"
+        assert settings["openai_reasoning_summary"] == "detailed"
+
 
 class TestBuildModelSettingsGoogle:
     """Google provider settings — GoogleModelSettings with thinking config."""

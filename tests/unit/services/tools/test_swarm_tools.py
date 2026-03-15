@@ -217,7 +217,9 @@ class TestBroadcastToSwarm:
             {"ok": True, "message_id": 99, "delivered": 2, "failed": 0, "total": 2},
         )
 
-        result = await broadcast_to_swarm(" swarm-1 ", " bell-wf ", " Investigate the failing test ")
+        result = await broadcast_to_swarm(
+            " swarm-1 ", " bell-wf ", " Investigate the failing test "
+        )
 
         assert result["success"] is True
         assert result["ok"] is True
@@ -238,7 +240,11 @@ class TestBroadcastToSwarm:
 class TestCompleteSwarm:
     @patch(f"{MODULE}.backbone_request")
     async def test_success(self, mock_req):
-        completed = {**SAMPLE_SWARM_DETAIL, "phase": "cleaned_up", "completed_at": "2026-03-13T20:00:00Z"}
+        completed = {
+            **SAMPLE_SWARM_DETAIL,
+            "phase": "cleaned_up",
+            "completed_at": "2026-03-13T20:00:00Z",
+        }
         mock_req.return_value = (200, completed)
 
         result = await complete_swarm(" swarm-1 ")

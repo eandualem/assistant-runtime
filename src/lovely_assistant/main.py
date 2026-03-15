@@ -25,6 +25,7 @@ from lovely_assistant.services.llm._cache_control_patch import apply_patch as _a
 from lovely_assistant.services.llm.factory import register_llm
 from lovely_assistant.services.mcp.factory import register_mcp
 from lovely_assistant.services.media.factory import register_media
+from lovely_assistant.services.oauth.factory import register_oauth
 from lovely_assistant.services.tools.factory import register_tools
 from lovely_assistant.services.tracing import initialize_tracing, shutdown_tracing
 
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Register modules in dependency order (infrastructure first, then services, then app)
     await register_database(app.state, lifecycle)
+    await register_oauth(app.state, lifecycle)
     await register_llm(app.state, lifecycle)
     await register_history(app.state, lifecycle)
     await register_media(app.state, lifecycle)

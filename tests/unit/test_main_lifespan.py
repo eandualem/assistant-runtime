@@ -24,6 +24,9 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     async def _register_media(app_state, lifecycle):
         return None
 
+    async def _register_oauth(app_state, lifecycle):
+        return None
+
     async def _register_tools(app_state, lifecycle):
         return None
 
@@ -41,6 +44,7 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     monkeypatch.setattr("lovely_assistant.main.register_llm", _register_llm)
     monkeypatch.setattr("lovely_assistant.main.register_history", _register_history)
     monkeypatch.setattr("lovely_assistant.main.register_media", _register_media)
+    monkeypatch.setattr("lovely_assistant.main.register_oauth", _register_oauth)
     monkeypatch.setattr("lovely_assistant.main.register_tools", _register_tools)
     monkeypatch.setattr("lovely_assistant.main.register_assistant", _register_assistant)
     monkeypatch.setattr("lovely_assistant.main.register_streaming", _register_streaming)

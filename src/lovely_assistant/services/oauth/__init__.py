@@ -2,6 +2,7 @@
 
 from lovely_assistant.services.oauth.deps import OAuthServiceDep, get_oauth_service
 from lovely_assistant.services.oauth.exceptions import (
+    OAuthCodexSyncError,
     OAuthDeviceCodeError,
     OAuthError,
     OAuthNotConfiguredError,
@@ -19,4 +20,5 @@ __all__ = [
     "OAuthRefreshError",
     "OAuthNotConfiguredError",
     "OAuthDeviceCodeError",
+    "OAuthCodexSyncError",
 ]

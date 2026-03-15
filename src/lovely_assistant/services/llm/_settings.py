@@ -24,6 +24,20 @@ _DEFAULT_TEMPERATURE = 0.1
 _THINKING_TEMPERATURE = 1.0
 
 
+def _map_openai_reasoning_effort(*, model_id: str, thinking_budget: int) -> str:
+    """Map Jarvis's numeric thinking budget onto OpenAI reasoning effort tiers."""
+    if model_id.endswith("-pro"):
+        # OpenAI's Pro reasoning models operate at fixed high effort.
+        return "high"
+    if thinking_budget <= 4_000:
+        return "low"
+    if thinking_budget <= 12_000:
+        return "medium"
+    if thinking_budget <= 32_000:
+        return "high"
+    return "xhigh"
+
+
 def validate_model_id(model_id: str) -> str:
     """Validate a model identifier. Raises ProviderConfigError on invalid format.
 
@@ -92,6 +106,7 @@ def build_model_settings(
     is_openrouter = model_id.startswith("openrouter:")
     is_anthropic = "anthropic" in model_id and not is_openrouter
     is_google = model_id.startswith("google-gla:") or model_id.startswith("google-vertex:")
+    is_openai_reasoning = model_id.startswith("openai:gpt-5")
 
     # Compute effective temperature and max_tokens
     base_max_tokens = max_tokens if max_tokens is not None else _RESPONSE_MAX_TOKENS
@@ -176,6 +191,35 @@ def build_model_settings(
             thinking="enabled" if thinking_budget else "disabled",
             thinking_budget=thinking_budget,
             temperature=effective_temperature,
+            max_tokens=base_max_tokens,
+        )
+
+    elif is_openai_reasoning:
+        openai_kwargs: dict[str, Any] = {
+            "temperature": effective_temperature,
+            "max_tokens": base_max_tokens,
+            # Let OpenAI resume from the most recent response state so tool
+            # continuations don't resend the entire prior conversation.
+            "openai_previous_response_id": "auto",
+            # We compact and sanitize stored history, so replaying provider item
+            # IDs can break OpenAI continuation requests.
+            "openai_send_reasoning_ids": False,
+        }
+        if thinking_budget:
+            openai_kwargs["openai_reasoning_effort"] = _map_openai_reasoning_effort(
+                model_id=model_id,
+                thinking_budget=thinking_budget,
+            )
+            openai_kwargs["openai_reasoning_summary"] = "detailed"
+
+        settings = openai_kwargs
+
+        logger.info(
+            "LLM model settings built",
+            provider="openai",
+            reasoning="enabled" if thinking_budget else "disabled",
+            thinking_budget=thinking_budget,
+            reasoning_effort=openai_kwargs.get("openai_reasoning_effort"),
             max_tokens=base_max_tokens,
         )
 

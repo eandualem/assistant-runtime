@@ -7,6 +7,7 @@ events directly to the requesting client (to=sid).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 import socketio
@@ -126,9 +127,12 @@ class AssistantNamespace(socketio.AsyncNamespace):
         """Consume StreamingService generator and emit events to the client."""
         logger.info("[STREAM] _run_stream started", sid=sid, session_id=session_id)
         event_count = 0
+        last_event_type: str | None = None
+        last_socket_event: str | None = None
         try:
             async for event in self._streaming_service.stream_message(request):
                 event_type = event.get("type", "")
+                last_event_type = event_type
                 socket_event = _EVENT_TYPE_MAP.get(event_type)
                 if socket_event is None:
                     # debug_* events → assistant:debug
@@ -136,6 +140,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
                         socket_event = "assistant:debug"
                     else:
                         socket_event = "assistant:unknown"
+                last_socket_event = socket_event
                 await self.emit(socket_event, event, to=sid)
                 event_count += 1
             logger.info(
@@ -152,15 +157,19 @@ class AssistantNamespace(socketio.AsyncNamespace):
                 to=sid,
             )
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "[STREAM] _run_stream failed",
                 sid=sid,
                 session_id=session_id,
-                error=str(e),
+                events_emitted=event_count,
+                last_event_type=last_event_type,
+                last_socket_event=last_socket_event,
                 error_type=type(e).__name__,
+                error=str(e),
             )
-            await self.emit(
-                "assistant:error",
-                {"type": "internal", "message": f"Stream failed: {e}"},
-                to=sid,
-            )
+            with contextlib.suppress(Exception):
+                await self.emit(
+                    "assistant:error",
+                    {"type": "internal", "message": f"Stream failed: {e}"},
+                    to=sid,
+                )

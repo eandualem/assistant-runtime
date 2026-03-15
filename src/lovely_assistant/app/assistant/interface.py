@@ -29,6 +29,7 @@ from lovely_assistant.app.assistant.models import (
 from lovely_assistant.app.settings import RuntimeSettings, resolve_effective_config
 from lovely_assistant.services.tools._screen_tools import (
     clear_current_screenshot,
+    extract_screenshot_data_uri,
     set_current_screenshot,
 )
 from lovely_assistant.services.tracing import create_request_trace, create_span
@@ -219,8 +220,12 @@ class AssistantService:
 
             # 4. Run the agent
             user_prompt = _build_user_prompt(request.message)
-            if request.images:
-                set_current_screenshot(request.images[0])
+            screenshot = extract_screenshot_data_uri(
+                images=request.images,
+                tool_result=request.tool_result,
+            )
+            if screenshot:
+                set_current_screenshot(screenshot)
             try:
                 result = await ctx.agent.run(
                     user_prompt,

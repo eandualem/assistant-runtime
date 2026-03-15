@@ -419,9 +419,7 @@ def register_swarm_tools(registry: ToolRegistry) -> None:
     registry.register_backend_tool(
         ToolDefinition(
             name="update_worker_status",
-            description=(
-                "Update a swarm worker's status and return the refreshed swarm detail."
-            ),
+            description=("Update a swarm worker's status and return the refreshed swarm detail."),
             parameters_schema={
                 "type": "object",
                 "properties": {

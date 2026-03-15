@@ -9,6 +9,7 @@ from lovely_assistant.app.routes.inbox import router as inbox_router
 from lovely_assistant.app.routes.inject import router as inject_router
 from lovely_assistant.app.routes.media import router as media_router
 from lovely_assistant.app.routes.models import router as models_router
+from lovely_assistant.app.routes.oauth import router as oauth_router
 from lovely_assistant.app.routes.sessions import router as sessions_router
 from lovely_assistant.app.routes.settings import router as settings_router
 
@@ -20,6 +21,7 @@ router.include_router(inbox_router)
 router.include_router(inject_router)
 router.include_router(media_router)
 router.include_router(models_router)
+router.include_router(oauth_router)
 router.include_router(sessions_router)
 router.include_router(settings_router)
 

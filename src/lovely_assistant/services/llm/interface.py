@@ -10,11 +10,15 @@ import json
 import os
 from typing import Any
 
+import httpx
 from loguru import logger
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from lovely_assistant.base.resilience import retry_with_backoff
+from lovely_assistant.services.llm._codex_model import OpenAICodexResponsesModel
 from lovely_assistant.services.llm._settings import build_model_settings, validate_model_id
 from lovely_assistant.services.llm.config import _PROVIDER_ENV_VAR_MAP, LLMConfig, ProviderConfig
 from lovely_assistant.services.llm.exceptions import ProviderConfigError, classify_llm_error
@@ -59,6 +63,8 @@ def _collect_retryable_llm_exceptions() -> tuple[type[Exception], ...]:
 
 
 _LLM_RETRYABLE_EXCEPTIONS = _collect_retryable_llm_exceptions()
+_CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex/"
+_CODEX_MODEL_NAMES = frozenset({"gpt-5.4", "gpt-5.4-pro"})
 
 
 class LLMResult(BaseModel):
@@ -74,7 +80,15 @@ class LlmService:
     def __init__(self, config: LLMConfig) -> None:
         self._config = config
         self._providers: list[ProviderConfig] = []
+        self._oauth_service: Any | None = None
+        self._codex_provider: OpenAIProvider | None = None
+        self._codex_provider_identity: tuple[str, str] | None = None
+        self._codex_http_clients: list[httpx.AsyncClient] = []
         self._started = False
+
+    def set_oauth_service(self, oauth_service: Any) -> None:
+        """Attach OAuth service after lifecycle registration."""
+        self._oauth_service = oauth_service
 
     async def start(self) -> None:
         """Load providers from env/JSON, export keys for Pydantic AI auto-detection."""
@@ -115,33 +129,119 @@ class LlmService:
         self._providers = providers
         self._started = True
 
-        if not self._providers:
+        configured_providers = self._configured_provider_names()
+        if not configured_providers:
             logger.warning(
                 "No LLM providers configured. Set ANTHROPIC_API_KEY in .env or environment."
             )
 
         logger.info(
             "LLM service started",
-            providers=[p.provider for p in self._providers],
+            providers=configured_providers,
             primary_model=self._config.primary_model,
         )
 
     async def stop(self) -> None:
         """Shutdown the LLM service."""
+        for client in self._codex_http_clients:
+            await client.aclose()
+        self._codex_http_clients.clear()
+        self._codex_provider = None
+        self._codex_provider_identity = None
         self._started = False
         logger.info("LLM service stopped")
 
     async def health_check(self) -> dict:
         """Report health status."""
+        providers = self._configured_provider_names()
         return {
-            "healthy": self._started and len(self._providers) > 0,
-            "providers": [p.provider for p in self._providers],
+            "healthy": self._started and len(providers) > 0,
+            "providers": providers,
             "primary_model": self._config.primary_model,
         }
 
     def resolve_model(self, model: str | None = None) -> str:
         """Resolve, normalize, and validate a model identifier."""
         return validate_model_id(model or self._config.primary_model)
+
+    def _configured_provider_names(self) -> list[str]:
+        """Return provider names including active Codex-backed OpenAI auth."""
+        providers = {p.provider for p in self._providers}
+        if self._get_codex_session() is not None:
+            providers.add("openai")
+        return sorted(providers)
+
+    def _get_codex_session(self) -> Any | None:
+        """Get the active Codex session from OAuth, if available."""
+        if self._oauth_service is None:
+            return None
+
+        getter = getattr(self._oauth_service, "get_codex_session", None)
+        if getter is None:
+            return None
+
+        return getter()
+
+    def _should_use_codex_provider(self, resolved_model: str) -> bool:
+        """Whether this model should use ChatGPT/Codex subscription auth."""
+        if not resolved_model.startswith("openai:"):
+            return False
+        model_name = resolved_model.split(":", 1)[1]
+        return model_name in _CODEX_MODEL_NAMES and self._get_codex_session() is not None
+
+    def _apply_model_transport_defaults(
+        self,
+        resolved_model: str,
+        settings: dict[str, Any] | Any,
+    ) -> dict[str, Any] | Any:
+        """Apply transport-specific defaults for certain providers."""
+        if not self._should_use_codex_provider(resolved_model):
+            return settings
+
+        codex_settings: dict[str, Any] = {"openai_store": False}
+        if isinstance(settings, dict):
+            for key in (
+                "timeout",
+                "extra_headers",
+                "extra_body",
+                "openai_reasoning_effort",
+                "openai_reasoning_summary",
+                "openai_send_reasoning_ids",
+                "openai_truncation",
+                "openai_user",
+            ):
+                if key in settings:
+                    codex_settings[key] = settings[key]
+        return codex_settings
+
+    def _get_or_create_codex_provider(self, session: Any) -> OpenAIProvider:
+        """Reuse a custom OpenAI provider for the current Codex access token."""
+        identity = (session.access_token, session.account_id)
+        if self._codex_provider is not None and self._codex_provider_identity == identity:
+            return self._codex_provider
+
+        http_client = httpx.AsyncClient(timeout=120.0)
+        self._codex_http_clients.append(http_client)
+        openai_client = AsyncOpenAI(
+            api_key=session.access_token,
+            base_url=_CODEX_BACKEND_BASE_URL,
+            default_headers={"ChatGPT-Account-Id": session.account_id},
+            http_client=http_client,
+        )
+        self._codex_provider = OpenAIProvider(openai_client=openai_client)
+        self._codex_provider_identity = identity
+        return self._codex_provider
+
+    def _resolve_agent_model(self, resolved_model: str) -> str | OpenAICodexResponsesModel:
+        """Resolve the actual Agent model object to use for a model id."""
+        if not self._should_use_codex_provider(resolved_model):
+            return resolved_model
+
+        session = self._get_codex_session()
+        assert session is not None
+        model_name = resolved_model.split(":", 1)[1]
+        provider = self._get_or_create_codex_provider(session)
+        return OpenAICodexResponsesModel(model_name=model_name, provider=provider)
 
     def build_agent(
         self,
@@ -178,9 +278,11 @@ class LlmService:
             thinking_budget=thinking_budget,
             temperature=temperature,
         )
+        settings = self._apply_model_transport_defaults(resolved_model, settings)
+        agent_model = self._resolve_agent_model(resolved_model)
 
         agent_kwargs: dict[str, Any] = {
-            "model": resolved_model,
+            "model": agent_model,
             "deps_type": deps_type,
             "instructions": system_prompt,
             "model_settings": settings,
@@ -249,8 +351,9 @@ class LlmService:
             name="execute_llm_call",
         )
         async def _run_with_retry() -> LLMResult:
+            agent_model = self._resolve_agent_model(resolved_model)
             agent = Agent(
-                model=resolved_model,
+                model=agent_model,
                 instructions=system_prompt,
             )
 
@@ -260,6 +363,7 @@ class LlmService:
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            model_settings = self._apply_model_transport_defaults(resolved_model, model_settings)
 
             result = await agent.run(user_prompt, model_settings=model_settings)
 

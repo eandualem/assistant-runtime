@@ -133,3 +133,20 @@ class ArtifactORM(Base):
         String(32), nullable=False, server_default=text("'system'")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OAuthTokenORM(Base):
+    """OAuth token storage — encrypted tokens for provider subscriptions."""
+
+    __tablename__ = "oauth_tokens"
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_id_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
