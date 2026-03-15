@@ -75,6 +75,37 @@ def extract_screenshot_data_uri(
     return _find_screenshot_data_uri(tool_result)
 
 
+def strip_screenshot_from_tool_result(tool_result: Any) -> Any:
+    """Remove screenshot data URIs from a tool_result dict.
+
+    Frontend actions (navigate, click) may include a post-action screenshot
+    in their response payload. We extract it into the ContextVar (via
+    extract_screenshot_data_uri) but strip it before passing to the LLM
+    so the base64 blob doesn't waste context tokens. The agent can still
+    access the screenshot on-demand via look_at_screen.
+
+    Returns a shallow copy with screenshot keys replaced by a placeholder.
+    Non-dict values pass through unchanged.
+    """
+    if not isinstance(tool_result, dict):
+        return tool_result
+
+    cleaned = {}
+    stripped = False
+    for key, value in tool_result.items():
+        if key in _SCREENSHOT_KEYS and isinstance(value, str) and value.startswith("data:image/"):
+            cleaned[key] = "[screenshot captured — use look_at_screen to inspect]"
+            stripped = True
+        elif isinstance(value, dict):
+            cleaned[key] = strip_screenshot_from_tool_result(value)
+        else:
+            cleaned[key] = value
+
+    if stripped:
+        logger.debug("Stripped screenshot from tool_result for LLM context efficiency")
+    return cleaned
+
+
 async def _look_at_screen() -> BinaryContent | dict[str, str]:
     """Inspect the current dashboard screenshot.
 
@@ -109,10 +140,10 @@ def register_screen_tools(registry: ToolRegistry) -> None:
             name="look_at_screen",
             description=(
                 "Look at the user's current screen. Returns the latest dashboard "
-                "screenshot. Use this when you need to visually inspect what the user "
-                "sees — layout, data displayed, error states, etc. The screenshot is "
-                "captured automatically with each message but only sent to you when "
-                "you call this tool."
+                "screenshot. Use this after navigation or UI actions to visually "
+                "confirm the result — layout, data displayed, error states, etc. "
+                "Frontend actions (navigate, ui_send_event) include a post-action "
+                "screenshot automatically. Call this tool to inspect it."
             ),
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,
