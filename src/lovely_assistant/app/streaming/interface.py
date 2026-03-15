@@ -924,22 +924,6 @@ class StreamingService:
             await asyncio.sleep(0)
 
     @staticmethod
-    def _extract_tool_result(next_node: ModelRequestNode, tool_call_id: str) -> str:
-        """Extract tool result content from the next ModelRequestNode's request parts."""
-        try:
-            for part in next_node.request.parts:
-                if isinstance(part, ToolReturnPart) and part.tool_call_id == tool_call_id:
-                    return str(part.content) if part.content is not None else ""
-        except Exception as e:
-            logger.debug(
-                "Failed to extract tool result content",
-                tool_call_id=tool_call_id,
-                error_type=type(e).__name__,
-                error=str(e),
-            )
-        return ""
-
-    @staticmethod
     def _extract_tool_result_raw(next_node: ModelRequestNode, tool_call_id: str) -> Any:
         """Extract raw tool result content (preserving type) from request parts."""
         try:
