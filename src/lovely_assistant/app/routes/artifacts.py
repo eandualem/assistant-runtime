@@ -42,6 +42,15 @@ class ScratchpadUpdateRequest(BaseModel):
     proposed_by: str = Field(default="dashboard")
 
 
+class ArtifactActionRequest(BaseModel):
+    """Unified action request for the dashboard proxy endpoint."""
+
+    action: str = Field(..., pattern="^(approve|rollback|propose)$")
+    version: int | None = None
+    content: str | None = None
+    proposed_by: str = Field(default="dashboard")
+
+
 def _row_to_response(row: Any) -> dict:
     """Convert an ArtifactORM row to a response dict."""
     return {
@@ -52,6 +61,23 @@ def _row_to_response(row: Any) -> dict:
         "is_active": row.is_active,
         "proposed_by": row.proposed_by,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _build_mutation_response(
+    row: Any,
+    *,
+    message: str,
+    live_version: int | None,
+    effective_on_next_request: bool,
+) -> dict[str, Any]:
+    """Build an explicit mutation response for dashboard artifact actions."""
+    return {
+        **_row_to_response(row),
+        "success": True,
+        "message": message,
+        "live_version": live_version,
+        "effective_on_next_request": effective_on_next_request,
     }
 
 
@@ -126,7 +152,14 @@ async def propose_artifact(name: str, body: ProposeRequest, request: Request) ->
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
             row = await repo.propose(name, body.content, body.proposed_by)
-            return _row_to_response(row)
+            active = await repo.get_active(name)
+            live_version = active.version if active is not None else None
+            return _build_mutation_response(
+                row,
+                message=f"Version {row.version} proposed. Approval required before activation.",
+                live_version=live_version,
+                effective_on_next_request=False,
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -147,7 +180,12 @@ async def approve_artifact(name: str, version: int, request: Request) -> dict:
                 raise HTTPException(
                     status_code=404, detail=f"Version {version} not found for artifact: {name}"
                 )
-            return _row_to_response(row)
+            return _build_mutation_response(
+                row,
+                message=f"Version {version} approved and now active.",
+                live_version=row.version,
+                effective_on_next_request=True,
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -168,12 +206,80 @@ async def rollback_artifact(name: str, version: int, request: Request) -> dict:
                 raise HTTPException(
                     status_code=404, detail=f"Version {version} not found for artifact: {name}"
                 )
-            return _row_to_response(row)
+            return _build_mutation_response(
+                row,
+                message=f"Rolled back {name} to version {version}.",
+                live_version=row.version,
+                effective_on_next_request=True,
+            )
     except HTTPException:
         raise
     except Exception as e:
         logger.error("Failed to rollback artifact", name=name, version=version, error=str(e))
         raise HTTPException(status_code=500, detail="Failed to rollback artifact") from e
+
+
+@router.post("/{name}/actions")
+async def artifact_action(name: str, body: ArtifactActionRequest, request: Request) -> dict:
+    """Unified action endpoint for the dashboard proxy.
+
+    Dispatches approve, rollback, and propose actions for a named artifact.
+    """
+    db = await _get_db(request)
+
+    try:
+        async with db.session_context() as session:
+            repo = ArtifactRepository(session)
+
+            if body.action == "approve":
+                if body.version is None:
+                    raise HTTPException(status_code=422, detail="version is required for approve")
+                row = await repo.approve(name, body.version)
+                if row is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Version {body.version} not found for artifact: {name}",
+                    )
+                return _build_mutation_response(
+                    row,
+                    message=f"Version {body.version} approved and now active.",
+                    live_version=row.version,
+                    effective_on_next_request=True,
+                )
+
+            if body.action == "rollback":
+                if body.version is None:
+                    raise HTTPException(status_code=422, detail="version is required for rollback")
+                row = await repo.rollback(name, body.version)
+                if row is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Version {body.version} not found for artifact: {name}",
+                    )
+                return _build_mutation_response(
+                    row,
+                    message=f"Rolled back {name} to version {body.version}.",
+                    live_version=row.version,
+                    effective_on_next_request=True,
+                )
+
+            # action == "propose"
+            if not body.content:
+                raise HTTPException(status_code=422, detail="content is required for propose")
+            row = await repo.propose(name, body.content, body.proposed_by)
+            active = await repo.get_active(name)
+            live_version = active.version if active is not None else None
+            return _build_mutation_response(
+                row,
+                message=f"Version {row.version} proposed. Approval required before activation.",
+                live_version=live_version,
+                effective_on_next_request=False,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Artifact action failed", name=name, action=body.action, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Artifact action failed: {body.action}") from e
 
 
 @router.patch("/scratchpad")
@@ -185,7 +291,12 @@ async def update_scratchpad(body: ScratchpadUpdateRequest, request: Request) -> 
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
             row = await repo.update_scratchpad(body.content, body.proposed_by)
-            return _row_to_response(row)
+            return _build_mutation_response(
+                row,
+                message=f"Scratchpad updated to version {row.version} and activated immediately.",
+                live_version=row.version,
+                effective_on_next_request=True,
+            )
     except HTTPException:
         raise
     except Exception as e:

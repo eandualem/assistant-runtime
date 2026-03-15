@@ -219,6 +219,7 @@ class TestProposeArtifact:
         with pytest.MonkeyPatch.context() as mp:
             repo = MagicMock()
             repo.propose = AsyncMock(return_value=proposed_row)
+            repo.get_active = AsyncMock(return_value=_make_row(name="persona", version=1, is_active=True))
             _patch_repo(mp, repo_mock=repo)
 
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -234,6 +235,10 @@ class TestProposeArtifact:
         assert data["is_active"] is False
         assert data["content"] == "Updated persona"
         assert data["proposed_by"] == "dashboard"
+        assert data["success"] is True
+        assert data["live_version"] == 1
+        assert data["effective_on_next_request"] is False
+        assert "approval" in data["message"].lower()
 
     @pytest.mark.asyncio
     async def test_propose_artifact_validates_empty_content(self):
@@ -281,6 +286,10 @@ class TestApproveArtifact:
         assert data["name"] == "persona"
         assert data["version"] == 2
         assert data["is_active"] is True
+        assert data["success"] is True
+        assert data["live_version"] == 2
+        assert data["effective_on_next_request"] is True
+        assert "approved" in data["message"].lower()
 
     @pytest.mark.asyncio
     async def test_approve_artifact_not_found(self):
@@ -332,6 +341,10 @@ class TestRollbackArtifact:
         assert data["name"] == "persona"
         assert data["version"] == 1
         assert data["is_active"] is True
+        assert data["success"] is True
+        assert data["live_version"] == 1
+        assert data["effective_on_next_request"] is True
+        assert "rolled back" in data["message"].lower()
 
     @pytest.mark.asyncio
     async def test_rollback_artifact_not_found(self):
@@ -349,6 +362,176 @@ class TestRollbackArtifact:
         assert response.status_code == 404
         assert "99" in response.json()["detail"]
         assert "persona" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# POST /artifacts/{name}/actions
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactActions:
+    @pytest.mark.asyncio
+    async def test_approve_action(self):
+        approved_row = _make_row(
+            row_id=4, name="persona", version=2, is_active=True, content="Updated"
+        )
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        with pytest.MonkeyPatch.context() as mp:
+            repo = MagicMock()
+            repo.approve = AsyncMock(return_value=approved_row)
+            _patch_repo(mp, repo_mock=repo)
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                response = await c.post(
+                    "/artifacts/persona/actions",
+                    json={"action": "approve", "version": 2},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["version"] == 2
+        assert data["is_active"] is True
+        assert data["live_version"] == 2
+        assert data["effective_on_next_request"] is True
+
+    @pytest.mark.asyncio
+    async def test_approve_missing_version(self):
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post(
+                "/artifacts/persona/actions",
+                json={"action": "approve"},
+            )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_approve_not_found(self):
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        with pytest.MonkeyPatch.context() as mp:
+            repo = MagicMock()
+            repo.approve = AsyncMock(return_value=None)
+            _patch_repo(mp, repo_mock=repo)
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                response = await c.post(
+                    "/artifacts/persona/actions",
+                    json={"action": "approve", "version": 99},
+                )
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_rollback_action(self):
+        rolled_back = _make_row(
+            row_id=1, name="persona", version=1, is_active=True, content="Original"
+        )
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        with pytest.MonkeyPatch.context() as mp:
+            repo = MagicMock()
+            repo.rollback = AsyncMock(return_value=rolled_back)
+            _patch_repo(mp, repo_mock=repo)
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                response = await c.post(
+                    "/artifacts/persona/actions",
+                    json={"action": "rollback", "version": 1},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["version"] == 1
+        assert data["live_version"] == 1
+
+    @pytest.mark.asyncio
+    async def test_rollback_missing_version(self):
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post(
+                "/artifacts/persona/actions",
+                json={"action": "rollback"},
+            )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_propose_action(self):
+        proposed_row = _make_row(
+            row_id=5, name="persona", version=3, is_active=False, content="New content"
+        )
+        active_row = _make_row(name="persona", version=2, is_active=True)
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        with pytest.MonkeyPatch.context() as mp:
+            repo = MagicMock()
+            repo.propose = AsyncMock(return_value=proposed_row)
+            repo.get_active = AsyncMock(return_value=active_row)
+            _patch_repo(mp, repo_mock=repo)
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                response = await c.post(
+                    "/artifacts/persona/actions",
+                    json={"action": "propose", "content": "New content"},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["version"] == 3
+        assert data["is_active"] is False
+        assert data["live_version"] == 2
+        assert data["effective_on_next_request"] is False
+
+    @pytest.mark.asyncio
+    async def test_propose_missing_content(self):
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post(
+                "/artifacts/persona/actions",
+                json={"action": "propose"},
+            )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_invalid_action(self):
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post(
+                "/artifacts/persona/actions",
+                json={"action": "delete"},
+            )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_no_db(self):
+        app = _make_app(db_service=None)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post(
+                "/artifacts/persona/actions",
+                json={"action": "approve", "version": 1},
+            )
+
+        assert response.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +569,10 @@ class TestUpdateScratchpad:
         assert data["name"] == "scratchpad"
         assert data["content"] == "Updated scratchpad notes"
         assert data["is_active"] is True
+        assert data["success"] is True
+        assert data["live_version"] == 3
+        assert data["effective_on_next_request"] is True
+        assert "activated immediately" in data["message"].lower()
 
     @pytest.mark.asyncio
     async def test_update_scratchpad_validates_empty_content(self):
