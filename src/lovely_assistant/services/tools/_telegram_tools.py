@@ -8,13 +8,12 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from lovely_assistant.base.resilience import retry_with_backoff
+from lovely_assistant.services.tools._http_client import request_json
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 _DEFAULT_CHAT_ID = "897573812"  # Elias's Telegram chat ID
-_TELEGRAM_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionError, TimeoutError)
 
 
 # ---------------------------------------------------------------------------
@@ -44,36 +43,22 @@ async def respond_telegram(message: str) -> dict[str, Any]:
 
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", _DEFAULT_CHAT_ID)
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
-
-    @retry_with_backoff(
-        max_attempts=3,
-        min_wait=0.5,
-        max_wait=10.0,
-        retry_on=_TELEGRAM_RETRYABLE,
-        name="telegram_send",
+    payload = {"chat_id": chat_id, "text": message.strip()}
+    status, data = await request_json(
+        "POST",
+        url,
+        json_body=payload,
+        timeout=30.0,
+        retry_name="telegram_send",
+        timeout_error="Request timed out sending Telegram message",
+        timeout_error_code="TELEGRAM_TIMEOUT",
+        http_error_code="TELEGRAM_HTTP_ERROR",
+        client_factory=httpx.AsyncClient,
+        request_executor=lambda client: client.post(url, json=payload),
     )
-    async def _send() -> tuple[int, Any]:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                url,
-                json={"chat_id": chat_id, "text": message.strip()},
-            )
-            return (response.status_code, response.json())
 
-    try:
-        status, data = await _send()
-    except httpx.TimeoutException:
-        return {
-            "success": False,
-            "error": "Request timed out sending Telegram message",
-            "error_code": "TELEGRAM_TIMEOUT",
-        }
-    except httpx.HTTPError as exc:
-        return {
-            "success": False,
-            "error": f"HTTP error: {exc}",
-            "error_code": "TELEGRAM_HTTP_ERROR",
-        }
+    if status == -1:
+        return data
 
     if status != 200:
         description = (

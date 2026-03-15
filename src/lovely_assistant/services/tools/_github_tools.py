@@ -8,14 +8,13 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from lovely_assistant.base.resilience import retry_with_backoff
+from lovely_assistant.services.tools._http_client import request_json
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
 GITHUB_REPO_OWNER = "eandualem"
 GITHUB_REPO_NAME = "orchestration"
 GITHUB_API_BASE = "https://api.github.com"
-_GITHUB_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionError, TimeoutError)
 
 
 # ---------------------------------------------------------------------------
@@ -50,47 +49,19 @@ async def _github_request(
         "Authorization": f"Bearer {github_token}",
         "Accept": "application/vnd.github.v3+json",
     }
-
-    url = f"{GITHUB_API_BASE}{path}"
-
-    @retry_with_backoff(
-        max_attempts=3,
-        min_wait=0.5,
-        max_wait=10.0,
-        retry_on=_GITHUB_RETRYABLE,
-        name="github_request",
+    return await request_json(
+        method,
+        f"{GITHUB_API_BASE}{path}",
+        headers=headers,
+        json_body=json_body,
+        params=params,
+        timeout=30.0,
+        retry_name="github_request",
+        timeout_error=f"Request timed out: {method} {path}",
+        timeout_error_code="GITHUB_TIMEOUT",
+        http_error_code="GITHUB_HTTP_ERROR",
+        client_factory=httpx.AsyncClient,
     )
-    async def _request() -> tuple[int, Any]:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.request(
-                method,
-                url,
-                headers=headers,
-                json=json_body,
-                params=params,
-            )
-            return (response.status_code, response.json())
-
-    try:
-        return await _request()
-    except httpx.TimeoutException:
-        return (
-            -1,
-            {
-                "success": False,
-                "error": f"Request timed out: {method} {path}",
-                "error_code": "GITHUB_TIMEOUT",
-            },
-        )
-    except httpx.HTTPError as exc:
-        return (
-            -1,
-            {
-                "success": False,
-                "error": f"HTTP error: {exc}",
-                "error_code": "GITHUB_HTTP_ERROR",
-            },
-        )
 
 
 def _request_error(payload: dict[str, Any]) -> str:

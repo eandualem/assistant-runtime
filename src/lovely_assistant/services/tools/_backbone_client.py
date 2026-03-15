@@ -8,9 +8,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from lovely_assistant.base.resilience import retry_with_backoff
-
-_BACKBONE_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionError, TimeoutError)
+from lovely_assistant.services.tools._http_client import request_json
 
 
 async def backbone_request(
@@ -33,50 +31,32 @@ async def backbone_request(
     if backbone_api_key:
         headers["Authorization"] = f"Bearer {backbone_api_key}"
 
-    url = f"{backbone_url}{path}"
-
-    @retry_with_backoff(
-        max_attempts=3,
-        min_wait=0.5,
-        max_wait=10.0,
-        retry_on=_BACKBONE_RETRYABLE,
-        name="backbone_request",
+    status, data = await request_json(
+        method,
+        f"{backbone_url}{path}",
+        headers=headers,
+        json_body=json_body,
+        params=params,
+        timeout=30.0,
+        retry_name="backbone_request",
+        timeout_error=f"Request timed out: {method} {path}",
+        timeout_error_code="BACKBONE_TIMEOUT",
+        http_error_code="BACKBONE_HTTP_ERROR",
+        client_factory=httpx.AsyncClient,
     )
-    async def _request() -> tuple[int, Any]:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.request(
-                method,
-                url,
-                headers=headers,
-                json=json_body,
-                params=params,
-            )
-            return (response.status_code, response.json())
 
-    try:
-        return await _request()
-    except httpx.TimeoutException:
-        logger.warning("Backbone request timed out after retries", method=method, path=path)
-        return (
-            -1,
-            {
-                "success": False,
-                "error": f"Request timed out: {method} {path}",
-                "error_code": "BACKBONE_TIMEOUT",
-            },
-        )
-    except httpx.HTTPError as exc:
-        logger.warning(
-            "Backbone request failed after retries", method=method, path=path, error=str(exc)
-        )
-        return (
-            -1,
-            {
-                "success": False,
-                "error": f"HTTP error: {exc}",
-                "error_code": "BACKBONE_HTTP_ERROR",
-            },
-        )
+    if status == -1 and isinstance(data, dict):
+        if data.get("error_code") == "BACKBONE_TIMEOUT":
+            logger.warning("Backbone request timed out after retries", method=method, path=path)
+        elif data.get("error_code") == "BACKBONE_HTTP_ERROR":
+            logger.warning(
+                "Backbone request failed after retries",
+                method=method,
+                path=path,
+                error=data.get("error", "unknown"),
+            )
+
+    return status, data
 
 
 def backbone_error(payload: dict[str, Any]) -> str:
