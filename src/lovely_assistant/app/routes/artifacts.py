@@ -282,6 +282,25 @@ async def artifact_action(name: str, body: ArtifactActionRequest, request: Reque
         raise HTTPException(status_code=500, detail=f"Artifact action failed: {body.action}") from e
 
 
+@router.delete("/{name}")
+async def delete_artifact(name: str, request: Request) -> dict:
+    """Delete all versions of an artifact by name."""
+    db = await _get_db(request)
+
+    try:
+        async with db.session_context() as session:
+            repo = ArtifactRepository(session)
+            count = await repo.delete_by_name(name)
+            if count == 0:
+                raise HTTPException(status_code=404, detail=f"Artifact not found: {name}")
+            return {"success": True, "name": name, "deleted_versions": count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to delete artifact", name=name, error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete artifact") from e
+
+
 @router.patch("/scratchpad")
 async def update_scratchpad(body: ScratchpadUpdateRequest, request: Request) -> dict:
     """Direct scratchpad update (auto-approved)."""

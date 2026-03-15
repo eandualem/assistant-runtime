@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from lovely_assistant.services.database.models import (
     ArtifactORM,
     InboxItemORM,
+    OAuthTokenORM,
     SessionORM,
     TraceORM,
     UserSettingsORM,
@@ -290,11 +291,27 @@ class ArtifactRepository:
         return result.scalar_one_or_none()
 
     async def get_all_active(self) -> list[ArtifactORM]:
-        """Get all active artifacts, ordered by name."""
+        """Get all active artifacts, ordered by name.
+
+        Excludes artifacts with ``debug_`` prefix (test probes).
+        """
         result = await self._session.execute(
-            select(ArtifactORM).where(ArtifactORM.is_active.is_(True)).order_by(ArtifactORM.name)
+            select(ArtifactORM)
+            .where(
+                ArtifactORM.is_active.is_(True),
+                ~ArtifactORM.name.startswith("debug_"),
+            )
+            .order_by(ArtifactORM.name)
         )
         return list(result.scalars().all())
+
+    async def delete_by_name(self, name: str) -> int:
+        """Delete all versions of an artifact by name. Returns count deleted."""
+        result = await self._session.execute(
+            delete(ArtifactORM).where(ArtifactORM.name == name)
+        )
+        await self._session.flush()
+        return result.rowcount or 0
 
     async def get_history(self, name: str, limit: int = 20) -> list[ArtifactORM]:
         """Get version history for an artifact, newest first."""
@@ -376,3 +393,60 @@ class ArtifactRepository:
         row.is_active = True
         await self._session.flush()
         return row
+
+
+class OAuthTokenRepository:
+    """CRUD operations for OAuth tokens. Uses flush() — caller owns commit."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, provider: str) -> OAuthTokenORM | None:
+        """Get a token by provider name."""
+        result = await self._session.execute(
+            select(OAuthTokenORM).where(OAuthTokenORM.provider == provider)
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert(
+        self,
+        provider: str,
+        *,
+        encrypted_api_key: str | None = None,
+        encrypted_refresh_token: str | None = None,
+        encrypted_id_token: str | None = None,
+        expires_at: float | None = None,
+        email: str | None = None,
+    ) -> None:
+        """Insert or update an OAuth token for a provider."""
+        values: dict[str, object] = {
+            "provider": provider,
+            "encrypted_api_key": encrypted_api_key,
+            "encrypted_refresh_token": encrypted_refresh_token,
+            "encrypted_id_token": encrypted_id_token,
+            "expires_at": expires_at,
+            "email": email,
+        }
+
+        stmt = pg_insert(OAuthTokenORM).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["provider"],
+            set_={
+                "encrypted_api_key": stmt.excluded.encrypted_api_key,
+                "encrypted_refresh_token": stmt.excluded.encrypted_refresh_token,
+                "encrypted_id_token": stmt.excluded.encrypted_id_token,
+                "expires_at": stmt.excluded.expires_at,
+                "email": stmt.excluded.email,
+                "updated_at": func.now(),
+            },
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
+
+    async def delete(self, provider: str) -> bool:
+        """Delete a token by provider. Returns True if deleted."""
+        result = await self._session.execute(
+            delete(OAuthTokenORM).where(OAuthTokenORM.provider == provider)
+        )
+        await self._session.flush()
+        return (result.rowcount or 0) > 0
