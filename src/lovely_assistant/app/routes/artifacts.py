@@ -4,27 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from lovely_assistant.services.database.interface import DatabaseService
+from lovely_assistant.services.database.deps import DatabaseServiceDep
 from lovely_assistant.services.database.repositories import ArtifactRepository
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
-
-
-# ---------------------------------------------------------------------------
-# Dependency
-# ---------------------------------------------------------------------------
-
-
-async def _get_db(request: Request) -> DatabaseService:
-    """Retrieve DatabaseService from app state."""
-    db: DatabaseService | None = getattr(request.app.state, "database_service", None)
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return db
 
 
 # ---------------------------------------------------------------------------
@@ -61,10 +48,8 @@ def _row_to_response(row: Any) -> dict:
 
 
 @router.get("")
-async def list_artifacts(request: Request) -> list[dict]:
+async def list_artifacts(db: DatabaseServiceDep) -> list[dict]:
     """List all active artifacts."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
@@ -78,10 +63,8 @@ async def list_artifacts(request: Request) -> list[dict]:
 
 
 @router.get("/{name}")
-async def get_artifact(name: str, request: Request) -> dict:
+async def get_artifact(name: str, db: DatabaseServiceDep) -> dict:
     """Get the active version of an artifact by name."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
@@ -99,12 +82,10 @@ async def get_artifact(name: str, request: Request) -> dict:
 @router.get("/{name}/history")
 async def get_artifact_history(
     name: str,
-    request: Request,
+    db: DatabaseServiceDep,
     limit: int = Query(20, ge=1, le=100),
 ) -> list[dict]:
     """Get version history for an artifact."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
@@ -118,10 +99,8 @@ async def get_artifact_history(
 
 
 @router.post("/{name}/propose", status_code=201)
-async def propose_artifact(name: str, body: ProposeRequest, request: Request) -> dict:
+async def propose_artifact(name: str, body: ProposeRequest, db: DatabaseServiceDep) -> dict:
     """Propose a new version of an artifact (inactive until approved)."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
@@ -135,10 +114,8 @@ async def propose_artifact(name: str, body: ProposeRequest, request: Request) ->
 
 
 @router.post("/{name}/approve/{version}")
-async def approve_artifact(name: str, version: int, request: Request) -> dict:
+async def approve_artifact(name: str, version: int, db: DatabaseServiceDep) -> dict:
     """Approve (activate) a specific version of an artifact."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
@@ -156,10 +133,8 @@ async def approve_artifact(name: str, version: int, request: Request) -> dict:
 
 
 @router.post("/{name}/rollback/{version}")
-async def rollback_artifact(name: str, version: int, request: Request) -> dict:
+async def rollback_artifact(name: str, version: int, db: DatabaseServiceDep) -> dict:
     """Rollback to a previous version of an artifact."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
@@ -177,10 +152,8 @@ async def rollback_artifact(name: str, version: int, request: Request) -> dict:
 
 
 @router.patch("/scratchpad")
-async def update_scratchpad(body: ScratchpadUpdateRequest, request: Request) -> dict:
+async def update_scratchpad(body: ScratchpadUpdateRequest, db: DatabaseServiceDep) -> dict:
     """Direct scratchpad update (auto-approved)."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = ArtifactRepository(session)

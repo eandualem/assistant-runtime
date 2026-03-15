@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from lovely_assistant.services.database.deps import DatabaseServiceDep
 from lovely_assistant.services.database.repositories import InboxRepository
 
 router = APIRouter(prefix="/assistant", tags=["assistant-inject"])
@@ -27,21 +28,6 @@ class InjectRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-# ---------------------------------------------------------------------------
-# Dependencies
-# ---------------------------------------------------------------------------
-
-
-async def _get_db(request: Request):
-    """Retrieve DatabaseService from app state."""
-    from lovely_assistant.services.database.interface import DatabaseService
-
-    db: DatabaseService | None = getattr(request.app.state, "database_service", None)
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return db
-
-
 def _get_assistant_service(request: Request):
     """Retrieve AssistantService from app state (may be None during startup)."""
     return getattr(request.app.state, "assistant_service", None)
@@ -53,14 +39,17 @@ def _get_assistant_service(request: Request):
 
 
 @router.post("/inject", status_code=201)
-async def inject_message(body: InjectRequest, request: Request) -> dict[str, Any]:
+async def inject_message(
+    body: InjectRequest,
+    request: Request,
+    db: DatabaseServiceDep,
+) -> dict[str, Any]:
     """Inject a message into a Jarvis session via the inbox.
 
     If session_id is provided and the session exists, tags the inbox item
     with that session and returns status "delivered". Otherwise stores
     the message without session tagging and returns "deferred".
     """
-    db = await _get_db(request)
     service = _get_assistant_service(request)
 
     # Determine whether the target session exists

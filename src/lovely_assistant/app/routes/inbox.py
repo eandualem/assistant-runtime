@@ -4,27 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from lovely_assistant.services.database.interface import DatabaseService
+from lovely_assistant.services.database.deps import DatabaseServiceDep
 from lovely_assistant.services.database.repositories import InboxRepository
 
 router = APIRouter(prefix="/inbox", tags=["inbox"])
-
-
-# ---------------------------------------------------------------------------
-# Dependency
-# ---------------------------------------------------------------------------
-
-
-async def _get_db(request: Request) -> DatabaseService:
-    """Retrieve DatabaseService from app state (independent of assistant module)."""
-    db: DatabaseService | None = getattr(request.app.state, "database_service", None)
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return db
 
 
 # ---------------------------------------------------------------------------
@@ -70,10 +57,8 @@ def _row_to_response(row) -> dict:
 
 
 @router.post("", status_code=201)
-async def create_inbox_item(body: InboxItemCreate, request: Request) -> dict:
+async def create_inbox_item(body: InboxItemCreate, db: DatabaseServiceDep) -> dict:
     """Create a new inbox item from an agent."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = InboxRepository(session)
@@ -95,14 +80,12 @@ async def create_inbox_item(body: InboxItemCreate, request: Request) -> dict:
 
 @router.get("")
 async def list_inbox_items(
-    request: Request,
+    db: DatabaseServiceDep,
     surfaced: bool | None = Query(None),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> list[dict]:
     """List inbox items. Filter by surfaced status if provided."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = InboxRepository(session)
@@ -119,10 +102,8 @@ async def list_inbox_items(
 
 
 @router.patch("/{item_id}/surfaced")
-async def mark_item_surfaced(item_id: str, request: Request) -> dict:
+async def mark_item_surfaced(item_id: str, db: DatabaseServiceDep) -> dict:
     """Mark an inbox item as surfaced."""
-    db = await _get_db(request)
-
     try:
         async with db.session_context() as session:
             repo = InboxRepository(session)
