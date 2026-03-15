@@ -15,6 +15,7 @@ from lovely_assistant.services.tools._screen_tools import (
     extract_screenshot_data_uri,
     register_screen_tools,
     set_current_screenshot,
+    strip_screenshot_from_tool_result,
 )
 from lovely_assistant.services.tools.config import ToolConfig
 
@@ -197,6 +198,54 @@ class TestExtractScreenshotDataUri:
 # ---------------------------------------------------------------------------
 # TestRegisterScreenTools
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# strip_screenshot_from_tool_result
+# ---------------------------------------------------------------------------
+
+
+class TestStripScreenshotFromToolResult:
+    """strip_screenshot_from_tool_result removes data URIs from tool_result."""
+
+    def test_strips_top_level_screenshot_key(self):
+        result = strip_screenshot_from_tool_result({
+            "success": True,
+            "screenshot": VALID_DATA_URI,
+        })
+        assert result["success"] is True
+        assert "look_at_screen" in result["screenshot"]
+        assert "data:image/" not in result["screenshot"]
+
+    def test_strips_nested_screenshot(self):
+        result = strip_screenshot_from_tool_result({
+            "success": True,
+            "data": {"screenshot": VALID_DATA_URI},
+        })
+        assert result["success"] is True
+        assert "look_at_screen" in result["data"]["screenshot"]
+
+    def test_preserves_non_screenshot_keys(self):
+        result = strip_screenshot_from_tool_result({
+            "success": True,
+            "page": "sessions",
+            "message": "Navigated",
+        })
+        assert result == {"success": True, "page": "sessions", "message": "Navigated"}
+
+    def test_non_data_uri_not_stripped(self):
+        result = strip_screenshot_from_tool_result({
+            "screenshot": "just-a-filename.png",
+        })
+        assert result["screenshot"] == "just-a-filename.png"
+
+    def test_non_dict_passthrough(self):
+        assert strip_screenshot_from_tool_result("hello") == "hello"
+        assert strip_screenshot_from_tool_result(42) == 42
+        assert strip_screenshot_from_tool_result(None) is None
+
+    def test_empty_dict(self):
+        assert strip_screenshot_from_tool_result({}) == {}
 
 
 class TestRegisterScreenTools:

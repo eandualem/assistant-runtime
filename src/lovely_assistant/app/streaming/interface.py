@@ -54,7 +54,9 @@ from lovely_assistant.app.streaming.exceptions import (
 from lovely_assistant.services.tools._registry import get_tool_invalidates
 from lovely_assistant.services.tools._screen_tools import (
     clear_current_screenshot,
+    extract_screenshot_data_uri,
     set_current_screenshot,
+    strip_screenshot_from_tool_result,
 )
 from lovely_assistant.services.tracing import create_request_trace, create_span
 
@@ -179,7 +181,20 @@ class StreamingService:
                 )
             prepared_history = history_result.history
 
-            deferred = DeferredToolResults(calls={request.tool_call_id: request.tool_result})
+            # Extract screenshot from tool_result BEFORE passing to LLM.
+            # The screenshot goes into the ContextVar (for look_at_screen);
+            # the tool_result sent to the LLM gets the base64 blob stripped.
+            screenshot = extract_screenshot_data_uri(
+                images=request.images,
+                tool_result=request.tool_result,
+            )
+            if screenshot:
+                set_current_screenshot(screenshot)
+                tool_result_for_llm = strip_screenshot_from_tool_result(request.tool_result)
+            else:
+                tool_result_for_llm = request.tool_result
+
+            deferred = DeferredToolResults(calls={request.tool_call_id: tool_result_for_llm})
 
         except Exception as e:
             raise StreamSetupError(f"Continuation setup failed: {e}") from e
@@ -192,10 +207,6 @@ class StreamingService:
             input_message=request.message or "(continuation)",
         )
         trace_cm.__enter__()
-
-        # Store screenshot for look_at_screen tool (request-scoped ContextVar)
-        if request.images:
-            set_current_screenshot(request.images[0])
 
         # Streaming phase
         started = coordinator.try_started()
@@ -483,8 +494,12 @@ class StreamingService:
             yield started
 
         # Store screenshot for look_at_screen tool (request-scoped ContextVar)
-        if request.images:
-            set_current_screenshot(request.images[0])
+        screenshot = extract_screenshot_data_uri(
+            images=request.images,
+            tool_result=request.tool_result,
+        )
+        if screenshot:
+            set_current_screenshot(screenshot)
 
         user_prompt = _build_user_prompt(request.message)
         _history_saved = False
