@@ -230,14 +230,17 @@ class StreamingService:
         except Exception as e:
             raise StreamSetupError(f"Continuation setup failed: {e}") from e
 
-        # Root trace — manual context manager (generator cannot use `with`)
-        trace_cm = create_request_trace(
-            session_id=session_id,
-            model=resolved_model,
-            is_continuation=True,
-            input_message=request.message or "(continuation)",
-        )
-        trace_cm.__enter__()
+        try:
+            # Root trace — manual context manager (generator cannot use `with`)
+            trace_cm = create_request_trace(
+                session_id=session_id,
+                model=resolved_model,
+                is_continuation=True,
+                input_message=request.message or "(continuation)",
+            )
+            trace_cm.__enter__()
+        except Exception as e:
+            raise StreamSetupError(f"Continuation trace setup failed: {e}") from e
 
         # Streaming phase
         started = coordinator.try_started()
@@ -345,7 +348,7 @@ class StreamingService:
         except StreamingError:
             raise
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "[STREAM] Continuation failed",
                 session_id=session_id,
                 error_type=e.__class__.__name__,
@@ -527,15 +530,18 @@ class StreamingService:
         except Exception as e:
             raise StreamSetupError(f"Stream setup failed: {e}") from e
 
-        # Root trace — manual context manager (generator cannot use `with`)
-        trace_cm = create_request_trace(
-            session_id=session_id,
-            model=resolved_model,
-            is_continuation=False,
-            input_message=request.message,
-            metadata={"has_images": bool(request.images)},
-        )
-        trace_cm.__enter__()
+        try:
+            # Root trace — manual context manager (generator cannot use `with`)
+            trace_cm = create_request_trace(
+                session_id=session_id,
+                model=resolved_model,
+                is_continuation=False,
+                input_message=request.message,
+                metadata={"has_images": bool(request.images)},
+            )
+            trace_cm.__enter__()
+        except Exception as e:
+            raise StreamSetupError(f"Stream trace setup failed: {e}") from e
 
         # Streaming phase
         started = coordinator.try_started()
@@ -678,7 +684,7 @@ class StreamingService:
         except StreamingError:
             raise
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "[STREAM] Streaming request failed",
                 session_id=session_id,
                 model=resolved_model if "resolved_model" in locals() else None,

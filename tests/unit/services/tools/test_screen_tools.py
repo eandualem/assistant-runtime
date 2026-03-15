@@ -209,34 +209,42 @@ class TestStripScreenshotFromToolResult:
     """strip_screenshot_from_tool_result removes data URIs from tool_result."""
 
     def test_strips_top_level_screenshot_key(self):
-        result = strip_screenshot_from_tool_result({
-            "success": True,
-            "screenshot": VALID_DATA_URI,
-        })
+        result = strip_screenshot_from_tool_result(
+            {
+                "success": True,
+                "screenshot": VALID_DATA_URI,
+            }
+        )
         assert result["success"] is True
         assert "look_at_screen" in result["screenshot"]
         assert "data:image/" not in result["screenshot"]
 
     def test_strips_nested_screenshot(self):
-        result = strip_screenshot_from_tool_result({
-            "success": True,
-            "data": {"screenshot": VALID_DATA_URI},
-        })
+        result = strip_screenshot_from_tool_result(
+            {
+                "success": True,
+                "data": {"screenshot": VALID_DATA_URI},
+            }
+        )
         assert result["success"] is True
         assert "look_at_screen" in result["data"]["screenshot"]
 
     def test_preserves_non_screenshot_keys(self):
-        result = strip_screenshot_from_tool_result({
-            "success": True,
-            "page": "sessions",
-            "message": "Navigated",
-        })
+        result = strip_screenshot_from_tool_result(
+            {
+                "success": True,
+                "page": "sessions",
+                "message": "Navigated",
+            }
+        )
         assert result == {"success": True, "page": "sessions", "message": "Navigated"}
 
     def test_non_data_uri_not_stripped(self):
-        result = strip_screenshot_from_tool_result({
-            "screenshot": "just-a-filename.png",
-        })
+        result = strip_screenshot_from_tool_result(
+            {
+                "screenshot": "just-a-filename.png",
+            }
+        )
         assert result["screenshot"] == "just-a-filename.png"
 
     def test_non_dict_passthrough(self):

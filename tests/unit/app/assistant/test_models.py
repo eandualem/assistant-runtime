@@ -410,9 +410,7 @@ class TestScreenshotFolding:
         assert req.images[1] == existing_image
 
     def test_no_screenshot_fields_images_empty(self):
-        req = AssistantRequest.model_validate(
-            {"session_id": "s1", "message": "hi"}
-        )
+        req = AssistantRequest.model_validate({"session_id": "s1", "message": "hi"})
         assert req.images == []
 
     def test_only_first_matching_key_used(self):

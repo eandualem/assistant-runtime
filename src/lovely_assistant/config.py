@@ -8,6 +8,7 @@ from lovely_assistant.services.database.config import DatabaseConfig
 from lovely_assistant.services.history.config import HistoryConfig
 from lovely_assistant.services.llm.config import LLMConfig
 from lovely_assistant.services.media.config import MediaConfig
+from lovely_assistant.services.oauth.config import OAuthConfig
 from lovely_assistant.services.tools.config import ToolConfig
 
 
@@ -23,6 +24,7 @@ class AppSettings(BaseSettings):
     llm: LLMConfig = LLMConfig()
     history: HistoryConfig = HistoryConfig()
     media: MediaConfig = MediaConfig()
+    oauth: OAuthConfig = OAuthConfig()
     tools: ToolConfig = ToolConfig()
     assistant: AssistantConfig = AssistantConfig()
     streaming: StreamingConfig = StreamingConfig()

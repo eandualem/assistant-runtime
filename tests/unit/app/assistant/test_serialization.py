@@ -84,6 +84,21 @@ class TestRoundTrip:
         assert isinstance(restored.parts[0], TextPart)
         assert restored.parts[0].content == "The answer is 4."
 
+    def test_model_response_provider_response_id_preserved(self):
+        original_resp = ModelResponse(
+            parts=[TextPart(content="Using cached reasoning state.")],
+            provider_name="openai",
+            provider_response_id="resp_123",
+        )
+        serialized = serialize_messages([original_resp])
+        deserialized = deserialize_messages(serialized)
+
+        assert len(deserialized) == 1
+        restored = deserialized[0]
+        assert isinstance(restored, ModelResponse)
+        assert restored.provider_name == "openai"
+        assert restored.provider_response_id == "resp_123"
+
 
 # --- _sanitize_tool_return_content ---
 

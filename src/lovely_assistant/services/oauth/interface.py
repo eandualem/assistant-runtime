@@ -1,11 +1,21 @@
-"""OAuth service — manages OpenAI OAuth tokens via Device Code flow."""
+"""OAuth service — manages OpenAI ChatGPT/Codex subscription auth.
+
+Uses the public Codex CLI OAuth client ID (PKCE, no secret required).
+Flows:
+- Device Code → user authorizes → OAuth access/id/refresh tokens
+- Codex CLI sync → import tokens from ~/.codex/auth.json
+"""
 
 from __future__ import annotations
 
 import asyncio
-import os
+import base64
+import binascii
+import contextlib
+import json
 import time
-from enum import Enum
+from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -13,8 +23,9 @@ from cryptography.fernet import Fernet
 from loguru import logger
 from pydantic import BaseModel
 
-from lovely_assistant.services.oauth.config import OAuthConfig
+from lovely_assistant.services.oauth.config import OPENAI_OAUTH_CLIENT_ID, OAuthConfig
 from lovely_assistant.services.oauth.exceptions import (
+    OAuthCodexSyncError,
     OAuthDeviceCodeError,
     OAuthNotConfiguredError,
     OAuthRefreshError,
@@ -22,7 +33,7 @@ from lovely_assistant.services.oauth.exceptions import (
 )
 
 
-class DeviceCodeStatus(str, Enum):
+class DeviceCodeStatus(StrEnum):
     """State of the device code authorization flow."""
 
     IDLE = "idle"
@@ -30,6 +41,14 @@ class DeviceCodeStatus(str, Enum):
     AUTHORIZED = "authorized"
     EXPIRED = "expired"
     ERROR = "error"
+
+
+class AuthSource(StrEnum):
+    """How the current OpenAI auth session was obtained."""
+
+    DEVICE_CODE = "device_code"
+    CODEX_CLI = "codex_cli"
+    DATABASE = "database"
 
 
 class DeviceCodeResponse(BaseModel):
@@ -45,14 +64,36 @@ class AuthStatus(BaseModel):
 
     connected: bool = False
     status: DeviceCodeStatus = DeviceCodeStatus.IDLE
+    source: AuthSource | None = None
     email: str | None = None
     api_key_preview: str | None = None
     expires_at: float | None = None
     error: str | None = None
 
 
+class CodexSession(BaseModel):
+    """Current ChatGPT/Codex auth context used for backend requests."""
+
+    access_token: str
+    account_id: str
+    expires_at: float | None = None
+    email: str | None = None
+    source: AuthSource | None = None
+
+
+class CodexCliAuth(BaseModel):
+    """Relevant OAuth state imported from the local Codex CLI."""
+
+    access_token: str
+    refresh_token: str
+    id_token: str | None = None
+    account_id: str | None = None
+    auth_mode: str | None = None
+    email: str | None = None
+
+
 class OAuthService:
-    """Manages OpenAI OAuth tokens — Device Code flow, encryption, refresh."""
+    """Manages OpenAI OAuth tokens — Device Code, Codex CLI sync, refresh."""
 
     def __init__(self, config: OAuthConfig) -> None:
         self._config = config
@@ -61,11 +102,13 @@ class OAuthService:
         self._poll_task: asyncio.Task | None = None
 
         # In-memory state
-        self._api_key: str | None = None
+        self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._id_token: str | None = None
+        self._account_id: str | None = None
         self._expires_at: float = 0.0
         self._email: str | None = None
+        self._auth_source: AuthSource | None = None
 
         # Device code flow state
         self._device_code_status = DeviceCodeStatus.IDLE
@@ -77,8 +120,8 @@ class OAuthService:
 
     @property
     def configured(self) -> bool:
-        """Whether OAuth is configured (has encryption key and client ID)."""
-        return bool(self._config.encryption_key and self._config.client_id)
+        """Whether OAuth is configured (has encryption key)."""
+        return bool(self._config.encryption_key)
 
     def set_database_service(self, db_service: Any) -> None:
         """Inject database service after lifecycle registration."""
@@ -87,24 +130,29 @@ class OAuthService:
     async def start(self) -> None:
         """Initialize Fernet cipher and load stored token from DB."""
         if not self.configured:
-            logger.info("OAuth not configured — skipping initialization")
+            logger.info("OAuth not configured — set OAUTH__ENCRYPTION_KEY to enable")
             return
 
         self._fernet = Fernet(self._config.encryption_key.encode())
         self._http = httpx.AsyncClient(timeout=30.0)
 
         # Load stored token from DB if available
+        loaded = False
         if self._db_service is not None:
-            await self._load_stored_token()
+            loaded = await self._load_stored_token()
+
+        if not loaded and self._config.codex_auto_sync:
+            try:
+                await self.sync_from_codex_cli()
+            except OAuthCodexSyncError as exc:
+                logger.debug("Codex CLI auth sync unavailable", error=str(exc))
 
     async def stop(self) -> None:
         """Cancel polling task and close HTTP client."""
         if self._poll_task is not None and not self._poll_task.done():
             self._poll_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._poll_task
-            except asyncio.CancelledError:
-                pass
             self._poll_task = None
 
         if self._http is not None:
@@ -116,7 +164,7 @@ class OAuthService:
         if not self.configured:
             return {"status": "disabled", "reason": "not_configured"}
 
-        connected = self._api_key is not None and not self.needs_refresh()
+        connected = self.get_codex_session() is not None
         return {
             "status": "connected" if connected else "disconnected",
             "email": self._email,
@@ -132,9 +180,8 @@ class OAuthService:
 
         response = await self._http.post(
             self._config.device_code_url,
-            data={
-                "client_id": self._config.client_id,
-                "scope": self._config.scopes,
+            json={
+                "client_id": OPENAI_OAUTH_CLIENT_ID,
             },
         )
 
@@ -144,49 +191,77 @@ class OAuthService:
             )
 
         data = response.json()
-        self._pending_device_code = data["device_code"]
+        interval = self._parse_interval_seconds(data.get("interval"))
+        self._pending_device_code = data["device_auth_id"]
         self._device_code_status = DeviceCodeStatus.POLLING
         self._device_code_error = None
 
         # Start background polling
         self._poll_task = asyncio.create_task(
             self._poll_for_token(
-                device_code=data["device_code"],
-                interval=data.get("interval", self._config.device_code_poll_interval),
-                expires_in=data.get("expires_in", self._config.device_code_timeout),
+                device_auth_id=data["device_auth_id"],
+                user_code=data["user_code"],
+                interval=interval,
+                expires_in=self._config.device_code_timeout,
             )
         )
 
         return DeviceCodeResponse(
             user_code=data["user_code"],
-            verification_uri=data["verification_uri"],
-            expires_in=data.get("expires_in", self._config.device_code_timeout),
+            verification_uri=self._config.device_verification_uri,
+            expires_in=self._config.device_code_timeout,
         )
 
     def get_device_code_status(self) -> AuthStatus:
         """Get current authorization flow status."""
-        connected = self._api_key is not None and not self.needs_refresh()
+        connected = self.get_codex_session() is not None
         return AuthStatus(
             connected=connected,
             status=self._device_code_status if not connected else DeviceCodeStatus.AUTHORIZED,
+            source=self._auth_source,
             email=self._email,
-            api_key_preview=f"sk-...{self._api_key[-4:]}" if self._api_key else None,
+            api_key_preview=None,
             expires_at=self._expires_at if self._expires_at > 0 else None,
             error=self._device_code_error,
         )
 
+    def get_codex_session(self) -> CodexSession | None:
+        """Return the current ChatGPT/Codex session if it is usable."""
+        if (
+            self._access_token is None
+            or self._account_id is None
+            or self._is_access_token_expired()
+        ):
+            return None
+        return CodexSession(
+            access_token=self._access_token,
+            account_id=self._account_id,
+            expires_at=self._expires_at if self._expires_at > 0 else None,
+            email=self._email,
+            source=self._auth_source,
+        )
+
     def get_openai_api_key(self) -> str | None:
-        """Get the current OpenAI API key, or None if not connected."""
-        return self._api_key
+        """Legacy API-key accessor.
+
+        ChatGPT/Codex subscription auth does not yield a reusable OpenAI API key.
+        """
+        return None
 
     def needs_refresh(self) -> bool:
-        """Check if the API key expires within the refresh buffer."""
+        """Check if the access token expires within the refresh buffer."""
         if self._expires_at <= 0:
-            return self._api_key is None
+            return self._access_token is None or self._account_id is None
         return time.time() > (self._expires_at - self._config.refresh_buffer_seconds)
 
+    def _is_access_token_expired(self) -> bool:
+        """Check whether the current access token has actually expired."""
+        if self._expires_at <= 0:
+            return self._access_token is None or self._account_id is None
+        return time.time() > self._expires_at
+
     async def refresh(self) -> None:
-        """Refresh the OAuth token chain: refresh_token -> id_token -> API key."""
+        """Refresh the OAuth token chain: refresh_token → new access/id tokens."""
         if not self.configured:
             raise OAuthNotConfiguredError()
         if self._refresh_token is None:
@@ -196,12 +271,12 @@ class OAuthService:
 
         logger.info("Refreshing OpenAI OAuth token")
 
-        # Step 1: Use refresh_token to get new id_token
+        # Step 1: Use refresh_token to get new access/id tokens
         response = await self._http.post(
             self._config.token_url,
-            data={
+            json={
                 "grant_type": "refresh_token",
-                "client_id": self._config.client_id,
+                "client_id": OPENAI_OAUTH_CLIENT_ID,
                 "refresh_token": self._refresh_token,
             },
         )
@@ -210,32 +285,57 @@ class OAuthService:
             raise OAuthRefreshError(f"Token refresh failed: {response.status_code} {response.text}")
 
         token_data = response.json()
-        self._id_token = token_data["id_token"]
+        self._access_token = token_data.get("access_token")
+        self._id_token = token_data.get("id_token")
         if "refresh_token" in token_data:
             self._refresh_token = token_data["refresh_token"]
-
-        # Step 2: Exchange id_token for API key
-        await self._exchange_for_api_key(self._id_token)
-
-        # Step 3: Persist to DB
+        self._sync_token_metadata()
         await self._save_token()
-
-        # Step 4: Export to environment
-        self._export_api_key()
 
         logger.info("OpenAI OAuth token refreshed successfully")
 
+    async def sync_from_codex_cli(self) -> AuthStatus:
+        """Import ChatGPT/Codex OAuth tokens from the local Codex CLI."""
+        if not self.configured:
+            raise OAuthNotConfiguredError()
+        if self._http is None:
+            raise OAuthNotConfiguredError("OAuth service not started")
+
+        tokens = self._read_codex_cli_auth()
+        self._access_token = tokens.access_token
+        self._refresh_token = tokens.refresh_token
+        self._id_token = tokens.id_token
+        self._email = tokens.email
+        self._account_id = tokens.account_id
+        self._sync_token_metadata()
+
+        if self.needs_refresh():
+            await self.refresh()
+        else:
+            await self._save_token()
+
+        self._auth_source = AuthSource.CODEX_CLI
+        self._device_code_status = DeviceCodeStatus.AUTHORIZED
+        self._device_code_error = None
+
+        logger.info(
+            "Synced OpenAI OAuth from Codex CLI",
+            auth_mode=tokens.auth_mode,
+            email=self._email,
+        )
+        return self.get_device_code_status()
+
     async def disconnect(self) -> None:
         """Disconnect — delete tokens from DB and clear env var."""
-        self._api_key = None
+        self._access_token = None
         self._refresh_token = None
         self._id_token = None
+        self._account_id = None
         self._expires_at = 0.0
         self._email = None
+        self._auth_source = None
         self._device_code_status = DeviceCodeStatus.IDLE
-
-        # Clear env var
-        os.environ.pop("OPENAI_API_KEY", None)
+        self._device_code_error = None
 
         # Delete from DB
         if self._db_service is not None:
@@ -251,9 +351,9 @@ class OAuthService:
     # --- Private methods ---
 
     async def _poll_for_token(
-        self, device_code: str, interval: int, expires_in: int
+        self, device_auth_id: str, user_code: str, interval: int, expires_in: int
     ) -> None:
-        """Poll OpenAI token endpoint during device code flow."""
+        """Poll OpenAI device-auth endpoint until authorization completes."""
         deadline = time.time() + expires_in
 
         while time.time() < deadline:
@@ -261,78 +361,75 @@ class OAuthService:
 
             try:
                 response = await self._http.post(
-                    self._config.token_url,
-                    data={
-                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                        "client_id": self._config.client_id,
-                        "device_code": device_code,
+                    self._config.device_auth_token_url,
+                    json={
+                        "device_auth_id": device_auth_id,
+                        "user_code": user_code,
                     },
                 )
 
                 if response.status_code == 200:
-                    token_data = response.json()
-                    self._id_token = token_data.get("id_token")
-                    self._refresh_token = token_data.get("refresh_token")
-
-                    # Extract email from id_token claims if present
-                    self._email = token_data.get("email")
-
-                    # Exchange id_token for API key
-                    await self._exchange_for_api_key(self._id_token)
+                    code_data = response.json()
+                    await self._exchange_authorization_code_for_tokens(
+                        authorization_code=code_data["authorization_code"],
+                        code_verifier=code_data["code_verifier"],
+                    )
                     await self._save_token()
-                    self._export_api_key()
 
+                    self._auth_source = AuthSource.DEVICE_CODE
                     self._device_code_status = DeviceCodeStatus.AUTHORIZED
                     logger.info("OpenAI OAuth authorized", email=self._email)
                     return
 
-                error_data = response.json()
-                error_code = error_data.get("error", "")
-
-                if error_code == "authorization_pending":
+                if response.status_code in {403, 404}:
                     continue
-                elif error_code == "slow_down":
-                    interval = min(interval + 5, 30)
-                    continue
-                elif error_code == "expired_token":
-                    self._device_code_status = DeviceCodeStatus.EXPIRED
-                    self._device_code_error = "Device code expired — please try again"
-                    return
-                else:
-                    self._device_code_status = DeviceCodeStatus.ERROR
-                    self._device_code_error = f"Authorization failed: {error_code}"
-                    return
+                self._device_code_status = DeviceCodeStatus.ERROR
+                self._device_code_error = (
+                    f"Authorization failed: {response.status_code} {response.text}"
+                )
+                return
 
-            except (httpx.HTTPError, Exception) as exc:
+            except Exception as exc:
+                self._device_code_status = DeviceCodeStatus.ERROR
+                self._device_code_error = str(exc)
                 logger.warning("Device code poll error", error=str(exc))
-                continue
+                return
 
         self._device_code_status = DeviceCodeStatus.EXPIRED
         self._device_code_error = "Device code flow timed out"
 
-    async def _exchange_for_api_key(self, id_token: str) -> None:
-        """Exchange id_token for an OpenAI API key."""
+    async def _exchange_authorization_code_for_tokens(
+        self,
+        *,
+        authorization_code: str,
+        code_verifier: str,
+    ) -> None:
+        """Exchange a device-auth authorization code for OAuth tokens."""
+        if self._http is None:
+            raise OAuthNotConfiguredError("OAuth service not started")
+
         response = await self._http.post(
-            self._config.api_key_exchange_url,
-            headers={"Authorization": f"Bearer {id_token}"},
-            json={"name": "lovely-assistant-oauth"},
+            self._config.token_url,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "authorization_code",
+                "code": authorization_code,
+                "redirect_uri": self._config.device_callback_url,
+                "client_id": OPENAI_OAUTH_CLIENT_ID,
+                "code_verifier": code_verifier,
+            },
         )
 
         if response.status_code != 200:
             raise OAuthRefreshError(
-                f"API key exchange failed: {response.status_code} {response.text}"
+                f"Authorization code exchange failed: {response.status_code} {response.text}"
             )
 
-        data = response.json()
-        self._api_key = data["key"]
-        # API keys from exchange typically have their own expiry
-        self._expires_at = time.time() + data.get("expires_in", 7 * 24 * 3600)
-
-    def _export_api_key(self) -> None:
-        """Set the API key in os.environ for Pydantic AI auto-detection."""
-        if self._api_key:
-            os.environ["OPENAI_API_KEY"] = self._api_key
-            logger.debug("OPENAI_API_KEY exported to environment")
+        token_data = response.json()
+        self._access_token = token_data.get("access_token")
+        self._id_token = token_data.get("id_token")
+        self._refresh_token = token_data.get("refresh_token")
+        self._sync_token_metadata()
 
     def _encrypt(self, plaintext: str) -> str:
         """Encrypt a string with Fernet."""
@@ -346,8 +443,8 @@ class OAuthService:
             raise OAuthNotConfiguredError("Fernet cipher not initialized")
         return self._fernet.decrypt(ciphertext.encode()).decode()
 
-    async def _load_stored_token(self) -> None:
-        """Load stored OAuth token from database and export to env."""
+    async def _load_stored_token(self) -> bool:
+        """Load stored OAuth token from database."""
         try:
             async with self._db_service.session_context() as session:
                 from lovely_assistant.services.database.repositories import OAuthTokenRepository
@@ -357,27 +454,34 @@ class OAuthService:
 
                 if token is None:
                     logger.debug("No stored OAuth token found")
-                    return
+                    return False
 
+                # Reuse the existing column for ChatGPT/Codex access tokens.
                 if token.encrypted_api_key:
-                    self._api_key = self._decrypt(token.encrypted_api_key)
+                    self._access_token = self._decrypt(token.encrypted_api_key)
                 if token.encrypted_refresh_token:
                     self._refresh_token = self._decrypt(token.encrypted_refresh_token)
                 if token.encrypted_id_token:
                     self._id_token = self._decrypt(token.encrypted_id_token)
                 self._expires_at = token.expires_at or 0.0
                 self._email = token.email
+                self._sync_token_metadata()
 
-                if self._api_key and not self.needs_refresh():
-                    self._export_api_key()
+                if self._access_token and self._account_id and not self.needs_refresh():
+                    self._auth_source = AuthSource.DATABASE
                     self._device_code_status = DeviceCodeStatus.AUTHORIZED
                     logger.info("Loaded stored OpenAI OAuth token", email=self._email)
-                elif self._api_key and self._refresh_token:
+                    return True
+                if self._refresh_token:
                     logger.info("Stored OAuth token needs refresh")
                     await self.refresh()
+                    self._auth_source = AuthSource.DATABASE
+                    self._device_code_status = DeviceCodeStatus.AUTHORIZED
+                    return True
 
         except Exception as exc:
             logger.warning("Failed to load stored OAuth token", error=str(exc))
+        return False
 
     async def _save_token(self) -> None:
         """Save current token state to database."""
@@ -390,10 +494,134 @@ class OAuthService:
             repo = OAuthTokenRepository(session)
             await repo.upsert(
                 provider="openai",
-                encrypted_api_key=self._encrypt(self._api_key) if self._api_key else None,
-                encrypted_refresh_token=self._encrypt(self._refresh_token) if self._refresh_token else None,
+                encrypted_api_key=self._encrypt(self._access_token) if self._access_token else None,
+                encrypted_refresh_token=self._encrypt(self._refresh_token)
+                if self._refresh_token
+                else None,
                 encrypted_id_token=self._encrypt(self._id_token) if self._id_token else None,
                 expires_at=self._expires_at,
                 email=self._email,
             )
             await session.commit()
+
+    def _read_codex_cli_auth(self) -> CodexCliAuth:
+        """Read ChatGPT/Codex OAuth state from the local Codex CLI auth file."""
+        auth_path = Path(self._config.codex_auth_file).expanduser()
+        if not auth_path.exists():
+            raise OAuthCodexSyncError(f"Codex auth file not found: {auth_path}")
+
+        try:
+            data = json.loads(auth_path.read_text())
+        except OSError as exc:
+            raise OAuthCodexSyncError(f"Failed to read Codex auth file: {auth_path}") from exc
+        except json.JSONDecodeError as exc:
+            raise OAuthCodexSyncError(f"Invalid JSON in Codex auth file: {auth_path}") from exc
+
+        auth_mode = data.get("auth_mode")
+        if auth_mode == "apikey":
+            raise OAuthCodexSyncError(
+                "Codex CLI is using API key mode, not ChatGPT OAuth. Run `codex login` first."
+            )
+
+        tokens = data.get("tokens")
+        if not isinstance(tokens, dict):
+            raise OAuthCodexSyncError(f"Codex auth file is missing OAuth tokens: {auth_path}")
+
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        id_token = tokens.get("id_token")
+        account_id = tokens.get("account_id")
+
+        if not isinstance(access_token, str) or not access_token:
+            raise OAuthCodexSyncError(f"Codex auth file is missing access_token: {auth_path}")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise OAuthCodexSyncError(f"Codex auth file is missing refresh_token: {auth_path}")
+        if id_token is not None and not isinstance(id_token, str):
+            id_token = None
+        if account_id is not None and not isinstance(account_id, str):
+            account_id = None
+
+        return CodexCliAuth(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            id_token=id_token,
+            account_id=account_id,
+            auth_mode=auth_mode if isinstance(auth_mode, str) else None,
+            email=self._extract_email_from_id_token(id_token),
+        )
+
+    def _parse_interval_seconds(self, value: object) -> int:
+        """Normalize device-auth polling intervals, which may arrive as strings."""
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            with contextlib.suppress(ValueError):
+                return int(value.strip())
+        return self._config.device_code_poll_interval
+
+    def _sync_token_metadata(self) -> None:
+        """Refresh derived auth metadata from the current token set."""
+        self._email = self._extract_email_from_id_token(self._id_token) or self._email
+        self._account_id = self._extract_account_id(self._id_token, self._access_token)
+        expires_at = self._extract_token_expiry(self._access_token)
+        if expires_at is not None:
+            self._expires_at = expires_at
+        elif self._access_token and self._expires_at <= 0:
+            self._expires_at = time.time() + max(self._config.refresh_buffer_seconds + 300, 3600)
+
+    def _decode_jwt_claims(self, token: str | None) -> dict[str, Any] | None:
+        """Decode JWT claims without verification for local token metadata access."""
+        if not token or token.count(".") < 2:
+            return None
+
+        payload = token.split(".")[1]
+        padding = "=" * (-len(payload) % 4)
+        try:
+            raw = base64.urlsafe_b64decode(payload + padding)
+            claims = json.loads(raw)
+        except (ValueError, TypeError, json.JSONDecodeError, binascii.Error):
+            return None
+
+        return claims if isinstance(claims, dict) else None
+
+    def _extract_email_from_id_token(self, id_token: str | None) -> str | None:
+        """Best-effort decode of email claim from the OIDC id_token payload."""
+        claims = self._decode_jwt_claims(id_token)
+        if claims is None:
+            return None
+
+        email = claims.get("email")
+        if isinstance(email, str) and email:
+            return email
+
+        profile = claims.get("https://api.openai.com/profile")
+        if isinstance(profile, dict):
+            email = profile.get("email")
+            if isinstance(email, str) and email:
+                return email
+
+        return None
+
+    def _extract_account_id(self, id_token: str | None, access_token: str | None) -> str | None:
+        """Extract the ChatGPT workspace/account id from token claims."""
+        for token in (id_token, access_token):
+            claims = self._decode_jwt_claims(token)
+            if claims is None:
+                continue
+            auth_claim = claims.get("https://api.openai.com/auth")
+            if isinstance(auth_claim, dict):
+                account_id = auth_claim.get("chatgpt_account_id")
+                if isinstance(account_id, str) and account_id:
+                    return account_id
+        return self._account_id
+
+    def _extract_token_expiry(self, token: str | None) -> float | None:
+        """Extract expiry from a JWT token, if present."""
+        claims = self._decode_jwt_claims(token)
+        if claims is None:
+            return None
+
+        exp = claims.get("exp")
+        if isinstance(exp, int | float):
+            return float(exp)
+        return None

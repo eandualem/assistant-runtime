@@ -1,9 +1,11 @@
 """Tests for LlmService lifecycle, build_agent, and execute_llm_call."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lovely_assistant.services.llm._codex_model import OpenAICodexResponsesModel
 from lovely_assistant.services.llm.config import LLMConfig
 from lovely_assistant.services.llm.exceptions import LLMCallError, ProviderConfigError
 from lovely_assistant.services.llm.interface import LLMResult, LlmService
@@ -83,6 +85,22 @@ class TestLlmServiceLifecycle:
         assert "anthropic" in health["providers"]
         assert health["primary_model"] == "anthropic:claude-haiku-4-5"
 
+    async def test_health_check_counts_codex_oauth_as_openai_provider(self, service, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        service.set_oauth_service(
+            SimpleNamespace(
+                get_codex_session=lambda: SimpleNamespace(
+                    access_token="access-token",
+                    account_id="acct_123",
+                )
+            )
+        )
+        await service.start()
+        health = await service.health_check()
+        assert health["healthy"] is True
+        assert "openai" in health["providers"]
+
     async def test_json_providers_dont_overwrite_env(self, monkeypatch):
         """When ANTHROPIC_API_KEY is already set, export doesn't overwrite it."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "original-key")
@@ -116,6 +134,52 @@ class TestBuildAgent:
         from pydantic_ai import Agent
 
         assert isinstance(agent, Agent)
+
+    def test_build_agent_uses_codex_model_for_openai_when_oauth_connected(self, service):
+        service.set_oauth_service(
+            SimpleNamespace(
+                get_codex_session=lambda: SimpleNamespace(
+                    access_token="access-token",
+                    account_id="acct_123",
+                )
+            )
+        )
+
+        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+            mock_agent_cls.return_value = MagicMock()
+            service.build_agent(model="openai:gpt-5.4", system_prompt="Test")
+
+        model_arg = mock_agent_cls.call_args.kwargs["model"]
+        settings_arg = mock_agent_cls.call_args.kwargs["model_settings"]
+        assert isinstance(model_arg, OpenAICodexResponsesModel)
+        assert settings_arg["openai_store"] is False
+        assert settings_arg["openai_send_reasoning_ids"] is False
+        assert "openai_previous_response_id" not in settings_arg
+
+    def test_build_agent_preserves_openai_reasoning_settings_for_codex(self, service):
+        service.set_oauth_service(
+            SimpleNamespace(
+                get_codex_session=lambda: SimpleNamespace(
+                    access_token="access-token",
+                    account_id="acct_123",
+                )
+            )
+        )
+
+        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+            mock_agent_cls.return_value = MagicMock()
+            service.build_agent(
+                model="openai:gpt-5.4",
+                system_prompt="Test",
+                thinking_budget=5_000,
+            )
+
+        settings_arg = mock_agent_cls.call_args.kwargs["model_settings"]
+        assert settings_arg["openai_store"] is False
+        assert settings_arg["openai_send_reasoning_ids"] is False
+        assert "openai_previous_response_id" not in settings_arg
+        assert settings_arg["openai_reasoning_effort"] == "medium"
+        assert settings_arg["openai_reasoning_summary"] == "detailed"
 
     def test_build_agent_with_invalid_model_raises(self, service):
         with pytest.raises(ProviderConfigError, match="Invalid model ID"):
@@ -224,6 +288,63 @@ class TestExecuteLlmCall:
             mock_agent_instance.run.assert_called_once()
             call_kwargs = mock_agent_instance.run.call_args
             assert "model_settings" in call_kwargs.kwargs
+
+    async def test_execute_uses_codex_model_for_supported_openai_models(self, service):
+        mock_result = MagicMock()
+        mock_result.output = "OK"
+        service.set_oauth_service(
+            SimpleNamespace(
+                get_codex_session=lambda: SimpleNamespace(
+                    access_token="access-token",
+                    account_id="acct_123",
+                )
+            )
+        )
+
+        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run = AsyncMock(return_value=mock_result)
+            mock_agent_cls.return_value = mock_agent_instance
+
+            await service.execute_llm_call(
+                system_prompt="Test",
+                user_prompt="Test",
+                model="openai:gpt-5.4",
+            )
+
+        model_arg = mock_agent_cls.call_args.kwargs["model"]
+        assert isinstance(model_arg, OpenAICodexResponsesModel)
+
+    async def test_execute_passes_openai_reasoning_settings_to_codex_run(self, service):
+        mock_result = MagicMock()
+        mock_result.output = "OK"
+        service.set_oauth_service(
+            SimpleNamespace(
+                get_codex_session=lambda: SimpleNamespace(
+                    access_token="access-token",
+                    account_id="acct_123",
+                )
+            )
+        )
+
+        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run = AsyncMock(return_value=mock_result)
+            mock_agent_cls.return_value = mock_agent_instance
+
+            await service.execute_llm_call(
+                system_prompt="Test",
+                user_prompt="Explain briefly.",
+                model="openai:gpt-5.4",
+                thinking_budget=5_000,
+            )
+
+        call_kwargs = mock_agent_instance.run.call_args.kwargs
+        assert call_kwargs["model_settings"]["openai_store"] is False
+        assert call_kwargs["model_settings"]["openai_send_reasoning_ids"] is False
+        assert "openai_previous_response_id" not in call_kwargs["model_settings"]
+        assert call_kwargs["model_settings"]["openai_reasoning_effort"] == "medium"
+        assert call_kwargs["model_settings"]["openai_reasoning_summary"] == "detailed"
 
 
 class TestExecuteLlmCallRetry:

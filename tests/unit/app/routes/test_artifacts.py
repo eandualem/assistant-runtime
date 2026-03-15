@@ -219,7 +219,9 @@ class TestProposeArtifact:
         with pytest.MonkeyPatch.context() as mp:
             repo = MagicMock()
             repo.propose = AsyncMock(return_value=proposed_row)
-            repo.get_active = AsyncMock(return_value=_make_row(name="persona", version=1, is_active=True))
+            repo.get_active = AsyncMock(
+                return_value=_make_row(name="persona", version=1, is_active=True)
+            )
             _patch_repo(mp, repo_mock=repo)
 
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

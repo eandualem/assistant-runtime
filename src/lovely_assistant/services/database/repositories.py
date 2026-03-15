@@ -307,9 +307,7 @@ class ArtifactRepository:
 
     async def delete_by_name(self, name: str) -> int:
         """Delete all versions of an artifact by name. Returns count deleted."""
-        result = await self._session.execute(
-            delete(ArtifactORM).where(ArtifactORM.name == name)
-        )
+        result = await self._session.execute(delete(ArtifactORM).where(ArtifactORM.name == name))
         await self._session.flush()
         return result.rowcount or 0
 
