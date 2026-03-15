@@ -139,12 +139,43 @@ class StreamingService:
         if not self._started:
             raise StreamingError("Streaming service not started")
 
-        if request.is_continuation:
-            async for event in self._stream_continuation(request):
-                yield event
-        else:
-            async for event in self._stream_new_message(request):
-                yield event
+        try:
+            if request.is_continuation:
+                async for event in self._stream_continuation(request):
+                    yield event
+            else:
+                async for event in self._stream_new_message(request):
+                    yield event
+        except StreamSetupError as e:
+            # Setup failed before any lifecycle events were emitted.
+            # Emit a minimal started → final_response(error) → completed
+            # envelope so the frontend can exit the "thinking" state.
+            from lovely_assistant.app.streaming._event_builder import (
+                make_agent_status_event,
+                make_error_event,
+                make_final_response_event,
+            )
+
+            logger.error(
+                "[STREAM] Setup failed — emitting minimal lifecycle envelope",
+                session_id=request.session_id,
+                error=str(e),
+            )
+            yield make_agent_status_event("started")
+            yield make_final_response_event(
+                None,
+                "unknown",
+                session_id=request.session_id,
+                error=True,
+                error_type="setup_error",
+            )
+            yield make_error_event(
+                f"Setup failed: {e}",
+                error_type="setup_error",
+                terminal=True,
+                retry_allowed=True,
+            )
+            yield make_agent_status_event("completed")
 
     async def _stream_continuation(
         self, request: AssistantRequest
@@ -294,6 +325,15 @@ class StreamingService:
                 session_id=session_id,
                 timeout=self._config.stream_timeout_seconds,
             )
+            final = coordinator.try_final_response(
+                None,
+                resolved_model if "resolved_model" in locals() else "unknown",
+                session_id=session_id,
+                error=True,
+                error_type="timeout",
+            )
+            if final:
+                yield final
             yield coordinator.track(
                 make_error_event(
                     f"Continuation timed out after {self._config.stream_timeout_seconds}s",
@@ -311,6 +351,15 @@ class StreamingService:
                 error_type=e.__class__.__name__,
                 error=str(e),
             )
+            final = coordinator.try_final_response(
+                None,
+                resolved_model if "resolved_model" in locals() else "unknown",
+                session_id=session_id,
+                error=True,
+                error_type="internal",
+            )
+            if final:
+                yield final
             yield coordinator.track(
                 make_error_event(
                     f"Continuation failed: {e.__class__.__name__}: {e}",
@@ -609,6 +658,15 @@ class StreamingService:
                 timeout=self._config.stream_timeout_seconds,
                 duration_ms=(time.monotonic() - start_time) * 1000,
             )
+            final = coordinator.try_final_response(
+                None,
+                resolved_model if "resolved_model" in locals() else "unknown",
+                session_id=session_id,
+                error=True,
+                error_type="timeout",
+            )
+            if final:
+                yield final
             yield coordinator.track(
                 make_error_event(
                     f"Request timed out after {self._config.stream_timeout_seconds}s",
@@ -628,6 +686,15 @@ class StreamingService:
                 error_type=e.__class__.__name__,
                 error=str(e),
             )
+            final = coordinator.try_final_response(
+                None,
+                resolved_model if "resolved_model" in locals() else "unknown",
+                session_id=session_id,
+                error=True,
+                error_type="internal",
+            )
+            if final:
+                yield final
             yield coordinator.track(
                 make_error_event(
                     f"Streaming failed: {e.__class__.__name__}: {e}",

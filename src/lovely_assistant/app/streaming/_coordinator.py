@@ -71,12 +71,18 @@ class EventCoordinator:
         return self._track(make_agent_status_event("started"))
 
     def try_completed(self) -> dict[str, Any] | None:
-        """Emit agent_status(completed) if not already emitted."""
+        """Emit agent_status(completed) if not already emitted.
+
+        Terminal event — bypasses event limit. The frontend MUST receive
+        this to exit the "thinking" state.
+        """
         if self._completed_emitted:
             logger.warning("Duplicate agent_status(completed) suppressed")
             return None
         self._completed_emitted = True
-        return self._track(make_agent_status_event("completed"))
+        event = make_agent_status_event("completed")
+        self._event_count += 1  # count but never raise
+        return event
 
     def try_final_response(
         self,
@@ -89,7 +95,11 @@ class EventCoordinator:
         usage: dict[str, int] | None = None,
         pending_tool_call: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Emit final_response if not already emitted."""
+        """Emit final_response if not already emitted.
+
+        Terminal event — bypasses event limit. The frontend MUST receive
+        this before completed.
+        """
         if self._final_response_emitted:
             logger.warning("Duplicate final_response suppressed")
             return None
@@ -98,19 +108,19 @@ class EventCoordinator:
         effective_content = (
             "" if self._streamed_text and not error and content is not None else content
         )
-        return self._track(
-            make_final_response_event(
-                effective_content,
-                model,
-                session_id=session_id,
-                streamed=self._streamed_text,
-                thinking_streamed=self._streamed_thinking,
-                error=error,
-                error_type=error_type,
-                usage=usage,
-                pending_tool_call=pending_tool_call,
-            )
+        event = make_final_response_event(
+            effective_content,
+            model,
+            session_id=session_id,
+            streamed=self._streamed_text,
+            thinking_streamed=self._streamed_thinking,
+            error=error,
+            error_type=error_type,
+            usage=usage,
+            pending_tool_call=pending_tool_call,
         )
+        self._event_count += 1  # count but never raise
+        return event
 
     def emit_text_delta(self, content: str) -> dict[str, Any]:
         """Create, track, and return a text_delta event. Sets streamed_text flag."""
