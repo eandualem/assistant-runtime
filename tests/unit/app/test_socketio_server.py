@@ -79,12 +79,12 @@ class TestOnJoinSession:
     @pytest.mark.asyncio
     async def test_enters_room(self):
         ns = AssistantNamespace("/assistant")
-        ns.enter_room = MagicMock()
+        ns.enter_room = AsyncMock()
         ns.emit = AsyncMock()
 
         await ns.on_assistant_join_session("sid-1", {"session_id": "sess-abc"})
 
-        ns.enter_room.assert_called_once_with("sid-1", "session:sess-abc")
+        ns.enter_room.assert_awaited_once_with("sid-1", "session:sess-abc")
 
     @pytest.mark.asyncio
     async def test_error_on_missing_session_id(self):

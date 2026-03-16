@@ -13,6 +13,7 @@ from loguru import logger
 from lovely_assistant.services.tools._agent_registry_cache import get_registry_cache
 from lovely_assistant.services.tools._backbone_client import backbone_error, backbone_request
 from lovely_assistant.services.tools._registry import ToolRegistry
+from lovely_assistant.services.tools._request_context import get_current_assistant_session_id
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
 STATE_DIR = Path.home() / ".claude" / "state"
@@ -315,8 +316,15 @@ async def send_agent_message(session_name: str, message: str) -> dict[str, Any]:
     if state and state.get("state") in ("processing", "busy"):
         state_warning = f"Agent is currently {state['state']} — message will be queued"
 
-    # Send with envelope tag
-    envelope = f"[via:jarvis from:jarvis] {message.strip()}"
+    reply_session_id = get_current_assistant_session_id()
+    if not reply_session_id:
+        return {
+            "error": "Cannot send Jarvis-routed message without assistant session context",
+            "success": False,
+        }
+
+    # Send with reply-safe Jarvis envelope
+    envelope = f"[via:jarvis from:elias session:{reply_session_id}] {message.strip()}"
     rc, _, stderr = await _run_command(["tmux", "send-keys", "-t", session_name, "-l", envelope])
     if rc != 0:
         return {"error": f"Failed to send message: {stderr}", "success": False}
@@ -329,6 +337,7 @@ async def send_agent_message(session_name: str, message: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "session_name": session_name,
         "message_sent": message.strip(),
+        "reply_session_id": reply_session_id,
         "success": True,
     }
     if state_warning:
@@ -350,9 +359,10 @@ def register_agent_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="list_agents",
             description=(
-                "List ALL tmux sessions including infrastructure. Returns session names, "
-                "state, entity, runtime, role, type, and home directory. "
-                "Prefer get_active_agents for a clean view of actual AI agents."
+                "List ALL tmux sessions, including infrastructure and support services. "
+                "Returns session names, state, entity, runtime, role, type, and home "
+                "directory. This is a low-level tmux view. Prefer get_active_agents for "
+                "normal 'agent status' requests."
             ),
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,
@@ -364,11 +374,13 @@ def register_agent_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="get_active_agents",
             description=(
-                "List active AI agents — the primary tool for checking agent status. "
-                "Returns only actual agents (named entities + coding agents) that are "
-                "online, excluding infrastructure sessions (gateway, prefect, ngrok, etc.). "
-                "Each agent includes: session_name, display_name, role, type, state, "
-                "runtime (claude/codex/aider/gemini), and current_issue."
+                "List active AI agents — the PRIMARY tool for 'agent status', "
+                "'what agents are running', or similar requests. Returns only real "
+                "agents (named entities + coding agents) that are online, excluding "
+                "infrastructure sessions like gateway, prefect, ngrok, and workers. "
+                "Use this instead of list_agents unless the user explicitly wants the "
+                "full tmux session list. Each agent includes session_name, display_name, "
+                "role, type, state, runtime, and current_issue."
             ),
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,
@@ -404,9 +416,12 @@ def register_agent_tools(registry: ToolRegistry) -> None:
             description=(
                 "Start a new AI agent in a tmux session. Delegates to the backbone "
                 "start endpoint which handles working directory resolution and session "
-                "creation. Supports runtime selection (claude, aider, gemini), model "
-                "override, and resume mode. Optionally sends an initial prompt after "
-                "the CLI starts. Use list_agents to see available session names."
+                "creation. Supports runtime selection, model override, and resume mode. "
+                "Optionally sends an initial prompt after the CLI starts. The result of "
+                "this tool is authoritative for whether the start succeeded, so do not "
+                "navigate or call look_at_screen just to confirm unless the user "
+                "explicitly asks for UI verification. Use get_active_agents to inspect "
+                "current agent status and known session names."
             ),
             parameters_schema={
                 "type": "object",
@@ -417,7 +432,10 @@ def register_agent_tools(registry: ToolRegistry) -> None:
                     },
                     "runtime": {
                         "type": "string",
-                        "description": "AI CLI runtime to use (e.g. claude, aider, gemini)",
+                        "description": (
+                            "AI CLI runtime to use (for example claude, codex, gemini, "
+                            "cursor, opencode, shell)"
+                        ),
                         "default": "claude",
                     },
                     "model": {
@@ -469,7 +487,9 @@ def register_agent_tools(registry: ToolRegistry) -> None:
             name="send_agent_message",
             description=(
                 "Send a message to a running agent session. Prepends the "
-                "[via:jarvis from:jarvis] envelope tag automatically. "
+                "[via:jarvis from:elias session:...] envelope automatically "
+                "using the active assistant session so the recipient can reply "
+                "through Jarvis. "
                 "Warns if the agent is currently busy."
             ),
             parameters_schema={

@@ -27,6 +27,7 @@ from lovely_assistant.app.assistant.models import (
     _build_user_prompt,
 )
 from lovely_assistant.app.settings import RuntimeSettings, resolve_effective_config
+from lovely_assistant.services.tools._request_context import assistant_request_context
 from lovely_assistant.services.tools._screen_tools import (
     clear_current_screenshot,
     extract_screenshot_data_uri,
@@ -227,11 +228,12 @@ class AssistantService:
             if screenshot:
                 set_current_screenshot(screenshot)
             try:
-                result = await ctx.agent.run(
-                    user_prompt,
-                    message_history=prepared_history if prepared_history else None,
-                    usage_limits=ctx.usage_limits,
-                )
+                with assistant_request_context(session_id):
+                    result = await ctx.agent.run(
+                        user_prompt,
+                        message_history=prepared_history if prepared_history else None,
+                        usage_limits=ctx.usage_limits,
+                    )
             except Exception as e:
                 logger.exception(
                     "Assistant request failed",

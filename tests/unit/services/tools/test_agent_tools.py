@@ -13,6 +13,7 @@ from lovely_assistant.services.tools._agent_tools import (
     _run_command,
     _validate_session_name,
     check_agent_state,
+    get_active_agents,
     list_agents,
     register_agent_tools,
     send_agent_message,
@@ -20,6 +21,7 @@ from lovely_assistant.services.tools._agent_tools import (
     stop_agent,
 )
 from lovely_assistant.services.tools._registry import ToolRegistry
+from lovely_assistant.services.tools._request_context import assistant_request_context
 from lovely_assistant.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
@@ -239,6 +241,112 @@ class TestListAgents:
         assert "role" not in sessions_by_name["unknown-session"]
         assert "type" not in sessions_by_name["unknown-session"]
         assert "home" not in sessions_by_name["unknown-session"]
+
+
+# ---------------------------------------------------------------------------
+# TestGetActiveAgents
+# ---------------------------------------------------------------------------
+
+
+class TestGetActiveAgents:
+    async def test_returns_only_online_real_agents(self):
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(
+            return_value=[
+                {
+                    "session": "ike",
+                    "display_name": "Eisenhower",
+                    "role": "Core Orchestrator",
+                    "type": "named_entity",
+                    "state": "idle",
+                    "runtime": "codex",
+                    "online": True,
+                    "current_issue": None,
+                },
+                {
+                    "session": "gateway",
+                    "display_name": "gateway",
+                    "role": "infra",
+                    "type": "service",
+                    "state": "unknown",
+                    "runtime": None,
+                    "online": True,
+                    "current_issue": None,
+                },
+                {
+                    "session": "leo",
+                    "display_name": "Vinci",
+                    "role": "Strategy Co-Architect",
+                    "type": "named_entity",
+                    "state": "offline",
+                    "runtime": None,
+                    "online": False,
+                    "current_issue": None,
+                },
+                {
+                    "session": "mystery-session",
+                    "display_name": "mystery-session",
+                    "role": "",
+                    "type": "coding_agent",
+                    "state": "unknown",
+                    "runtime": None,
+                    "online": True,
+                    "current_issue": None,
+                },
+            ]
+        )
+
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await get_active_agents()
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["agents"] == [
+            {
+                "session_name": "ike",
+                "display_name": "Eisenhower",
+                "role": "Core Orchestrator",
+                "type": "named_entity",
+                "state": "idle",
+                "runtime": "codex",
+                "current_issue": None,
+            }
+        ]
+
+    async def test_keeps_unknown_state_when_runtime_present(self):
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(
+            return_value=[
+                {
+                    "session": "bell-wf",
+                    "display_name": "Bell",
+                    "role": "Org Orchestrator",
+                    "type": "named_entity",
+                    "state": "unknown",
+                    "runtime": "claude",
+                    "online": True,
+                    "current_issue": 813,
+                }
+            ]
+        )
+
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await get_active_agents()
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["agents"][0]["session_name"] == "bell-wf"
+        assert result["agents"][0]["state"] == "unknown"
+        assert result["agents"][0]["runtime"] == "claude"
+
+    async def test_returns_error_when_backbone_unavailable(self):
+        mock_cache = MagicMock()
+        mock_cache.get_agents = AsyncMock(return_value=None)
+
+        with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
+            result = await get_active_agents()
+
+        assert result == {"error": "Backbone agent registry unavailable", "success": False}
 
 
 # ---------------------------------------------------------------------------
@@ -518,10 +626,12 @@ class TestSendAgentMessage:
             (0, "", ""),
         ]
 
-        result = await send_agent_message("leo", "check status")
+        with assistant_request_context("sess_abc123"):
+            result = await send_agent_message("leo", "check status")
         assert result["success"] is True
         assert result["message_sent"] == "check status"
         assert result["agent_state"] == "idle"
+        assert result["reply_session_id"] == "sess_abc123"
 
     @patch(f"{MODULE}._run_command")
     @patch(f"{MODULE}._read_state_file")
@@ -533,13 +643,26 @@ class TestSendAgentMessage:
             (0, "", ""),
         ]
 
-        await send_agent_message("leo", "hello")
+        with assistant_request_context("sess_abc123"):
+            await send_agent_message("leo", "hello")
 
         # The second call is send-keys -l with the envelope
         send_call = mock_run.call_args_list[1]
         args = send_call[0][0]  # positional args to _run_command
-        assert "[via:jarvis from:jarvis]" in args[-1]
+        assert "[via:jarvis from:elias session:sess_abc123]" in args[-1]
         assert "hello" in args[-1]
+
+    @patch(f"{MODULE}._run_command")
+    @patch(f"{MODULE}._read_state_file")
+    async def test_missing_request_context_rejects_send(self, mock_state, mock_run):
+        mock_state.return_value = None
+        mock_run.return_value = (0, "", "")
+
+        result = await send_agent_message("leo", "hello")
+
+        assert result["success"] is False
+        assert "assistant session context" in result["error"]
+        assert mock_run.await_count == 1
 
     @patch(f"{MODULE}._run_command")
     async def test_nonexistent_session(self, mock_run):
@@ -569,7 +692,8 @@ class TestSendAgentMessage:
             (0, "", ""),
         ]
 
-        result = await send_agent_message("leo", "urgent question")
+        with assistant_request_context("sess_busy"):
+            result = await send_agent_message("leo", "urgent question")
         assert result["success"] is True
         assert "warning" in result
         assert "processing" in result["warning"]
@@ -620,6 +744,7 @@ class TestRegisterAgentTools:
         register_agent_tools(registry)
         for name in [
             "list_agents",
+            "get_active_agents",
             "check_agent_state",
             "start_agent",
             "stop_agent",
