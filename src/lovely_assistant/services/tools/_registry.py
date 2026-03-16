@@ -47,6 +47,7 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "read_skill",
         # Agent tools are cross-cutting — check/manage agents from any page
         "list_agents",
+        "get_active_agents",
         "check_agent_state",
         "start_agent",
         "stop_agent",
@@ -291,8 +292,8 @@ class ToolRegistry:
         - repos page → core + repo tools
         - flows page → core only
 
-        Agent tools (list_agents, check_agent_state, start/stop/send) are in
-        core — available on every page.
+        Agent tools (list_agents, get_active_agents, check_agent_state,
+        start/stop/send) are in core — available on every page.
         """
         backend = list(self._backend_definitions.values())
         total_before = len(backend)

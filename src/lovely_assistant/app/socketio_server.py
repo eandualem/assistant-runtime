@@ -71,7 +71,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
             )
             return
         room = f"session:{session_id}"
-        self.enter_room(sid, room)
+        await self.enter_room(sid, room)
         logger.info("Client joined session room", sid=sid, session_id=session_id)
 
     async def on_assistant_message(self, sid: str, data: dict[str, Any]) -> None:

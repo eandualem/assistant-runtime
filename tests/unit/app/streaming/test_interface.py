@@ -407,6 +407,80 @@ class TestStreamSetupErrors:
         assert any(e.get("status") == "completed" for e in events)
         assert any(e.get("type") == "error" for e in events)
 
+    @pytest.mark.asyncio
+    async def test_continuation_missing_session_rejected_without_creating_session(self):
+        sessions = SessionStore()
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        request = _make_request(
+            message="",
+            tool_call_id="call_missing_session",
+            tool_result={"status": "ok"},
+        )
+
+        events = [e async for e in service.stream_message(request)]
+
+        assert sessions.session_count() == 0
+        assert any(
+            e.get("type") == "final_response" and e.get("error_type") == "session_error"
+            for e in events
+        )
+        assert any("does not exist" in e.get("message", "") for e in events if e["type"] == "error")
+        assert any(e.get("status") == "completed" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_continuation_missing_pending_tool_call_rejected(self):
+        sessions = SessionStore()
+        sessions.get_context("test-session")
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        request = _make_request(
+            message="",
+            tool_call_id="call_missing_pending",
+            tool_result={"status": "ok"},
+        )
+
+        events = [e async for e in service.stream_message(request)]
+
+        assert any(
+            "has no pending tool call" in e.get("message", "")
+            for e in events
+            if e["type"] == "error"
+        )
+        assert any(
+            e.get("type") == "final_response" and e.get("error_type") == "session_error"
+            for e in events
+        )
+
+    @pytest.mark.asyncio
+    async def test_continuation_mismatched_pending_tool_call_rejected(self):
+        sessions = SessionStore()
+        session_context = sessions.get_context("test-session")
+        session_context["pending_tool_call_id"] = "call_expected"
+        session_context["pending_tool_name"] = "navigate"
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        request = _make_request(
+            message="",
+            tool_call_id="call_actual",
+            tool_result={"status": "ok"},
+        )
+
+        events = [e async for e in service.stream_message(request)]
+
+        assert any(
+            "does not match pending tool call" in e.get("message", "")
+            for e in events
+            if e["type"] == "error"
+        )
+        assert any(
+            e.get("type") == "final_response" and e.get("error_type") == "session_error"
+            for e in events
+        )
+
 
 class TestStreamExecutionErrors:
     @pytest.mark.asyncio
@@ -1836,7 +1910,12 @@ class TestContinuationHistory:
         mock_run = _MockAgentRun(nodes=[], output="Continued response")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        sessions = SessionStore()
+        sessions.get_context("test-session")["pending_tool_call_id"] = "call_ui_send_event_001"
+        service = _make_service(
+            sessions=sessions,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
         await service.start()
 
         request = _make_request(
@@ -1885,7 +1964,12 @@ class TestContinuationScreenshots:
         mock_run = _MockAgentRun(nodes=[], output="Continued response")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        sessions = SessionStore()
+        sessions.get_context("test-session")["pending_tool_call_id"] = "call_navigate_001"
+        service = _make_service(
+            sessions=sessions,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
         await service.start()
 
         request = _make_request(
@@ -1908,7 +1992,12 @@ class TestContinuationScreenshots:
         mock_run = _MockAgentRun(nodes=[], output="Continued response")
         mock_agent = MagicMock()
         mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        sessions = SessionStore()
+        sessions.get_context("test-session")["pending_tool_call_id"] = "call_navigate_001"
+        service = _make_service(
+            sessions=sessions,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
         await service.start()
 
         request = _make_request(

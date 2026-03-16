@@ -30,6 +30,7 @@ from pydantic_graph.nodes import End
 
 from lovely_assistant.app.assistant._serialization import sanitize_image_tool_returns
 from lovely_assistant.app.assistant._session_store import SessionStore
+from lovely_assistant.app.assistant.exceptions import SessionError
 from lovely_assistant.app.assistant.models import AssistantRequest, _build_user_prompt
 from lovely_assistant.app.streaming._coordinator import EventCoordinator
 from lovely_assistant.app.streaming._event_builder import (
@@ -52,6 +53,7 @@ from lovely_assistant.app.streaming.exceptions import (
     StreamSetupError,
 )
 from lovely_assistant.services.tools._registry import get_tool_invalidates
+from lovely_assistant.services.tools._request_context import assistant_request_context
 from lovely_assistant.services.tools._screen_tools import (
     clear_current_screenshot,
     extract_screenshot_data_uri,
@@ -146,7 +148,7 @@ class StreamingService:
             else:
                 async for event in self._stream_new_message(request):
                     yield event
-        except StreamSetupError as e:
+        except (StreamSetupError, SessionError) as e:
             # Setup failed before any lifecycle events were emitted.
             # Emit a minimal started → final_response(error) → completed
             # envelope so the frontend can exit the "thinking" state.
@@ -159,21 +161,24 @@ class StreamingService:
             logger.error(
                 "[STREAM] Setup failed — emitting minimal lifecycle envelope",
                 session_id=request.session_id,
+                error_type=type(e).__name__,
                 error=str(e),
             )
+            error_type = "session_error" if isinstance(e, SessionError) else "setup_error"
+            retry_allowed = not isinstance(e, SessionError)
             yield make_agent_status_event("started")
             yield make_final_response_event(
                 None,
                 "unknown",
                 session_id=request.session_id,
                 error=True,
-                error_type="setup_error",
+                error_type=error_type,
             )
             yield make_error_event(
                 f"Setup failed: {e}",
-                error_type="setup_error",
+                error_type=error_type,
                 terminal=True,
-                retry_allowed=True,
+                retry_allowed=retry_allowed,
             )
             yield make_agent_status_event("completed")
 
@@ -187,7 +192,21 @@ class StreamingService:
 
         try:
             session_id = request.session_id
-            session_context = await self._sessions.get_context_async(session_id)
+            session_context = await self._sessions.get_context_if_exists_async(session_id)
+            if session_context is None:
+                raise SessionError(f"Continuation rejected: session '{session_id}' does not exist")
+
+            pending_tool_call_id = session_context.get("pending_tool_call_id")
+            if not pending_tool_call_id:
+                raise SessionError(
+                    f"Continuation rejected: session '{session_id}' has no pending tool call"
+                )
+            if pending_tool_call_id != request.tool_call_id:
+                raise SessionError(
+                    "Continuation rejected: "
+                    f"tool_call_id '{request.tool_call_id}' does not match pending "
+                    f"tool call '{pending_tool_call_id}' for session '{session_id}'"
+                )
 
             if emit_debug:
                 yield coordinator.track_debug(
@@ -227,6 +246,8 @@ class StreamingService:
 
             deferred = DeferredToolResults(calls={request.tool_call_id: tool_result_for_llm})
 
+        except SessionError:
+            raise
         except Exception as e:
             raise StreamSetupError(f"Continuation setup failed: {e}") from e
 
@@ -250,16 +271,17 @@ class StreamingService:
         _history_saved = False
         try:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
-                async with ctx.agent.iter(
-                    None,
-                    message_history=prepared_history if prepared_history else None,
-                    usage_limits=ctx.usage_limits,
-                    deferred_tool_results=deferred,
-                ) as run:
-                    async for event in self._iterate_run(
-                        run, coordinator, resolved_model, emit_debug=emit_debug
-                    ):
-                        yield event
+                with assistant_request_context(session_id):
+                    async with ctx.agent.iter(
+                        None,
+                        message_history=prepared_history if prepared_history else None,
+                        usage_limits=ctx.usage_limits,
+                        deferred_tool_results=deferred,
+                    ) as run:
+                        async for event in self._iterate_run(
+                            run, coordinator, resolved_model, emit_debug=emit_debug
+                        ):
+                            yield event
 
             await self._sessions.save_history_async(
                 session_id, sanitize_image_tool_returns(list(run.result.all_messages()))
@@ -560,15 +582,16 @@ class StreamingService:
         _history_saved = False
         try:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
-                async with ctx.agent.iter(
-                    user_prompt,
-                    message_history=prepared_history if prepared_history else None,
-                    usage_limits=ctx.usage_limits,
-                ) as run:
-                    async for event in self._iterate_run(
-                        run, coordinator, resolved_model, emit_debug=emit_debug
-                    ):
-                        yield event
+                with assistant_request_context(session_id):
+                    async with ctx.agent.iter(
+                        user_prompt,
+                        message_history=prepared_history if prepared_history else None,
+                        usage_limits=ctx.usage_limits,
+                    ) as run:
+                        async for event in self._iterate_run(
+                            run, coordinator, resolved_model, emit_debug=emit_debug
+                        ):
+                            yield event
 
             # Save history after run completes (async = persists to DB)
             await self._sessions.save_history_async(
