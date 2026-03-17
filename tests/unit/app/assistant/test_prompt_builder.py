@@ -3,6 +3,7 @@
 import pytest
 
 from lovely_assistant.app.assistant._prompt_builder import (
+    REQUIRED_ARTIFACT_NAMES,
     _dashboard_context_fragment,
     _datetime_fragment,
     _mcp_connections_fragment,
@@ -15,6 +16,7 @@ from lovely_assistant.services.history.models import WorkingMemory
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 REQUIRED_ARTIFACTS = {
+    "soul": "Jarvis exists to increase Elias's leverage in a live AI workbench.",
     "persona": "You are Jarvis, the operational assistant.",
     "communication_protocol": "Messages may arrive with envelope tags.",
     "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
@@ -512,6 +514,14 @@ class TestSmartHints:
 
 
 class TestBuildSystemPrompt:
+    def test_contains_soul(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
+        )
+        assert "live AI workbench" in result.content
+
     def test_contains_persona(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
@@ -644,6 +654,7 @@ class TestBuildSystemPrompt:
             artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
+        assert "soul" in fragment_names
         assert "persona" in fragment_names
         assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
@@ -676,7 +687,8 @@ class TestBuildSystemPrompt:
             artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
-        # Minimum: persona + communication_protocol + ecosystem + datetime (always present)
+        # Minimum: soul + persona + communication_protocol + ecosystem + datetime (always present)
+        assert "soul" in fragment_names
         assert "persona" in fragment_names
         assert "communication_protocol" in fragment_names
         assert "ecosystem" in fragment_names
@@ -697,6 +709,15 @@ class TestBuildSystemPrompt:
         assert "ecosystem" in fragment_names
         assert "Leo" in result.content
 
+    def test_required_artifacts_follow_catalog_order(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
+        )
+        fragment_names = [f["name"] for f in result.fragments[: len(REQUIRED_ARTIFACT_NAMES)]]
+        assert fragment_names == list(REQUIRED_ARTIFACT_NAMES)
+
 
 class TestArtifactIntegration:
     """Tests for DB artifact validation in prompt builder."""
@@ -706,17 +727,20 @@ class TestArtifactIntegration:
             available_tools=ToolSet(),
             session_context={},
             artifacts={
+                "soul": "Deeper identity guidance",
                 "persona": "I am TestBot",
                 "communication_protocol": "Custom protocol rules",
                 "ecosystem": "Test agents here",
                 "scratchpad": "Test scratchpad",
             },
         )
+        assert "Deeper identity guidance" in result.content
         assert "I am TestBot" in result.content
         assert "Custom protocol rules" in result.content
         assert "Test agents here" in result.content
         assert "Test scratchpad" in result.content
         fragment_names = [f["name"] for f in result.fragments]
+        assert "soul" in fragment_names
         assert "persona" in fragment_names
         assert "communication_protocol" in fragment_names
         assert "ecosystem" in fragment_names
@@ -760,6 +784,7 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "communication_protocol": "protocol",
                     "ecosystem": "ecosystem",
                 },
@@ -771,7 +796,20 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "persona",
+                    "ecosystem": "ecosystem",
+                },
+            )
+
+    def test_missing_soul_raises_error(self):
+        with pytest.raises(ValueError, match="Missing required artifact: soul"):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "persona": "persona",
+                    "communication_protocol": "protocol",
                     "ecosystem": "ecosystem",
                 },
             )
@@ -782,6 +820,7 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "persona",
                     "communication_protocol": "protocol",
                 },
@@ -793,6 +832,7 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "",
                     "communication_protocol": "protocol",
                     "ecosystem": "ecosystem",
@@ -805,8 +845,22 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "persona",
                     "communication_protocol": "",
+                    "ecosystem": "ecosystem",
+                },
+            )
+
+    def test_empty_soul_raises(self):
+        with pytest.raises(ValueError, match="Missing required artifact: soul"):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "soul": "",
+                    "persona": "persona",
+                    "communication_protocol": "protocol",
                     "ecosystem": "ecosystem",
                 },
             )
@@ -817,6 +871,7 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "persona",
                     "communication_protocol": "protocol",
                     "ecosystem": "",

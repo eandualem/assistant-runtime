@@ -158,10 +158,21 @@ class TestGetArtifact:
             _patch_repo(mp, repo_mock=repo)
 
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                response = await c.get("/artifacts/nonexistent")
+                response = await c.get("/artifacts/persona")
 
         assert response.status_code == 404
-        assert "nonexistent" in response.json()["detail"]
+        assert "persona" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_get_artifact_rejects_unknown_name(self):
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.get("/artifacts/not-real")
+
+        assert response.status_code == 422
+        assert "Known artifacts" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +265,20 @@ class TestProposeArtifact:
             )
 
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_propose_artifact_rejects_unknown_name(self):
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post(
+                "/artifacts/not-real/propose",
+                json={"content": "Updated persona"},
+            )
+
+        assert response.status_code == 422
+        assert "Known artifacts" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +547,20 @@ class TestArtifactActions:
             )
 
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_unknown_artifact_rejected(self):
+        mock_db = _make_mock_db()
+        app = _make_app(db_service=mock_db)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post(
+                "/artifacts/not-real/actions",
+                json={"action": "approve", "version": 1},
+            )
+
+        assert response.status_code == 422
+        assert "Known artifacts" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_no_db(self):

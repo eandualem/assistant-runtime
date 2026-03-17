@@ -7,6 +7,7 @@ a context fragment.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,9 +17,75 @@ from lovely_assistant.app.assistant.models import PromptResult
 from lovely_assistant.services.history.models import WorkingMemory
 from lovely_assistant.services.tools.models import ToolSet
 
-# --- Required artifacts ---
+# --- Artifact catalog ---
 
-_REQUIRED_ARTIFACTS = ("persona", "communication_protocol", "ecosystem")
+
+@dataclass(frozen=True)
+class ArtifactDefinition:
+    """Definition of a first-class prompt artifact."""
+
+    name: str
+    role_boundary: str
+    required: bool
+    scratchpad_special_case: bool = False
+
+
+ARTIFACT_CATALOG: tuple[ArtifactDefinition, ...] = (
+    ArtifactDefinition(
+        name="soul",
+        role_boundary="enduring purpose, values, non-negotiables, deepest identity guidance",
+        required=True,
+    ),
+    ArtifactDefinition(
+        name="persona",
+        role_boundary="style, stance, behavioral voice",
+        required=True,
+    ),
+    ArtifactDefinition(
+        name="communication_protocol",
+        role_boundary="interaction and routing rules",
+        required=True,
+    ),
+    ArtifactDefinition(
+        name="ecosystem",
+        role_boundary="world model, roles, org structure, system topology",
+        required=True,
+    ),
+    ArtifactDefinition(
+        name="scratchpad",
+        role_boundary="short-lived operational memory",
+        required=False,
+        scratchpad_special_case=True,
+    ),
+)
+_ARTIFACTS_BY_NAME: dict[str, ArtifactDefinition] = {item.name: item for item in ARTIFACT_CATALOG}
+_REQUIRED_ARTIFACTS = tuple(item.name for item in ARTIFACT_CATALOG if item.required)
+REQUIRED_ARTIFACT_NAMES = _REQUIRED_ARTIFACTS
+KNOWN_ARTIFACT_NAMES = tuple(item.name for item in ARTIFACT_CATALOG)
+SCRATCHPAD_ARTIFACT_NAME = next(
+    item.name for item in ARTIFACT_CATALOG if item.scratchpad_special_case
+)
+_ARTIFACT_ORDER = {item.name: idx for idx, item in enumerate(ARTIFACT_CATALOG)}
+
+
+def artifact_sort_key(name: str) -> tuple[int, str]:
+    """Sort first-class artifacts in canonical prompt/dashboard order."""
+    return (_ARTIFACT_ORDER.get(name, len(ARTIFACT_CATALOG)), name)
+
+
+def is_known_artifact_name(name: str) -> bool:
+    """Return whether the name is a first-class artifact."""
+    return name in _ARTIFACTS_BY_NAME
+
+
+def known_artifact_names_text() -> str:
+    """Human-readable list of known first-class artifact names."""
+    return ", ".join(KNOWN_ARTIFACT_NAMES)
+
+
+def artifact_role_boundaries_text() -> str:
+    """Human-readable summary of the artifact role split."""
+    return "; ".join(f"{item.name} = {item.role_boundary}" for item in ARTIFACT_CATALOG)
 
 # --- Fragment builders ---
 
@@ -283,14 +350,20 @@ def build_system_prompt(
     """Compose system prompt from module fragments.
 
     Order: stable fragments first (cached by Anthropic), dynamic fragments last.
+    Artifact role boundary:
+    - soul: enduring purpose, values, non-negotiables, deepest identity guidance
+    - persona: style, stance, behavioral voice
+    - communication_protocol: interaction and routing rules
+    - ecosystem: world model, roles, org structure, system topology
+    - scratchpad: short-lived operational memory
 
     Args:
         available_tools: Tools available for this request.
         session_context: Session context dict (may contain working memory).
         machine_state: Frontend XState machine state snapshot.
         mcp_summary: MCP server connection summary for prompt context.
-        artifacts: DB-loaded artifact name→content map. Must contain persona,
-            communication_protocol, and ecosystem.
+        artifacts: DB-loaded artifact name→content map. Must contain soul,
+            persona, communication_protocol, and ecosystem.
 
     Returns:
         PromptResult with composed content and fragment metadata.
@@ -307,16 +380,14 @@ def build_system_prompt(
     named_fragments: list[tuple[str, str]] = []
 
     # Stable fragments (cacheable) — from DB artifacts
-    named_fragments.append(("persona", artifacts["persona"]))
-    named_fragments.append(("communication_protocol", artifacts["communication_protocol"]))
-
-    # Semi-stable fragments — from DB artifacts
-    named_fragments.append(("ecosystem", artifacts["ecosystem"]))
+    for artifact in ARTIFACT_CATALOG:
+        if artifact.required:
+            named_fragments.append((artifact.name, artifacts[artifact.name]))
 
     # Scratchpad — optional
-    scratchpad_content = artifacts.get("scratchpad")
+    scratchpad_content = artifacts.get(SCRATCHPAD_ARTIFACT_NAME)
     if scratchpad_content:
-        named_fragments.append(("scratchpad", scratchpad_content))
+        named_fragments.append((SCRATCHPAD_ARTIFACT_NAME, scratchpad_content))
 
     mcp_frag = _mcp_connections_fragment(mcp_summary)
     if mcp_frag:
