@@ -17,6 +17,7 @@ from lovely_assistant.app.assistant.models import AssistantRequest, RequestConfi
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 _MOCK_ARTIFACTS = {
+    "soul": "Jarvis exists to increase Elias's leverage inside a live operating environment.",
     "persona": "You are Jarvis, the operational assistant.",
     "communication_protocol": "Messages may arrive with envelope tags.",
     "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",

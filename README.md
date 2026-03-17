@@ -251,6 +251,18 @@ Every module follows the **5-file skeleton**: `config.py` (settings), `deps.py` 
 
 Streaming responses are delivered via **Socket.IO** on the `/assistant` namespace with `assistant:` prefixed events (`text_delta`, `thinking_delta`, `tool_call`, `tool_result`, `final_response`, `status`, `error`, `debug`).
 
+## Prompt Artifacts
+
+Jarvis's system prompt is assembled from five first-class artifacts with distinct roles:
+
+- `soul`: enduring purpose, values, non-negotiables, deepest identity guidance
+- `persona`: style, stance, behavioral voice
+- `communication_protocol`: interaction and routing rules
+- `ecosystem`: world model, roles, org structure, system topology
+- `scratchpad`: short-lived operational memory
+
+`Soul`, `persona`, `communication_protocol`, and `ecosystem` are durable versioned artifacts. `Scratchpad` remains the operational special case: mutable, auto-approved, and intentionally short-lived.
+
 ## Port
 
 Default: **7100** (WF org range: 7100–7199). Override with `PORT` env var:

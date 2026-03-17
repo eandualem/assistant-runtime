@@ -10,13 +10,30 @@ from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
 
+def _unknown_artifact_error(name: str) -> dict[str, Any]:
+    """Build a consistent unknown-artifact error payload."""
+    from lovely_assistant.app.assistant._prompt_builder import (
+        artifact_role_boundaries_text,
+        known_artifact_names_text,
+    )
+
+    return {
+        "error": (
+            f"Unknown artifact '{name}'. "
+            f"Known artifacts: {known_artifact_names_text()}. "
+            f"Role boundaries: {artifact_role_boundaries_text()}."
+        ),
+        "success": False,
+    }
+
+
 async def manage_artifacts(
     action: str,
     name: str = "",
     content: str = "",
     version: int = 0,
 ) -> dict[str, Any]:
-    """Manage versioned prompt artifacts (persona, communication_protocol, ecosystem, scratchpad).
+    """Manage versioned prompt artifacts (soul, persona, communication_protocol, ecosystem, scratchpad).
 
     Supports list, view, propose_edit, update_scratchpad, approve, and history actions.
     """
@@ -56,11 +73,13 @@ async def _list_artifacts(
     **_kwargs: Any,
 ) -> dict[str, Any]:
     """List all active artifacts with versions and sizes."""
+    from lovely_assistant.app.assistant._prompt_builder import artifact_sort_key
     from lovely_assistant.services.database.repositories import ArtifactRepository
 
     async with database_service.session_context() as session:
         repo = ArtifactRepository(session)
         rows = await repo.get_all_active()
+    rows = sorted(rows, key=lambda row: artifact_sort_key(row.name))
 
     return {
         "artifacts": [
@@ -86,6 +105,10 @@ async def _view_artifact(
     """View the active content of an artifact."""
     if not name:
         return {"error": "Name is required for view", "success": False}
+    from lovely_assistant.app.assistant._prompt_builder import is_known_artifact_name
+
+    if not is_known_artifact_name(name):
+        return _unknown_artifact_error(name)
 
     from lovely_assistant.services.database.repositories import ArtifactRepository
 
@@ -115,6 +138,10 @@ async def _propose_edit(
     """Propose a new version of an artifact (requires approval to activate)."""
     if not name:
         return {"error": "Name is required for propose_edit", "success": False}
+    from lovely_assistant.app.assistant._prompt_builder import is_known_artifact_name
+
+    if not is_known_artifact_name(name):
+        return _unknown_artifact_error(name)
     if not content:
         return {"error": "Content is required for propose_edit", "success": False}
 
@@ -168,6 +195,10 @@ async def _approve_artifact(
     """Activate a specific version of an artifact."""
     if not name:
         return {"error": "Name is required for approve", "success": False}
+    from lovely_assistant.app.assistant._prompt_builder import is_known_artifact_name
+
+    if not is_known_artifact_name(name):
+        return _unknown_artifact_error(name)
     if not version:
         return {"error": "Version is required for approve", "success": False}
 
@@ -201,6 +232,10 @@ async def _artifact_history(
     """Return version history for an artifact."""
     if not name:
         return {"error": "Name is required for history", "success": False}
+    from lovely_assistant.app.assistant._prompt_builder import is_known_artifact_name
+
+    if not is_known_artifact_name(name):
+        return _unknown_artifact_error(name)
 
     from lovely_assistant.services.database.repositories import ArtifactRepository
 
@@ -227,11 +262,18 @@ async def _artifact_history(
 
 def register_artifact_tools(registry: ToolRegistry) -> None:
     """Register the artifact management tool."""
+    from lovely_assistant.app.assistant._prompt_builder import (
+        artifact_role_boundaries_text,
+        known_artifact_names_text,
+    )
+
     registry.register_backend_tool(
         ToolDefinition(
             name="manage_artifacts",
             description=(
-                "Manage versioned prompt artifacts (persona, communication_protocol, ecosystem, scratchpad). "
+                "Manage versioned prompt artifacts "
+                f"({known_artifact_names_text()}). "
+                f"Role boundaries: {artifact_role_boundaries_text()}. "
                 "Actions: list (all active), view (active content), propose_edit (create pending "
                 "version — requires approval), update_scratchpad (auto-approved), history (list all "
                 "versions with active status), approve (activate a specific version). "
@@ -258,7 +300,7 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
                         "type": "string",
                         "description": (
                             "Artifact name (required for view/propose_edit/approve/history). "
-                            "Known artifacts: persona, communication_protocol, ecosystem, scratchpad"
+                            f"Known artifacts: {known_artifact_names_text()}"
                         ),
                     },
                     "content": {

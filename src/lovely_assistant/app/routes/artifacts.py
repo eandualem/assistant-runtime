@@ -51,6 +51,25 @@ class ArtifactActionRequest(BaseModel):
     proposed_by: str = Field(default="dashboard")
 
 
+def _ensure_known_artifact_name(name: str) -> None:
+    """Reject unknown artifact names at the route boundary."""
+    from lovely_assistant.app.assistant._prompt_builder import (
+        artifact_role_boundaries_text,
+        is_known_artifact_name,
+        known_artifact_names_text,
+    )
+
+    if not is_known_artifact_name(name):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown artifact '{name}'. "
+                f"Known artifacts: {known_artifact_names_text()}. "
+                f"Role boundaries: {artifact_role_boundaries_text()}."
+            ),
+        )
+
+
 def _row_to_response(row: Any) -> dict:
     """Convert an ArtifactORM row to a response dict."""
     return {
@@ -90,11 +109,13 @@ def _build_mutation_response(
 async def list_artifacts(request: Request) -> list[dict]:
     """List all active artifacts."""
     db = await _get_db(request)
+    from lovely_assistant.app.assistant._prompt_builder import artifact_sort_key
 
     try:
         async with db.session_context() as session:
             repo = ArtifactRepository(session)
             rows = await repo.get_all_active()
+            rows = sorted(rows, key=lambda row: artifact_sort_key(row.name))
             return [_row_to_response(row) for row in rows]
     except HTTPException:
         raise
@@ -106,6 +127,7 @@ async def list_artifacts(request: Request) -> list[dict]:
 @router.get("/{name}")
 async def get_artifact(name: str, request: Request) -> dict:
     """Get the active version of an artifact by name."""
+    _ensure_known_artifact_name(name)
     db = await _get_db(request)
 
     try:
@@ -129,6 +151,7 @@ async def get_artifact_history(
     limit: int = Query(20, ge=1, le=100),
 ) -> list[dict]:
     """Get version history for an artifact."""
+    _ensure_known_artifact_name(name)
     db = await _get_db(request)
 
     try:
@@ -146,6 +169,7 @@ async def get_artifact_history(
 @router.post("/{name}/propose", status_code=201)
 async def propose_artifact(name: str, body: ProposeRequest, request: Request) -> dict:
     """Propose a new version of an artifact (inactive until approved)."""
+    _ensure_known_artifact_name(name)
     db = await _get_db(request)
 
     try:
@@ -170,6 +194,7 @@ async def propose_artifact(name: str, body: ProposeRequest, request: Request) ->
 @router.post("/{name}/approve/{version}")
 async def approve_artifact(name: str, version: int, request: Request) -> dict:
     """Approve (activate) a specific version of an artifact."""
+    _ensure_known_artifact_name(name)
     db = await _get_db(request)
 
     try:
@@ -196,6 +221,7 @@ async def approve_artifact(name: str, version: int, request: Request) -> dict:
 @router.post("/{name}/rollback/{version}")
 async def rollback_artifact(name: str, version: int, request: Request) -> dict:
     """Rollback to a previous version of an artifact."""
+    _ensure_known_artifact_name(name)
     db = await _get_db(request)
 
     try:
@@ -225,6 +251,7 @@ async def artifact_action(name: str, body: ArtifactActionRequest, request: Reque
 
     Dispatches approve, rollback, and propose actions for a named artifact.
     """
+    _ensure_known_artifact_name(name)
     db = await _get_db(request)
 
     try:
@@ -285,6 +312,7 @@ async def artifact_action(name: str, body: ArtifactActionRequest, request: Reque
 @router.delete("/{name}")
 async def delete_artifact(name: str, request: Request) -> dict:
     """Delete all versions of an artifact by name."""
+    _ensure_known_artifact_name(name)
     db = await _get_db(request)
 
     try:

@@ -83,6 +83,7 @@ class TestListAction:
         manage_artifacts._handler_deps = {"database_service": mock_db}
 
         rows = [
+            _make_artifact_row(name="soul", content="Deeper alignment", version=1),
             _make_artifact_row(name="ecosystem", content="Agent ecosystem info", version=3),
             _make_artifact_row(name="persona", content="You are Jarvis.", version=2),
             _make_artifact_row(name="scratchpad", content="Notes here", version=5),
@@ -94,10 +95,12 @@ class TestListAction:
         result = await manage_artifacts(action="list")
 
         assert result["success"] is True
-        assert result["count"] == 3
-        assert len(result["artifacts"]) == 3
+        assert result["count"] == 4
+        assert len(result["artifacts"]) == 4
 
         artifact_names = [a["name"] for a in result["artifacts"]]
+        assert artifact_names == ["soul", "persona", "ecosystem", "scratchpad"]
+        assert "soul" in artifact_names
         assert "ecosystem" in artifact_names
         assert "persona" in artifact_names
         assert "scratchpad" in artifact_names
@@ -141,6 +144,15 @@ class TestViewAction:
         assert result["success"] is False
         assert "Name is required" in result["error"]
 
+    async def test_view_action_unknown_artifact_returns_error(self):
+        mock_db = _make_mock_db()
+        manage_artifacts._handler_deps = {"database_service": mock_db}
+
+        result = await manage_artifacts(action="view", name="not-real")
+
+        assert result["success"] is False
+        assert "Known artifacts" in result["error"]
+
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_view_action_not_found_returns_error(self, mock_repo_cls):
         mock_db = _make_mock_db()
@@ -150,11 +162,11 @@ class TestViewAction:
         mock_repo_instance.get_active = AsyncMock(return_value=None)
         mock_repo_cls.return_value = mock_repo_instance
 
-        result = await manage_artifacts(action="view", name="nonexistent")
+        result = await manage_artifacts(action="view", name="persona")
 
         assert result["success"] is False
         assert "No active artifact found" in result["error"]
-        assert "nonexistent" in result["error"]
+        assert "persona" in result["error"]
 
 
 class TestProposeEditAction:
@@ -208,6 +220,15 @@ class TestProposeEditAction:
 
         assert result["success"] is False
         assert "Content is required" in result["error"]
+
+    async def test_propose_edit_unknown_artifact_returns_error(self):
+        mock_db = _make_mock_db()
+        manage_artifacts._handler_deps = {"database_service": mock_db}
+
+        result = await manage_artifacts(action="propose_edit", name="not-real", content="x")
+
+        assert result["success"] is False
+        assert "Known artifacts" in result["error"]
 
 
 class TestUpdateScratchpadAction:
@@ -305,6 +326,15 @@ class TestApproveAction:
         assert result["success"] is False
         assert "Name is required" in result["error"]
 
+    async def test_approve_unknown_artifact(self):
+        mock_db = _make_mock_db()
+        manage_artifacts._handler_deps = {"database_service": mock_db}
+
+        result = await manage_artifacts(action="approve", name="not-real", version=2)
+
+        assert result["success"] is False
+        assert "Known artifacts" in result["error"]
+
     async def test_approve_missing_version(self):
         mock_db = _make_mock_db()
         manage_artifacts._handler_deps = {"database_service": mock_db}
@@ -360,6 +390,15 @@ class TestHistoryAction:
         assert result["success"] is False
         assert "Name is required" in result["error"]
 
+    async def test_history_unknown_artifact(self):
+        mock_db = _make_mock_db()
+        manage_artifacts._handler_deps = {"database_service": mock_db}
+
+        result = await manage_artifacts(action="history", name="not-real")
+
+        assert result["success"] is False
+        assert "Known artifacts" in result["error"]
+
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_history_empty(self, mock_repo_cls):
         mock_db = _make_mock_db()
@@ -369,7 +408,7 @@ class TestHistoryAction:
         mock_repo_instance.get_history = AsyncMock(return_value=[])
         mock_repo_cls.return_value = mock_repo_instance
 
-        result = await manage_artifacts(action="history", name="nonexistent")
+        result = await manage_artifacts(action="history", name="persona")
 
         assert result["success"] is True
         assert result["count"] == 0
