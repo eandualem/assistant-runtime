@@ -201,6 +201,79 @@ def _render_background(background: dict[str, Any]) -> str:
     return f"Background: {' | '.join(parts)}"
 
 
+def _render_machines(machines: dict[str, Any]) -> str:
+    """Render XState machine states, context, and available transitions for the LLM.
+
+    Produces a compact summary of each machine's current state, runtime context,
+    and reachable transitions. Skips the full definition (too large for prompt).
+    """
+    if not machines:
+        return ""
+
+    lines: list[str] = ["Page machines:"]
+
+    for name, machine in machines.items():
+        if not isinstance(machine, dict):
+            continue
+
+        current_state = machine.get("current_state", "unknown")
+        lines.append(f"\n**{name}** (state: {current_state})")
+
+        # Context — compact key-value, skip internal/noisy keys
+        context = machine.get("context", {})
+        if isinstance(context, dict):
+            filtered = {
+                k: v for k, v in context.items()
+                if not k.startswith("_") and k != "definition"
+            }
+            if filtered:
+                if len(filtered) <= 5:
+                    # Compact one-liner
+                    parts = [f"{k}={_format_value(v, 0)}" for k, v in filtered.items()]
+                    lines.append(f"  Context: {', '.join(parts)}")
+                else:
+                    # Multi-line for readability
+                    lines.append("  Context:")
+                    for k, v in filtered.items():
+                        lines.append(f"    {k}: {_format_value(v, 4)}")
+
+        # Available transitions
+        transitions = machine.get("available_transitions", [])
+        if transitions:
+            lines.append("  Transitions:")
+            for t in transitions:
+                if not isinstance(t, dict):
+                    lines.append(f"  - {t}")
+                    continue
+                event_type = t.get("event_type", "?")
+                description = t.get("description", "")
+                line = f"  - {event_type}"
+                if description:
+                    line += f" — {description}"
+                params = t.get("params", [])
+                if params:
+                    param_strs = []
+                    for p in params:
+                        if isinstance(p, dict):
+                            p_name = p.get("name", "?")
+                            p_type = p.get("type", "")
+                            p_req = p.get("required", False)
+                            desc = f"{p_name} ({p_type}" if p_type else p_name
+                            if p_type:
+                                desc += ", required)" if p_req else ")"
+                            elif p_req:
+                                desc += " (required)"
+                            param_strs.append(desc)
+                    if param_strs:
+                        line += f" (params: {', '.join(param_strs)})"
+                lines.append(line)
+
+    # Only return if we rendered at least one machine beyond the header
+    if len(lines) <= 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _dashboard_context_fragment(machine_state: dict[str, Any] | None) -> str:
     """Dashboard context from frontend machine state."""
     if not machine_state:
@@ -223,6 +296,13 @@ def _dashboard_context_fragment(machine_state: dict[str, Any] | None) -> str:
         page_lines = _render_generic_data(page_data)
         if page_lines:
             sections.extend(page_lines)
+
+    # Page machines (XState machine states, context, transitions)
+    machines = active_page.get("machines", {})
+    if machines:
+        machines_text = _render_machines(machines)
+        if machines_text:
+            sections.append(machines_text)
 
     # Navigation targets
     navigation = machine_state.get("navigation", [])
@@ -329,6 +409,19 @@ def _smart_hints(machine_state: dict[str, Any] | None) -> str:
                     f"{issue_count} issues shown with no filters — "
                     "consider filtering by entity or priority for focus."
                 )
+
+    # Any page: machines in error states
+    machines = active_page.get("machines", {})
+    if machines:
+        error_machines = [
+            name for name, m in machines.items()
+            if isinstance(m, dict) and "error" in str(m.get("current_state", "")).lower()
+        ]
+        if error_machines:
+            hints.append(
+                f"Machines in error state ({', '.join(error_machines)}) — "
+                "investigate or suggest recovery actions."
+            )
 
     if not hints:
         return ""
