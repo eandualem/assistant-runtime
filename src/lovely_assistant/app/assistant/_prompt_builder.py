@@ -7,6 +7,7 @@ a context fragment.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -202,76 +203,17 @@ def _render_background(background: dict[str, Any]) -> str:
 
 
 def _render_machines(machines: dict[str, Any]) -> str:
-    """Render XState machine states, context, and available transitions for the LLM.
+    """Serialize page machines as-is for the LLM prompt.
 
-    Produces a compact summary of each machine's current state, runtime context,
-    and reachable transitions. Skips the full definition (too large for prompt).
+    The dashboard already curates what it sends — event types, guards,
+    transition targets, definitions, and context are all needed by the
+    assistant to call ``ui_send_event`` correctly. No transformation,
+    no field extraction — just faithful JSON serialization.
     """
     if not machines:
         return ""
 
-    lines: list[str] = ["Page machines:"]
-
-    for name, machine in machines.items():
-        if not isinstance(machine, dict):
-            continue
-
-        current_state = machine.get("current_state", "unknown")
-        lines.append(f"\n**{name}** (state: {current_state})")
-
-        # Context — compact key-value, skip internal/noisy keys
-        context = machine.get("context", {})
-        if isinstance(context, dict):
-            filtered = {
-                k: v for k, v in context.items()
-                if not k.startswith("_") and k != "definition"
-            }
-            if filtered:
-                if len(filtered) <= 5:
-                    # Compact one-liner
-                    parts = [f"{k}={_format_value(v, 0)}" for k, v in filtered.items()]
-                    lines.append(f"  Context: {', '.join(parts)}")
-                else:
-                    # Multi-line for readability
-                    lines.append("  Context:")
-                    for k, v in filtered.items():
-                        lines.append(f"    {k}: {_format_value(v, 4)}")
-
-        # Available transitions
-        transitions = machine.get("available_transitions", [])
-        if transitions:
-            lines.append("  Transitions:")
-            for t in transitions:
-                if not isinstance(t, dict):
-                    lines.append(f"  - {t}")
-                    continue
-                event_type = t.get("event_type", "?")
-                description = t.get("description", "")
-                line = f"  - {event_type}"
-                if description:
-                    line += f" — {description}"
-                params = t.get("params", [])
-                if params:
-                    param_strs = []
-                    for p in params:
-                        if isinstance(p, dict):
-                            p_name = p.get("name", "?")
-                            p_type = p.get("type", "")
-                            p_req = p.get("required", False)
-                            desc = f"{p_name} ({p_type}" if p_type else p_name
-                            if p_type:
-                                desc += ", required)" if p_req else ")"
-                            elif p_req:
-                                desc += " (required)"
-                            param_strs.append(desc)
-                    if param_strs:
-                        line += f" (params: {', '.join(param_strs)})"
-                lines.append(line)
-
-    # Only return if we rendered at least one machine beyond the header
-    if len(lines) <= 1:
-        return ""
-    return "\n".join(lines)
+    return "Page machines:\n```json\n" + json.dumps(machines, indent=2, default=str) + "\n```"
 
 
 def _dashboard_context_fragment(machine_state: dict[str, Any] | None) -> str:
