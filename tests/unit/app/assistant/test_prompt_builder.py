@@ -7,6 +7,7 @@ from lovely_assistant.app.assistant._prompt_builder import (
     _dashboard_context_fragment,
     _datetime_fragment,
     _mcp_connections_fragment,
+    _render_machines,
     _smart_hints,
     _working_memory_fragment,
     build_system_prompt,
@@ -348,6 +349,50 @@ class TestDashboardContextFragment:
         frag = _dashboard_context_fragment(state)
         assert "agents page" in frag
 
+    def test_machines_rendered_in_dashboard_context(self):
+        state = {
+            "active_page": {
+                "name": "agents",
+                "data": {"sessions": [{"name": "leo", "state": "idle"}]},
+                "machines": {
+                    "agents_machine": {
+                        "current_state": "sessions.loaded",
+                        "context": {"count": 5},
+                        "available_transitions": [
+                            {"event_type": "SELECT", "description": "Select agent"},
+                        ],
+                    }
+                },
+            }
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "agents page" in frag
+        assert "Page machines:" in frag
+        assert "agents_machine" in frag
+        assert "sessions.loaded" in frag
+        assert "SELECT" in frag
+
+    def test_no_machines_key_no_machines_section(self):
+        state = {
+            "active_page": {
+                "name": "agents",
+                "data": {"sessions": []},
+            }
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Page machines:" not in frag
+
+    def test_empty_machines_no_section(self):
+        state = {
+            "active_page": {
+                "name": "agents",
+                "data": {},
+                "machines": {},
+            }
+        }
+        frag = _dashboard_context_fragment(state)
+        assert "Page machines:" not in frag
+
     def test_missing_active_page_logs_warning(self):
         """machine_state present but no active_page triggers a warning log."""
         from io import StringIO
@@ -406,6 +451,155 @@ class TestDashboardContextFragment:
         }
         frag = _dashboard_context_fragment(state)
         assert "Navigation:" not in frag
+
+
+class TestRenderMachines:
+    def test_empty_machines_returns_empty(self):
+        assert _render_machines({}) == ""
+
+    def test_none_returns_empty(self):
+        assert _render_machines(None) == ""
+
+    def test_single_machine_with_state(self):
+        machines = {
+            "agents_machine": {
+                "current_state": "sessions.loaded",
+                "context": {},
+                "available_transitions": [],
+            }
+        }
+        result = _render_machines(machines)
+        assert "agents_machine" in result
+        assert "sessions.loaded" in result
+        assert "Page machines:" in result
+
+    def test_machine_with_transitions(self):
+        machines = {
+            "agents_machine": {
+                "current_state": "idle",
+                "context": {},
+                "available_transitions": [
+                    {
+                        "event_type": "SELECT_AGENT",
+                        "description": "Select an agent",
+                        "params": [
+                            {"name": "agentId", "type": "string", "required": True}
+                        ],
+                    },
+                    {"event_type": "REFRESH", "description": "Refresh list"},
+                ],
+            }
+        }
+        result = _render_machines(machines)
+        assert "SELECT_AGENT" in result
+        assert "Select an agent" in result
+        assert "agentId" in result
+        assert "string" in result
+        assert "required" in result
+        assert "REFRESH" in result
+
+    def test_machine_with_context(self):
+        machines = {
+            "tasks_machine": {
+                "current_state": "loaded",
+                "context": {"selected_issue": 42, "filter": "open"},
+                "available_transitions": [],
+            }
+        }
+        result = _render_machines(machines)
+        assert "selected_issue" in result
+        assert "42" in result
+        assert "filter" in result
+
+    def test_definition_preserved(self):
+        """Machine definitions are passed through as-is — the dashboard curates what it sends."""
+        machines = {
+            "test_machine": {
+                "current_state": "idle",
+                "definition": {
+                    "states": {"idle": {}, "active": {}},
+                    "initial": "idle",
+                },
+                "context": {},
+                "available_transitions": [],
+            }
+        }
+        result = _render_machines(machines)
+        assert "Page machines:" in result
+        assert '"states"' in result
+        assert '"initial"' in result
+
+    def test_multiple_machines(self):
+        machines = {
+            "agents_machine": {
+                "current_state": "loaded",
+                "context": {},
+                "available_transitions": [],
+            },
+            "sidebar_machine": {
+                "current_state": "expanded",
+                "context": {"width": 300},
+                "available_transitions": [
+                    {"event_type": "TOGGLE", "description": "Toggle sidebar"},
+                ],
+            },
+        }
+        result = _render_machines(machines)
+        assert "agents_machine" in result
+        assert "sidebar_machine" in result
+        assert "TOGGLE" in result
+
+    def test_transition_without_params(self):
+        machines = {
+            "m": {
+                "current_state": "idle",
+                "context": {},
+                "available_transitions": [
+                    {"event_type": "REFRESH"},
+                ],
+            }
+        }
+        result = _render_machines(machines)
+        assert "REFRESH" in result
+
+    def test_output_is_json_serialized(self):
+        """Machines are serialized as JSON — no transformation, no field extraction."""
+        machines = {
+            "m": {
+                "current_state": "idle",
+                "context": {"_internal": True, "visible": "yes"},
+                "available_transitions": [
+                    {"event_type": "user.focusSession", "guard": "hasSelection"}
+                ],
+                "definition": {"id": "m", "initial": "idle"},
+            }
+        }
+        result = _render_machines(machines)
+        assert "```json" in result
+        # All fields preserved — including _internal and definition
+        assert '"_internal"' in result
+        assert '"definition"' in result
+        assert '"guard"' in result
+        assert '"user.focusSession"' in result
+
+    def test_transition_without_description(self):
+        machines = {
+            "m": {
+                "current_state": "idle",
+                "context": {},
+                "available_transitions": [
+                    {
+                        "event_type": "LOAD",
+                        "params": [
+                            {"name": "id", "type": "string", "required": True}
+                        ],
+                    },
+                ],
+            }
+        }
+        result = _render_machines(machines)
+        assert "LOAD" in result
+        assert "id" in result
 
 
 class TestSmartHints:
@@ -512,6 +706,42 @@ class TestSmartHints:
         }
         assert _smart_hints(state) == ""
 
+    def test_error_machine_hint(self):
+        state = {
+            "active_page": {
+                "name": "agents",
+                "data": {},
+                "machines": {
+                    "data_machine": {
+                        "current_state": "error.fetch_failed",
+                        "context": {},
+                        "available_transitions": [],
+                    }
+                },
+            }
+        }
+        hints = _smart_hints(state)
+        assert "error" in hints.lower()
+        assert "data_machine" in hints
+
+    def test_no_error_machine_no_hint(self):
+        state = {
+            "active_page": {
+                "name": "agents",
+                "data": {},
+                "machines": {
+                    "agents_machine": {
+                        "current_state": "loaded",
+                        "context": {},
+                        "available_transitions": [],
+                    }
+                },
+            }
+        }
+        hints = _smart_hints(state)
+        # No error hint — either empty or just the existing hints
+        assert "error" not in hints.lower() or hints == ""
+
 
 class TestBuildSystemPrompt:
     def test_contains_soul(self):
@@ -580,6 +810,31 @@ class TestBuildSystemPrompt:
             artifacts=REQUIRED_ARTIFACTS,
         )
         assert "agents page" in result.content
+
+    def test_includes_machine_state_with_machines(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            machine_state={
+                "active_page": {
+                    "name": "agents",
+                    "data": {},
+                    "machines": {
+                        "agents_machine": {
+                            "current_state": "sessions.loaded",
+                            "context": {},
+                            "available_transitions": [
+                                {"event_type": "REFRESH", "description": "Refresh"},
+                            ],
+                        }
+                    },
+                },
+            },
+            artifacts=REQUIRED_ARTIFACTS,
+        )
+        assert "Page machines:" in result.content
+        assert "agents_machine" in result.content
+        assert "REFRESH" in result.content
 
     def test_includes_working_memory(self):
         result = build_system_prompt(
