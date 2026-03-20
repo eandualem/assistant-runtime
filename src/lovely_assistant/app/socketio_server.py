@@ -87,7 +87,11 @@ class AssistantNamespace(socketio.AsyncNamespace):
         session_id = data["session_id"]
 
         # Guard: reject if stream already active for this session
-        if session_id in self._active_streams:
+        active_task = self._active_streams.get(session_id)
+        if active_task is not None and active_task.done():
+            self._active_streams.pop(session_id, None)
+            active_task = None
+        if active_task is not None:
             await self.emit(
                 "assistant:error",
                 {"type": "conflict", "message": "Stream already active for this session"},
@@ -129,6 +133,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
         event_count = 0
         last_event_type: str | None = None
         last_socket_event: str | None = None
+        released_session = False
         try:
             async for event in self._streaming_service.stream_message(request):
                 event_type = event.get("type", "")
@@ -141,8 +146,22 @@ class AssistantNamespace(socketio.AsyncNamespace):
                     else:
                         socket_event = "assistant:unknown"
                 last_socket_event = socket_event
+                is_terminal_completed = (
+                    event_type == "agent_status" and event.get("status") == "completed"
+                )
+                is_deferred_final = (
+                    event_type == "final_response"
+                    and event.get("pending_tool_call") is not None
+                )
+                if is_terminal_completed or is_deferred_final:
+                    # Release the session before notifying the client so an immediate
+                    # frontend-tool continuation can start on the same socket/session.
+                    self._active_streams.pop(session_id, None)
+                    released_session = True
                 await self.emit(socket_event, event, to=sid)
                 event_count += 1
+                if is_terminal_completed:
+                    break
             logger.info(
                 "[STREAM] _run_stream completed",
                 sid=sid,
@@ -173,3 +192,6 @@ class AssistantNamespace(socketio.AsyncNamespace):
                     {"type": "internal", "message": f"Stream failed: {e}"},
                     to=sid,
                 )
+        finally:
+            if not released_session:
+                self._active_streams.pop(session_id, None)
