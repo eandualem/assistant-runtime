@@ -167,6 +167,36 @@ class TestOnAssistantMessage:
             await ns._active_streams["sess-1"]
 
     @pytest.mark.asyncio
+    async def test_discards_completed_task_before_duplicate_check(self):
+        ns = AssistantNamespace("/assistant")
+        ns.emit = AsyncMock()
+
+        done_task = asyncio.get_event_loop().create_future()
+        done_task.set_result(None)
+        ns._active_streams["sess-1"] = asyncio.ensure_future(done_task)
+
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
+
+        await ns.on_assistant_message("sid-1", {"session_id": "sess-1", "message": "Retry"})
+
+        assert "sess-1" in ns._active_streams
+        emitted = [call.args[0] for call in ns.emit.call_args_list]
+        assert "assistant:error" not in emitted
+
+        task = ns._active_streams["sess-1"]
+        await task
+        await asyncio.sleep(0)
+        assert "sess-1" not in ns._active_streams
+
+    @pytest.mark.asyncio
     async def test_validates_request_missing_fields(self):
         ns = AssistantNamespace("/assistant")
         ns.emit = AsyncMock()
@@ -371,3 +401,124 @@ class TestRunStream:
         # Give event loop a cycle for callback
         await asyncio.sleep(0)
         assert "sess-cleanup" not in ns._active_streams
+
+    @pytest.mark.asyncio
+    async def test_releases_session_before_completed_emit(self):
+        ns = AssistantNamespace("/assistant")
+        emitted: list[tuple[str, dict]] = []
+
+        async def emit(event_name, payload, **kwargs):
+            if event_name == "assistant:status" and payload.get("status") == "completed":
+                assert "sess-1" not in ns._active_streams
+            emitted.append((event_name, payload))
+
+        ns.emit = AsyncMock(side_effect=emit)
+
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            yield {"type": "agent_status", "status": "started"}
+            yield {"type": "final_response", "content": None, "model": "m"}
+            yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
+        ns._active_streams["sess-1"] = asyncio.current_task()
+
+        request = AssistantRequest(session_id="sess-1", message="Hello")
+        await ns._run_stream("sid-1", "sess-1", request)
+
+        assert [name for name, _ in emitted] == [
+            "assistant:status",
+            "assistant:final_response",
+            "assistant:status",
+        ]
+        assert "sess-1" not in ns._active_streams
+
+    @pytest.mark.asyncio
+    async def test_releases_session_before_deferred_final_response_emit(self):
+        """Session must be released before emitting final_response with pending_tool_call.
+
+        The client fires the continuation immediately upon receiving final_response
+        with pending_tool_call. If the session is still in _active_streams at that
+        point, the continuation is rejected with 'Stream already active'.
+        """
+        ns = AssistantNamespace("/assistant")
+        emitted: list[tuple[str, dict]] = []
+
+        async def emit(event_name, payload, **kwargs):
+            if (
+                event_name == "assistant:final_response"
+                and payload.get("pending_tool_call") is not None
+            ):
+                # Session must already be released when this event is emitted
+                assert "sess-1" not in ns._active_streams
+            emitted.append((event_name, payload))
+
+        ns.emit = AsyncMock(side_effect=emit)
+
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            yield {"type": "agent_status", "status": "started"}
+            yield {
+                "type": "final_response",
+                "content": None,
+                "model": "m",
+                "pending_tool_call": {
+                    "call_id": "call_123",
+                    "tool_name": "look_at_screen",
+                    "arguments": {},
+                },
+            }
+            yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
+        ns._active_streams["sess-1"] = asyncio.current_task()
+
+        request = AssistantRequest(session_id="sess-1", message="Hello")
+        await ns._run_stream("sid-1", "sess-1", request)
+
+        assert [name for name, _ in emitted] == [
+            "assistant:status",
+            "assistant:final_response",
+            "assistant:status",
+        ]
+        assert "sess-1" not in ns._active_streams
+
+    @pytest.mark.asyncio
+    async def test_no_early_release_for_normal_final_response(self):
+        """Normal final_response (no pending_tool_call) does NOT early-release."""
+        ns = AssistantNamespace("/assistant")
+        emitted: list[tuple[str, dict]] = []
+
+        async def emit(event_name, payload, **kwargs):
+            if event_name == "assistant:final_response" and "pending_tool_call" not in payload:
+                # Session should still be active — only released at completed
+                assert "sess-1" in ns._active_streams
+            emitted.append((event_name, payload))
+
+        ns.emit = AsyncMock(side_effect=emit)
+
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            yield {"type": "agent_status", "status": "started"}
+            yield {"type": "final_response", "content": "Hello!", "model": "m"}
+            yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
+        ns._active_streams["sess-1"] = asyncio.current_task()
+
+        request = AssistantRequest(session_id="sess-1", message="Hello")
+        await ns._run_stream("sid-1", "sess-1", request)
+
+        assert "sess-1" not in ns._active_streams
