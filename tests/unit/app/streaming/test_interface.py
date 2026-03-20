@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai import DeferredToolRequests
 from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
 from pydantic_ai.messages import (
     ModelRequest,
@@ -278,6 +280,31 @@ class TestStreamNewMessage:
         assert events[-1]["status"] == "completed"
 
     @pytest.mark.asyncio
+    async def test_emits_started_before_agent_setup_completes(self):
+        sessions = SessionStore()
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        setup_gate = asyncio.Event()
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+
+        async def slow_prepare(request, session_context):
+            await setup_gate.wait()
+            return _make_default_agent_context(agent=mock_agent)
+
+        service._assistant_service.prepare_agent_context = AsyncMock(side_effect=slow_prepare)
+
+        stream = service.stream_message(_make_request())
+        first_event = await anext(stream)
+
+        assert first_event == {"type": "agent_status", "status": "started"}
+
+        setup_gate.set()
+        _ = [e async for e in stream]
+
+    @pytest.mark.asyncio
     async def test_emits_final_response(self):
         mock_run = _MockAgentRun(nodes=[], output="Hello world")
         mock_agent = MagicMock()
@@ -445,7 +472,7 @@ class TestStreamSetupErrors:
         events = [e async for e in service.stream_message(request)]
 
         assert any(
-            "has no pending tool call" in e.get("message", "")
+            "no longer has a pending tool call" in e.get("message", "")
             for e in events
             if e["type"] == "error"
         )
@@ -480,6 +507,36 @@ class TestStreamSetupErrors:
             e.get("type") == "final_response" and e.get("error_type") == "session_error"
             for e in events
         )
+
+    @pytest.mark.asyncio
+    async def test_new_message_clears_pending_frontend_tool(self):
+        """A new message while a frontend tool is pending clears the pending state."""
+        sessions = SessionStore()
+        session_context = sessions.get_context("test-session")
+        session_context["pending_tool_call_id"] = "call_navigate_001"
+        session_context["pending_tool_name"] = "navigate"
+
+        mock_run = _MockAgentRun(nodes=[], output="OK, moving on.")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(
+            sessions=sessions,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+
+        request = _make_request(message="Start something else")
+
+        events = [e async for e in service.stream_message(request)]
+
+        # Pending state should be cleared
+        assert "pending_tool_call_id" not in session_context
+        assert "pending_tool_name" not in session_context
+
+        # The new message proceeded — final_response has content (not an error)
+        final = [e for e in events if e["type"] == "final_response"]
+        assert len(final) == 1
+        assert final[0].get("error") is not True
 
 
 class TestStreamExecutionErrors:
@@ -1955,6 +2012,71 @@ class TestContinuationHistory:
         # Should not have is_continuation=True (either absent or False)
         assert call_kwargs.kwargs.get("is_continuation", False) is False
 
+    @pytest.mark.asyncio
+    async def test_continuation_does_not_reemit_same_frontend_tool_call(self):
+        tc = ToolCallPart(
+            tool_name="navigate",
+            args={"page": "agents"},
+            tool_call_id="call_navigate_001",
+        )
+        call_node = _make_call_tools_node([tc])
+        mock_run = _MockAgentRun(nodes=[call_node], output="Continued response")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        sessions = SessionStore()
+        sessions.get_context("test-session")["pending_tool_call_id"] = "call_navigate_001"
+        sessions.get_context("test-session")["pending_tool_name"] = "navigate"
+        service = _make_service(
+            sessions=sessions,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        await service.start()
+
+        request = _make_request(
+            message="",
+            tool_call_id="call_navigate_001",
+            tool_result={"status": "ok"},
+        )
+
+        events = [e async for e in service.stream_message(request)]
+
+        assert not any(e["type"] == "tool_call" for e in events)
+        assert any(
+            e["type"] == "final_response" and e.get("content") == "Continued response" for e in events
+        )
+
+
+class TestDeferredFrontendToolProtocol:
+    @pytest.mark.asyncio
+    async def test_rejects_multiple_deferred_frontend_tools(self):
+        deferred = DeferredToolRequests(
+            calls=[
+                ToolCallPart(tool_name="navigate", args={"page": "agents"}, tool_call_id="call_nav_1"),
+                ToolCallPart(
+                    tool_name="ui_send_event",
+                    args={"event_type": "user.refresh"},
+                    tool_call_id="call_ui_1",
+                ),
+            ]
+        )
+        mock_run = _MockAgentRun(nodes=[], output=deferred)
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        await service.start()
+
+        events = [e async for e in service.stream_message(_make_request())]
+
+        assert any(
+            "expected exactly 1 deferred tool call, got 2" in e.get("message", "")
+            for e in events
+            if e["type"] == "error"
+        )
+        assert any(
+            e.get("type") == "final_response" and e.get("error_type") == "internal"
+            for e in events
+        )
+
 
 class TestContinuationScreenshots:
     """Continuation requests can supply fresh screenshots via tool_result payloads."""
@@ -2237,6 +2359,81 @@ class TestStreamingWorkingMemory:
             events.append(event)
 
         service._assistant_service._update_working_memory.assert_not_called()
+
+
+class TestStreamingTraceLifecycle:
+    @pytest.mark.asyncio
+    async def test_new_message_closes_trace_before_completed(self):
+        order: list[str] = []
+
+        class _TraceCM:
+            def __enter__(self):
+                order.append("enter")
+                return MagicMock()
+
+            def __exit__(self, exc_type, exc, tb):
+                order.append("exit")
+                return False
+
+        mock_run = _MockAgentRun(nodes=[], output="Done")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        service._save_trace = AsyncMock(side_effect=lambda *a, **k: order.append("save_trace"))
+        service._assistant_service._update_working_memory = AsyncMock()
+        await service.start()
+
+        with patch(
+            "lovely_assistant.app.streaming.interface.create_request_trace",
+            side_effect=lambda **kwargs: (
+                order.append(f"current={kwargs['set_current_observation']}") or _TraceCM()
+            ),
+        ):
+            async for event in service.stream_message(_make_request()):
+                if event["type"] == "agent_status" and event["status"] == "completed":
+                    assert order == ["current=False", "enter", "exit", "save_trace"]
+
+    @pytest.mark.asyncio
+    async def test_continuation_closes_trace_before_completed(self):
+        order: list[str] = []
+
+        class _TraceCM:
+            def __enter__(self):
+                order.append("enter")
+                return MagicMock()
+
+            def __exit__(self, exc_type, exc, tb):
+                order.append("exit")
+                return False
+
+        mock_run = _MockAgentRun(nodes=[], output="Continued response")
+        mock_agent = MagicMock()
+        mock_agent.iter = MagicMock(return_value=mock_run)
+        sessions = SessionStore()
+        sessions.get_context("test-session")["pending_tool_call_id"] = "call_ui_send_event_001"
+        sessions.get_context("test-session")["pending_tool_name"] = "ui_send_event"
+        service = _make_service(
+            sessions=sessions,
+            agent_context=_make_default_agent_context(agent=mock_agent),
+        )
+        service._save_trace = AsyncMock(side_effect=lambda *a, **k: order.append("save_trace"))
+        await service.start()
+
+        request = _make_request(
+            message="",
+            tool_call_id="call_ui_send_event_001",
+            tool_result={"status": "ok"},
+        )
+
+        with patch(
+            "lovely_assistant.app.streaming.interface.create_request_trace",
+            side_effect=lambda **kwargs: (
+                order.append(f"current={kwargs['set_current_observation']}") or _TraceCM()
+            ),
+        ):
+            async for event in service.stream_message(request):
+                if event["type"] == "agent_status" and event["status"] == "completed":
+                    assert order == ["current=False", "enter", "exit", "save_trace"]
 
     @pytest.mark.asyncio
     async def test_working_memory_failure_does_not_break_stream(self):
