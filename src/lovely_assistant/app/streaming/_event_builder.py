@@ -27,13 +27,22 @@ def make_tool_call_event(
     tool_name: str,
     arguments: dict[str, Any],
     call_id: str,
+    *,
+    category: str = "backend",
 ) -> dict[str, Any]:
-    """Create a tool_call event (backend or frontend deferred tool)."""
+    """Create a tool_call event.
+
+    Args:
+        category: "backend" (executed server-side) or "frontend" (deferred to dashboard).
+            The frontend uses this to decide whether to show a spinner (backend)
+            or execute the tool and send a continuation (frontend).
+    """
     return {
         "type": "tool_call",
         "tool_name": tool_name,
         "arguments": arguments,
         "call_id": call_id,
+        "category": category,
     }
 
 

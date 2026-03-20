@@ -52,6 +52,7 @@ from lovely_assistant.app.streaming.exceptions import (
     StreamingError,
     StreamSetupError,
 )
+from lovely_assistant.services.tools._frontend_tools import FRONTEND_TOOL_SCHEMAS
 from lovely_assistant.services.tools._registry import get_tool_invalidates
 from lovely_assistant.services.tools._request_context import assistant_request_context
 from lovely_assistant.services.tools._screen_tools import (
@@ -60,7 +61,7 @@ from lovely_assistant.services.tools._screen_tools import (
     set_current_screenshot,
     strip_screenshot_from_tool_result,
 )
-from lovely_assistant.services.tracing import create_request_trace, create_span
+from lovely_assistant.services.tracing import create_request_trace
 
 if TYPE_CHECKING:
     from lovely_assistant.app.assistant.config import AssistantConfig
@@ -208,6 +209,16 @@ class StreamingService:
                     f"tool call '{pending_tool_call_id}' for session '{session_id}'"
                 )
 
+        except SessionError:
+            raise
+        except Exception as e:
+            raise StreamSetupError(f"Continuation setup failed: {e}") from e
+
+        started = coordinator.try_started()
+        if started:
+            yield started
+
+        try:
             if emit_debug:
                 yield coordinator.track_debug(
                     make_debug_request_event(
@@ -219,16 +230,16 @@ class StreamingService:
                     )
                 )
 
-            # Build agent context (tools, prompt, etc.)
-            ctx = await self._assistant_service.prepare_agent_context(request, session_context)
-            resolved_model = ctx.resolved_model
-
-            # Load history and build deferred results
             history = self._sessions.get_history(session_id)
-            with create_span("history-preparation"):
-                history_result = await self._history.prepare_history_with_metadata(
-                    history, session_context, is_continuation=True
-                )
+            (ctx, agent_setup_ms), (history_result, history_prep_ms) = await asyncio.gather(
+                self._timed_async(self._assistant_service.prepare_agent_context(request, session_context)),
+                self._timed_async(
+                    self._history.prepare_history_with_metadata(
+                        history, session_context, is_continuation=True
+                    )
+                ),
+            )
+            resolved_model = ctx.resolved_model
             prepared_history = history_result.history
 
             # Extract screenshot from tool_result BEFORE passing to LLM.
@@ -246,42 +257,62 @@ class StreamingService:
 
             deferred = DeferredToolResults(calls={request.tool_call_id: tool_result_for_llm})
 
-        except SessionError:
-            raise
-        except Exception as e:
-            raise StreamSetupError(f"Continuation setup failed: {e}") from e
+            logger.info(
+                "[STREAM] Continuation setup ready",
+                session_id=session_id,
+                model=resolved_model,
+                agent_setup_ms=agent_setup_ms,
+                history_prep_ms=history_prep_ms,
+                pre_stream_ms=(time.monotonic() - start_time) * 1000,
+            )
 
-        try:
             # Root trace — manual context manager (generator cannot use `with`)
             trace_cm = create_request_trace(
                 session_id=session_id,
                 model=resolved_model,
                 is_continuation=True,
                 input_message=request.message or "(continuation)",
+                set_current_observation=False,
             )
             trace_cm.__enter__()
         except Exception as e:
-            raise StreamSetupError(f"Continuation trace setup failed: {e}") from e
+            error_type = "session_error" if isinstance(e, SessionError) else "setup_error"
+            retry_allowed = not isinstance(e, SessionError)
+            logger.error(
+                "[STREAM] Continuation setup failed after started",
+                session_id=session_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            for event in self._iter_setup_failure_events(
+                coordinator,
+                session_id=session_id,
+                message=f"Setup failed: {e}",
+                error_type=error_type,
+                retry_allowed=retry_allowed,
+            ):
+                yield event
+            return
 
         # Streaming phase
-        started = coordinator.try_started()
-        if started:
-            yield started
-
         _history_saved = False
         try:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
                 with assistant_request_context(session_id):
-                    async with ctx.agent.iter(
-                        None,
-                        message_history=prepared_history if prepared_history else None,
-                        usage_limits=ctx.usage_limits,
-                        deferred_tool_results=deferred,
-                    ) as run:
-                        async for event in self._iterate_run(
-                            run, coordinator, resolved_model, emit_debug=emit_debug
-                        ):
-                            yield event
+                        async with ctx.agent.iter(
+                            None,
+                            message_history=prepared_history if prepared_history else None,
+                            usage_limits=ctx.usage_limits,
+                            deferred_tool_results=deferred,
+                        ) as run:
+                            async for event in self._iterate_run(
+                                run,
+                                coordinator,
+                                resolved_model,
+                                emit_debug=emit_debug,
+                                suppress_tool_call_ids={request.tool_call_id},
+                            ):
+                                yield event
 
             await self._sessions.save_history_async(
                 session_id, sanitize_image_tool_returns(list(run.result.all_messages()))
@@ -308,20 +339,7 @@ class StreamingService:
             output = run.result.output
             if isinstance(output, DeferredToolRequests):
                 # tool_call already emitted during _iterate_run() — just store pending state
-                pending_info: dict[str, Any] | None = None
-                if output.calls:
-                    first = output.calls[0]
-                    session_context["pending_tool_call_id"] = first.tool_call_id
-                    session_context["pending_tool_name"] = first.tool_name
-                    try:
-                        args = first.args_as_dict()
-                    except Exception:
-                        args = {}
-                    pending_info = {
-                        "tool_name": first.tool_name,
-                        "call_id": first.tool_call_id,
-                        "arguments": args,
-                    }
+                pending_info = self._store_pending_frontend_tool(output, session_context)
 
                 final = coordinator.try_final_response(
                     None,
@@ -429,15 +447,13 @@ class StreamingService:
                     )
                 )
 
-            completed = coordinator.try_completed()
-            if completed:
-                yield completed
-
             duration_ms = (time.monotonic() - start_time) * 1000
             if emit_debug:
                 yield coordinator.track_debug(make_debug_completed_event(duration_ms=duration_ms))
 
             screenshot = request.images[0] if request.images else None
+            with contextlib.suppress(Exception):
+                trace_cm.__exit__(None, None, None)
             await self._save_trace(
                 session_id,
                 coordinator.debug_events,
@@ -446,8 +462,9 @@ class StreamingService:
                 screenshot=screenshot,
             )
 
-            with contextlib.suppress(Exception):
-                trace_cm.__exit__(None, None, None)
+            completed = coordinator.try_completed()
+            if completed:
+                yield completed
 
     async def _stream_new_message(self, request: AssistantRequest) -> AsyncIterator[dict[str, Any]]:
         """Stream a fresh user message."""
@@ -459,8 +476,19 @@ class StreamingService:
         try:
             session_id = request.session_id
             session_context = await self._sessions.get_context_async(session_id)
+            self._ensure_no_pending_frontend_tool(session_context, session_id)
             turn_number = self._sessions.increment_turn(session_id)
 
+        except SessionError:
+            raise
+        except Exception as e:
+            raise StreamSetupError(f"Stream setup failed: {e}") from e
+
+        started = coordinator.try_started()
+        if started:
+            yield started
+
+        try:
             # Debug: request
             if emit_debug:
                 yield coordinator.track_debug(
@@ -474,10 +502,16 @@ class StreamingService:
                     )
                 )
 
-            # Build agent setup context (single source of truth for agent setup)
-            ctx = await self._assistant_service.prepare_agent_context(request, session_context)
+            history = self._sessions.get_history(session_id)
+            (ctx, agent_setup_ms), (history_result, history_prep_ms) = await asyncio.gather(
+                self._timed_async(self._assistant_service.prepare_agent_context(request, session_context)),
+                self._timed_async(
+                    self._history.prepare_history_with_metadata(history, session_context)
+                ),
+            )
             available_tools = ctx.available_tools
             resolved_model = ctx.resolved_model
+            prepared_history = history_result.history
 
             # Debug: tool selection
             if emit_debug:
@@ -510,13 +544,16 @@ class StreamingService:
                 )
 
             logger.info(
-                "[STREAM] Executing streaming request",
+                "[STREAM] Setup ready",
                 session_id=session_id,
                 model=resolved_model,
                 has_images=bool(request.images),
                 max_turns=ctx.effective_config.max_turns,
                 thinking_budget=ctx.effective_config.thinking_budget,
                 temperature=ctx.effective_config.temperature,
+                agent_setup_ms=agent_setup_ms,
+                history_prep_ms=history_prep_ms,
+                pre_stream_ms=(time.monotonic() - start_time) * 1000,
             )
 
             # Debug: agent config
@@ -531,13 +568,6 @@ class StreamingService:
                     )
                 )
 
-            history = self._sessions.get_history(session_id)
-            with create_span("history-preparation"):
-                history_result = await self._history.prepare_history_with_metadata(
-                    history, session_context
-                )
-            prepared_history = history_result.history
-
             # Debug: history
             if emit_debug:
                 yield coordinator.track_debug(
@@ -549,10 +579,7 @@ class StreamingService:
                         messages=history_result.message_summaries,
                     )
                 )
-        except Exception as e:
-            raise StreamSetupError(f"Stream setup failed: {e}") from e
 
-        try:
             # Root trace — manual context manager (generator cannot use `with`)
             trace_cm = create_request_trace(
                 session_id=session_id,
@@ -560,16 +587,29 @@ class StreamingService:
                 is_continuation=False,
                 input_message=request.message,
                 metadata={"has_images": bool(request.images)},
+                set_current_observation=False,
             )
             trace_cm.__enter__()
         except Exception as e:
-            raise StreamSetupError(f"Stream trace setup failed: {e}") from e
+            error_type = "session_error" if isinstance(e, SessionError) else "setup_error"
+            retry_allowed = not isinstance(e, SessionError)
+            logger.error(
+                "[STREAM] Setup failed after started",
+                session_id=session_id,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
+            for event in self._iter_setup_failure_events(
+                coordinator,
+                session_id=session_id,
+                message=f"Setup failed: {e}",
+                error_type=error_type,
+                retry_allowed=retry_allowed,
+            ):
+                yield event
+            return
 
         # Streaming phase
-        started = coordinator.try_started()
-        if started:
-            yield started
-
         # Store screenshot for look_at_screen tool (request-scoped ContextVar)
         screenshot = extract_screenshot_data_uri(
             images=request.images,
@@ -635,20 +675,7 @@ class StreamingService:
                 # Frontend tool call — store pending state for continuation.
                 # The tool_call event was already emitted during
                 # _iterate_run() (via _stream_node or CallToolsNode handler).
-                pending_info: dict[str, Any] | None = None
-                if output.calls:
-                    first = output.calls[0]
-                    session_context["pending_tool_call_id"] = first.tool_call_id
-                    session_context["pending_tool_name"] = first.tool_name
-                    try:
-                        args = first.args_as_dict()
-                    except Exception:
-                        args = {}
-                    pending_info = {
-                        "tool_name": first.tool_name,
-                        "call_id": first.tool_call_id,
-                        "arguments": args,
-                    }
+                pending_info = self._store_pending_frontend_tool(output, session_context)
 
                 final = coordinator.try_final_response(
                     None,
@@ -663,7 +690,7 @@ class StreamingService:
                     "[STREAM] Deferred tool request emitted",
                     session_id=session_id,
                     model=resolved_model,
-                    tool_name=first.tool_name if output.calls else None,
+                    tool_name=pending_info["tool_name"],
                     duration_ms=(time.monotonic() - start_time) * 1000,
                 )
             else:
@@ -782,10 +809,6 @@ class StreamingService:
                     )
                 )
 
-            completed = coordinator.try_completed()
-            if completed:
-                yield completed
-
             # Debug: completed
             duration_ms = (time.monotonic() - start_time) * 1000
             if emit_debug:
@@ -797,6 +820,8 @@ class StreamingService:
 
             # Persist trace
             screenshot = request.images[0] if request.images else None
+            with contextlib.suppress(Exception):
+                trace_cm.__exit__(None, None, None)
             await self._save_trace(
                 session_id,
                 coordinator.debug_events,
@@ -805,8 +830,98 @@ class StreamingService:
                 screenshot=screenshot,
             )
 
-            with contextlib.suppress(Exception):
-                trace_cm.__exit__(None, None, None)
+            completed = coordinator.try_completed()
+            if completed:
+                yield completed
+
+    def _ensure_no_pending_frontend_tool(
+        self, session_context: dict[str, Any], session_id: str
+    ) -> None:
+        """Reject fresh messages while a frontend tool result is still outstanding."""
+        pending_tool_call_id = session_context.get("pending_tool_call_id")
+        if not pending_tool_call_id:
+            return
+
+        pending_tool_name = session_context.get("pending_tool_name") or "unknown"
+        raise SessionError(
+            "New message rejected: "
+            f"session '{session_id}' is waiting for frontend tool "
+            f"'{pending_tool_name}' ({pending_tool_call_id}). "
+            "Send the continuation with that tool result before starting a new stream."
+        )
+
+    def _store_pending_frontend_tool(
+        self, output: DeferredToolRequests, session_context: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist the single supported frontend tool request and return final_response metadata."""
+        calls = list(output.calls)
+        if len(calls) != 1:
+            raise ValueError(
+                "Frontend tool protocol violation: "
+                f"expected exactly 1 deferred tool call, got {len(calls)}"
+            )
+
+        first = calls[0]
+        if first.tool_name not in FRONTEND_TOOL_SCHEMAS:
+            raise ValueError(
+                "Frontend tool protocol violation: "
+                f"unknown deferred frontend tool '{first.tool_name}'"
+            )
+
+        session_context["pending_tool_call_id"] = first.tool_call_id
+        session_context["pending_tool_name"] = first.tool_name
+        try:
+            args = first.args_as_dict()
+        except Exception:
+            args = {}
+        return {
+            "tool_name": first.tool_name,
+            "call_id": first.tool_call_id,
+            "arguments": args,
+        }
+
+    @staticmethod
+    def _iter_setup_failure_events(
+        coordinator: EventCoordinator,
+        *,
+        session_id: str,
+        message: str,
+        error_type: str,
+        retry_allowed: bool,
+        model: str = "unknown",
+    ) -> list[dict[str, Any]]:
+        """Build the terminal lifecycle envelope for failures after started was emitted."""
+        events: list[dict[str, Any]] = []
+        final = coordinator.try_final_response(
+            None,
+            model,
+            session_id=session_id,
+            error=True,
+            error_type=error_type,
+        )
+        if final:
+            events.append(final)
+        events.append(
+            coordinator.track(
+                make_error_event(
+                    message,
+                    error_type=error_type,
+                    terminal=True,
+                    retry_allowed=retry_allowed,
+                )
+            )
+        )
+        completed = coordinator.try_completed()
+        if completed:
+            events.append(completed)
+        return events
+
+    @staticmethod
+    async def _timed_async(awaitable: Any) -> tuple[Any, float]:
+        """Await an operation and return its result plus elapsed milliseconds."""
+        started_at = time.monotonic()
+        result = await awaitable
+        return result, (time.monotonic() - started_at) * 1000
 
     async def _iterate_run(
         self,
@@ -815,9 +930,11 @@ class StreamingService:
         model: str,
         *,
         emit_debug: bool = False,
+        suppress_tool_call_ids: set[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Iterate over agent run nodes, yielding streaming events."""
         _pending_image_sanitize = False
+        suppressed_tool_call_ids = suppress_tool_call_ids or set()
         while True:
             node = run.next_node
             if isinstance(node, End):
@@ -844,11 +961,14 @@ class StreamingService:
                 # model_response.tool_calls has the fully accumulated args.
                 all_calls = list(node.model_response.tool_calls)
                 for tc in all_calls:
+                    if tc.tool_call_id in suppressed_tool_call_ids:
+                        continue
                     try:
                         args = tc.args_as_dict()
                     except Exception:
                         args = {}
-                    evt = make_tool_call_event(tc.tool_name, args, tc.tool_call_id)
+                    category = "frontend" if tc.tool_name in FRONTEND_TOOL_SCHEMAS else "backend"
+                    evt = make_tool_call_event(tc.tool_name, args, tc.tool_call_id, category=category)
                     coordinator.track_debug(evt)
                     yield coordinator.track(evt)
 
