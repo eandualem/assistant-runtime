@@ -522,3 +522,87 @@ class TestRunStream:
         await ns._run_stream("sid-1", "sess-1", request)
 
         assert "sess-1" not in ns._active_streams
+
+    @pytest.mark.asyncio
+    async def test_completed_does_not_pop_continuation_task(self):
+        """After deferred early-release, completed must not pop a newer continuation task.
+
+        Race condition: deferred final_response releases session → client sends
+        continuation → new task registered → old generator yields completed →
+        completed must NOT pop the new task.
+        """
+        ns = AssistantNamespace("/assistant")
+        continuation_task = asyncio.get_event_loop().create_future()
+        continuation_task_obj = asyncio.ensure_future(continuation_task)
+
+        async def emit(event_name, payload, **kwargs):
+            # Simulate: after deferred final_response is emitted, a continuation
+            # task registers itself before completed arrives.
+            if (
+                event_name == "assistant:final_response"
+                and payload.get("pending_tool_call") is not None
+            ):
+                # Continuation starts and registers its task
+                ns._active_streams["sess-1"] = continuation_task_obj
+
+        ns.emit = AsyncMock(side_effect=emit)
+
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            yield {"type": "agent_status", "status": "started"}
+            yield {
+                "type": "final_response",
+                "content": None,
+                "model": "m",
+                "pending_tool_call": {"call_id": "c1", "tool_name": "ui_send_event", "arguments": {}},
+            }
+            yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
+        ns._active_streams["sess-1"] = asyncio.current_task()
+
+        request = AssistantRequest(session_id="sess-1", message="Hello")
+        await ns._run_stream("sid-1", "sess-1", request)
+
+        # The continuation's task must still be in _active_streams
+        assert ns._active_streams.get("sess-1") is continuation_task_obj
+
+        # Cleanup
+        continuation_task.set_result(None)
+        await continuation_task_obj
+
+    @pytest.mark.asyncio
+    async def test_done_callback_does_not_pop_continuation_task(self):
+        """done_callback from old task must not remove a newer continuation task."""
+        ns = AssistantNamespace("/assistant")
+
+        # Simulate: old task finishes, but continuation already registered
+        old_future = asyncio.get_event_loop().create_future()
+        old_task = asyncio.ensure_future(old_future)
+        ns._active_streams["sess-1"] = old_task
+
+        # Register the done_callback (same as on_assistant_message does)
+        def _done_cleanup(_t):
+            if ns._active_streams.get("sess-1") is _t:
+                ns._active_streams.pop("sess-1", None)
+
+        old_task.add_done_callback(_done_cleanup)
+
+        # Continuation starts and replaces the entry
+        new_future = asyncio.get_event_loop().create_future()
+        new_task = asyncio.ensure_future(new_future)
+        ns._active_streams["sess-1"] = new_task
+
+        # Old task completes — callback should NOT remove the new task
+        old_future.set_result(None)
+        await asyncio.sleep(0)  # let callback fire
+
+        assert ns._active_streams.get("sess-1") is new_task
+
+        # Cleanup
+        new_future.set_result(None)
+        await new_task

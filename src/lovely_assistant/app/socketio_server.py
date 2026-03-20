@@ -114,7 +114,14 @@ class AssistantNamespace(socketio.AsyncNamespace):
         # Start streaming task
         task = asyncio.create_task(self._run_stream(sid, session_id, request))
         self._active_streams[session_id] = task
-        task.add_done_callback(lambda _t: self._active_streams.pop(session_id, None))
+
+        def _done_cleanup(_t: asyncio.Task[None]) -> None:
+            # Only pop if WE are still the active stream for this session.
+            # A continuation may have already replaced us in _active_streams.
+            if self._active_streams.get(session_id) is _t:
+                self._active_streams.pop(session_id, None)
+
+        task.add_done_callback(_done_cleanup)
 
     async def on_assistant_cancel(self, sid: str, data: dict[str, Any]) -> None:
         """Cancel an active stream for a session."""
@@ -153,9 +160,11 @@ class AssistantNamespace(socketio.AsyncNamespace):
                     event_type == "final_response"
                     and event.get("pending_tool_call") is not None
                 )
-                if is_terminal_completed or is_deferred_final:
+                if not released_session and (is_terminal_completed or is_deferred_final):
                     # Release the session before notifying the client so an immediate
                     # frontend-tool continuation can start on the same socket/session.
+                    # Only pop once — a continuation may have already registered a new
+                    # task after the deferred final_response early-release.
                     self._active_streams.pop(session_id, None)
                     released_session = True
                 await self.emit(socket_event, event, to=sid)
