@@ -86,18 +86,21 @@ class AssistantNamespace(socketio.AsyncNamespace):
 
         session_id = data["session_id"]
 
-        # Guard: reject if stream already active for this session
+        # If a stream is already active for this session, cancel it and replace.
+        # This is more robust than rejecting — it handles slow LLM responses,
+        # hung generators, and timing races without requiring the client to retry.
         active_task = self._active_streams.get(session_id)
-        if active_task is not None and active_task.done():
-            self._active_streams.pop(session_id, None)
-            active_task = None
         if active_task is not None:
-            await self.emit(
-                "assistant:error",
-                {"type": "conflict", "message": "Stream already active for this session"},
-                to=sid,
-            )
-            return
+            if active_task.done():
+                self._active_streams.pop(session_id, None)
+            else:
+                active_task.cancel()
+                self._active_streams.pop(session_id, None)
+                logger.info(
+                    "Cancelled stale stream for new message",
+                    sid=sid,
+                    session_id=session_id,
+                )
 
         # Build request — catch Pydantic validation errors
         try:

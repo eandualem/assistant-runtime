@@ -144,27 +144,46 @@ class TestOnAssistantMessage:
         assert ns.emit.call_count >= 3
 
     @pytest.mark.asyncio
-    async def test_rejects_duplicate_stream(self):
+    async def test_cancels_stale_stream_on_new_message(self):
+        """When a new message arrives with an active stream, cancel and replace."""
         ns = AssistantNamespace("/assistant")
         ns.emit = AsyncMock()
 
-        # Simulate an active stream
+        # Simulate an active (stuck) stream
         never_done = asyncio.get_event_loop().create_future()
-        ns._active_streams["sess-1"] = asyncio.ensure_future(never_done)
+        old_task = asyncio.ensure_future(never_done)
+        ns._active_streams["sess-1"] = old_task
+
+        # Mock streaming service for the new message
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            yield {"type": "agent_status", "status": "started"}
+            yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
 
         data = {"session_id": "sess-1", "message": "Second message"}
         await ns.on_assistant_message("sid-1", data)
 
-        ns.emit.assert_called_once_with(
-            "assistant:error",
-            {"type": "conflict", "message": "Stream already active for this session"},
-            to="sid-1",
-        )
+        # Old task should be cancelled
+        assert old_task.cancelled()
 
-        # Cleanup
-        ns._active_streams["sess-1"].cancel()
-        with pytest.raises((asyncio.CancelledError, Exception)):
-            await ns._active_streams["sess-1"]
+        # New task should be created — no error emitted
+        new_task = ns._active_streams.get("sess-1")
+        assert new_task is not None
+        assert new_task is not old_task
+        await new_task
+
+        # No conflict error emitted
+        error_calls = [
+            call for call in ns.emit.call_args_list
+            if call.args[0] == "assistant:error" and call.args[1].get("type") == "conflict"
+        ]
+        assert not error_calls
 
     @pytest.mark.asyncio
     async def test_discards_completed_task_before_duplicate_check(self):
@@ -195,6 +214,158 @@ class TestOnAssistantMessage:
         await task
         await asyncio.sleep(0)
         assert "sess-1" not in ns._active_streams
+
+    @pytest.mark.asyncio
+    async def test_second_message_after_tool_call_stream(self):
+        """Reproduce #16: backend tool call stream completes, then second message is sent.
+
+        After a stream with look_at_screen (backend tool) completes normally,
+        the session must be released so the next message can start.
+        """
+        ns = AssistantNamespace("/assistant")
+        ns.emit = AsyncMock()
+
+        call_count = 0
+
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First message: backend tool call (look_at_screen)
+                yield {"type": "agent_status", "status": "started"}
+                yield {"type": "tool_call", "tool_name": "look_at_screen", "arguments": {}, "call_id": "c1"}
+                yield {"type": "tool_result", "tool_name": "look_at_screen", "result": "[image]", "call_id": "c1"}
+                yield {"type": "text_delta", "content": "I can see the agents page."}
+                yield {"type": "final_response", "content": "I can see the agents page.", "model": "m"}
+                yield {"type": "agent_status", "status": "completed"}
+            else:
+                # Second message: simple response
+                yield {"type": "agent_status", "status": "started"}
+                yield {"type": "text_delta", "content": "Sure!"}
+                yield {"type": "final_response", "content": "Sure!", "model": "m"}
+                yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
+
+        # First message
+        await ns.on_assistant_message("sid-1", {"session_id": "sess-1", "message": "Look at my screen"})
+        task1 = ns._active_streams.get("sess-1")
+        assert task1 is not None
+        await task1
+        await asyncio.sleep(0)  # let done_callback fire
+
+        # Session must be released
+        assert "sess-1" not in ns._active_streams, (
+            "Session still in _active_streams after first stream completed"
+        )
+
+        # Second message — must NOT get "Stream already active"
+        ns.emit.reset_mock()
+        await ns.on_assistant_message("sid-1", {"session_id": "sess-1", "message": "Navigate to workspace"})
+        task2 = ns._active_streams.get("sess-1")
+        assert task2 is not None, "Second message should have created a new task"
+        await task2
+        await asyncio.sleep(0)
+
+        # Verify no error was emitted
+        error_calls = [
+            call for call in ns.emit.call_args_list
+            if call.args[0] == "assistant:error"
+        ]
+        assert not error_calls, f"Unexpected error: {error_calls}"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_second_message_after_deferred_tool_stream(self):
+        """Reproduce #16: deferred tool call, then continuation, then new message.
+
+        Full cycle: message → deferred final_response → continuation → completed → new message.
+        """
+        ns = AssistantNamespace("/assistant")
+        ns.emit = AsyncMock()
+
+        call_count = 0
+
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First message → deferred tool call
+                yield {"type": "agent_status", "status": "started"}
+                yield {"type": "tool_call", "tool_name": "look_at_screen", "arguments": {}, "call_id": "c1"}
+                yield {
+                    "type": "final_response",
+                    "content": None,
+                    "model": "m",
+                    "pending_tool_call": {"call_id": "c1", "tool_name": "look_at_screen", "arguments": {}},
+                }
+                yield {"type": "agent_status", "status": "completed"}
+            elif call_count == 2:
+                # Continuation
+                yield {"type": "agent_status", "status": "started"}
+                yield {"type": "text_delta", "content": "I see the page."}
+                yield {"type": "final_response", "content": "I see the page.", "model": "m"}
+                yield {"type": "agent_status", "status": "completed"}
+            else:
+                # Third message
+                yield {"type": "agent_status", "status": "started"}
+                yield {"type": "final_response", "content": "Done.", "model": "m"}
+                yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
+
+        # Step 1: First message → deferred tool call
+        await ns.on_assistant_message("sid-1", {"session_id": "sess-1", "message": "Look at screen"})
+        task1 = ns._active_streams.get("sess-1")
+        assert task1 is not None
+        await task1
+        await asyncio.sleep(0)
+
+        # Session should be released (early-release at deferred final_response)
+        assert "sess-1" not in ns._active_streams, (
+            f"Session still active after deferred stream. "
+            f"_active_streams keys: {list(ns._active_streams.keys())}"
+        )
+
+        # Step 2: Continuation (tool result from frontend)
+        ns.emit.reset_mock()
+        await ns.on_assistant_message("sid-1", {
+            "session_id": "sess-1",
+            "message": "",
+            "tool_call_id": "c1",
+            "tool_result": {"screenshot": "data:image/jpeg;base64,abc"},
+        })
+        task2 = ns._active_streams.get("sess-1")
+        assert task2 is not None, "Continuation should have created a task"
+        await task2
+        await asyncio.sleep(0)
+
+        assert "sess-1" not in ns._active_streams
+
+        # Step 3: New message after full cycle
+        ns.emit.reset_mock()
+        await ns.on_assistant_message("sid-1", {"session_id": "sess-1", "message": "Navigate to workspace"})
+        task3 = ns._active_streams.get("sess-1")
+        assert task3 is not None, "Third message should have created a task"
+        await task3
+        await asyncio.sleep(0)
+
+        error_calls = [
+            call for call in ns.emit.call_args_list
+            if call.args[0] == "assistant:error"
+        ]
+        assert not error_calls, f"Unexpected error on third message: {error_calls}"
+        assert call_count == 3
 
     @pytest.mark.asyncio
     async def test_validates_request_missing_fields(self):
