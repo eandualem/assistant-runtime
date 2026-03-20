@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -184,6 +185,52 @@ class TestOnAssistantMessage:
             if call.args[0] == "assistant:error" and call.args[1].get("type") == "conflict"
         ]
         assert not error_calls
+
+    @pytest.mark.asyncio
+    async def test_continuation_does_not_cancel_active_stream(self):
+        """Continuations (tool_call_id set) must not cancel the draining stream."""
+        ns = AssistantNamespace("/assistant")
+        ns.emit = AsyncMock()
+
+        # Simulate an active stream (draining after deferred tool dispatch)
+        never_done = asyncio.get_event_loop().create_future()
+        old_task = asyncio.ensure_future(never_done)
+        ns._active_streams["sess-1"] = old_task
+
+        # Mock streaming service
+        mock_service = MagicMock()
+
+        async def mock_stream(request):
+            yield {"type": "agent_status", "status": "started"}
+            yield {"type": "final_response", "content": "Done", "model": "m"}
+            yield {"type": "agent_status", "status": "completed"}
+
+        mock_service.stream_message = mock_stream
+        mock_server = MagicMock()
+        mock_server.fastapi_app.state.streaming_service = mock_service
+        ns.server = mock_server
+
+        # Send a continuation (has tool_call_id)
+        data = {
+            "session_id": "sess-1",
+            "message": "",
+            "tool_call_id": "call_123",
+            "tool_result": {"success": True},
+        }
+        await ns.on_assistant_message("sid-1", data)
+
+        # Old task should NOT be cancelled — continuations don't cancel
+        assert not old_task.cancelled()
+
+        # New task still created (alongside the old draining one)
+        new_task = ns._active_streams.get("sess-1")
+        assert new_task is not None
+        await new_task
+
+        # Cleanup
+        never_done.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await old_task
 
     @pytest.mark.asyncio
     async def test_discards_completed_task_before_duplicate_check(self):

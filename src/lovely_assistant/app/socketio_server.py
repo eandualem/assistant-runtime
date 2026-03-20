@@ -85,15 +85,18 @@ class AssistantNamespace(socketio.AsyncNamespace):
             return
 
         session_id = data["session_id"]
+        is_continuation = data.get("tool_call_id") is not None
 
         # If a stream is already active for this session, cancel it and replace.
-        # This is more robust than rejecting — it handles slow LLM responses,
-        # hung generators, and timing races without requiring the client to retry.
+        # Exception: continuations (tool_call_id set) should not cancel the
+        # stream that dispatched the tool — the stream may still be draining
+        # its finally block. Continuations go through the streaming service's
+        # own validation (pending tool call matching).
         active_task = self._active_streams.get(session_id)
         if active_task is not None:
             if active_task.done():
                 self._active_streams.pop(session_id, None)
-            else:
+            elif not is_continuation:
                 active_task.cancel()
                 self._active_streams.pop(session_id, None)
                 logger.info(

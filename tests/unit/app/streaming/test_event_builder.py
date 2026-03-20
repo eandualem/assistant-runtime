@@ -65,6 +65,7 @@ class TestToolCallEvent:
             "tool_name": "navigate",
             "arguments": {"message": "hi", "level": "info"},
             "call_id": "call_123",
+            "category": "backend",
         }
 
     def test_empty_arguments(self):
@@ -74,6 +75,19 @@ class TestToolCallEvent:
             call_id="call_456",
         )
         assert event["arguments"] == {}
+
+    def test_frontend_category(self):
+        event = make_tool_call_event(
+            tool_name="navigate",
+            arguments={"page": "agents"},
+            call_id="call_789",
+            category="frontend",
+        )
+        assert event["category"] == "frontend"
+
+    def test_default_category_is_backend(self):
+        event = make_tool_call_event("tool", {}, "c1")
+        assert event["category"] == "backend"
 
 
 class TestToolStatusEvent:
