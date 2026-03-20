@@ -199,8 +199,18 @@ class StreamingService:
 
             pending_tool_call_id = session_context.get("pending_tool_call_id")
             if not pending_tool_call_id:
+                # Pending state was cleared (new message arrived during slow tool execution).
+                # The tool result is stale — emit a non-fatal lifecycle so the frontend
+                # can exit its frontendToolExecution state cleanly.
+                logger.info(
+                    "Late continuation arrived after pending state cleared",
+                    session_id=session_id,
+                    tool_call_id=request.tool_call_id,
+                )
                 raise SessionError(
-                    f"Continuation rejected: session '{session_id}' has no pending tool call"
+                    f"Continuation ignored: session '{session_id}' no longer has a pending "
+                    "tool call (a new message was processed). The frontend tool result "
+                    "arrived after the session moved on."
                 )
             if pending_tool_call_id != request.tool_call_id:
                 raise SessionError(
@@ -837,18 +847,27 @@ class StreamingService:
     def _ensure_no_pending_frontend_tool(
         self, session_context: dict[str, Any], session_id: str
     ) -> None:
-        """Reject fresh messages while a frontend tool result is still outstanding."""
+        """Clear stale pending frontend tool state if a new message arrives.
+
+        Frontend tools (navigate, ui_send_event) can take 2-4s (html2canvas).
+        If the user sends a new message during that window, clear the pending
+        state so the new stream can proceed. The late tool_result will arrive
+        as a continuation — _stream_continuation handles missing pending state
+        gracefully.
+        """
         pending_tool_call_id = session_context.get("pending_tool_call_id")
         if not pending_tool_call_id:
             return
 
         pending_tool_name = session_context.get("pending_tool_name") or "unknown"
-        raise SessionError(
-            "New message rejected: "
-            f"session '{session_id}' is waiting for frontend tool "
-            f"'{pending_tool_name}' ({pending_tool_call_id}). "
-            "Send the continuation with that tool result before starting a new stream."
+        logger.warning(
+            "Clearing pending frontend tool for new message",
+            session_id=session_id,
+            pending_tool=pending_tool_name,
+            pending_call_id=pending_tool_call_id,
         )
+        session_context.pop("pending_tool_call_id", None)
+        session_context.pop("pending_tool_name", None)
 
     def _store_pending_frontend_tool(
         self, output: DeferredToolRequests, session_context: dict[str, Any]
