@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from lovely_assistant.services.database.repositories import InboxRepository
+from lovely_assistant.app._injector import inject_inbox_message
 
 router = APIRouter(prefix="/assistant", tags=["assistant-inject"])
 
@@ -23,6 +23,7 @@ class InjectRequest(BaseModel):
     via: str = Field(..., min_length=1)
     message: str = Field(..., min_length=1)
     session_id: str | None = Field(None, alias="sessionId")
+    telegram_chat_id: str | None = Field(None, alias="telegramChatId")
 
     model_config = {"populate_by_name": True}
 
@@ -63,38 +64,21 @@ async def inject_message(body: InjectRequest, request: Request) -> dict[str, Any
     db = await _get_db(request)
     service = _get_assistant_service(request)
 
-    # Determine whether the target session exists
-    session_found = False
-    if body.session_id and service is not None:
-        sessions = service.get_session_store()
-        if sessions is not None:
-            ctx = await sessions.get_context_if_exists_async(body.session_id)
-            session_found = ctx is not None
-
-    # Build context dict for the inbox item
-    context: dict[str, Any] = {"via": body.via, "injected": True}
-    if body.session_id and session_found:
-        context["session_id"] = body.session_id
-
-    status = "delivered" if session_found else "deferred"
-
     try:
-        async with db.session_context() as session:
-            repo = InboxRepository(session)
-            row = await repo.create(
-                from_agent=body.from_agent,
-                message=body.message,
-                severity="info",
-                context=context,
-            )
-            inbox_id = row.id
+        return await inject_inbox_message(
+            db=db,
+            assistant_service=service,
+            from_agent=body.from_agent,
+            via=body.via,
+            message=body.message,
+            session_id=body.session_id,
+            telegram_chat_id=body.telegram_chat_id,
+        )
     except HTTPException:
         raise
     except Exception as e:
         logger.error("Failed to create inject inbox item", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to store injected message") from e
-
-    return {"status": status, "inbox_id": inbox_id}
 
 
 # ---------------------------------------------------------------------------

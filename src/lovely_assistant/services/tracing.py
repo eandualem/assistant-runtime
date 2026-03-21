@@ -183,11 +183,17 @@ def create_request_trace(
     input_message: str | None = None,
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    set_current_observation: bool = True,
 ):
     """Create a root trace for a full request lifecycle.
 
     Yields a handle with ``update_output()`` / ``update()`` methods.
     When tracing is disabled, yields a ``_NoOpHandle``.
+
+    ``set_current_observation=False`` is intended for async generator flows
+    where the request lifecycle spans multiple ``yield`` points. In that mode
+    we avoid OpenTelemetry context attach/detach and end the observation
+    manually, which is safe across async generator shutdown.
     """
     if not _tracing_enabled or _langfuse_client is None:
         yield _NoOpHandle()
@@ -204,13 +210,22 @@ def create_request_trace(
     trace_metadata = dict(metadata) if metadata else {}
 
     try:
-        cm = _langfuse_client.start_as_current_observation(
-            as_type="span",
-            name="agent-request",
-            input=input_message,
-            metadata=trace_metadata,
-        )
-        obs = cm.__enter__()
+        if set_current_observation:
+            cm = _langfuse_client.start_as_current_observation(
+                as_type="span",
+                name="agent-request",
+                input=input_message,
+                metadata=trace_metadata,
+            )
+            obs = cm.__enter__()
+        else:
+            cm = None
+            obs = _langfuse_client.start_observation(
+                as_type="span",
+                name="agent-request",
+                input=input_message,
+                metadata=trace_metadata,
+            )
         obs.update_trace(
             session_id=str(session_id),
             user_id="elias",
@@ -227,7 +242,10 @@ def create_request_trace(
         yield _TraceHandle(obs)
     finally:
         try:
-            cm.__exit__(None, None, None)
+            if cm is not None:
+                cm.__exit__(None, None, None)
+            else:
+                obs.end()
         except Exception as e:
             logger.warning(f"[TRACING] Error closing request trace: {e}")
 

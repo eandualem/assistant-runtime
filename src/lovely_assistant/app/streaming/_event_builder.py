@@ -8,19 +8,72 @@ from __future__ import annotations
 from typing import Any
 
 
+def _apply_segment_metadata(
+    event: dict[str, Any],
+    *,
+    segment_id: str | None = None,
+    segment_index: int | None = None,
+    delta_index: int | None = None,
+    segment_started: bool | None = None,
+    segment_kind: str | None = None,
+) -> dict[str, Any]:
+    """Attach segment metadata when provided."""
+    if segment_id is not None:
+        event["segment_id"] = segment_id
+    if segment_index is not None:
+        event["segment_index"] = segment_index
+    if delta_index is not None:
+        event["delta_index"] = delta_index
+    if segment_started is not None:
+        event["segment_started"] = segment_started
+    if segment_kind is not None:
+        event["segment_kind"] = segment_kind
+    return event
+
+
 def make_agent_status_event(status: str) -> dict[str, Any]:
     """Create an agent_status event (started | completed)."""
     return {"type": "agent_status", "status": status}
 
 
-def make_thinking_delta_event(content: str) -> dict[str, Any]:
+def make_thinking_delta_event(
+    content: str,
+    *,
+    segment_id: str | None = None,
+    segment_index: int | None = None,
+    delta_index: int | None = None,
+    segment_started: bool | None = None,
+    segment_kind: str | None = None,
+) -> dict[str, Any]:
     """Create a thinking_delta event."""
-    return {"type": "thinking_delta", "content": content}
+    return _apply_segment_metadata(
+        {"type": "thinking_delta", "content": content},
+        segment_id=segment_id,
+        segment_index=segment_index,
+        delta_index=delta_index,
+        segment_started=segment_started,
+        segment_kind=segment_kind,
+    )
 
 
-def make_text_delta_event(content: str) -> dict[str, Any]:
+def make_text_delta_event(
+    content: str,
+    *,
+    segment_id: str | None = None,
+    segment_index: int | None = None,
+    delta_index: int | None = None,
+    segment_started: bool | None = None,
+    segment_kind: str | None = None,
+) -> dict[str, Any]:
     """Create a text_delta event."""
-    return {"type": "text_delta", "content": content}
+    return _apply_segment_metadata(
+        {"type": "text_delta", "content": content},
+        segment_id=segment_id,
+        segment_index=segment_index,
+        delta_index=delta_index,
+        segment_started=segment_started,
+        segment_kind=segment_kind,
+    )
 
 
 def make_tool_call_event(
@@ -92,6 +145,7 @@ def make_final_response_event(
     model: str,
     *,
     session_id: str | None = None,
+    message_id: str | None = None,
     streamed: bool = False,
     thinking_streamed: bool = False,
     error: bool = False,
@@ -113,6 +167,8 @@ def make_final_response_event(
     }
     if session_id is not None:
         event["session_id"] = session_id
+    if message_id is not None:
+        event["message_id"] = message_id
     if thinking_streamed:
         event["thinking_streamed"] = True
     if error:

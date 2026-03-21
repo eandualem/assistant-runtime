@@ -129,7 +129,16 @@ class TestPropose:
         # First call: MAX(version) query returns 2
         max_result = MagicMock()
         max_result.scalar_one_or_none.return_value = 2
-        mock_session.execute.return_value = max_result
+        created_row = ArtifactORM(
+            name="persona",
+            content="new content",
+            version=3,
+            is_active=False,
+            proposed_by="elias",
+        )
+        insert_result = MagicMock()
+        insert_result.scalar_one.return_value = created_row
+        mock_session.execute.side_effect = [max_result, insert_result]
 
         result = await repo.propose("persona", "new content", "elias")
 
@@ -139,14 +148,23 @@ class TestPropose:
         assert result.content == "new content"
         assert result.proposed_by == "elias"
         assert result.is_active is False
-        mock_session.add.assert_called_once()
+        assert mock_session.execute.await_count == 2
         mock_session.flush.assert_awaited_once()
 
     async def test_propose_first_version_is_1(self, repo, mock_session):
         # MAX(version) returns None when no rows exist for this name
         max_result = MagicMock()
         max_result.scalar_one_or_none.return_value = None
-        mock_session.execute.return_value = max_result
+        created_row = ArtifactORM(
+            name="brand_new",
+            content="initial content",
+            version=1,
+            is_active=False,
+            proposed_by="jarvis",
+        )
+        insert_result = MagicMock()
+        insert_result.scalar_one.return_value = created_row
+        mock_session.execute.side_effect = [max_result, insert_result]
 
         result = await repo.propose("brand_new", "initial content", "jarvis")
 
@@ -157,7 +175,16 @@ class TestPropose:
     async def test_propose_does_not_activate(self, repo, mock_session):
         max_result = MagicMock()
         max_result.scalar_one_or_none.return_value = 5
-        mock_session.execute.return_value = max_result
+        created_row = ArtifactORM(
+            name="persona",
+            content="draft",
+            version=6,
+            is_active=False,
+            proposed_by="jarvis",
+        )
+        insert_result = MagicMock()
+        insert_result.scalar_one.return_value = created_row
+        mock_session.execute.side_effect = [max_result, insert_result]
 
         result = await repo.propose("persona", "draft", "jarvis")
 
@@ -171,23 +198,27 @@ class TestPropose:
 
 class TestApprove:
     async def test_approve_deactivates_previous(self, repo, mock_session):
-        target_row = MagicMock(spec=ArtifactORM)
-        target_row.is_active = False
+        target_row = ArtifactORM(
+            id=11,
+            name="persona",
+            content="v3",
+            version=3,
+            is_active=True,
+            proposed_by="elias",
+        )
 
-        # First execute: select target version -> found
         select_result = MagicMock()
-        select_result.scalar_one_or_none.return_value = target_row
-        # Second execute: update deactivate -> no return needed
+        select_result.scalar_one_or_none.return_value = 11
         update_result = MagicMock()
+        activate_result = MagicMock()
+        activate_result.scalar_one.return_value = target_row
 
-        mock_session.execute.side_effect = [select_result, update_result]
+        mock_session.execute.side_effect = [select_result, update_result, activate_result]
 
         result = await repo.approve("persona", version=3)
 
         assert result is target_row
-        assert target_row.is_active is True
-        # Two execute calls: one select, one update (deactivate previous)
-        assert mock_session.execute.await_count == 2
+        assert mock_session.execute.await_count == 3
         mock_session.flush.assert_awaited_once()
 
     async def test_approve_returns_none_for_missing_version(self, repo, mock_session):
@@ -198,22 +229,29 @@ class TestApprove:
         result = await repo.approve("persona", version=999)
 
         assert result is None
-        # Only one execute call (select), no update or flush
         mock_session.execute.assert_awaited_once()
         mock_session.flush.assert_not_awaited()
 
     async def test_approve_activates_target(self, repo, mock_session):
-        target_row = MagicMock(spec=ArtifactORM)
-        target_row.is_active = False
+        target_row = ArtifactORM(
+            id=9,
+            name="persona",
+            content="v2",
+            version=2,
+            is_active=True,
+            proposed_by="elias",
+        )
 
         select_result = MagicMock()
-        select_result.scalar_one_or_none.return_value = target_row
+        select_result.scalar_one_or_none.return_value = 9
         update_result = MagicMock()
-        mock_session.execute.side_effect = [select_result, update_result]
+        activate_result = MagicMock()
+        activate_result.scalar_one.return_value = target_row
+        mock_session.execute.side_effect = [select_result, update_result, activate_result]
 
-        await repo.approve("persona", version=2)
+        result = await repo.approve("persona", version=2)
 
-        assert target_row.is_active is True
+        assert result.is_active is True
 
 
 # ---------------------------------------------------------------------------
@@ -223,20 +261,27 @@ class TestApprove:
 
 class TestRollback:
     async def test_rollback_reactivates_old_version(self, repo, mock_session):
-        target_row = MagicMock(spec=ArtifactORM)
-        target_row.is_active = False
+        target_row = ArtifactORM(
+            id=5,
+            name="persona",
+            content="v1",
+            version=1,
+            is_active=True,
+            proposed_by="elias",
+        )
 
         select_result = MagicMock()
-        select_result.scalar_one_or_none.return_value = target_row
+        select_result.scalar_one_or_none.return_value = 5
         update_result = MagicMock()
-        mock_session.execute.side_effect = [select_result, update_result]
+        activate_result = MagicMock()
+        activate_result.scalar_one.return_value = target_row
+        mock_session.execute.side_effect = [select_result, update_result, activate_result]
 
         result = await repo.rollback("persona", version=1)
 
         assert result is target_row
         assert target_row.is_active is True
-        # rollback delegates to approve — same execution path
-        assert mock_session.execute.await_count == 2
+        assert mock_session.execute.await_count == 3
         mock_session.flush.assert_awaited_once()
 
     async def test_rollback_returns_none_for_missing_version(self, repo, mock_session):
@@ -256,13 +301,36 @@ class TestRollback:
 
 class TestUpdateScratchpad:
     async def test_update_scratchpad_auto_approves(self, repo, mock_session):
-        # propose calls execute once (MAX query), then add + flush
-        # update_scratchpad then calls execute (deactivate update) + flush
         max_result = MagicMock()
         max_result.scalar_one_or_none.return_value = 3  # current max version
         deactivate_result = MagicMock()
+        proposed_row = ArtifactORM(
+            id=21,
+            name="scratchpad",
+            content="new scratchpad content",
+            version=4,
+            is_active=False,
+            proposed_by="jarvis",
+        )
+        insert_result = MagicMock()
+        insert_result.scalar_one.return_value = proposed_row
+        activated_row = ArtifactORM(
+            id=21,
+            name="scratchpad",
+            content="new scratchpad content",
+            version=4,
+            is_active=True,
+            proposed_by="jarvis",
+        )
+        activate_result = MagicMock()
+        activate_result.scalar_one.return_value = activated_row
 
-        mock_session.execute.side_effect = [max_result, deactivate_result]
+        mock_session.execute.side_effect = [
+            max_result,
+            insert_result,
+            deactivate_result,
+            activate_result,
+        ]
 
         result = await repo.update_scratchpad("new scratchpad content")
 
@@ -271,16 +339,38 @@ class TestUpdateScratchpad:
         assert result.version == 4  # 3 + 1
         assert result.is_active is True
         assert result.proposed_by == "jarvis"
-        # Two execute calls: MAX query + deactivate update
-        assert mock_session.execute.await_count == 2
-        mock_session.add.assert_called_once()
+        assert mock_session.execute.await_count == 4
 
     async def test_update_scratchpad_first_version(self, repo, mock_session):
         max_result = MagicMock()
         max_result.scalar_one_or_none.return_value = None  # no prior versions
         deactivate_result = MagicMock()
+        proposed_row = ArtifactORM(
+            id=1,
+            name="scratchpad",
+            content="first scratchpad",
+            version=1,
+            is_active=False,
+            proposed_by="jarvis",
+        )
+        insert_result = MagicMock()
+        insert_result.scalar_one.return_value = proposed_row
+        activate_result = MagicMock()
+        activate_result.scalar_one.return_value = ArtifactORM(
+            id=1,
+            name="scratchpad",
+            content="first scratchpad",
+            version=1,
+            is_active=True,
+            proposed_by="jarvis",
+        )
 
-        mock_session.execute.side_effect = [max_result, deactivate_result]
+        mock_session.execute.side_effect = [
+            max_result,
+            insert_result,
+            deactivate_result,
+            activate_result,
+        ]
 
         result = await repo.update_scratchpad("first scratchpad")
 
@@ -292,7 +382,31 @@ class TestUpdateScratchpad:
         max_result = MagicMock()
         max_result.scalar_one_or_none.return_value = 1
         deactivate_result = MagicMock()
-        mock_session.execute.side_effect = [max_result, deactivate_result]
+        proposed_row = ArtifactORM(
+            id=7,
+            name="scratchpad",
+            content="content",
+            version=2,
+            is_active=False,
+            proposed_by="elias",
+        )
+        insert_result = MagicMock()
+        insert_result.scalar_one.return_value = proposed_row
+        activate_result = MagicMock()
+        activate_result.scalar_one.return_value = ArtifactORM(
+            id=7,
+            name="scratchpad",
+            content="content",
+            version=2,
+            is_active=True,
+            proposed_by="elias",
+        )
+        mock_session.execute.side_effect = [
+            max_result,
+            insert_result,
+            deactivate_result,
+            activate_result,
+        ]
 
         result = await repo.update_scratchpad("content", proposed_by="elias")
 
@@ -303,9 +417,32 @@ class TestUpdateScratchpad:
         max_result = MagicMock()
         max_result.scalar_one_or_none.return_value = 2
         deactivate_result = MagicMock()
-        mock_session.execute.side_effect = [max_result, deactivate_result]
+        proposed_row = ArtifactORM(
+            id=8,
+            name="scratchpad",
+            content="content",
+            version=3,
+            is_active=False,
+            proposed_by="jarvis",
+        )
+        insert_result = MagicMock()
+        insert_result.scalar_one.return_value = proposed_row
+        activate_result = MagicMock()
+        activate_result.scalar_one.return_value = ArtifactORM(
+            id=8,
+            name="scratchpad",
+            content="content",
+            version=3,
+            is_active=True,
+            proposed_by="jarvis",
+        )
+        mock_session.execute.side_effect = [
+            max_result,
+            insert_result,
+            deactivate_result,
+            activate_result,
+        ]
 
         await repo.update_scratchpad("content")
 
-        # propose does one flush, update_scratchpad does another
         assert mock_session.flush.await_count == 2

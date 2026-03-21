@@ -92,6 +92,11 @@ class ToolService:
         self._ensure_started()
         return self._registry.get_available_tools(machine_state)
 
+    def warm_machine_state(self, machine_state: dict[str, Any] | None = None) -> None:
+        """Precompute page-scoped tool availability and toolsets."""
+        self._ensure_started()
+        self._registry.warm_machine_state(machine_state)
+
     def validate_tool_call(self, tool_name: str, args: dict[str, Any]) -> bool:
         """Check if a tool name is registered."""
         self._ensure_started()

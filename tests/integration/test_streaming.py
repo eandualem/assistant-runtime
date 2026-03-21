@@ -12,6 +12,15 @@ from lovely_assistant.app.assistant.models import AssistantRequest
 from .conftest import _make_mock_agent_result, _make_mock_agent_run
 
 
+def _request(*, message_id: str, session_id: str, parent_id: str | None, content: str) -> AssistantRequest:
+    return AssistantRequest(
+        id=message_id,
+        session_id=session_id,
+        parent_id=parent_id,
+        content=content,
+    )
+
+
 class TestStreamingPipeline:
     @pytest.mark.asyncio
     async def test_stream_yields_correct_event_order(self, wired_services):
@@ -25,7 +34,12 @@ class TestStreamingPipeline:
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
             async for event in streaming.stream_message(
-                AssistantRequest(session_id="stream-1", message="Hi")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-1",
+                    parent_id=None,
+                    content="Hi",
+                )
             ):
                 events.append(event)
 
@@ -50,7 +64,12 @@ class TestStreamingPipeline:
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
             async for event in streaming.stream_message(
-                AssistantRequest(session_id="stream-2", message="What?")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-2",
+                    parent_id=None,
+                    content="What?",
+                )
             ):
                 events.append(event)
 
@@ -58,6 +77,7 @@ class TestStreamingPipeline:
         assert len(final) == 1
         assert final[0]["content"] == "The answer is 42"
         assert final[0]["streamed"] is False
+        assert final[0]["message_id"]
 
     @pytest.mark.asyncio
     async def test_stream_saves_history(self, wired_services):
@@ -91,13 +111,19 @@ class TestStreamingPipeline:
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             async for _ in streaming.stream_message(
-                AssistantRequest(session_id="stream-hist", message="Save me")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-hist",
+                    parent_id=None,
+                    content="Save me",
+                )
             ):
                 pass
 
-        # History was saved via the shared session store
-        history = assistant._sessions.get_history("stream-hist")
-        assert len(history) == 2
+        path = await assistant._sessions.get_message_path("stream-hist")
+        assert len(path) == 2
+        assert path[0]["id"] == "user-1"
+        assert path[1]["role"] == "assistant"
 
     @pytest.mark.asyncio
     async def test_coordinator_dedup_in_real_flow(self, wired_services):
@@ -111,7 +137,12 @@ class TestStreamingPipeline:
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
             async for event in streaming.stream_message(
-                AssistantRequest(session_id="stream-dedup", message="test")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-dedup",
+                    parent_id=None,
+                    content="test",
+                )
             ):
                 events.append(event)
 
@@ -136,7 +167,12 @@ class TestStreamingPipeline:
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             async for _ in streaming.stream_message(
-                AssistantRequest(session_id="stream-turn", message="test")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-turn",
+                    parent_id=None,
+                    content="test",
+                )
             ):
                 pass
 

@@ -36,37 +36,73 @@ def repo(mock_session):
 
 class TestCreate:
     async def test_creates_inbox_item(self, repo, mock_session):
+        created_row = InboxItemORM(from_agent="leo", message="Hello", severity="info", context=None)
+        mock_result = MagicMock()
+        mock_result.scalar_one.return_value = created_row
+        mock_session.execute.return_value = mock_result
+
         result = await repo.create(from_agent="leo", message="Hello")
 
         assert isinstance(result, InboxItemORM)
         assert result.from_agent == "leo"
         assert result.message == "Hello"
 
-    async def test_adds_to_session_and_flushes(self, repo, mock_session):
+    async def test_executes_insert_and_flushes(self, repo, mock_session):
+        created_row = InboxItemORM(from_agent="leo", message="Hello", severity="info", context=None)
+        mock_result = MagicMock()
+        mock_result.scalar_one.return_value = created_row
+        mock_session.execute.return_value = mock_result
+
         await repo.create(from_agent="leo", message="Hello")
 
-        mock_session.add.assert_called_once()
-        added_obj = mock_session.add.call_args[0][0]
-        assert isinstance(added_obj, InboxItemORM)
+        mock_session.execute.assert_awaited_once()
         mock_session.flush.assert_awaited_once()
 
     async def test_default_severity_is_info(self, repo):
+        mock_session = repo._session
+        created_row = InboxItemORM(from_agent="leo", message="Hello", severity="info", context=None)
+        mock_result = MagicMock()
+        mock_result.scalar_one.return_value = created_row
+        mock_session.execute.return_value = mock_result
+
         result = await repo.create(from_agent="leo", message="Hello")
 
         assert result.severity == "info"
 
     async def test_accepts_severity_parameter(self, repo):
+        mock_session = repo._session
+        created_row = InboxItemORM(
+            from_agent="leo", message="Alert!", severity="urgent", context=None
+        )
+        mock_result = MagicMock()
+        mock_result.scalar_one.return_value = created_row
+        mock_session.execute.return_value = mock_result
+
         result = await repo.create(from_agent="leo", message="Alert!", severity="urgent")
 
         assert result.severity == "urgent"
 
     async def test_accepts_context_parameter(self, repo):
         ctx = {"issue_number": 42, "repo": "orchestration"}
+        mock_session = repo._session
+        created_row = InboxItemORM(
+            from_agent="leo", message="Check this", severity="info", context=ctx
+        )
+        mock_result = MagicMock()
+        mock_result.scalar_one.return_value = created_row
+        mock_session.execute.return_value = mock_result
+
         result = await repo.create(from_agent="leo", message="Check this", context=ctx)
 
         assert result.context == ctx
 
     async def test_context_defaults_to_none(self, repo):
+        mock_session = repo._session
+        created_row = InboxItemORM(from_agent="leo", message="Hello", severity="info", context=None)
+        mock_result = MagicMock()
+        mock_result.scalar_one.return_value = created_row
+        mock_session.execute.return_value = mock_result
+
         result = await repo.create(from_agent="leo", message="Hello")
 
         assert result.context is None
@@ -121,8 +157,8 @@ class TestListUnsurfaced:
 
 class TestMarkSurfaced:
     async def test_marks_item_as_surfaced(self, repo, mock_session):
-        mock_row = MagicMock(spec=InboxItemORM)
-        mock_row.surfaced = False
+        mock_row = InboxItemORM(from_agent="leo", message="Hello", severity="info", context=None)
+        mock_row.surfaced = True
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_row
         mock_session.execute.return_value = mock_result

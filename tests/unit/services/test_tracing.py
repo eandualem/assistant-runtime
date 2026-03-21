@@ -339,6 +339,38 @@ class TestCreateRequestTrace:
         assert call_kwargs["metadata"] == {"has_images": True}
         assert call_kwargs["input"] == "hello"
 
+    def test_manual_mode_uses_non_current_observation(self):
+        mock_client = MagicMock()
+        mock_obs = MagicMock()
+        mock_client.start_observation.return_value = mock_obs
+
+        tracing._tracing_enabled = True
+        tracing._langfuse_client = mock_client
+
+        with create_request_trace(session_id="s1", set_current_observation=False) as handle:
+            assert isinstance(handle, _TraceHandle)
+
+        mock_client.start_observation.assert_called_once_with(
+            as_type="span",
+            name="agent-request",
+            input=None,
+            metadata={},
+        )
+        mock_obs.update_trace.assert_called_once()
+        mock_obs.end.assert_called_once()
+
+    def test_manual_mode_end_failure_is_swallowed(self):
+        mock_client = MagicMock()
+        mock_obs = MagicMock()
+        mock_obs.end.side_effect = RuntimeError("end boom")
+        mock_client.start_observation.return_value = mock_obs
+
+        tracing._tracing_enabled = True
+        tracing._langfuse_client = mock_client
+
+        with create_request_trace(session_id="s1", set_current_observation=False):
+            pass
+
 
 # ---------------------------------------------------------------------------
 # create_span

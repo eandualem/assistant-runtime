@@ -28,12 +28,16 @@ class SessionORM(Base):
     """Persistent session storage — maps to the 'sessions' table."""
 
     __tablename__ = "sessions"
+    __table_args__ = (
+        Index("ix_sessions_telegram_chat_id_bound_at", "telegram_chat_id", "telegram_bound_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     turn_number: Mapped[int] = mapped_column(Integer, default=0)
-    message_history: Mapped[list] = mapped_column(JSONB, default=list)
     working_memory: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    telegram_bound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -42,6 +46,45 @@ class SessionORM(Base):
         DateTime(timezone=True),
         server_default=text("now() + interval '24 hours'"),
         nullable=False,
+    )
+
+
+class MessageORM(Base):
+    """Tree-structured conversation messages."""
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="ck_messages_role_valid"),
+        CheckConstraint(
+            "message_type IN ('standard', 'guidance')",
+            name="ck_messages_message_type_valid",
+        ),
+        Index("ix_messages_session_id_created_at", "session_id", "created_at"),
+        Index("ix_messages_parent_id", "parent_id"),
+        Index(
+            "uq_messages_single_root_per_session",
+            "session_id",
+            unique=True,
+            postgresql_where=text("parent_id IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("messages.id", ondelete="CASCADE"), nullable=True
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    message_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'standard'")
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    segments: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 

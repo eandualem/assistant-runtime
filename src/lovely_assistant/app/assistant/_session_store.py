@@ -1,28 +1,17 @@
-"""Session store with read-through DB persistence.
-
-Manages per-session context (working memory, turn count, pending tool calls).
-In-memory dict acts as hot cache; DB is the durable backing store when available.
-
-Durability contract:
-- When DB writes/reads succeed, session state is durable across restarts.
-- When DB load fails after retries, the error propagates — callers get a clear
-  error instead of silently losing conversation history.
-- DB write failures (_persist_to_db) are still best-effort — the session continues
-  in-memory. Write failures don't lose existing conversation state.
-"""
+"""Session store with tree-structured conversation state."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from pydantic_ai.messages import ModelMessage
 from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
 
 from lovely_assistant.app.assistant._serialization import (
-    deserialize_messages,
-    serialize_messages,
+    MessageRecord,
+    path_records_to_model_history,
 )
 from lovely_assistant.base.resilience import retry_with_backoff
 
@@ -35,6 +24,7 @@ _DB_RETRYABLE_EXCEPTIONS = (
 )
 
 if TYPE_CHECKING:
+    from lovely_assistant.app.assistant.models import AssistantRequest
     from lovely_assistant.services.database.interface import DatabaseService
 
 
@@ -52,122 +42,368 @@ class SessionStore:
         self._sessions: dict[str, dict[str, Any]] = {}
         self._db: DatabaseService | None = database_service
         self._session_ttl_hours = session_ttl_hours
+        self._pending_db_loads: dict[str, asyncio.Task[dict[str, Any] | None]] = {}
+        self._pending_db_loads_lock = asyncio.Lock()
 
     def get_context(self, session_id: str) -> dict[str, Any]:
-        """Get or create session context (in-memory only — sync path)."""
-        if session_id not in self._sessions:
-            self._sessions[session_id] = {
-                "turn_number": 0,
-                "working_memory": None,
-                "message_history": [],
-            }
-        return self._sessions[session_id]
+        """Get or create in-memory session context without DB hydration."""
+        if session_id in self._sessions:
+            self._touch_session(session_id)
+            return self._sessions[session_id]
+        self._evict_if_needed()
+        ctx = self._build_empty_context()
+        self._sessions[session_id] = ctx
+        return ctx
 
     async def get_context_async(self, session_id: str) -> dict[str, Any]:
-        """Get or create session context, loading from DB on cache miss."""
-        if session_id in self._sessions:
-            return self._sessions[session_id]
-
-        # Cache miss — evict if memory is full before adding a new entry
-        self._evict_if_needed()
-
-        # Try loading from DB
-        if self._db is not None:
-            loaded = await self._load_session_from_db(session_id)
-            if loaded is not None:
-                self._sessions[session_id] = loaded
-                return loaded
-
-        # Create new
+        """Get or create session context, hydrating from DB on cache miss."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is not None:
+            return ctx
         return self.get_context(session_id)
 
     async def get_context_if_exists_async(self, session_id: str) -> dict[str, Any] | None:
-        """Get session context if it exists (memory or DB). Returns None if not found."""
+        """Return context if the session exists in memory or DB."""
         if session_id in self._sessions:
+            self._touch_session(session_id)
             return self._sessions[session_id]
 
         if self._db is not None:
-            loaded = await self._load_session_from_db(session_id)
+            loaded = await self._load_session_from_db_singleflight(session_id)
             if loaded is not None:
+                self._evict_if_needed()
                 self._sessions[session_id] = loaded
+                self._touch_session(session_id)
                 return loaded
 
         return None
 
-    def get_history(self, session_id: str) -> list[ModelMessage]:
-        """Get message history for a session."""
+    def get_history(self, session_id: str, *, exclude_leaf: bool = False) -> list[Any]:
+        """Return the cached root-to-leaf history as ModelMessages."""
         ctx = self.get_context(session_id)
-        history = ctx.get("message_history", [])
-        logger.debug(
-            "Retrieved session history",
-            session_id=session_id,
-            message_count=len(history),
-        )
-        return history
+        path = ctx["cached_path"][:-1] if exclude_leaf and ctx["cached_path"] else ctx["cached_path"]
+        return path_records_to_model_history(path)
 
-    def save_history(self, session_id: str, messages: list[ModelMessage]) -> None:
-        """Save message history for a session (in-memory only)."""
-        ctx = self.get_context(session_id)
-        ctx["message_history"] = messages
+    async def register_user_message(self, request: AssistantRequest) -> tuple[dict[str, Any], MessageRecord]:
+        """Persist a user-side message send and update the active cached path."""
+        session_id = request.session_id
+        existing = await self.get_context_if_exists_async(session_id)
+        ctx = existing
 
-    async def save_history_async(self, session_id: str, messages: list[ModelMessage]) -> None:
-        """Save message history and persist to DB."""
-        ctx = self.get_context(session_id)
-        ctx["message_history"] = messages
-        logger.debug(
-            "[SESSION] Saving session history",
-            session_id=session_id,
-            message_count=len(messages),
-        )
+        if request.parent_id is None:
+            if ctx is None:
+                ctx = self.get_context(session_id)
+                await self._ensure_session_row(session_id, ctx)
+            elif ctx["message_count"] > 0:
+                raise ValueError("Only the first message in a session may have parent_id = null")
+        else:
+            if ctx is None:
+                raise LookupError("Session not found")
+            if request.parent_id not in ctx["message_index"]:
+                raise LookupError(f"Parent message '{request.parent_id}' not found")
 
-        # Auto-title from first user message if no title set
-        if not ctx.get("title") and messages:
-            from pydantic_ai.messages import ModelRequest, UserPromptPart
+        assert ctx is not None
+        if request.id in ctx["message_index"]:
+            raise ValueError(f"Message '{request.id}' already exists")
 
-            for msg in messages:
-                if isinstance(msg, ModelRequest):
-                    for part in msg.parts:
-                        if isinstance(part, UserPromptPart) and isinstance(part.content, str):
-                            text = part.content.strip()
-                            ctx["title"] = text[:50] + ("..." if len(text) > 50 else "")
-                            break
-                if ctx.get("title"):
-                    break
+        now = datetime.now(UTC)
+        record: MessageRecord = {
+            "id": request.id,
+            "session_id": session_id,
+            "parent_id": request.parent_id,
+            "role": "user",
+            "message_type": request.message_type,
+            "content": request.content,
+            "segments": None,
+            "usage": None,
+            "created_at": now,
+        }
 
-        # Persist full session state to DB
-        await self._persist_to_db(session_id)
-
-    def increment_turn(self, session_id: str) -> int:
-        """Increment and return the turn number."""
-        ctx = self.get_context(session_id)
-        ctx["turn_number"] = ctx.get("turn_number", 0) + 1
-        return ctx["turn_number"]
-
-    def has_session(self, session_id: str) -> bool:
-        """Check if a session exists in memory."""
-        return session_id in self._sessions
-
-    def session_count(self) -> int:
-        """Number of active sessions in memory."""
-        return len(self._sessions)
-
-    async def delete_session(self, session_id: str) -> None:
-        """Remove session from DB first, then memory."""
         if self._db is not None:
             async with self._db.session_context() as db_session:
                 from lovely_assistant.services.database.repositories import (
+                    MessageRepository,
                     SessionRepository,
                 )
 
+                session_repo = SessionRepository(db_session)
+                row = await session_repo.get(session_id)
+                if row is None:
+                    await session_repo.create(
+                        session_id=session_id,
+                        title=None,
+                        expires_at=self._expires_at(),
+                    )
+                repo = MessageRepository(db_session)
+                await repo.create(
+                    message_id=record["id"],
+                    session_id=session_id,
+                    parent_id=record["parent_id"],
+                    role=record["role"],
+                    message_type=record["message_type"],
+                    content=record["content"],
+                )
+
+        self._add_message_to_context(ctx, record)
+        self._refresh_cached_path_for_new_leaf(ctx, record)
+        ctx["turn_number"] = ctx.get("turn_number", 0) + 1
+        if (
+            not ctx.get("title")
+            and request.message_type == "standard"
+            and request.content.strip()
+        ):
+            text = request.content.strip()
+            ctx["title"] = text[:50] + ("..." if len(text) > 50 else "")
+
+        await self.save_session_state_async(session_id)
+        return ctx, record
+
+    async def register_assistant_message(
+        self,
+        session_id: str,
+        *,
+        message_id: str,
+        parent_id: str,
+        content: str,
+        segments: list[dict[str, Any]] | None,
+        usage: dict[str, Any] | None,
+        created_at: datetime | None = None,
+    ) -> MessageRecord:
+        """Persist a single assistant message row and update cache state."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        if parent_id not in ctx["message_index"]:
+            raise LookupError(f"Parent message '{parent_id}' not found")
+        if ctx["message_index"][parent_id]["role"] != "user":
+            raise ValueError("Assistant messages must parent a user message")
+        if message_id in ctx["message_index"]:
+            raise ValueError(f"Message '{message_id}' already exists")
+
+        now = created_at or datetime.now(UTC)
+        record: MessageRecord = {
+            "id": message_id,
+            "session_id": session_id,
+            "parent_id": parent_id,
+            "role": "assistant",
+            "message_type": "standard",
+            "content": content,
+            "segments": segments,
+            "usage": usage,
+            "created_at": now,
+        }
+
+        if self._db is not None:
+            async with self._db.session_context() as db_session:
+                from lovely_assistant.services.database.repositories import MessageRepository
+
+                repo = MessageRepository(db_session)
+                await repo.create(
+                    message_id=record["id"],
+                    session_id=session_id,
+                    parent_id=record["parent_id"],
+                    role=record["role"],
+                    message_type=record["message_type"],
+                    content=record["content"],
+                    segments=record["segments"],
+                    usage=record["usage"],
+                )
+
+        self._add_message_to_context(ctx, record)
+        self._refresh_cached_path_for_new_leaf(ctx, record)
+        return record
+
+    async def update_message(
+        self,
+        session_id: str,
+        message_id: str,
+        *,
+        content: str | None = None,
+        segments: list[dict[str, Any]] | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> MessageRecord:
+        """Update an existing message row in-memory and in DB."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None or message_id not in ctx["message_index"]:
+            raise LookupError(f"Message '{message_id}' not found")
+        record = dict(ctx["message_index"][message_id])
+        if content is not None:
+            record["content"] = content
+        if segments is not None:
+            record["segments"] = segments
+        if usage is not None:
+            record["usage"] = usage
+        ctx["message_index"][message_id] = record
+        ctx["cached_path"] = [
+            record if message["id"] == message_id else message for message in ctx["cached_path"]
+        ]
+
+        if self._db is not None:
+            async with self._db.session_context() as db_session:
+                from lovely_assistant.services.database.repositories import MessageRepository
+
+                repo = MessageRepository(db_session)
+                await repo.update(message_id, content=content, segments=segments, usage=usage)
+
+        return record
+
+    async def queue_guidance(self, session_id: str, request: AssistantRequest) -> dict[str, Any]:
+        """Queue guidance for delivery at the next pause point."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        queued = {
+            "id": request.id,
+            "content": request.content,
+            "message_type": request.message_type,
+            "created_at": datetime.now(UTC),
+        }
+        ctx["pending_guidance"].append(queued)
+        return queued
+
+    async def persist_guidance_messages(
+        self,
+        session_id: str,
+        *,
+        parent_id: str,
+    ) -> list[MessageRecord]:
+        """Persist queued guidance messages in submission order."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+
+        persisted: list[MessageRecord] = []
+        current_parent_id = parent_id
+        for queued in ctx["pending_guidance"]:
+            record: MessageRecord = {
+                "id": queued["id"],
+                "session_id": session_id,
+                "parent_id": current_parent_id,
+                "role": "user",
+                "message_type": "guidance",
+                "content": queued["content"],
+                "segments": None,
+                "usage": None,
+                "created_at": queued["created_at"],
+            }
+
+            if self._db is not None:
+                async with self._db.session_context() as db_session:
+                    from lovely_assistant.services.database.repositories import MessageRepository
+
+                    repo = MessageRepository(db_session)
+                    await repo.create(
+                        message_id=record["id"],
+                        session_id=session_id,
+                        parent_id=record["parent_id"],
+                        role=record["role"],
+                        message_type=record["message_type"],
+                        content=record["content"],
+                    )
+
+            self._add_message_to_context(ctx, record)
+            self._refresh_cached_path_for_new_leaf(ctx, record)
+            ctx["turn_number"] = ctx.get("turn_number", 0) + 1
+            persisted.append(record)
+            current_parent_id = record["id"]
+
+        ctx["pending_guidance"] = []
+        if persisted:
+            await self.save_session_state_async(session_id)
+        return persisted
+
+    async def get_message_path(
+        self,
+        session_id: str,
+        *,
+        leaf_id: str | None = None,
+    ) -> list[MessageRecord]:
+        """Resolve a root-to-leaf path for the requested leaf (or active/latest leaf)."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+
+        target_leaf = leaf_id or ctx.get("active_leaf_id") or self._latest_leaf_id(ctx)
+        if target_leaf is None:
+            return []
+        if target_leaf == ctx.get("active_leaf_id") and ctx["cached_path"]:
+            return list(ctx["cached_path"])
+        if target_leaf not in ctx["message_index"]:
+            raise LookupError(f"Message '{target_leaf}' not found")
+        return self._resolve_path(ctx, target_leaf)
+
+    async def get_tree_messages(self, session_id: str) -> list[MessageRecord]:
+        """Return all messages in a session ordered by created_at."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        return sorted(
+            ctx["message_index"].values(),
+            key=lambda message: message["created_at"],
+        )
+
+    async def save_session_state_async(self, session_id: str) -> None:
+        """Persist non-message session metadata."""
+        ctx = self._sessions.get(session_id)
+        if ctx is None or self._db is None:
+            return
+
+        async with self._db.session_context() as db_session:
+            from lovely_assistant.services.database.repositories import SessionRepository
+
+            repo = SessionRepository(db_session)
+            await repo.upsert(
+                session_id,
+                title=ctx.get("title"),
+                turn_number=ctx.get("turn_number", 0),
+                working_memory=ctx.get("working_memory"),
+                telegram_chat_id=ctx.get("telegram_chat_id"),
+                telegram_bound_at=ctx.get("telegram_bound_at"),
+                expires_at=self._expires_at(),
+            )
+
+    async def get_session_id_for_telegram_chat_async(self, chat_id: str) -> str | None:
+        """Resolve the newest active session bound to a Telegram chat id."""
+        best_session_id: str | None = None
+        best_bound_at: datetime | None = None
+        for session_id, ctx in self._sessions.items():
+            if ctx.get("telegram_chat_id") != chat_id:
+                continue
+            bound_at = self._coerce_datetime(ctx.get("telegram_bound_at"))
+            if best_session_id is None or self._is_newer_binding(bound_at, best_bound_at):
+                best_session_id = session_id
+                best_bound_at = bound_at
+        if best_session_id is not None:
+            return best_session_id
+
+        if self._db is None:
+            return None
+
+        async with self._db.session_context() as db_session:
+            from lovely_assistant.services.database.repositories import SessionRepository
+
+            repo = SessionRepository(db_session)
+            row = await repo.get_latest_by_telegram_chat_id(chat_id)
+            return row.id if row is not None else None
+
+    def has_session(self, session_id: str) -> bool:
+        return session_id in self._sessions
+
+    def session_count(self) -> int:
+        return len(self._sessions)
+
+    async def delete_session(self, session_id: str) -> None:
+        if self._db is not None:
+            async with self._db.session_context() as db_session:
+                from lovely_assistant.services.database.repositories import SessionRepository
+
                 repo = SessionRepository(db_session)
                 await repo.delete(session_id)
-
         self._sessions.pop(session_id, None)
 
     async def list_sessions(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
-        """List sessions from DB (metadata only — no full history)."""
+        """List sessions with metadata and tree message counts."""
         if self._db is None:
-            # Fallback: return in-memory sessions
             sessions = []
             for sid, ctx in self._sessions.items():
                 sessions.append(
@@ -175,7 +411,7 @@ class SessionStore:
                         "session_id": sid,
                         "title": ctx.get("title"),
                         "turn_number": ctx.get("turn_number", 0),
-                        "message_count": len(ctx.get("message_history", [])),
+                        "message_count": ctx.get("message_count", 0),
                         "created_at": None,
                     }
                 )
@@ -183,40 +419,121 @@ class SessionStore:
 
         async with self._db.session_context() as db_session:
             from lovely_assistant.services.database.repositories import (
+                MessageRepository,
                 SessionRepository,
             )
 
-            repo = SessionRepository(db_session)
-            rows = await repo.list_all(limit=limit, offset=offset)
+            session_repo = SessionRepository(db_session)
+            message_repo = MessageRepository(db_session)
+            rows = await session_repo.list_all(limit=limit, offset=offset)
+            counts = await message_repo.count_by_sessions([row.id for row in rows])
+
             db_results = [
                 {
                     "session_id": row.id,
                     "title": row.title,
                     "turn_number": row.turn_number,
-                    "message_count": len(row.message_history) if row.message_history else 0,
+                    "message_count": counts.get(row.id, 0),
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                 }
                 for row in rows
             ]
 
-            # Overlay in-memory data on DB results — active sessions may have
-            # newer message counts/titles not yet persisted to DB.
             for result in db_results:
                 sid = result["session_id"]
                 if sid in self._sessions:
                     ctx = self._sessions[sid]
-                    result["message_count"] = len(ctx.get("message_history", []))
+                    result["message_count"] = ctx.get("message_count", result["message_count"])
                     result["turn_number"] = ctx.get("turn_number", result["turn_number"])
                     if ctx.get("title"):
                         result["title"] = ctx["title"]
 
             return db_results
 
+    async def cleanup_expired(self) -> int:
+        if self._db is None:
+            return 0
+        async with self._db.session_context() as db_session:
+            from lovely_assistant.services.database.repositories import SessionRepository
+
+            repo = SessionRepository(db_session)
+            return await repo.cleanup_expired()
+
+    async def _ensure_session_row(self, session_id: str, ctx: dict[str, Any]) -> None:
+        if self._db is None:
+            return
+        async with self._db.session_context() as db_session:
+            from lovely_assistant.services.database.repositories import SessionRepository
+
+            repo = SessionRepository(db_session)
+            existing = await repo.get(session_id)
+            if existing is None:
+                await repo.create(session_id=session_id, title=ctx.get("title"), expires_at=self._expires_at())
+
+    def _build_empty_context(self) -> dict[str, Any]:
+        return {
+            "turn_number": 0,
+            "working_memory": None,
+            "title": None,
+            "telegram_chat_id": None,
+            "telegram_bound_at": None,
+            "pending_tool_call_id": None,
+            "pending_tool_name": None,
+            "pending_assistant_message_id": None,
+            "current_assistant_message_id": None,
+            "pending_guidance": [],
+            "message_count": 0,
+            "message_index": {},
+            "children_by_parent": {},
+            "cached_path": [],
+            "active_leaf_id": None,
+        }
+
+    def _add_message_to_context(self, ctx: dict[str, Any], record: MessageRecord) -> None:
+        message_index = ctx["message_index"]
+        children_by_parent = ctx["children_by_parent"]
+        message_index[record["id"]] = record
+        children_by_parent.setdefault(record.get("parent_id"), []).append(record["id"])
+        children_by_parent.setdefault(record["id"], [])
+        ctx["message_count"] = len(message_index)
+
+    def _refresh_cached_path_for_new_leaf(self, ctx: dict[str, Any], record: MessageRecord) -> None:
+        active_leaf_id = ctx.get("active_leaf_id")
+        if active_leaf_id == record.get("parent_id") or (active_leaf_id is None and record.get("parent_id") is None):
+            ctx["cached_path"] = [*ctx["cached_path"], record]
+        else:
+            parent_path = self._resolve_path(ctx, record.get("parent_id"))
+            ctx["cached_path"] = [*parent_path, record]
+        ctx["active_leaf_id"] = record["id"]
+
+    def _resolve_path(self, ctx: dict[str, Any], leaf_id: str | None) -> list[MessageRecord]:
+        if leaf_id is None:
+            return []
+        index = ctx["message_index"]
+        path: list[MessageRecord] = []
+        current_id = leaf_id
+        while current_id is not None:
+            message = index.get(current_id)
+            if message is None:
+                raise LookupError(f"Message '{current_id}' not found")
+            path.append(message)
+            current_id = message.get("parent_id")
+        path.reverse()
+        return path
+
+    def _latest_leaf_id(self, ctx: dict[str, Any]) -> str | None:
+        latest: MessageRecord | None = None
+        children_by_parent = ctx["children_by_parent"]
+        for message in ctx["message_index"].values():
+            if children_by_parent.get(message["id"]):
+                continue
+            if latest is None or message["created_at"] > latest["created_at"]:
+                latest = message
+        return latest["id"] if latest is not None else None
+
     def _evict_if_needed(self) -> None:
-        """Evict oldest half of in-memory sessions if above threshold."""
         if len(self._sessions) <= _MAX_MEMORY_SESSIONS:
             return
-        # dict preserves insertion order in Python 3.7+ — oldest entries are first
         evict_count = len(self._sessions) // 2
         keys_to_evict = list(self._sessions.keys())[:evict_count]
         for key in keys_to_evict:
@@ -227,131 +544,96 @@ class SessionStore:
             remaining=len(self._sessions),
         )
 
-    async def cleanup_expired(self) -> int:
-        """Delete expired sessions from DB. Returns count deleted."""
+    def _touch_session(self, session_id: str) -> None:
+        ctx = self._sessions.get(session_id)
+        if ctx is None:
+            return
+        self._sessions.pop(session_id, None)
+        self._sessions[session_id] = ctx
+
+    async def _load_session_from_db_singleflight(self, session_id: str) -> dict[str, Any] | None:
         if self._db is None:
-            return 0
+            return None
 
-        async with self._db.session_context() as db_session:
-            from lovely_assistant.services.database.repositories import (
-                SessionRepository,
-            )
+        async with self._pending_db_loads_lock:
+            existing = self._pending_db_loads.get(session_id)
+            if existing is None:
+                task = asyncio.create_task(self._load_session_from_db(session_id))
+                self._pending_db_loads[session_id] = task
+            else:
+                task = existing
 
-            repo = SessionRepository(db_session)
-            return await repo.cleanup_expired()
+        try:
+            return await task
+        finally:
+            async with self._pending_db_loads_lock:
+                current = self._pending_db_loads.get(session_id)
+                if current is task:
+                    self._pending_db_loads.pop(session_id, None)
 
     async def _load_session_from_db(self, session_id: str) -> dict[str, Any] | None:
-        """Load a session from DB into the in-memory format.
-
-        Retries on transient DB errors (OperationalError, DisconnectionError, etc.).
-        Deserialization failures return the session with empty history (data is in DB
-        but unreadable by the current pydantic-ai version) and log at ERROR level.
-        """
         if self._db is None:
             return None
 
         @retry_with_backoff(
-            max_attempts=4,
+            max_attempts=3,
+            min_wait=0.1,
+            max_wait=1.0,
             retry_on=_DB_RETRYABLE_EXCEPTIONS,
-            name="load_session_from_db",
         )
         async def _load() -> dict[str, Any] | None:
             async with self._db.session_context() as db_session:
                 from lovely_assistant.services.database.repositories import (
+                    MessageRepository,
                     SessionRepository,
                 )
 
-                repo = SessionRepository(db_session)
-                row = await repo.get(session_id)
+                session_repo = SessionRepository(db_session)
+                message_repo = MessageRepository(db_session)
+                row = await session_repo.get(session_id)
                 if row is None:
                     return None
+                messages = await message_repo.list_by_session(session_id)
+                ctx = self._build_empty_context()
+                ctx["turn_number"] = row.turn_number
+                ctx["working_memory"] = row.working_memory
+                ctx["title"] = row.title
+                ctx["telegram_chat_id"] = row.telegram_chat_id
+                ctx["telegram_bound_at"] = row.telegram_bound_at
 
-                # Deserialize JSONB message history back to typed ModelMessage list
-                raw_history = row.message_history if row.message_history else []
-                try:
-                    message_history = deserialize_messages(raw_history)
-                except Exception as e:
-                    logger.error(
-                        "Session message history failed to deserialize — "
-                        "returning session with empty history. "
-                        "Data is still in DB and may be recoverable after a pydantic-ai upgrade.",
-                        session_id=session_id,
-                        stored_message_count=len(raw_history),
-                        error_type=type(e).__name__,
-                        error=str(e),
-                    )
-                    message_history = []
+                for message in messages:
+                    record: MessageRecord = {
+                        "id": message.id,
+                        "session_id": message.session_id,
+                        "parent_id": message.parent_id,
+                        "role": message.role,
+                        "message_type": message.message_type,
+                        "content": message.content,
+                        "segments": message.segments,
+                        "usage": message.usage,
+                        "created_at": message.created_at,
+                    }
+                    self._add_message_to_context(ctx, record)
 
-                return {
-                    "turn_number": row.turn_number,
-                    "working_memory": row.working_memory,
-                    "message_history": message_history,
-                    "title": row.title,
-                }
+                ctx["active_leaf_id"] = self._latest_leaf_id(ctx)
+                ctx["cached_path"] = self._resolve_path(ctx, ctx["active_leaf_id"])
+                return ctx
 
         return await _load()
 
+    def _expires_at(self) -> datetime:
+        return datetime.now(UTC) + timedelta(hours=self._session_ttl_hours)
+
     @staticmethod
-    def _jsonb_safe(value: object) -> object:
-        """Convert Pydantic models to dicts for JSONB storage."""
-        if value is None:
-            return None
-        from pydantic import BaseModel
+    def _coerce_datetime(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        return None
 
-        if isinstance(value, BaseModel):
-            return value.model_dump()
-        return value
-
-    async def _persist_to_db(self, session_id: str) -> None:
-        """Persist current in-memory session state to DB via atomic upsert.
-
-        Retries on transient DB errors (OperationalError, DisconnectionError, etc.).
-        """
-        if self._db is None:
-            return
-
-        ctx = self._sessions.get(session_id)
-        if ctx is None:
-            return
-
-        # Serialize outside the retry loop — deterministic and doesn't need DB
-        messages = ctx.get("message_history", [])
-        serialized_history = serialize_messages(messages) if messages else []
-        working_memory = self._jsonb_safe(ctx.get("working_memory"))
-        expires_at = datetime.now(UTC) + timedelta(hours=self._session_ttl_hours)
-
-        @retry_with_backoff(
-            max_attempts=4,
-            retry_on=_DB_RETRYABLE_EXCEPTIONS,
-            name="persist_to_db",
-        )
-        async def _persist() -> None:
-            async with self._db.session_context() as db_session:
-                from lovely_assistant.services.database.repositories import (
-                    SessionRepository,
-                )
-
-                repo = SessionRepository(db_session)
-                await repo.upsert(
-                    session_id,
-                    title=ctx.get("title"),
-                    turn_number=ctx.get("turn_number", 0),
-                    message_history=serialized_history,
-                    working_memory=working_memory,
-                    expires_at=expires_at,
-                )
-
-                logger.debug(
-                    "[SESSION] Persisted session to DB",
-                    session_id=session_id,
-                    message_count=len(messages),
-                )
-
-        try:
-            await _persist()
-        except Exception as e:
-            logger.exception(
-                "[SESSION] Failed to persist session to DB; state remains in-memory only",
-                session_id=session_id,
-                error=str(e),
-            )
+    @staticmethod
+    def _is_newer_binding(candidate: datetime | None, current: datetime | None) -> bool:
+        if candidate is None:
+            return False
+        if current is None:
+            return True
+        return candidate > current

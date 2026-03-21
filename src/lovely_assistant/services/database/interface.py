@@ -101,11 +101,18 @@ class DatabaseService:
                 await session.rollback()
                 raise
 
+    @property
+    def healthy(self) -> bool:
+        """Whether the database is reachable."""
+        return self._healthy
+
     @asynccontextmanager
     async def session_context(self) -> AsyncIterator[AsyncSession]:
         """Context manager for non-DI use (background tasks, tests)."""
         if self._session_factory is None:
             raise DatabaseError("Database service not started")
+        if not self._healthy:
+            raise DatabaseError("Database not reachable")
         async with self._session_factory() as session:
             try:
                 yield session

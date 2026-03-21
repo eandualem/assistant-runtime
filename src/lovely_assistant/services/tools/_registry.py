@@ -128,6 +128,9 @@ class ToolRegistry:
         self._backend_handlers: dict[str, Callable] = {}
         self._backend_definitions: dict[str, ToolDefinition] = {}
         self._frontend_definitions: list[ToolDefinition] = []
+        self._frontend_toolset: Any | None = None
+        self._available_tools_cache: dict[str | None, ToolSet] = {}
+        self._toolset_cache: dict[str | None, list[Any]] = {}
 
     def register_backend_tool(self, definition: ToolDefinition, handler: Callable) -> None:
         """Register a backend tool with its async handler function."""
@@ -139,11 +142,16 @@ class ToolRegistry:
             raise ToolValidationError(f"Backend tool '{definition.name}' already registered")
         self._backend_definitions[definition.name] = definition
         self._backend_handlers[definition.name] = handler
+        self._available_tools_cache.clear()
+        self._toolset_cache.clear()
         logger.debug("Registered backend tool", tool=definition.name)
 
     def register_frontend_tools(self) -> None:
         """Register frontend tools from the built-in schema definitions."""
         self._frontend_definitions = get_frontend_definitions()
+        self._frontend_toolset = build_frontend_toolset()
+        self._available_tools_cache.clear()
+        self._toolset_cache.clear()
         logger.debug(
             "Registered frontend tools",
             count=len(self._frontend_definitions),
@@ -194,6 +202,11 @@ class ToolRegistry:
         - FunctionToolset for backend tools (with real handlers, wrapped with safety net)
         - ExternalToolset for frontend tools (deferred execution via DeferredToolRequests)
         """
+        cache_key = self._cache_key(machine_state)
+        cached = self._toolset_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
         available = self._resolve_available_tools(machine_state)
         toolsets: list = []
 
@@ -210,10 +223,8 @@ class ToolRegistry:
             toolsets.append(func_toolset)
 
         # Frontend tools — always appended, bypass page filtering
-        if self._frontend_definitions:
-            ext_toolset = build_frontend_toolset()
-            if ext_toolset is not None:
-                toolsets.append(ext_toolset)
+        if self._frontend_toolset is not None:
+            toolsets.append(self._frontend_toolset)
 
         logger.debug(
             "[TOOLS] Built toolsets",
@@ -221,7 +232,8 @@ class ToolRegistry:
             frontend=len(self._frontend_definitions),
             toolsets=len(toolsets),
         )
-        return toolsets
+        self._toolset_cache[cache_key] = list(toolsets)
+        return list(toolsets)
 
     def build_subagent_toolset(self) -> list:
         """Build toolsets for subagent execution — backend tools only, excluding run_subagent.
@@ -257,6 +269,11 @@ class ToolRegistry:
     def get_available_tools(self, machine_state: dict[str, Any] | None = None) -> ToolSet:
         """List tools available for a given machine state."""
         return self._resolve_available_tools(machine_state)
+
+    def warm_machine_state(self, machine_state: dict[str, Any] | None = None) -> None:
+        """Precompute page-scoped availability and toolset caches."""
+        self._resolve_available_tools(machine_state)
+        self.build_toolset(machine_state)
 
     def validate_tool_call(self, tool_name: str, args: dict[str, Any]) -> bool:
         """Check if a tool name is registered."""
@@ -295,29 +312,32 @@ class ToolRegistry:
         Agent tools (list_agents, get_active_agents, check_agent_state,
         start/stop/send) are in core — available on every page.
         """
+        page_name = self._page_name(machine_state)
+        cache_key = page_name or None
+        cached = self._available_tools_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         backend = list(self._backend_definitions.values())
         total_before = len(backend)
-        page_name: str | None = None
 
         # Determine if we should filter
-        if machine_state and isinstance(machine_state.get("active_page"), dict):
-            page_name = machine_state["active_page"].get("name")
-            if page_name and page_name != "home":
-                if page_name in _AGENT_PAGES:
-                    allowed = _CORE_TOOL_NAMES | _PLAN_TOOL_NAMES
-                    backend = [t for t in backend if t.name in allowed]
-                elif page_name in _GITHUB_PAGES:
-                    allowed = _CORE_TOOL_NAMES | _GITHUB_TOOL_NAMES
-                    backend = [t for t in backend if t.name in allowed]
-                elif page_name in _MEETING_PAGES:
-                    allowed = _CORE_TOOL_NAMES | _MEETING_TOOL_NAMES
-                    backend = [t for t in backend if t.name in allowed]
-                elif page_name in _REPO_PAGES:
-                    allowed = _CORE_TOOL_NAMES | _REPO_TOOL_NAMES
-                    backend = [t for t in backend if t.name in allowed]
-                elif page_name in _CORE_ONLY_PAGES:
-                    backend = [t for t in backend if t.name in _CORE_TOOL_NAMES]
-                # else: unknown page → all tools (no filtering)
+        if page_name and page_name != "home":
+            if page_name in _AGENT_PAGES:
+                allowed = _CORE_TOOL_NAMES | _PLAN_TOOL_NAMES
+                backend = [t for t in backend if t.name in allowed]
+            elif page_name in _GITHUB_PAGES:
+                allowed = _CORE_TOOL_NAMES | _GITHUB_TOOL_NAMES
+                backend = [t for t in backend if t.name in allowed]
+            elif page_name in _MEETING_PAGES:
+                allowed = _CORE_TOOL_NAMES | _MEETING_TOOL_NAMES
+                backend = [t for t in backend if t.name in allowed]
+            elif page_name in _REPO_PAGES:
+                allowed = _CORE_TOOL_NAMES | _REPO_TOOL_NAMES
+                backend = [t for t in backend if t.name in allowed]
+            elif page_name in _CORE_ONLY_PAGES:
+                backend = [t for t in backend if t.name in _CORE_TOOL_NAMES]
+            # else: unknown page → all tools (no filtering)
 
         total = len(backend)
         if total > self._config.max_tools_per_request:
@@ -327,9 +347,22 @@ class ToolRegistry:
                 max=self._config.max_tools_per_request,
             )
 
-        return ToolSet(
+        toolset = ToolSet(
             backend_tools=backend,
             frontend_tools=self._frontend_definitions,
             page=page_name,
             filtered_out_count=total_before - total,
         )
+        self._available_tools_cache[cache_key] = toolset
+        return toolset
+
+    @staticmethod
+    def _page_name(machine_state: dict[str, Any] | None = None) -> str | None:
+        """Extract the active page name from machine state."""
+        if machine_state and isinstance(machine_state.get("active_page"), dict):
+            return machine_state["active_page"].get("name")
+        return None
+
+    def _cache_key(self, machine_state: dict[str, Any] | None = None) -> str | None:
+        """Cache by active page since tool availability is page-scoped."""
+        return self._page_name(machine_state) or None

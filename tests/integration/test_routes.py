@@ -12,6 +12,15 @@ from lovely_assistant.main import create_app
 from .conftest import _make_mock_agent
 
 
+def _payload(*, message_id: str, session_id: str, parent_id: str | None, content: str) -> dict[str, object]:
+    return {
+        "id": message_id,
+        "session_id": session_id,
+        "parent_id": parent_id,
+        "content": content,
+    }
+
+
 @pytest.fixture
 async def integration_client(monkeypatch):
     """Create a real app with services manually wired (ASGITransport skips lifespan)."""
@@ -102,7 +111,12 @@ class TestChatRouteIntegration:
         ):
             response = await client.post(
                 "/api/chat",
-                json={"session_id": "route-integ", "message": "Hello"},
+                json=_payload(
+                    message_id="user-1",
+                    session_id="route-integ",
+                    parent_id=None,
+                    content="Hello",
+                ),
             )
 
         assert response.status_code == 200
@@ -132,7 +146,12 @@ class TestSessionRouteIntegration:
         ):
             await client.post(
                 "/api/chat",
-                json={"session_id": "sess-route", "message": "Hi"},
+                json=_payload(
+                    message_id="user-1",
+                    session_id="sess-route",
+                    parent_id=None,
+                    content="Hi",
+                ),
             )
 
         response = await client.get("/api/sessions/sess-route")
@@ -153,7 +172,12 @@ class TestSessionRouteIntegration:
         ):
             await client.post(
                 "/api/chat",
-                json={"session_id": "sess-delete", "message": "Hi"},
+                json=_payload(
+                    message_id="user-1",
+                    session_id="sess-delete",
+                    parent_id=None,
+                    content="Hi",
+                ),
             )
 
         # Delete

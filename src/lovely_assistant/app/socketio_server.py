@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 from typing import TYPE_CHECKING, Any
 
 import socketio
@@ -72,20 +73,65 @@ class AssistantNamespace(socketio.AsyncNamespace):
             return
         room = f"session:{session_id}"
         await self.enter_room(sid, room)
+        machine_state = data.get("machine_state") if isinstance(data, dict) else None
+        streaming_service = self._try_get_streaming_service()
+        if streaming_service is not None:
+            warm = getattr(streaming_service, "warm_session", None)
+            if callable(warm):
+                try:
+                    maybe_awaitable = warm(session_id, machine_state)
+                    if inspect.isawaitable(maybe_awaitable):
+                        await maybe_awaitable
+                except Exception as e:
+                    logger.warning(
+                        "Session warmup failed during join",
+                        sid=sid,
+                        session_id=session_id,
+                        error=str(e),
+                    )
         logger.info("Client joined session room", sid=sid, session_id=session_id)
 
     async def on_assistant_message(self, sid: str, data: dict[str, Any]) -> None:
         """Handle incoming chat message — start streaming to client."""
-        if not isinstance(data, dict) or "session_id" not in data or "message" not in data:
+        if not isinstance(data, dict):
             await self.emit(
                 "assistant:error",
-                {"type": "validation", "message": "Missing session_id or message"},
+                {"type": "validation", "message": "Invalid assistant request payload"},
                 to=sid,
             )
             return
 
-        session_id = data["session_id"]
-        is_continuation = data.get("tool_call_id") is not None
+        # Build request — catch Pydantic validation errors
+        try:
+            request = AssistantRequest(**data)
+        except Exception as e:
+            logger.error("Request validation failed", sid=sid, error=str(e))
+            await self.emit(
+                "assistant:error",
+                {"type": "validation", "message": f"Invalid request: {e}"},
+                to=sid,
+            )
+            return
+
+        session_id = request.session_id
+        is_continuation = request.is_continuation
+
+        if request.is_guidance:
+            try:
+                await self._streaming_service.queue_guidance(request)
+            except Exception as e:
+                logger.error(
+                    "Guidance queueing failed",
+                    sid=sid,
+                    session_id=session_id,
+                    error=str(e),
+                )
+                await self.emit(
+                    "assistant:error",
+                    {"type": "session", "message": str(e)},
+                    to=sid,
+                )
+            return
 
         # If a stream is already active for this session, cancel it and replace.
         # Exception: continuations (tool_call_id set) should not cancel the
@@ -104,18 +150,6 @@ class AssistantNamespace(socketio.AsyncNamespace):
                     sid=sid,
                     session_id=session_id,
                 )
-
-        # Build request — catch Pydantic validation errors
-        try:
-            request = AssistantRequest(**data)
-        except Exception as e:
-            logger.error("Request validation failed", sid=sid, session_id=session_id, error=str(e))
-            await self.emit(
-                "assistant:error",
-                {"type": "validation", "message": f"Invalid request: {e}"},
-                to=sid,
-            )
-            return
 
         # Start streaming task
         task = asyncio.create_task(self._run_stream(sid, session_id, request))
@@ -163,8 +197,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
                     event_type == "agent_status" and event.get("status") == "completed"
                 )
                 is_deferred_final = (
-                    event_type == "final_response"
-                    and event.get("pending_tool_call") is not None
+                    event_type == "final_response" and event.get("pending_tool_call") is not None
                 )
                 if not released_session and (is_terminal_completed or is_deferred_final):
                     # Release the session before notifying the client so an immediate
@@ -210,3 +243,14 @@ class AssistantNamespace(socketio.AsyncNamespace):
         finally:
             if not released_session:
                 self._active_streams.pop(session_id, None)
+
+    def _try_get_streaming_service(self) -> StreamingService | None:
+        """Best-effort accessor for tests and early lifecycle states."""
+        server = getattr(self, "server", None)
+        fastapi_app = getattr(server, "fastapi_app", None)
+        if fastapi_app is None:
+            return None
+        state = getattr(fastapi_app, "state", None)
+        if state is None:
+            return None
+        return getattr(state, "streaming_service", None)

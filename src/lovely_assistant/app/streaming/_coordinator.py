@@ -41,6 +41,11 @@ class EventCoordinator:
         self._streamed_thinking = False
         self._thinking_buffer: list[str] = []
         self._response_buffer: list[str] = []
+        self._current_segment_kind: str | None = None
+        self._current_segment_id: str | None = None
+        self._current_segment_index: int | None = None
+        self._current_segment_delta_index = 0
+        self._next_segment_index = 0
 
     @property
     def event_count(self) -> int:
@@ -80,6 +85,7 @@ class EventCoordinator:
             logger.warning("Duplicate agent_status(completed) suppressed")
             return None
         self._completed_emitted = True
+        self.clear_content_segment()
         event = make_agent_status_event("completed")
         self._event_count += 1  # count but never raise
         return event
@@ -90,6 +96,7 @@ class EventCoordinator:
         model: str,
         *,
         session_id: str | None = None,
+        message_id: str | None = None,
         error: bool = False,
         error_type: str | None = None,
         usage: dict[str, int] | None = None,
@@ -104,6 +111,7 @@ class EventCoordinator:
             logger.warning("Duplicate final_response suppressed")
             return None
         self._final_response_emitted = True
+        self.clear_content_segment()
         # Clear content when text was already delivered via deltas (unless error)
         effective_content = (
             "" if self._streamed_text and not error and content is not None else content
@@ -112,6 +120,7 @@ class EventCoordinator:
             effective_content,
             model,
             session_id=session_id,
+            message_id=message_id,
             streamed=self._streamed_text,
             thinking_streamed=self._streamed_thinking,
             error=error,
@@ -126,13 +135,33 @@ class EventCoordinator:
         """Create, track, and return a text_delta event. Sets streamed_text flag."""
         self._streamed_text = True
         self._response_buffer.append(content)
-        return self._track(make_text_delta_event(content))
+        segment = self._next_segment("text")
+        return self._track(
+            make_text_delta_event(
+                content,
+                segment_id=segment["segment_id"],
+                segment_index=segment["segment_index"],
+                delta_index=segment["delta_index"],
+                segment_started=segment["segment_started"],
+                segment_kind="text",
+            )
+        )
 
     def emit_thinking_delta(self, content: str) -> dict[str, Any]:
         """Create, track, and return a thinking_delta event. Sets streamed_thinking flag."""
         self._streamed_thinking = True
         self._thinking_buffer.append(content)
-        return self._track(make_thinking_delta_event(content))
+        segment = self._next_segment("thinking")
+        return self._track(
+            make_thinking_delta_event(
+                content,
+                segment_id=segment["segment_id"],
+                segment_index=segment["segment_index"],
+                delta_index=segment["delta_index"],
+                segment_started=segment["segment_started"],
+                segment_kind="thinking",
+            )
+        )
 
     def flush_thinking(self) -> dict[str, Any] | None:
         """Flush current thinking buffer as a debug_thinking trace event.
@@ -148,6 +177,8 @@ class EventCoordinator:
 
     def track(self, event: dict[str, Any]) -> dict[str, Any]:
         """Track a regular event (thinking_delta, text_delta, tool_*, error)."""
+        if event.get("type") not in {"thinking_delta", "text_delta"}:
+            self.clear_content_segment()
         return self._track(event)
 
     def track_debug(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -171,9 +202,37 @@ class EventCoordinator:
         """Full response content accumulated from all text_delta events."""
         return "".join(self._response_buffer)
 
+    def clear_content_segment(self) -> None:
+        """Reset active content-segment tracking on any non-content boundary."""
+        self._current_segment_kind = None
+        self._current_segment_id = None
+        self._current_segment_index = None
+        self._current_segment_delta_index = 0
+
     def _track(self, event: dict[str, Any]) -> dict[str, Any]:
         """Increment counter and enforce limit."""
         self._event_count += 1
         if self._event_count > self._max_events:
             raise EventLimitError(f"Event limit exceeded: {self._event_count} > {self._max_events}")
         return event
+
+    def _next_segment(self, kind: str) -> dict[str, int | str | bool]:
+        """Return metadata for the current segment, rotating on kind changes."""
+        if self._current_segment_kind != kind:
+            self.clear_content_segment()
+            self._current_segment_kind = kind
+            self._current_segment_index = self._next_segment_index
+            self._current_segment_id = f"segment_{self._next_segment_index}"
+            self._next_segment_index += 1
+
+        segment_started = self._current_segment_delta_index == 0
+        delta_index = self._current_segment_delta_index
+        self._current_segment_delta_index += 1
+        assert self._current_segment_id is not None
+        assert self._current_segment_index is not None
+        return {
+            "segment_id": self._current_segment_id,
+            "segment_index": self._current_segment_index,
+            "delta_index": delta_index,
+            "segment_started": segment_started,
+        }

@@ -28,7 +28,11 @@ from pydantic_ai.messages import (
 )
 from pydantic_graph.nodes import End
 
-from lovely_assistant.app.assistant._serialization import sanitize_image_tool_returns
+from lovely_assistant.app.assistant._serialization import (
+    build_assistant_message_content,
+    path_records_to_model_history,
+    sanitize_image_tool_returns,
+)
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.exceptions import SessionError
 from lovely_assistant.app.assistant.models import AssistantRequest, _build_user_prompt
@@ -123,6 +127,36 @@ class StreamingService:
         """Report health status."""
         return {"healthy": self._started}
 
+    async def warm_session(
+        self,
+        session_id: str,
+        machine_state: dict[str, Any] | None = None,
+    ) -> None:
+        """Warm shared request-path state for a joined session."""
+        if not self._started:
+            return
+        await self._assistant_service.warm_session(session_id, machine_state)
+
+    async def queue_guidance(self, request: AssistantRequest) -> dict[str, Any]:
+        """Queue a mid-turn guidance message without starting a new run."""
+        if not request.is_guidance:
+            raise SessionError("Only guidance requests can be queued")
+
+        session_context = await self._sessions.get_context_if_exists_async(request.session_id)
+        if session_context is None:
+            raise SessionError(f"Guidance rejected: session '{request.session_id}' does not exist")
+
+        active_assistant_message_id = (
+            session_context.get("current_assistant_message_id")
+            or session_context.get("pending_assistant_message_id")
+        )
+        if not active_assistant_message_id:
+            raise SessionError(
+                f"Guidance rejected: session '{request.session_id}' has no active assistant turn"
+            )
+
+        return await self._sessions.queue_guidance(request.session_id, request)
+
     async def stream_message(self, request: AssistantRequest) -> AsyncIterator[dict[str, Any]]:
         """Stream a response as event dicts.
 
@@ -143,6 +177,9 @@ class StreamingService:
             raise StreamingError("Streaming service not started")
 
         try:
+            if request.is_guidance:
+                await self.queue_guidance(request)
+                return
             if request.is_continuation:
                 async for event in self._stream_continuation(request):
                     yield event
@@ -219,6 +256,19 @@ class StreamingService:
                     f"tool call '{pending_tool_call_id}' for session '{session_id}'"
                 )
 
+            assistant_message_id = session_context.get("pending_assistant_message_id")
+            if not assistant_message_id:
+                raise SessionError(
+                    "Continuation rejected: "
+                    f"session '{session_id}' is missing the pending assistant message id"
+                )
+
+            if session_context.get("pending_guidance"):
+                await self._sessions.persist_guidance_messages(
+                    session_id,
+                    parent_id=assistant_message_id,
+                )
+
         except SessionError:
             raise
         except Exception as e:
@@ -241,8 +291,17 @@ class StreamingService:
                 )
 
             history = self._sessions.get_history(session_id)
+            assistant_record = session_context["message_index"].get(assistant_message_id)
+            if assistant_record is None:
+                raise SessionError(
+                    "Continuation rejected: "
+                    f"assistant message '{assistant_message_id}' is not cached for session '{session_id}'"
+                )
+            assistant_history = path_records_to_model_history([assistant_record])
             (ctx, agent_setup_ms), (history_result, history_prep_ms) = await asyncio.gather(
-                self._timed_async(self._assistant_service.prepare_agent_context(request, session_context)),
+                self._timed_async(
+                    self._assistant_service.prepare_agent_context(request, session_context)
+                ),
                 self._timed_async(
                     self._history.prepare_history_with_metadata(
                         history, session_context, is_continuation=True
@@ -305,29 +364,27 @@ class StreamingService:
             return
 
         # Streaming phase
-        _history_saved = False
+        _assistant_persisted = False
         try:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
                 with assistant_request_context(session_id):
-                        async with ctx.agent.iter(
-                            None,
-                            message_history=prepared_history if prepared_history else None,
-                            usage_limits=ctx.usage_limits,
-                            deferred_tool_results=deferred,
-                        ) as run:
-                            async for event in self._iterate_run(
-                                run,
-                                coordinator,
-                                resolved_model,
-                                emit_debug=emit_debug,
-                                suppress_tool_call_ids={request.tool_call_id},
-                            ):
-                                yield event
+                    async with ctx.agent.iter(
+                        None,
+                        message_history=prepared_history if prepared_history else None,
+                        usage_limits=ctx.usage_limits,
+                        deferred_tool_results=deferred,
+                    ) as run:
+                        async for event in self._iterate_run(
+                            run,
+                            coordinator,
+                            resolved_model,
+                            emit_debug=emit_debug,
+                            suppress_tool_call_ids={request.tool_call_id},
+                        ):
+                            yield event
 
-            await self._sessions.save_history_async(
-                session_id, sanitize_image_tool_returns(list(run.result.all_messages()))
-            )
-            _history_saved = True
+            all_messages = list(run.result.all_messages())
+            continuation_messages = all_messages[len(prepared_history) :]
 
             # Clear pending tool call state
             session_context.pop("pending_tool_call_id", None)
@@ -345,22 +402,47 @@ class StreamingService:
             except Exception:
                 pass
 
+            assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
+                [*assistant_history, *continuation_messages]
+            )
+            await self._sessions.update_message(
+                session_id,
+                assistant_message_id,
+                content=assistant_content,
+                segments=assistant_segments,
+                usage=usage_dict,
+            )
+            _assistant_persisted = True
+
             # Handle output (same DeferredToolRequests check as new message path)
             output = run.result.output
             if isinstance(output, DeferredToolRequests):
                 # tool_call already emitted during _iterate_run() — just store pending state
                 pending_info = self._store_pending_frontend_tool(output, session_context)
+                session_context["pending_assistant_message_id"] = assistant_message_id
 
                 final = coordinator.try_final_response(
                     None,
                     resolved_model,
                     session_id=session_id,
+                    message_id=assistant_message_id,
                     usage=usage_dict,
                     pending_tool_call=pending_info,
                 )
             else:
+                session_context.pop("pending_assistant_message_id", None)
+                session_context.pop("current_assistant_message_id", None)
+                if session_context.get("pending_guidance"):
+                    await self._sessions.persist_guidance_messages(
+                        session_id,
+                        parent_id=assistant_message_id,
+                    )
                 final = coordinator.try_final_response(
-                    str(output), resolved_model, session_id=session_id, usage=usage_dict
+                    str(output),
+                    resolved_model,
+                    session_id=session_id,
+                    message_id=assistant_message_id,
+                    usage=usage_dict,
                 )
             if final:
                 yield final
@@ -424,16 +506,6 @@ class StreamingService:
         finally:
             clear_current_screenshot()
 
-            if not _history_saved:
-                try:
-                    if "run" in dir() and hasattr(run, "result") and run.result is not None:
-                        await self._sessions.save_history_async(
-                            session_id,
-                            sanitize_image_tool_returns(list(run.result.all_messages())),
-                        )
-                except Exception:
-                    pass
-
             # Flush any unflushed thinking (error path safety net)
             if emit_debug:
                 coordinator.flush_thinking()
@@ -485,9 +557,11 @@ class StreamingService:
         # Setup phase
         try:
             session_id = request.session_id
-            session_context = await self._sessions.get_context_async(session_id)
+            session_context, _user_record = await self._sessions.register_user_message(request)
             self._ensure_no_pending_frontend_tool(session_context, session_id)
-            turn_number = self._sessions.increment_turn(session_id)
+            turn_number = session_context.get("turn_number", 0)
+            assistant_message_id = str(uuid.uuid4())
+            session_context["current_assistant_message_id"] = assistant_message_id
 
         except SessionError:
             raise
@@ -512,9 +586,11 @@ class StreamingService:
                     )
                 )
 
-            history = self._sessions.get_history(session_id)
+            history = self._sessions.get_history(session_id, exclude_leaf=True)
             (ctx, agent_setup_ms), (history_result, history_prep_ms) = await asyncio.gather(
-                self._timed_async(self._assistant_service.prepare_agent_context(request, session_context)),
+                self._timed_async(
+                    self._assistant_service.prepare_agent_context(request, session_context)
+                ),
                 self._timed_async(
                     self._history.prepare_history_with_metadata(history, session_context)
                 ),
@@ -629,7 +705,7 @@ class StreamingService:
             set_current_screenshot(screenshot)
 
         user_prompt = _build_user_prompt(request.message)
-        _history_saved = False
+        _assistant_persisted = False
         try:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
                 with assistant_request_context(session_id):
@@ -643,11 +719,8 @@ class StreamingService:
                         ):
                             yield event
 
-            # Save history after run completes (async = persists to DB)
-            await self._sessions.save_history_async(
-                session_id, sanitize_image_tool_returns(list(run.result.all_messages()))
-            )
-            _history_saved = True
+            all_messages = list(run.result.all_messages())
+            turn_messages = all_messages[len(prepared_history) :]
 
             # Debug: usage
             if emit_debug:
@@ -678,6 +751,21 @@ class StreamingService:
             except Exception:
                 pass
 
+            assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
+                turn_messages
+            )
+            await self._sessions.register_assistant_message(
+                session_id,
+                message_id=assistant_message_id,
+                parent_id=request.id,
+                content=assistant_content,
+                segments=assistant_segments,
+                usage=usage_dict,
+                created_at=assistant_timestamp,
+            )
+            _assistant_persisted = True
+            session_context.pop("current_assistant_message_id", None)
+
             # Handle output
             output = run.result.output
 
@@ -686,11 +774,13 @@ class StreamingService:
                 # The tool_call event was already emitted during
                 # _iterate_run() (via _stream_node or CallToolsNode handler).
                 pending_info = self._store_pending_frontend_tool(output, session_context)
+                session_context["pending_assistant_message_id"] = assistant_message_id
 
                 final = coordinator.try_final_response(
                     None,
                     resolved_model,
                     session_id=session_id,
+                    message_id=assistant_message_id,
                     usage=usage_dict,
                     pending_tool_call=pending_info,
                 )
@@ -704,8 +794,18 @@ class StreamingService:
                     duration_ms=(time.monotonic() - start_time) * 1000,
                 )
             else:
+                session_context.pop("pending_assistant_message_id", None)
+                if session_context.get("pending_guidance"):
+                    await self._sessions.persist_guidance_messages(
+                        session_id,
+                        parent_id=assistant_message_id,
+                    )
                 final = coordinator.try_final_response(
-                    str(output), resolved_model, session_id=session_id, usage=usage_dict
+                    str(output),
+                    resolved_model,
+                    session_id=session_id,
+                    message_id=assistant_message_id,
+                    usage=usage_dict,
                 )
                 if final:
                     yield final
@@ -772,24 +872,9 @@ class StreamingService:
         finally:
             clear_current_screenshot()
 
-            # Backup history save if normal path didn't execute
-            if not _history_saved:
-                try:
-                    if "run" in dir() and hasattr(run, "result") and run.result is not None:
-                        await self._sessions.save_history_async(
-                            session_id,
-                            sanitize_image_tool_returns(list(run.result.all_messages())),
-                        )
-                        logger.debug("Backup history save succeeded", session_id=session_id)
-                except Exception:
-                    logger.debug(
-                        "Backup history save failed (expected if run did not complete)",
-                        session_id=session_id,
-                    )
-
             # Working memory delta (mirrors non-streaming path, best-effort)
             try:
-                if ctx.effective_config.enable_working_memory:
+                if _assistant_persisted and ctx.effective_config.enable_working_memory:
                     await self._assistant_service._update_working_memory(
                         session_id, session_context, turn_number
                     )
@@ -868,6 +953,9 @@ class StreamingService:
         )
         session_context.pop("pending_tool_call_id", None)
         session_context.pop("pending_tool_name", None)
+        session_context.pop("pending_assistant_message_id", None)
+        session_context.pop("current_assistant_message_id", None)
+        session_context["pending_guidance"] = []
 
     def _store_pending_frontend_tool(
         self, output: DeferredToolRequests, session_context: dict[str, Any]
@@ -964,6 +1052,7 @@ class StreamingService:
                 # Flush this iteration's thinking into the trace (chronological position)
                 if emit_debug:
                     coordinator.flush_thinking()
+                coordinator.clear_content_segment()
                 # Deferred sanitization: strip image after the LLM has seen it.
                 # look_at_screen sets the flag at CallToolsNode time; we wait
                 # until this ModelRequestNode finishes streaming (LLM consumed
@@ -987,7 +1076,9 @@ class StreamingService:
                     except Exception:
                         args = {}
                     category = "frontend" if tc.tool_name in FRONTEND_TOOL_SCHEMAS else "backend"
-                    evt = make_tool_call_event(tc.tool_name, args, tc.tool_call_id, category=category)
+                    evt = make_tool_call_event(
+                        tc.tool_name, args, tc.tool_call_id, category=category
+                    )
                     coordinator.track_debug(evt)
                     yield coordinator.track(evt)
 

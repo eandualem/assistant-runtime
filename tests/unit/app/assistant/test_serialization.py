@@ -1,5 +1,3 @@
-"""Tests for message history serialization helpers."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -9,849 +7,280 @@ from pydantic_ai.messages import (
     BinaryContent,
     ModelRequest,
     ModelResponse,
-    SystemPromptPart,
     TextPart,
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.usage import RequestUsage
 
 from lovely_assistant.app.assistant._serialization import (
-    _sanitize_history,
-    _sanitize_tool_return_content,
-    deserialize_messages,
-    messages_to_display_format,
+    assistant_segments_to_text,
+    build_assistant_message_content,
+    canonicalize_assistant_segments,
+    normalize_tool_output_for_storage,
+    path_records_to_model_history,
     sanitize_image_tool_returns,
-    serialize_messages,
+    tree_messages_to_display,
+    tree_messages_to_tree,
 )
 
-# --- serialize_messages ---
+
+def _strip_segment_metadata(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {key: value for key, value in segment.items() if key not in {"segment_id", "segment_index"}}
+        for segment in segments
+    ]
 
 
-class TestSerializeMessages:
-    def test_empty_list_returns_empty(self):
-        result = serialize_messages([])
-        assert result == []
+def test_canonicalize_assistant_segments_merges_adjacent_content() -> None:
+    segments = [
+        {"kind": "thinking", "text": "A"},
+        {"kind": "thinking", "text": "B"},
+        {"kind": "text", "text": "C"},
+        {"kind": "text", "text": "D"},
+        {"kind": "tool_group", "tools": [{"id": "tc-1", "name": "list_agents", "input": {}}]},
+        {"kind": "text", "text": "E"},
+    ]
 
-    def test_simple_model_request_round_trips(self):
-        msg = ModelRequest(parts=[UserPromptPart(content="hello")])
-        serialized = serialize_messages([msg])
-        assert isinstance(serialized, list)
-        assert len(serialized) == 1
-        # Verify the serialized dict is JSON-compatible (no pydantic objects)
-        assert isinstance(serialized[0], dict)
-
-
-# --- deserialize_messages ---
-
-
-class TestDeserializeMessages:
-    def test_empty_list_returns_empty(self):
-        result = deserialize_messages([])
-        assert result == []
-
-    def test_empty_data_returns_empty(self):
-        result = deserialize_messages([])
-        assert result == []
+    assert canonicalize_assistant_segments(segments) == [
+        {"kind": "thinking", "text": "AB"},
+        {"kind": "text", "text": "CD"},
+        {"kind": "tool_group", "tools": [{"id": "tc-1", "name": "list_agents", "input": {}}]},
+        {"kind": "text", "text": "E"},
+    ]
 
 
-# --- Round-trip tests ---
-
-
-class TestRoundTrip:
-    def test_user_prompt_content_preserved(self):
-        original_msg = ModelRequest(parts=[UserPromptPart(content="What is 2+2?")])
-        serialized = serialize_messages([original_msg])
-        deserialized = deserialize_messages(serialized)
-
-        assert len(deserialized) == 1
-        restored = deserialized[0]
-        assert isinstance(restored, ModelRequest)
-        assert len(restored.parts) == 1
-        assert isinstance(restored.parts[0], UserPromptPart)
-        assert restored.parts[0].content == "What is 2+2?"
-
-    def test_text_part_model_response_preserved(self):
-        original_resp = ModelResponse(parts=[TextPart(content="The answer is 4.")])
-        serialized = serialize_messages([original_resp])
-        deserialized = deserialize_messages(serialized)
-
-        assert len(deserialized) == 1
-        restored = deserialized[0]
-        assert isinstance(restored, ModelResponse)
-        assert len(restored.parts) == 1
-        assert isinstance(restored.parts[0], TextPart)
-        assert restored.parts[0].content == "The answer is 4."
-
-    def test_model_response_provider_response_id_preserved(self):
-        original_resp = ModelResponse(
-            parts=[TextPart(content="Using cached reasoning state.")],
-            provider_name="openai",
-            provider_response_id="resp_123",
-        )
-        serialized = serialize_messages([original_resp])
-        deserialized = deserialize_messages(serialized)
-
-        assert len(deserialized) == 1
-        restored = deserialized[0]
-        assert isinstance(restored, ModelResponse)
-        assert restored.provider_name == "openai"
-        assert restored.provider_response_id == "resp_123"
-
-
-# --- _sanitize_tool_return_content ---
-
-
-class TestSanitizeToolReturnContent:
-    def test_plain_string_passes_through(self):
-        result = _sanitize_tool_return_content("hello world")
-        assert result == "hello world"
-
-    def test_plain_dict_passes_through(self):
-        data: dict[str, Any] = {"key": "value", "count": 42}
-        result = _sanitize_tool_return_content(data)
-        assert result == {"key": "value", "count": 42}
-
-    def test_list_of_strings_passes_through(self):
-        data = ["a", "b", "c"]
-        result = _sanitize_tool_return_content(data)
-        assert result == ["a", "b", "c"]
-
-    def test_nested_dict_passes_through(self):
-        data: dict[str, Any] = {
-            "outer": {
-                "inner": "value",
-                "nums": [1, 2, 3],
+def test_path_records_to_model_history_expands_assistant_turns() -> None:
+    created_at = datetime(2026, 3, 21, 12, 0, tzinfo=UTC)
+    history = path_records_to_model_history(
+        [
+            {
+                "id": "user-1",
+                "session_id": "sess-1",
+                "parent_id": None,
+                "role": "user",
+                "message_type": "standard",
+                "content": "Check the agents page",
+                "created_at": created_at,
             },
-            "flag": True,
-        }
-        result = _sanitize_tool_return_content(data)
-        assert result == {
-            "outer": {
-                "inner": "value",
-                "nums": [1, 2, 3],
-            },
-            "flag": True,
-        }
-
-
-# --- _sanitize_history ---
-
-
-class TestSanitizeHistory:
-    def test_empty_list_returns_empty(self):
-        result = _sanitize_history([])
-        assert result == []
-
-    def test_messages_without_tool_return_pass_through(self):
-        msg = ModelRequest(parts=[UserPromptPart(content="hello")])
-        resp = ModelResponse(parts=[TextPart(content="world")])
-        history = [msg, resp]
-
-        result = _sanitize_history(history)
-        assert len(result) == 2
-        # Objects should be the same identity (no modification needed)
-        assert result[0] is msg
-        assert result[1] is resp
-
-
-# --- messages_to_display_format ---
-
-
-class TestMessagesToDisplayFormat:
-    def test_empty_messages(self):
-        result = messages_to_display_format([])
-        assert result == []
-
-    def test_user_message(self):
-        msg = ModelRequest(parts=[UserPromptPart(content="hello")])
-        result = messages_to_display_format([msg])
-
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
-        assert result[0]["text"] == "hello"
-
-    def test_assistant_text_only(self):
-        resp = ModelResponse(
-            parts=[TextPart(content="The answer is 42.")],
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        result = messages_to_display_format([resp])
-
-        assert len(result) == 1
-        assert result[0]["role"] == "assistant"
-        assert result[0]["text"] == "The answer is 42."
-        assert result[0]["segments"] == [{"kind": "text", "text": "The answer is 42."}]
-        assert "thinking" not in result[0]
-        assert "tool_calls" not in result[0]
-
-    def test_assistant_with_thinking(self):
-        resp = ModelResponse(
-            parts=[
-                ThinkingPart(content="Let me consider..."),
-                TextPart(content="Here is the answer."),
-            ],
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        result = messages_to_display_format([resp])
-
-        assert len(result) == 1
-        entry = result[0]
-        assert entry["role"] == "assistant"
-        assert entry["text"] == "Here is the answer."
-        assert "thinking" not in entry  # Flat fields removed — use segments
-        assert entry["segments"] == [
-            {"kind": "thinking", "text": "Let me consider..."},
-            {"kind": "text", "text": "Here is the answer."},
-        ]
-
-    def test_tool_call_paired_with_result(self):
-        call_id = "tc_001"
-        response_msg = ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="get_status",
-                    args={"agent": "leo"},
-                    tool_call_id=call_id,
-                ),
-            ],
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        return_msg = ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="get_status",
-                    content="idle",
-                    tool_call_id=call_id,
-                    timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
-                ),
-            ]
-        )
-        result = messages_to_display_format([response_msg, return_msg])
-
-        # Only the assistant message should appear (tool return is not a standalone message)
-        assert len(result) == 1
-        entry = result[0]
-        assert entry["role"] == "assistant"
-        assert "tool_calls" not in entry  # Flat fields removed — use segments
-        tc = entry["segments"][0]["tools"][0]
-        assert tc["name"] == "get_status"
-        assert tc["input"] == {"agent": "leo"}
-        assert tc["id"] == call_id
-        assert tc["output"] == "idle"
-        assert entry["segments"] == [
             {
-                "kind": "tool_group",
-                "tools": [
+                "id": "assistant-1",
+                "session_id": "sess-1",
+                "parent_id": "user-1",
+                "role": "assistant",
+                "message_type": "standard",
+                "content": "Leo is idle.",
+                "segments": [
+                    {"kind": "thinking", "text": "Inspecting."},
                     {
-                        "id": call_id,
-                        "name": "get_status",
-                        "input": {"agent": "leo"},
-                        "output": "idle",
-                    }
-                ],
-            }
-        ]
-
-    def test_tool_call_without_result(self):
-        call_id = "tc_orphan"
-        resp = ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="restart_agent",
-                    args={"name": "ada"},
-                    tool_call_id=call_id,
-                ),
-            ],
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        result = messages_to_display_format([resp])
-
-        assert len(result) == 1
-        assert "tool_calls" not in result[0]  # Flat fields removed — use segments
-        tc = result[0]["segments"][0]["tools"][0]
-        assert tc["name"] == "restart_agent"
-        assert "output" not in tc
-        assert result[0]["segments"] == [
-            {
-                "kind": "tool_group",
-                "tools": [
-                    {
-                        "id": call_id,
-                        "name": "restart_agent",
-                        "input": {"name": "ada"},
-                    }
-                ],
-            }
-        ]
-
-    def test_system_prompts_skipped(self):
-        msg = ModelRequest(parts=[SystemPromptPart(content="You are an assistant.")])
-        result = messages_to_display_format([msg])
-
-        assert result == []
-
-    def test_tool_returns_not_separate_messages(self):
-        msg = ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="check",
-                    content="ok",
-                    tool_call_id="tc_100",
-                    timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-                ),
-            ]
-        )
-        result = messages_to_display_format([msg])
-
-        assert result == []
-
-    def test_multi_turn_ordering(self):
-        ts = datetime(2026, 1, 1, tzinfo=UTC)
-        messages = [
-            ModelRequest(parts=[UserPromptPart(content="Question 1")]),
-            ModelResponse(parts=[TextPart(content="Answer 1")], timestamp=ts),
-            ModelRequest(parts=[UserPromptPart(content="Question 2")]),
-            ModelResponse(parts=[TextPart(content="Answer 2")], timestamp=ts),
-        ]
-        result = messages_to_display_format(messages)
-
-        assert len(result) == 4
-        assert result[0]["role"] == "user"
-        assert result[0]["text"] == "Question 1"
-        assert result[1]["role"] == "assistant"
-        assert result[1]["text"] == "Answer 1"
-        assert result[2]["role"] == "user"
-        assert result[2]["text"] == "Question 2"
-        assert result[3]["role"] == "assistant"
-        assert result[3]["text"] == "Answer 2"
-        assert result[1]["segments"] == [{"kind": "text", "text": "Answer 1"}]
-        assert result[3]["segments"] == [{"kind": "text", "text": "Answer 2"}]
-
-    def test_timestamps_propagated(self):
-        ts_user = datetime(2026, 2, 15, 10, 30, 0, tzinfo=UTC)
-        ts_assistant = datetime(2026, 2, 15, 10, 30, 5, tzinfo=UTC)
-        messages = [
-            ModelRequest(
-                parts=[UserPromptPart(content="hi", timestamp=ts_user)],
-                timestamp=ts_user,
-            ),
-            ModelResponse(
-                parts=[TextPart(content="hello")],
-                timestamp=ts_assistant,
-            ),
-        ]
-        result = messages_to_display_format(messages)
-
-        assert len(result) == 2
-        assert result[0]["timestamp"] == ts_user.isoformat()
-        assert result[1]["timestamp"] == ts_assistant.isoformat()
-
-    def test_segments_interleaved_multi_tool_turn(self):
-        ts = datetime(2026, 1, 1, tzinfo=UTC)
-        messages = [
-            ModelRequest(parts=[UserPromptPart(content="Check agents")]),
-            ModelResponse(
-                parts=[
-                    TextPart(content="Let me check."),
-                    ToolCallPart(
-                        tool_name="get_status",
-                        args={"agent": "leo"},
-                        tool_call_id="tc_1",
-                    ),
-                ],
-                timestamp=ts,
-            ),
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="get_status",
-                        content="idle",
-                        tool_call_id="tc_1",
-                        timestamp=ts,
-                    ),
-                ]
-            ),
-            ModelResponse(
-                parts=[
-                    TextPart(content="Leo is idle. Checking Ada."),
-                    ToolCallPart(
-                        tool_name="get_status",
-                        args={"agent": "ada"},
-                        tool_call_id="tc_2",
-                    ),
-                ],
-                timestamp=ts,
-            ),
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="get_status",
-                        content="busy",
-                        tool_call_id="tc_2",
-                        timestamp=ts,
-                    ),
-                ]
-            ),
-            ModelResponse(
-                parts=[TextPart(content="Ada is busy.")],
-                timestamp=ts,
-            ),
-        ]
-        result = messages_to_display_format(messages)
-
-        # 1 user entry + 1 collapsed assistant entry
-        assert len(result) == 2
-        assert result[0]["role"] == "user"
-        assert result[0]["text"] == "Check agents"
-
-        entry = result[1]
-        assert entry["role"] == "assistant"
-        assert entry["segments"] == [
-            {"kind": "text", "text": "Let me check."},
-            {
-                "kind": "tool_group",
-                "tools": [
-                    {
-                        "id": "tc_1",
-                        "name": "get_status",
-                        "input": {"agent": "leo"},
-                        "output": "idle",
-                    }
-                ],
-            },
-            {"kind": "text", "text": "Leo is idle. Checking Ada."},
-            {
-                "kind": "tool_group",
-                "tools": [
-                    {
-                        "id": "tc_2",
-                        "name": "get_status",
-                        "input": {"agent": "ada"},
-                        "output": "busy",
-                    }
-                ],
-            },
-            {"kind": "text", "text": "Ada is busy."},
-        ]
-
-    def test_segments_consecutive_tool_calls_grouped(self):
-        ts = datetime(2026, 1, 1, tzinfo=UTC)
-        messages = [
-            ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="get_status",
-                        args={"agent": "leo"},
-                        tool_call_id="tc_a",
-                    ),
-                    ToolCallPart(
-                        tool_name="get_status",
-                        args={"agent": "ada"},
-                        tool_call_id="tc_b",
-                    ),
-                ],
-                timestamp=ts,
-            ),
-        ]
-        result = messages_to_display_format(messages)
-
-        assert len(result) == 1
-        entry = result[0]
-        assert entry["role"] == "assistant"
-        assert entry["segments"] == [
-            {
-                "kind": "tool_group",
-                "tools": [
-                    {
-                        "id": "tc_a",
-                        "name": "get_status",
-                        "input": {"agent": "leo"},
+                        "kind": "tool_group",
+                        "tools": [
+                            {
+                                "id": "call-1",
+                                "name": "get_active_agents",
+                                "input": {"scope": "all"},
+                                "output": [{"name": "leo", "state": "idle"}],
+                            }
+                        ],
                     },
-                    {
-                        "id": "tc_b",
-                        "name": "get_status",
-                        "input": {"agent": "ada"},
-                    },
+                    {"kind": "text", "text": "Leo is idle."},
                 ],
-            }
+                "usage": {"input_tokens": 5, "output_tokens": 7},
+                "created_at": created_at,
+            },
         ]
+    )
 
-    def test_segments_collapsed_assistant_turn(self):
-        ts = datetime(2026, 1, 1, tzinfo=UTC)
-        messages = [
+    assert len(history) == 4
+    assert isinstance(history[0], ModelRequest)
+    assert isinstance(history[1], ModelResponse)
+    assert isinstance(history[2], ModelRequest)
+    assert isinstance(history[3], ModelResponse)
+    assert isinstance(history[1].parts[0], ThinkingPart)
+    assert isinstance(history[1].parts[1], ToolCallPart)
+    assert isinstance(history[2].parts[0], ToolReturnPart)
+    assert isinstance(history[3].parts[0], TextPart)
+    assert history[3].usage == RequestUsage(input_tokens=5, output_tokens=7)
+
+
+def test_tree_messages_to_display_returns_root_to_leaf_view() -> None:
+    created_at = datetime(2026, 3, 21, 12, 0, tzinfo=UTC)
+    display = tree_messages_to_display(
+        [
+            {
+                "id": "user-1",
+                "parent_id": None,
+                "role": "user",
+                "message_type": "standard",
+                "content": "Hello",
+                "created_at": created_at,
+            },
+            {
+                "id": "assistant-1",
+                "parent_id": "user-1",
+                "role": "assistant",
+                "content": "Hi there",
+                "segments": [
+                    {"kind": "thinking", "text": "Thinking..."},
+                    {"kind": "text", "text": "Hi there"},
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+                "created_at": created_at,
+            },
+        ]
+    )
+
+    assert display[0] == {
+        "id": "user-1",
+        "parent_id": None,
+        "role": "user",
+        "text": "Hello",
+        "message_type": "standard",
+        "timestamp": created_at.isoformat(),
+    }
+    assert display[1]["id"] == "assistant-1"
+    assert display[1]["text"] == "Hi there"
+    assert display[1]["usage"] == {"input_tokens": 1, "output_tokens": 2}
+    assert _strip_segment_metadata(display[1]["segments"]) == [
+        {"kind": "thinking", "text": "Thinking..."},
+        {"kind": "text", "text": "Hi there"},
+    ]
+
+
+def test_tree_messages_to_tree_preserves_parent_links() -> None:
+    created_at = datetime(2026, 3, 21, 12, 0, tzinfo=UTC)
+    assert tree_messages_to_tree(
+        [
+            {
+                "id": "root",
+                "parent_id": None,
+                "role": "user",
+                "message_type": "standard",
+                "content": "Root",
+                "created_at": created_at,
+            },
+            {
+                "id": "child",
+                "parent_id": "root",
+                "role": "assistant",
+                "message_type": "standard",
+                "content": "Child",
+                "created_at": created_at,
+            },
+        ]
+    ) == [
+        {
+            "id": "root",
+            "parent_id": None,
+            "role": "user",
+            "message_type": "standard",
+            "content": "Root",
+            "created_at": created_at.isoformat(),
+        },
+        {
+            "id": "child",
+            "parent_id": "root",
+            "role": "assistant",
+            "message_type": "standard",
+            "content": "Child",
+            "created_at": created_at.isoformat(),
+        },
+    ]
+
+
+def test_build_assistant_message_content_collects_segments_and_usage() -> None:
+    timestamp = datetime(2026, 3, 21, 12, 0, tzinfo=UTC)
+    text, segments, created_at = build_assistant_message_content(
+        [
             ModelResponse(
-                parts=[TextPart(content="First part.")],
-                timestamp=ts,
-            ),
-            ModelRequest(
                 parts=[
-                    ToolReturnPart(
-                        tool_name="x",
-                        content="r",
-                        tool_call_id="tc_x",
-                        timestamp=ts,
-                    ),
-                ]
-            ),
-            ModelResponse(
-                parts=[TextPart(content="Second part.")],
-                timestamp=ts,
-            ),
-        ]
-        result = messages_to_display_format(messages)
-
-        assert len(result) == 1
-        entry = result[0]
-        assert entry["role"] == "assistant"
-        assert entry["segments"] == [
-            {"kind": "text", "text": "First part."},
-            {"kind": "text", "text": "Second part."},
-        ]
-
-    def test_segments_text_only_no_tool_group(self):
-        ts = datetime(2026, 1, 1, tzinfo=UTC)
-        messages = [
-            ModelResponse(
-                parts=[TextPart(content="Just text.")],
-                timestamp=ts,
-            ),
-        ]
-        result = messages_to_display_format(messages)
-
-        assert len(result) == 1
-        entry = result[0]
-        assert entry["segments"] == [{"kind": "text", "text": "Just text."}]
-        assert "tool_calls" not in entry
-        # No tool_group segments should be present
-        assert all(seg["kind"] != "tool_group" for seg in entry["segments"])
-
-    def test_segments_no_flat_fields(self):
-        """Flat thinking/tool_calls fields are not produced — only segments."""
-        ts = datetime(2026, 1, 1, tzinfo=UTC)
-        messages = [
-            ModelResponse(
-                parts=[
-                    ThinkingPart(content="Hmm..."),
-                    TextPart(content="Here's what I found."),
+                    ThinkingPart(content="Let me check."),
                     ToolCallPart(
-                        tool_name="check",
+                        tool_name="look_at_screen",
                         args={},
-                        tool_call_id="tc_z",
+                        tool_call_id="call-1",
                     ),
                 ],
-                timestamp=ts,
+                timestamp=timestamp,
             ),
             ModelRequest(
                 parts=[
                     ToolReturnPart(
-                        tool_name="check",
-                        content="all good",
-                        tool_call_id="tc_z",
-                        timestamp=ts,
-                    ),
-                ]
-            ),
-        ]
-        result = messages_to_display_format(messages)
-
-        assert len(result) == 1
-        entry = result[0]
-
-        # text summary is preserved
-        assert entry["text"] == "Here's what I found."
-        # Flat fields are NOT present
-        assert "thinking" not in entry
-        assert "tool_calls" not in entry
-
-        # Ordered segments field has everything
-        assert entry["segments"] == [
-            {"kind": "thinking", "text": "Hmm..."},
-            {"kind": "text", "text": "Here's what I found."},
-            {
-                "kind": "tool_group",
-                "tools": [
-                    {
-                        "id": "tc_z",
-                        "name": "check",
-                        "input": {},
-                        "output": "all good",
-                    }
+                        tool_name="look_at_screen",
+                        content=BinaryContent(data=b"\xff\xd8", media_type="image/jpeg"),
+                        tool_call_id="call-1",
+                        timestamp=timestamp,
+                    )
                 ],
-            },
-        ]
-
-    def test_interleaved_segments_across_multi_response_turn(self):
-        """Five-segment interleaving: text -> tool -> text -> tool -> text across collapsed turns."""
-        ts = datetime(2026, 1, 1, tzinfo=UTC)
-        messages = [
-            ModelRequest(parts=[UserPromptPart(content="Check everything")]),
-            # Turn 1: text + tool call
+                timestamp=timestamp,
+            ),
             ModelResponse(
-                parts=[
-                    TextPart(content="Starting checks."),
-                    ToolCallPart(
-                        tool_name="check_a", args={"target": "alpha"}, tool_call_id="tc_i1"
-                    ),
-                ],
-                timestamp=ts,
-            ),
-            # Tool return for check_a
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="check_a",
-                        content="alpha ok",
-                        tool_call_id="tc_i1",
-                        timestamp=ts,
-                    ),
-                ]
-            ),
-            # Turn 2: text + tool call
-            ModelResponse(
-                parts=[
-                    TextPart(content="Alpha passed. Now beta."),
-                    ToolCallPart(
-                        tool_name="check_b", args={"target": "beta"}, tool_call_id="tc_i2"
-                    ),
-                ],
-                timestamp=ts,
-            ),
-            # Tool return for check_b
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="check_b",
-                        content="beta ok",
-                        tool_call_id="tc_i2",
-                        timestamp=ts,
-                    ),
-                ]
-            ),
-            # Turn 3: final text
-            ModelResponse(
-                parts=[TextPart(content="All checks passed.")],
-                timestamp=ts,
+                parts=[TextPart(content="I found the agents page.")],
+                timestamp=timestamp,
             ),
         ]
-        result = messages_to_display_format(messages)
+    )
 
-        # 1 user + 1 collapsed assistant
-        assert len(result) == 2
-        assert result[0]["role"] == "user"
-
-        entry = result[1]
-        assert entry["role"] == "assistant"
-        assert entry["segments"] == [
-            {"kind": "text", "text": "Starting checks."},
-            {
-                "kind": "tool_group",
-                "tools": [
-                    {
-                        "id": "tc_i1",
-                        "name": "check_a",
-                        "input": {"target": "alpha"},
-                        "output": "alpha ok",
-                    }
-                ],
-            },
-            {"kind": "text", "text": "Alpha passed. Now beta."},
-            {
-                "kind": "tool_group",
-                "tools": [
-                    {
-                        "id": "tc_i2",
-                        "name": "check_b",
-                        "input": {"target": "beta"},
-                        "output": "beta ok",
-                    }
-                ],
-            },
-            {"kind": "text", "text": "All checks passed."},
-        ]
-        # text concatenates all text parts; tool_calls flat field no longer present
-        assert entry["text"] == "Starting checks.Alpha passed. Now beta.All checks passed."
-        assert "tool_calls" not in entry
-
-    def test_user_message_with_multimodal_content(self):
-        """User message with text + image (list content) should extract text."""
-        screenshot = BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg")
-        msg = ModelRequest(
-            parts=[UserPromptPart(content=["What is this?", screenshot])],
-        )
-        result = messages_to_display_format([msg])
-
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
-        assert result[0]["text"] == "What is this?"
-
-    def test_user_message_image_only_gets_placeholder(self):
-        """User message with only image content (no text) should get placeholder."""
-        screenshot = BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg")
-        msg = ModelRequest(
-            parts=[UserPromptPart(content=[screenshot])],
-        )
-        result = messages_to_display_format([msg])
-
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
-        assert result[0]["text"] == "[Image attachment]"
-
-    def test_user_message_multimodal_multi_text_segments(self):
-        """User message with multiple text segments in list content."""
-        screenshot = BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg")
-        msg = ModelRequest(
-            parts=[UserPromptPart(content=["Hello", screenshot, "World"])],
-        )
-        result = messages_to_display_format([msg])
-
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
-        assert result[0]["text"] == "Hello\nWorld"
-
-    def test_multi_turn_with_multimodal_user_messages(self):
-        """Full conversation with multimodal user messages should preserve all turns."""
-        ts = datetime(2026, 1, 1, tzinfo=UTC)
-        screenshot = BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg")
-        messages = [
-            ModelRequest(
-                parts=[UserPromptPart(content=["Question 1", screenshot])],
-            ),
-            ModelResponse(parts=[TextPart(content="Answer 1")], timestamp=ts),
-            ModelRequest(
-                parts=[UserPromptPart(content=["Question 2", screenshot])],
-            ),
-            ModelResponse(parts=[TextPart(content="Answer 2")], timestamp=ts),
-        ]
-        result = messages_to_display_format(messages)
-
-        assert len(result) == 4
-        assert result[0]["role"] == "user"
-        assert result[0]["text"] == "Question 1"
-        assert result[1]["role"] == "assistant"
-        assert result[1]["text"] == "Answer 1"
-        assert result[2]["role"] == "user"
-        assert result[2]["text"] == "Question 2"
-        assert result[3]["role"] == "assistant"
-        assert result[3]["text"] == "Answer 2"
+    assert text == "I found the agents page."
+    assert assistant_segments_to_text(segments) == "I found the agents page."
+    assert segments == [
+        {"kind": "thinking", "text": "Let me check."},
+        {
+            "kind": "tool_group",
+            "tools": [
+                {
+                    "id": "call-1",
+                    "name": "look_at_screen",
+                    "input": {},
+                    "output": "[Inspected current screen]",
+                }
+            ],
+        },
+        {"kind": "text", "text": "I found the agents page."},
+    ]
+    assert created_at == timestamp
 
 
-# --- sanitize_image_tool_returns ---
-
-
-class TestSanitizeImageToolReturns:
-    def test_messages_without_look_at_screen_pass_through_unchanged(self):
-        """Regular messages without look_at_screen should pass through unmodified."""
-        msg = ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="get_time",
-                    content="2026-01-01",
-                    tool_call_id="tc_1",
-                ),
-                UserPromptPart(content="hello"),
+def test_normalize_tool_output_for_storage_handles_nested_binary_values() -> None:
+    result = normalize_tool_output_for_storage(
+        "get_payload",
+        {
+            "items": [
+                BinaryContent(data=b"\x00", media_type="application/octet-stream"),
+                {"nested": BinaryContent(data=b"\x01", media_type="application/octet-stream")},
             ]
-        )
-        result = sanitize_image_tool_returns([msg])
+        },
+    )
 
-        assert len(result) == 1
-        req = result[0]
-        assert isinstance(req, ModelRequest)
-        assert isinstance(req.parts[0], ToolReturnPart)
-        assert req.parts[0].content == "2026-01-01"
-        assert isinstance(req.parts[1], UserPromptPart)
-        assert req.parts[1].content == "hello"
+    assert result == {
+        "items": [
+            "[Binary content omitted]",
+            {"nested": "[Binary content omitted]"},
+        ]
+    }
 
-    def test_look_at_screen_tool_return_content_replaced(self):
-        """ToolReturnPart with tool_name='look_at_screen' gets content replaced."""
-        msg = ModelRequest(
+
+def test_sanitize_image_tool_returns_rewrites_screen_payloads() -> None:
+    image = BinaryContent(data=b"\xff\xd8", media_type="image/jpeg")
+    messages = [
+        ModelRequest(
             parts=[
                 ToolReturnPart(
                     tool_name="look_at_screen",
-                    content="some binary data",
-                    tool_call_id="tc_1",
+                    content=image,
+                    tool_call_id="call-1",
                 ),
+                UserPromptPart(content=["Reference: look_at_screen", image]),
             ]
         )
-        result = sanitize_image_tool_returns([msg])
+    ]
 
-        assert len(result) == 1
-        req = result[0]
-        assert isinstance(req, ModelRequest)
-        part = req.parts[0]
-        assert isinstance(part, ToolReturnPart)
-        assert part.content == "[Inspected current screen]"
+    sanitized = sanitize_image_tool_returns(messages)
 
-    def test_synthetic_user_prompt_with_binary_content_removed(self):
-        """Synthetic UserPromptPart with BinaryContent is removed entirely (not replaced)."""
-        msg = ModelRequest(
-            parts=[
-                UserPromptPart(
-                    content=[
-                        "This is file xyz:",
-                        BinaryContent(data=b"\xff\xd8", media_type="image/jpeg"),
-                    ]
-                ),
-            ]
-        )
-        result = sanitize_image_tool_returns([msg])
-
-        assert len(result) == 1
-        req = result[0]
-        assert isinstance(req, ModelRequest)
-        # The synthetic UserPromptPart should be completely removed
-        assert len(req.parts) == 0
-
-    def test_other_tool_returns_and_user_prompts_not_affected(self):
-        """Non-look_at_screen ToolReturnParts and plain string UserPromptParts are unchanged."""
-        msg = ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="get_time",
-                    content="2026-01-01",
-                    tool_call_id="tc_2",
-                ),
-                UserPromptPart(content="hello"),
-            ]
-        )
-        result = sanitize_image_tool_returns([msg])
-
-        assert len(result) == 1
-        req = result[0]
-        assert isinstance(req, ModelRequest)
-        tool_part = req.parts[0]
-        assert isinstance(tool_part, ToolReturnPart)
-        assert tool_part.tool_name == "get_time"
-        assert tool_part.content == "2026-01-01"
-        user_part = req.parts[1]
-        assert isinstance(user_part, UserPromptPart)
-        assert user_part.content == "hello"
-
-    def test_both_tool_return_and_user_prompt_sanitized_in_same_message(self):
-        """ToolReturnPart content replaced, synthetic UserPromptPart removed entirely."""
-        msg = ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="look_at_screen",
-                    content="raw screenshot bytes",
-                    tool_call_id="tc_3",
-                ),
-                UserPromptPart(
-                    content=[
-                        "Screenshot:",
-                        BinaryContent(data=b"\xff\xd8\xff\xe0", media_type="image/jpeg"),
-                    ]
-                ),
-            ]
-        )
-        result = sanitize_image_tool_returns([msg])
-
-        assert len(result) == 1
-        req = result[0]
-        assert isinstance(req, ModelRequest)
-        # Only the ToolReturnPart should remain — synthetic UserPromptPart removed
-        assert len(req.parts) == 1
-        tool_part = req.parts[0]
-        assert isinstance(tool_part, ToolReturnPart)
-        assert tool_part.content == "[Inspected current screen]"
+    request = sanitized[0]
+    assert isinstance(request, ModelRequest)
+    assert len(request.parts) == 1
+    assert isinstance(request.parts[0], ToolReturnPart)
+    assert request.parts[0].content == "[Inspected current screen]"
