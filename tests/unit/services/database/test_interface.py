@@ -272,6 +272,8 @@ class TestDatabaseServiceSessionContext:
         mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
 
         service._session_factory = mock_session_factory
+        service._started = True
+        service._healthy = True
 
         async with service.session_context() as session:
             assert session is mock_session
@@ -286,6 +288,8 @@ class TestDatabaseServiceSessionContext:
         mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
 
         service._session_factory = mock_session_factory
+        service._started = True
+        service._healthy = True
 
         async with service.session_context():
             pass
@@ -302,6 +306,8 @@ class TestDatabaseServiceSessionContext:
         mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
 
         service._session_factory = mock_session_factory
+        service._started = True
+        service._healthy = True
 
         with pytest.raises(ValueError, match="test error"):
             async with service.session_context():

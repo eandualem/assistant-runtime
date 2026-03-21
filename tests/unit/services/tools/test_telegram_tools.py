@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from lovely_assistant.services.tools._registry import ToolRegistry
+from lovely_assistant.services.tools._request_context import assistant_request_context
 from lovely_assistant.services.tools._telegram_tools import (
     register_telegram_tools,
     respond_telegram,
@@ -58,6 +59,33 @@ class TestRespondTelegram:
 
         assert result["success"] is True
         assert result["message_id"] == 42
+
+    async def test_success_includes_reply_session_id_from_request_context(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "result": {"message_id": 42},
+        }
+
+        with (
+            patch.dict("os.environ", {"TELEGRAM_TOKEN": "test-token"}, clear=True),
+            patch(
+                "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
+            ) as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            with assistant_request_context("sess-jarvis"):
+                result = await respond_telegram("Hello Elias")
+
+        assert result["success"] is True
+        assert result["reply_session_id"] == "sess-jarvis"
+        assert result["chat_id"] == "897573812"
 
     async def test_success_uses_default_chat_id(self):
         mock_response = MagicMock()

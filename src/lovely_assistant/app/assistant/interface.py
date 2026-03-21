@@ -5,7 +5,10 @@ Public facade for the assistant module. Implements LifecycleAware.
 
 from __future__ import annotations
 
+import asyncio
 import time
+import uuid
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -13,7 +16,7 @@ from pydantic_ai import DeferredToolRequests
 from pydantic_ai.usage import UsageLimits
 
 from lovely_assistant.app.assistant._prompt_builder import build_system_prompt
-from lovely_assistant.app.assistant._serialization import sanitize_image_tool_returns
+from lovely_assistant.app.assistant._serialization import build_assistant_message_content
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.config import AssistantConfig
 from lovely_assistant.app.assistant.exceptions import (
@@ -27,7 +30,10 @@ from lovely_assistant.app.assistant.models import (
     _build_user_prompt,
 )
 from lovely_assistant.app.settings import RuntimeSettings, resolve_effective_config
-from lovely_assistant.services.tools._request_context import assistant_request_context
+from lovely_assistant.services.tools._request_context import (
+    assistant_request_context,
+    get_current_telegram_chat_binding,
+)
 from lovely_assistant.services.tools._screen_tools import (
     clear_current_screenshot,
     extract_screenshot_data_uri,
@@ -40,6 +46,8 @@ if TYPE_CHECKING:
     from lovely_assistant.services.history.interface import HistoryService
     from lovely_assistant.services.llm.interface import LlmService
     from lovely_assistant.services.tools.interface import ToolService
+
+_ARTIFACT_CACHE_TTL_SECONDS = 5.0
 
 
 class AssistantService:
@@ -61,6 +69,9 @@ class AssistantService:
         self._runtime_settings = runtime_settings
         self._database_service: DatabaseService | None = database_service
         self._sessions: SessionStore | None = None
+        self._active_artifacts_cache: dict[str, str] | None = None
+        self._active_artifacts_cached_at = 0.0
+        self._active_artifacts_lock = asyncio.Lock()
         self._started = False
 
     async def start(self) -> None:
@@ -75,6 +86,8 @@ class AssistantService:
     async def stop(self) -> None:
         """Shutdown the assistant service."""
         self._sessions = None
+        self._active_artifacts_cache = None
+        self._active_artifacts_cached_at = 0.0
         self._started = False
         logger.info("Assistant service stopped")
 
@@ -105,6 +118,61 @@ class AssistantService:
         """Return the database service for route-level access."""
         return self._database_service
 
+    async def warm_session(
+        self,
+        session_id: str,
+        machine_state: dict[str, Any] | None = None,
+    ) -> None:
+        """Warm session-local and shared request-path caches.
+
+        This keeps the first user message from paying cold session hydration and
+        shared prompt-input discovery when the dashboard has already joined the
+        session.
+        """
+        self._ensure_started()
+        sessions = self._sessions
+        assert sessions is not None
+
+        started_at = time.monotonic()
+        await sessions.get_context_async(session_id)
+        try:
+            self._tools.warm_machine_state(machine_state)
+        except Exception as e:
+            logger.warning(
+                "Session warmup step failed",
+                session_id=session_id,
+                step="tool_registry",
+                error=str(e),
+            )
+
+        warm_results = await asyncio.gather(
+            self._tools.get_mcp_summary(),
+            self._load_active_artifacts(),
+            return_exceptions=True,
+        )
+
+        for label, result in zip(
+            ("mcp_summary", "active_artifacts"),
+            warm_results,
+            strict=False,
+        ):
+            if isinstance(result, Exception):
+                logger.warning(
+                    "Session warmup step failed",
+                    session_id=session_id,
+                    step=label,
+                    error=str(result),
+                )
+
+        logger.debug(
+            "Session warmup completed",
+            session_id=session_id,
+            page=machine_state.get("active_page", {}).get("name")
+            if isinstance(machine_state, dict)
+            else None,
+            duration_ms=(time.monotonic() - started_at) * 1000,
+        )
+
     async def prepare_agent_context(
         self,
         request: AssistantRequest,
@@ -119,9 +187,18 @@ class AssistantService:
             available_tools = self._tools.get_available_tools(request.machine_state)
             toolsets = self._tools.build_toolset(request.machine_state)
 
-            # 2. MCP + artifacts + system prompt
-            mcp_summary = await self._tools.get_mcp_summary()
-            artifacts = await self._load_active_artifacts()
+            mcp_summary_task = asyncio.create_task(self._tools.get_mcp_summary())
+            artifacts_task = asyncio.create_task(self._load_active_artifacts())
+
+            # 2. Config resolution can run while prompt inputs load.
+            effective = resolve_effective_config(
+                self._config, self._runtime_settings, request.config
+            )
+            resolved_model = self._llm.resolve_model(effective.default_model)
+            usage_limits = UsageLimits(request_limit=effective.max_turns)
+
+            # 3. MCP + artifacts + system prompt
+            mcp_summary, artifacts = await asyncio.gather(mcp_summary_task, artifacts_task)
             if artifacts is None:
                 raise AssistantError("Cannot build system prompt: artifact store unavailable")
 
@@ -132,13 +209,6 @@ class AssistantService:
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
             )
-
-            # 3. Config resolution
-            effective = resolve_effective_config(
-                self._config, self._runtime_settings, request.config
-            )
-            resolved_model = self._llm.resolve_model(effective.default_model)
-            usage_limits = UsageLimits(request_limit=effective.max_turns)
 
             # 4. Build agent — use union output type when frontend tools are registered
             output_type: type | list[type] = str
@@ -188,9 +258,11 @@ class AssistantService:
         sessions = self._sessions
         assert sessions is not None
 
-        # 1. Get session context (loads from DB on cache miss) and increment turn
-        session_context = await sessions.get_context_async(session_id)
-        turn_number = sessions.increment_turn(session_id)
+        # 1. Persist the user message and cache the active leaf path
+        session_context, _user_record = await sessions.register_user_message(request)
+        turn_number = session_context.get("turn_number", 0)
+        assistant_message_id = str(uuid.uuid4())
+        session_context["current_assistant_message_id"] = assistant_message_id
 
         # 2. Build agent setup context (tools → MCP → artifacts → prompt → config → agent)
         ctx = await self.prepare_agent_context(request, session_context)
@@ -210,23 +282,24 @@ class AssistantService:
             session_id=session_id,
             model=ctx.resolved_model,
             is_continuation=False,
-            input_message=request.message,
+            input_message=request.content,
         ) as trace:
             # 3. Prepare history
-            history = sessions.get_history(session_id)
+            history = sessions.get_history(session_id, exclude_leaf=True)
             with create_span("history-preparation"):
                 prepared_history, _context_modified = await self._history.prepare_history(
                     history, session_context
                 )
 
             # 4. Run the agent
-            user_prompt = _build_user_prompt(request.message)
+            user_prompt = _build_user_prompt(request.content)
             screenshot = extract_screenshot_data_uri(
                 images=request.images,
                 tool_result=request.tool_result,
             )
             if screenshot:
                 set_current_screenshot(screenshot)
+            telegram_chat_id: str | None = None
             try:
                 with assistant_request_context(session_id):
                     result = await ctx.agent.run(
@@ -234,6 +307,7 @@ class AssistantService:
                         message_history=prepared_history if prepared_history else None,
                         usage_limits=ctx.usage_limits,
                     )
+                    telegram_chat_id = get_current_telegram_chat_binding()
             except Exception as e:
                 logger.exception(
                     "Assistant request failed",
@@ -246,14 +320,31 @@ class AssistantService:
             finally:
                 clear_current_screenshot()
 
-            # 5. Save message history (persists to DB, with image data stripped)
-            await sessions.save_history_async(
-                session_id, sanitize_image_tool_returns(list(result.all_messages()))
+            if telegram_chat_id:
+                session_context["telegram_chat_id"] = telegram_chat_id
+                session_context["telegram_bound_at"] = datetime.now(UTC)
+                await sessions.save_session_state_async(session_id)
+
+            # 5. Persist the assistant message row for this turn
+            all_messages = list(result.all_messages())
+            turn_messages = all_messages[len(prepared_history) :]
+            assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
+                turn_messages
             )
+            usage = self._safe_usage(result)
+            await sessions.register_assistant_message(
+                session_id,
+                message_id=assistant_message_id,
+                parent_id=request.id,
+                content=assistant_content,
+                segments=assistant_segments,
+                usage=usage,
+                created_at=assistant_timestamp,
+            )
+            session_context.pop("current_assistant_message_id", None)
 
             # 6. Handle output
             output = result.output
-            usage = self._safe_usage(result)
             logger.info(
                 "Assistant request completed",
                 session_id=session_id,
@@ -270,6 +361,7 @@ class AssistantService:
         # 7. Extract working memory delta (fire-and-forget style)
         if ctx.effective_config.enable_working_memory:
             await self._update_working_memory(session_id, session_context, turn_number)
+            await sessions.save_session_state_async(session_id)
 
         return AssistantResult(
             content=str(output),
@@ -286,30 +378,23 @@ class AssistantService:
     ) -> None:
         """Extract working memory delta from recent messages (best-effort)."""
         try:
-            from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
-
             from lovely_assistant.services.history.models import WorkingMemory
 
             current_wm = session_context.get("working_memory") or WorkingMemory()
             sessions = self._sessions
             assert sessions is not None
-            history = sessions.get_history(session_id)
+            path = await sessions.get_message_path(session_id)
 
-            # Convert ModelMessage objects to dicts with role + content
             recent: list[dict[str, Any]] = []
-            for msg in history[-4:]:
-                if isinstance(msg, ModelRequest):
-                    texts = [
-                        p.content
-                        for p in msg.parts
-                        if isinstance(p, UserPromptPart) and isinstance(p.content, str)
-                    ]
-                    if texts:
-                        recent.append({"role": "user", "content": "\n".join(texts)})
-                elif isinstance(msg, ModelResponse):
-                    texts = [p.content for p in msg.parts if isinstance(p, TextPart)]
-                    if texts:
-                        recent.append({"role": "assistant", "content": "".join(texts)})
+            for message in path[-4:]:
+                if message.get("role") not in {"user", "assistant"}:
+                    continue
+                recent.append(
+                    {
+                        "role": message["role"],
+                        "content": message.get("content", ""),
+                    }
+                )
 
             updated_wm = await self._history.extract_memory_delta(current_wm, recent, turn_number)
             session_context["working_memory"] = updated_wm
@@ -321,13 +406,30 @@ class AssistantService:
         """Load all active artifacts from DB. Returns None if DB unavailable."""
         if self._database_service is None:
             return None
+        now = time.monotonic()
+        if (
+            self._active_artifacts_cache is not None
+            and (now - self._active_artifacts_cached_at) < _ARTIFACT_CACHE_TTL_SECONDS
+        ):
+            return dict(self._active_artifacts_cache)
         try:
-            from lovely_assistant.services.database.repositories import ArtifactRepository
+            async with self._active_artifacts_lock:
+                now = time.monotonic()
+                if (
+                    self._active_artifacts_cache is not None
+                    and (now - self._active_artifacts_cached_at) < _ARTIFACT_CACHE_TTL_SECONDS
+                ):
+                    return dict(self._active_artifacts_cache)
 
-            async with self._database_service.session_context() as session:
-                repo = ArtifactRepository(session)
-                rows = await repo.get_all_active()
-                return {row.name: row.content for row in rows}
+                from lovely_assistant.services.database.repositories import ArtifactRepository
+
+                async with self._database_service.session_context() as session:
+                    repo = ArtifactRepository(session)
+                    rows = await repo.get_all_active()
+                    artifacts = {row.name: row.content for row in rows}
+                    self._active_artifacts_cache = artifacts
+                    self._active_artifacts_cached_at = time.monotonic()
+                    return dict(artifacts)
         except Exception as e:
             logger.warning("Failed to load artifacts from DB", error=str(e))
             return None

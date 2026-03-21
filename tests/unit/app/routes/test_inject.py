@@ -89,7 +89,18 @@ def _make_mock_session_store(*, sessions: dict | None = None) -> MagicMock:
             return sessions[session_id]
         return None
 
+    async def _get_session_id_for_telegram_chat(chat_id):
+        if not sessions:
+            return None
+        for session_id, ctx in sessions.items():
+            if ctx and ctx.get("telegram_chat_id") == chat_id:
+                return session_id
+        return None
+
     store.get_context_if_exists_async = AsyncMock(side_effect=_get_context)
+    store.get_session_id_for_telegram_chat_async = AsyncMock(
+        side_effect=_get_session_id_for_telegram_chat
+    )
     return store
 
 
@@ -114,7 +125,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inject.InboxRepository",
+                "lovely_assistant.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -133,6 +144,7 @@ class TestInjectMessage:
         data = response.json()
         assert data["status"] == "delivered"
         assert data["inbox_id"] == "inbox-1"
+        assert data["session_id"] == "sess-1"
 
         # Verify context passed to repo.create includes session_id
         call_kwargs = mock_repo_inst.create.call_args.kwargs
@@ -154,7 +166,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inject.InboxRepository",
+                "lovely_assistant.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -192,7 +204,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inject.InboxRepository",
+                "lovely_assistant.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -204,6 +216,80 @@ class TestInjectMessage:
                         "via": "backbone",
                         "message": "Hello",
                         "sessionId": "nonexistent-session",
+                    },
+                )
+
+        assert response.status_code == 201
+        assert response.json()["status"] == "deferred"
+
+    @pytest.mark.asyncio
+    async def test_inject_telegram_reply_resolves_session_from_chat_binding(self):
+        """Telegram replies resolve the target Jarvis session from the bound chat id."""
+        mock_row = _make_inbox_row()
+        mock_db = _make_mock_db()
+        session_store = _make_mock_session_store(
+            sessions={"sess-jarvis": {"turn_number": 3, "telegram_chat_id": "897573812"}}
+        )
+        assistant = _make_mock_assistant(session_store=session_store)
+
+        app = _make_app(db_service=mock_db, assistant_service=assistant)
+        with pytest.MonkeyPatch.context() as mp:
+            mock_repo_cls = MagicMock()
+            mock_repo_inst = MagicMock()
+            mock_repo_inst.create = AsyncMock(return_value=mock_row)
+            mock_repo_cls.return_value = mock_repo_inst
+            mp.setattr(
+                "lovely_assistant.app._injector.InboxRepository",
+                mock_repo_cls,
+            )
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                response = await c.post(
+                    "/assistant/inject",
+                    json={
+                        "from": "elias",
+                        "via": "telegram",
+                        "message": "Reply from Telegram",
+                        "telegramChatId": "897573812",
+                    },
+                )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["status"] == "delivered"
+        assert data["session_id"] == "sess-jarvis"
+
+        call_kwargs = mock_repo_inst.create.call_args.kwargs
+        assert call_kwargs["context"]["session_id"] == "sess-jarvis"
+        assert call_kwargs["context"]["telegram_chat_id"] == "897573812"
+
+    @pytest.mark.asyncio
+    async def test_inject_telegram_reply_without_binding_returns_deferred(self):
+        """Telegram replies without a known chat binding stay deferred."""
+        mock_row = _make_inbox_row()
+        mock_db = _make_mock_db()
+        session_store = _make_mock_session_store(sessions={})
+        assistant = _make_mock_assistant(session_store=session_store)
+
+        app = _make_app(db_service=mock_db, assistant_service=assistant)
+        with pytest.MonkeyPatch.context() as mp:
+            mock_repo_cls = MagicMock()
+            mock_repo_inst = MagicMock()
+            mock_repo_inst.create = AsyncMock(return_value=mock_row)
+            mock_repo_cls.return_value = mock_repo_inst
+            mp.setattr(
+                "lovely_assistant.app._injector.InboxRepository",
+                mock_repo_cls,
+            )
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                response = await c.post(
+                    "/assistant/inject",
+                    json={
+                        "from": "elias",
+                        "via": "telegram",
+                        "message": "Reply from Telegram",
+                        "telegramChatId": "897573812",
                     },
                 )
 
@@ -267,7 +353,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inject.InboxRepository",
+                "lovely_assistant.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 

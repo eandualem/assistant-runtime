@@ -11,6 +11,15 @@ from lovely_assistant.app.assistant.models import AssistantRequest
 from .conftest import _make_mock_agent
 
 
+def _request(*, message_id: str, session_id: str, parent_id: str | None, content: str) -> AssistantRequest:
+    return AssistantRequest(
+        id=message_id,
+        session_id=session_id,
+        parent_id=parent_id,
+        content=content,
+    )
+
+
 class TestAssistantPipeline:
     @pytest.mark.asyncio
     async def test_request_flows_to_result(self, wired_services):
@@ -20,7 +29,12 @@ class TestAssistantPipeline:
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             result = await assistant.process_message(
-                AssistantRequest(session_id="integ-1", message="Hi")
+                _request(
+                    message_id="user-1",
+                    session_id="integ-1",
+                    parent_id=None,
+                    content="Hi",
+                )
             )
 
         assert result.content == "Hello from the assistant!"
@@ -42,22 +56,33 @@ class TestAssistantPipeline:
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent1):
             result1 = await assistant.process_message(
-                AssistantRequest(session_id="integ-persist", message="First")
+                _request(
+                    message_id="user-1",
+                    session_id="integ-persist",
+                    parent_id=None,
+                    content="First",
+                )
             )
 
         assert result1.turn_number == 1
+        parent_id = (await assistant._sessions.get_message_path("integ-persist"))[-1]["id"]
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent2):
             result2 = await assistant.process_message(
-                AssistantRequest(session_id="integ-persist", message="Second")
+                _request(
+                    message_id="user-2",
+                    session_id="integ-persist",
+                    parent_id=parent_id,
+                    content="Second",
+                )
             )
 
         assert result2.turn_number == 2
 
         # History was saved and re-loaded for turn 2
         sessions = assistant._sessions
-        history = sessions.get_history("integ-persist")
-        assert len(history) == 2  # From turn 2's all_messages()
+        path = await sessions.get_message_path("integ-persist")
+        assert len(path) == 4
 
     @pytest.mark.asyncio
     async def test_tools_passed_to_agent(self, wired_services):
@@ -69,11 +94,19 @@ class TestAssistantPipeline:
             wired_services["llm_service"], "build_agent", return_value=mock_agent
         ) as build_mock:
             await assistant.process_message(
-                AssistantRequest(session_id="integ-tools", message="test")
+                _request(
+                    message_id="user-1",
+                    session_id="integ-tools",
+                    parent_id=None,
+                    content="test",
+                )
             )
 
-        # build_agent was called with toolsets from the real ToolService
-        call_kwargs = build_mock.call_args[1]
+        # prepare_agent_context wires toolsets into the assistant agent build call.
+        assistant_call = next(
+            kwargs for _, kwargs in build_mock.call_args_list if "toolsets" in kwargs
+        )
+        call_kwargs = assistant_call
         assert "toolsets" in call_kwargs
         assert "system_prompt" in call_kwargs
         assert "Jarvis" in call_kwargs["system_prompt"]
@@ -89,8 +122,10 @@ class TestAssistantPipeline:
         ) as build_mock:
             await assistant.process_message(
                 AssistantRequest(
+                    id="user-1",
                     session_id="integ-state",
-                    message="test",
+                    parent_id=None,
+                    content="test",
                     machine_state={
                         "active_page": {
                             "name": "agents",
@@ -100,5 +135,9 @@ class TestAssistantPipeline:
                 )
             )
 
-        prompt = build_mock.call_args[1]["system_prompt"]
+        prompt = next(
+            kwargs["system_prompt"]
+            for _, kwargs in build_mock.call_args_list
+            if "toolsets" in kwargs and "system_prompt" in kwargs
+        )
         assert "agents page" in prompt

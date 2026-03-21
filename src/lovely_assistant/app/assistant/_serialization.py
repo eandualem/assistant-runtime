@@ -1,20 +1,13 @@
-"""Message history serialization helpers.
-
-Handles round-tripping Pydantic AI's typed ModelMessage list through JSONB storage.
-Ported from arclio-assistant's session model — fixes the FileUrl reconstruction gotcha
-where Pydantic AI auto-converts dicts with 'url' keys into FileUrl subclasses on
-deserialization.
-"""
+"""Conversation tree serialization helpers."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
-from loguru import logger
 from pydantic_ai.messages import (
     BinaryContent,
     ModelMessage,
-    ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -23,83 +16,288 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.usage import RequestUsage
 
 
-def serialize_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
-    """Serialize typed ModelMessage list to JSON-compatible dicts for JSONB storage."""
-    json_bytes = ModelMessagesTypeAdapter.dump_json(messages)
-    import json
-
-    return json.loads(json_bytes)
+MessageRecord = dict[str, Any]
 
 
-def deserialize_messages(data: list[dict[str, Any]]) -> list[ModelMessage]:
-    """Deserialize JSONB data back to typed ModelMessage list.
-
-    Applies sanitization to fix rogue FileUrl reconstructions in tool return content.
-    """
-    if not data:
+def canonicalize_assistant_segments(segments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Merge adjacent content segments while preserving tool boundaries."""
+    if not segments:
         return []
-    messages = ModelMessagesTypeAdapter.validate_python(data)
-    return _sanitize_history(messages)
+
+    normalized: list[dict[str, Any]] = []
+    for segment in segments:
+        kind = segment.get("kind")
+        if kind not in {"thinking", "text", "tool_group"}:
+            continue
+        if kind == "tool_group":
+            tools = [dict(tool) for tool in segment.get("tools", []) if isinstance(tool, dict)]
+            if not tools:
+                continue
+            normalized.append({"kind": "tool_group", "tools": tools})
+            continue
+
+        text = str(segment.get("text", ""))
+        if not text:
+            continue
+        if normalized and normalized[-1]["kind"] == kind:
+            normalized[-1]["text"] += text
+            continue
+        normalized.append({"kind": kind, "text": text})
+
+    return normalized
 
 
-def _sanitize_tool_return_content(content: Any) -> Any:
-    """Recursively convert rogue FileUrl objects back to plain dicts.
+def path_records_to_model_history(messages: list[MessageRecord]) -> list[ModelMessage]:
+    """Expand tree message rows into the linear ModelMessage history seen by the LLM."""
+    history: list[ModelMessage] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            history.append(_user_record_to_request(message))
+        elif role == "assistant":
+            history.extend(_assistant_record_to_messages(message))
+    return history
 
-    Pydantic AI's ToolReturnContent type auto-reconstructs dicts containing
-    a 'url' key as ImageUrl/AudioUrl/DocumentUrl/VideoUrl during deserialization.
-    Tool results are arbitrary data and should not contain multi-modal content
-    objects — when re-serialized, these objects fail if the URL lacks a
-    recognizable file extension.
-    """
+
+def tree_messages_to_display(messages: list[MessageRecord]) -> list[dict[str, Any]]:
+    """Serialize a linear root-to-leaf path for `/messages`."""
+    display: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            display.append(
+                {
+                    "id": message["id"],
+                    "parent_id": message.get("parent_id"),
+                    "role": "user",
+                    "text": message.get("content", ""),
+                    "message_type": message.get("message_type", "standard"),
+                    "timestamp": _iso(message.get("created_at")),
+                }
+            )
+            continue
+
+        if role == "assistant":
+            segments = _with_segment_metadata(
+                canonicalize_assistant_segments(message.get("segments"))
+            )
+            display.append(
+                {
+                    "id": message["id"],
+                    "parent_id": message.get("parent_id"),
+                    "role": "assistant",
+                    "text": assistant_segments_to_text(segments),
+                    "segments": segments,
+                    "usage": message.get("usage"),
+                    "timestamp": _iso(message.get("created_at")),
+                }
+            )
+    return display
+
+
+def tree_messages_to_tree(messages: list[MessageRecord]) -> list[dict[str, Any]]:
+    """Serialize all session messages for `/tree`."""
+    return [
+        {
+            "id": message["id"],
+            "parent_id": message.get("parent_id"),
+            "role": message.get("role"),
+            "message_type": message.get("message_type", "standard"),
+            "content": message.get("content", ""),
+            "created_at": _iso(message.get("created_at")),
+        }
+        for message in messages
+    ]
+
+
+def assistant_segments_to_text(segments: list[dict[str, Any]] | None) -> str:
+    """Concatenate text segments for display / summary fields."""
+    if not segments:
+        return ""
+    return "".join(segment.get("text", "") for segment in segments if segment.get("kind") == "text")
+
+
+def build_assistant_message_content(
+    messages: list[ModelMessage],
+) -> tuple[str, list[dict[str, Any]], datetime | None]:
+    """Extract assistant content + canonicalized segments from a single turn's messages."""
+    tool_results: dict[str, Any] = {}
+    for message in messages:
+        if not isinstance(message, ModelRequest):
+            continue
+        for part in message.parts:
+            if isinstance(part, ToolReturnPart):
+                tool_results[part.tool_call_id] = normalize_tool_output_for_storage(
+                    part.tool_name,
+                    part.content,
+                )
+
+    segments: list[dict[str, Any]] = []
+    timestamp: datetime | None = None
+    for message in messages:
+        if not isinstance(message, ModelResponse):
+            continue
+        if timestamp is None:
+            timestamp = message.timestamp
+        for part in message.parts:
+            if isinstance(part, ThinkingPart):
+                _append_content_segment(segments, "thinking", part.content)
+            elif isinstance(part, TextPart):
+                _append_content_segment(segments, "text", part.content)
+            elif isinstance(part, ToolCallPart):
+                tool_entry = {
+                    "id": part.tool_call_id,
+                    "name": part.tool_name,
+                    "input": part.args if isinstance(part.args, dict) else {},
+                }
+                if part.tool_call_id in tool_results:
+                    tool_entry["output"] = tool_results[part.tool_call_id]
+                if segments and segments[-1]["kind"] == "tool_group":
+                    segments[-1]["tools"].append(tool_entry)
+                else:
+                    segments.append({"kind": "tool_group", "tools": [tool_entry]})
+
+    canonical = canonicalize_assistant_segments(segments)
+    return assistant_segments_to_text(canonical), canonical, timestamp
+
+
+def normalize_tool_output_for_storage(tool_name: str, content: Any) -> Any:
+    """Strip binary / multimodal payloads so persisted tool outputs stay serializable."""
+    if tool_name == "look_at_screen":
+        return "[Inspected current screen]"
+    if isinstance(content, BinaryContent):
+        return "[Binary content omitted]"
     try:
         from pydantic_ai.messages import FileUrl
-    except ImportError:
-        return content
-
-    if isinstance(content, FileUrl):
+    except ImportError:  # pragma: no cover
+        FileUrl = None  # type: ignore[assignment]
+    if FileUrl is not None and isinstance(content, FileUrl):
         result: dict[str, Any] = {"url": content.url}
         if hasattr(content, "kind"):
             result["kind"] = content.kind
         return result
     if isinstance(content, dict):
-        return {k: _sanitize_tool_return_content(v) for k, v in content.items()}
+        return {key: normalize_tool_output_for_storage(tool_name, value) for key, value in content.items()}
     if isinstance(content, list):
-        return [_sanitize_tool_return_content(item) for item in content]
+        return [normalize_tool_output_for_storage(tool_name, item) for item in content]
     return content
 
 
-def _sanitize_history(history: list[Any]) -> list[Any]:
-    """Sanitize deserialized history to fix rogue type reconstructions.
+def sanitize_image_tool_returns(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Strip binary screen-inspection payloads from a ModelMessage history."""
+    for message in messages:
+        if not isinstance(message, ModelRequest):
+            continue
+        for part in message.parts:
+            if isinstance(part, ToolReturnPart) and part.tool_name == "look_at_screen":
+                part.content = "[Inspected current screen]"
+        message.parts = [part for part in message.parts if not _is_synthetic_binary_user_prompt(part)]
+    return messages
 
-    Walks all ToolReturnPart.content values and converts any FileUrl
-    subclass objects back to plain dicts.
-    """
-    sanitized_count = 0
-    for msg in history:
-        if isinstance(msg, ModelRequest):
-            for part in msg.parts:
-                if isinstance(part, ToolReturnPart):
-                    original = part.content
-                    sanitized = _sanitize_tool_return_content(original)
-                    if sanitized is not original:
-                        part.content = sanitized
-                        sanitized_count += 1
-    if sanitized_count > 0:
-        logger.info(
-            f"Sanitized {sanitized_count} tool return part(s) with rogue FileUrl reconstructions"
+
+def _assistant_record_to_messages(message: MessageRecord) -> list[ModelMessage]:
+    segments = canonicalize_assistant_segments(message.get("segments"))
+    if not segments and message.get("content"):
+        segments = [{"kind": "text", "text": message["content"]}]
+
+    response_groups: list[list[Any]] = []
+    current_parts: list[Any] = []
+    request_messages: list[ModelRequest | None] = []
+
+    for segment in segments:
+        kind = segment["kind"]
+        if kind == "thinking":
+            current_parts.append(ThinkingPart(content=segment["text"]))
+            continue
+        if kind == "text":
+            current_parts.append(TextPart(content=segment["text"]))
+            continue
+
+        if kind == "tool_group":
+            for tool in segment.get("tools", []):
+                current_parts.append(
+                    ToolCallPart(
+                        tool_name=str(tool.get("name", "")),
+                        args=tool.get("input") if isinstance(tool.get("input"), dict) else {},
+                        tool_call_id=str(tool.get("id", "")),
+                    )
+                )
+            response_groups.append(current_parts)
+            current_parts = []
+
+            tool_returns = []
+            for tool in segment.get("tools", []):
+                if "output" not in tool:
+                    continue
+                tool_returns.append(
+                    ToolReturnPart(
+                        tool_name=str(tool.get("name", "")),
+                        content=tool.get("output"),
+                        tool_call_id=str(tool.get("id", "")),
+                        timestamp=_coerce_datetime(message.get("created_at")) or datetime.now(UTC),
+                    )
+                )
+            request_messages.append(
+                ModelRequest(
+                    parts=tool_returns,
+                    timestamp=_coerce_datetime(message.get("created_at")),
+                )
+                if tool_returns
+                else None
+            )
+
+    if current_parts:
+        response_groups.append(current_parts)
+
+    usage = _request_usage(message.get("usage"))
+    timestamp = _coerce_datetime(message.get("created_at")) or datetime.now(UTC)
+
+    model_messages: list[ModelMessage] = []
+    for index, parts in enumerate(response_groups):
+        response_usage = usage if index == len(response_groups) - 1 else RequestUsage()
+        model_messages.append(
+            ModelResponse(
+                parts=parts,
+                usage=response_usage,
+                timestamp=timestamp,
+            )
         )
-    return history
+        if index < len(request_messages) and request_messages[index] is not None:
+            model_messages.append(request_messages[index])  # type: ignore[arg-type]
+    return model_messages
+
+
+def _user_record_to_request(message: MessageRecord) -> ModelRequest:
+    content = message.get("content", "")
+    timestamp = _coerce_datetime(message.get("created_at"))
+    return ModelRequest(
+        parts=[UserPromptPart(content=content, timestamp=timestamp or datetime.now(UTC))],
+        timestamp=timestamp,
+    )
+
+
+def _request_usage(data: dict[str, Any] | None) -> RequestUsage:
+    if not data:
+        return RequestUsage()
+    return RequestUsage(
+        input_tokens=int(data.get("input_tokens", 0) or 0),
+        output_tokens=int(data.get("output_tokens", 0) or 0),
+    )
+
+
+def _append_content_segment(segments: list[dict[str, Any]], kind: str, text: str) -> None:
+    if not text:
+        return
+    if segments and segments[-1]["kind"] == kind:
+        segments[-1]["text"] += text
+        return
+    segments.append({"kind": kind, "text": text})
 
 
 def _is_synthetic_binary_user_prompt(part: Any) -> bool:
-    """Check if a part is a synthetic UserPromptPart created by Pydantic AI for BinaryContent.
-
-    When a tool returns BinaryContent, Pydantic AI creates a UserPromptPart
-    with ``content=[text_ref, BinaryContent(...)]`` so the model can "see" the
-    file. These are framework artifacts, not real user messages.
-    """
     return (
         isinstance(part, UserPromptPart)
         and isinstance(part.content, list)
@@ -107,130 +305,27 @@ def _is_synthetic_binary_user_prompt(part: Any) -> bool:
     )
 
 
-def sanitize_image_tool_returns(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Strip image data from look_at_screen tool returns.
-
-    The ``look_at_screen`` tool returns a BinaryContent image. Pydantic AI
-    wraps this in two parts within the same ModelRequest:
-    1. A ``ToolReturnPart`` with ``tool_name="look_at_screen"`` — replace content
-       with a text placeholder
-    2. A synthetic ``UserPromptPart`` whose content is a list containing
-       ``BinaryContent`` — **remove entirely** (otherwise it renders as a ghost
-       user message in the chat UI)
-
-    This prevents base64 image data from accumulating in history and avoids
-    UI artifacts.
-    """
-    for msg in messages:
-        if not isinstance(msg, ModelRequest):
-            continue
-        for part in msg.parts:
-            if isinstance(part, ToolReturnPart) and part.tool_name == "look_at_screen":
-                part.content = "[Inspected current screen]"
-        # Remove synthetic UserPromptParts with BinaryContent (ghost messages)
-        msg.parts = [p for p in msg.parts if not _is_synthetic_binary_user_prompt(p)]
-    return messages
+def _with_segment_metadata(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        item = dict(segment)
+        item["segment_id"] = f"segment_{index}"
+        item["segment_index"] = index
+        enriched.append(item)
+    return enriched
 
 
-def messages_to_display_format(messages: list[ModelMessage]) -> list[dict[str, Any]]:
-    """Convert ModelMessage list to display-ready dicts for the frontend.
-
-    Two-pass conversion:
-    1. Collect ToolReturnPart results keyed by tool_call_id
-    2. Build display messages with ordered segments, collapsing consecutive
-       assistant turns (ModelResponse messages separated by tool-return-only
-       ModelRequests) into single entries
-    """
-    # Pass 1: collect tool return results
-    tool_results: dict[str, Any] = {}
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            for part in msg.parts:
-                if isinstance(part, ToolReturnPart):
-                    tool_results[part.tool_call_id] = part.content
-
-    # Pass 2: build display messages with ordered segments
-    display: list[dict[str, Any]] = []
-    pending_segments: list[dict[str, Any]] = []
-    pending_timestamp: str | None = None
-
-    def _flush_assistant() -> None:
-        nonlocal pending_segments, pending_timestamp
-        if not pending_segments:
-            return
-        display.append(_build_assistant_entry(pending_segments, pending_timestamp))
-        pending_segments = []
-        pending_timestamp = None
-
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            user_texts: list[str] = []
-            has_user_prompt = False
-            for part in msg.parts:
-                if not isinstance(part, UserPromptPart):
-                    continue
-                has_user_prompt = True
-                if isinstance(part.content, str):
-                    user_texts.append(part.content)
-                elif isinstance(part.content, list):
-                    for item in part.content:
-                        if isinstance(item, str):
-                            user_texts.append(item)
-            if not has_user_prompt:
-                continue
-            if not user_texts:
-                user_texts.append("[Image attachment]")
-            _flush_assistant()
-            entry: dict[str, Any] = {
-                "role": "user",
-                "text": "\n".join(user_texts),
-            }
-            if msg.timestamp is not None:
-                entry["timestamp"] = msg.timestamp.isoformat()
-            display.append(entry)
-
-        elif isinstance(msg, ModelResponse):
-            if pending_timestamp is None and msg.timestamp is not None:
-                pending_timestamp = msg.timestamp.isoformat()
-
-            for part in msg.parts:
-                if isinstance(part, ThinkingPart):
-                    pending_segments.append({"kind": "thinking", "text": part.content})
-                elif isinstance(part, TextPart):
-                    pending_segments.append({"kind": "text", "text": part.content})
-                elif isinstance(part, ToolCallPart):
-                    tc: dict[str, Any] = {
-                        "id": part.tool_call_id,
-                        "name": part.tool_name,
-                        "input": part.args if isinstance(part.args, dict) else {},
-                    }
-                    if part.tool_call_id in tool_results:
-                        tc["output"] = tool_results[part.tool_call_id]
-                    if pending_segments and pending_segments[-1]["kind"] == "tool_group":
-                        pending_segments[-1]["tools"].append(tc)
-                    else:
-                        pending_segments.append({"kind": "tool_group", "tools": [tc]})
-
-    _flush_assistant()
-    return display
+def _iso(value: Any) -> str | None:
+    dt = _coerce_datetime(value)
+    return dt.isoformat() if dt is not None else None
 
 
-def _build_assistant_entry(segments: list[dict[str, Any]], timestamp: str | None) -> dict[str, Any]:
-    """Build an assistant display entry from ordered segments.
-
-    Produces the ordered ``segments`` array (for position-aware rendering)
-    and a concatenated ``text`` summary field.
-    """
-    text_parts: list[str] = []
-    for seg in segments:
-        if seg["kind"] == "text":
-            text_parts.append(seg["text"])
-
-    entry: dict[str, Any] = {
-        "role": "assistant",
-        "text": "".join(text_parts),
-        "segments": segments,
-    }
-    if timestamp is not None:
-        entry["timestamp"] = timestamp
-    return entry
+def _coerce_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None

@@ -20,6 +20,15 @@ from lovely_assistant.services.tools.interface import ToolService
 from .conftest import _make_mock_agent
 
 
+def _payload(*, message_id: str, session_id: str, parent_id: str | None, content: str) -> dict[str, object]:
+    return {
+        "id": message_id,
+        "session_id": session_id,
+        "parent_id": parent_id,
+        "content": content,
+    }
+
+
 @pytest.fixture
 async def full_app_client(monkeypatch):
     """App with all services wired — mirrors lifespan behavior."""
@@ -163,7 +172,12 @@ class TestEdgeCases:
         ):
             response = await client.post(
                 "/api/chat",
-                json={"session_id": "edge-empty", "message": ""},
+                json=_payload(
+                    message_id="user-1",
+                    session_id="edge-empty",
+                    parent_id=None,
+                    content="",
+                ),
             )
 
         assert response.status_code == 200
@@ -182,7 +196,12 @@ class TestEdgeCases:
         ):
             response = await client.post(
                 "/api/chat",
-                json={"session_id": long_id, "message": "test"},
+                json=_payload(
+                    message_id="user-1",
+                    session_id=long_id,
+                    parent_id=None,
+                    content="test",
+                ),
             )
 
         assert response.status_code == 200
@@ -193,6 +212,7 @@ class TestEdgeCases:
         """Multiple requests to same session accumulate turns correctly."""
         client, app = full_app_client
 
+        parent_id: str | None = None
         for i in range(1, 4):
             mock_agent = _make_mock_agent(f"Reply {i}")
             with patch(
@@ -201,9 +221,17 @@ class TestEdgeCases:
             ):
                 response = await client.post(
                     "/api/chat",
-                    json={"session_id": "edge-multi", "message": f"msg{i}"},
+                    json=_payload(
+                        message_id=f"user-{i}",
+                        session_id="edge-multi",
+                        parent_id=parent_id,
+                        content=f"msg{i}",
+                    ),
                 )
             assert response.status_code == 200
+            messages = await client.get("/api/sessions/edge-multi/messages")
+            assert messages.status_code == 200
+            parent_id = messages.json()[-1]["id"]
 
         # Session should have 3 turns
         sess_response = await client.get("/api/sessions/edge-multi")

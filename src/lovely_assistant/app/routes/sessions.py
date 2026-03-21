@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
-from lovely_assistant.app.assistant._serialization import messages_to_display_format
+from lovely_assistant.app.assistant._serialization import (
+    tree_messages_to_display,
+    tree_messages_to_tree,
+)
 from lovely_assistant.app.assistant.deps import AssistantServiceDep
 
 if TYPE_CHECKING:
@@ -53,26 +56,39 @@ async def get_session(session_id: str, service: AssistantServiceDep) -> dict:
     return {
         "session_id": session_id,
         "turn_number": ctx.get("turn_number", 0),
-        "message_count": len(ctx.get("message_history", [])),
+        "has_pending_tool_call": bool(ctx.get("pending_tool_call_id")),
+        "message_count": ctx.get("message_count", 0),
     }
 
 
 @router.get("/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str, service: AssistantServiceDep) -> list[dict]:
-    """Get display-ready message history for a session.
-
-    Returns empty list for sessions with no history (including new sessions
-    that haven't sent a message yet). The frontend creates sessions in its
-    own registry before the backend sees any messages, so unknown session IDs
-    are a normal state — not an error.
-    """
+async def get_session_messages(
+    session_id: str,
+    service: AssistantServiceDep,
+    leaf_id: str | None = None,
+) -> list[dict]:
+    """Get the root-to-leaf display path for a session."""
     sessions = service.get_session_store()
     if sessions is None:
-        return []
-    ctx = await sessions.get_context_if_exists_async(session_id)
-    if ctx is None:
-        return []
-    return messages_to_display_format(ctx.get("message_history", []))
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        path = await sessions.get_message_path(session_id, leaf_id=leaf_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return tree_messages_to_display(path)
+
+
+@router.get("/sessions/{session_id}/tree")
+async def get_session_tree(session_id: str, service: AssistantServiceDep) -> list[dict]:
+    """Get all messages in a session with parent pointers."""
+    sessions = service.get_session_store()
+    if sessions is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        messages = await sessions.get_tree_messages(session_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return tree_messages_to_tree(messages)
 
 
 @router.delete("/sessions/{session_id}")

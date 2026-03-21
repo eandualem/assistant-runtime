@@ -9,6 +9,10 @@ import httpx
 from loguru import logger
 
 from lovely_assistant.base.resilience import retry_with_backoff
+from lovely_assistant.services.tools._request_context import (
+    get_current_assistant_session_id,
+    record_current_telegram_chat_binding,
+)
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
@@ -86,10 +90,17 @@ async def respond_telegram(message: str) -> dict[str, Any]:
         }
 
     result = data.get("result", {}) if isinstance(data, dict) else {}
-    return {
+    reply_session_id = get_current_assistant_session_id()
+    record_current_telegram_chat_binding(chat_id)
+
+    payload = {
         "success": True,
         "message_id": result.get("message_id"),
+        "chat_id": chat_id,
     }
+    if reply_session_id:
+        payload["reply_session_id"] = reply_session_id
+    return payload
 
 
 # ---------------------------------------------------------------------------

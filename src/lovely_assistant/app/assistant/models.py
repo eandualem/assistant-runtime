@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -122,8 +122,11 @@ _SCREENSHOT_TOP_LEVEL_KEYS = (
 class AssistantRequest(BaseModel):
     """Input for a single assistant interaction."""
 
+    id: str
     session_id: str
-    message: str
+    parent_id: str | None
+    message_type: Literal["standard", "guidance"] = Field(default="standard")
+    content: str
     images: list[str] = Field(default_factory=list)
     machine_state: dict[str, Any] | None = None
     config: RequestConfigOverride | None = None
@@ -134,6 +137,16 @@ class AssistantRequest(BaseModel):
     def is_continuation(self) -> bool:
         """Whether this is a continuation request (frontend returning a tool result)."""
         return self.tool_call_id is not None
+
+    @property
+    def is_guidance(self) -> bool:
+        """Whether this is a mid-stream guidance message."""
+        return self.message_type == "guidance"
+
+    @property
+    def message(self) -> str:
+        """Compatibility accessor for internal call sites during the cutover."""
+        return self.content
 
     @model_validator(mode="before")
     @classmethod
