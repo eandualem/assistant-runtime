@@ -1,5 +1,7 @@
 """Tests for the LLM service exception hierarchy and error classification."""
 
+from pydantic_ai.exceptions import ModelHTTPError
+
 from lovely_assistant.services.llm.exceptions import LLMCallError, classify_llm_error
 
 
@@ -101,5 +103,23 @@ class TestClassifyLlmError:
     def test_python_timeout_error(self):
         result = classify_llm_error(TimeoutError("timed out"))
         assert result.error_category == "CONNECTION_ERROR"
+        assert result.is_retryable is True
+        assert result.retry_allowed is True
+
+    def test_model_http_error_429_maps_to_rate_limit(self):
+        result = classify_llm_error(
+            ModelHTTPError(
+                status_code=429,
+                model_name="claude-haiku-4-5",
+                body={
+                    "type": "error",
+                    "error": {
+                        "type": "rate_limit_error",
+                        "message": "too many tokens",
+                    },
+                },
+            )
+        )
+        assert result.error_category == "RATE_LIMIT"
         assert result.is_retryable is True
         assert result.retry_allowed is True

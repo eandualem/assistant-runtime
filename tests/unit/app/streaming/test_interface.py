@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic_ai import DeferredToolRequests
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import UsageLimits
 from pydantic_graph.nodes import End
@@ -290,3 +291,41 @@ class TestStreamingService:
 
         assert events == []
         assert ctx["pending_guidance"][0]["id"] == "guidance-1"
+
+    @pytest.mark.asyncio
+    async def test_provider_rate_limit_emits_retryable_rate_limit_error(self) -> None:
+        class _FailingRun:
+            async def __aenter__(self) -> "_FailingRun":
+                raise ModelHTTPError(
+                    status_code=429,
+                    model_name="claude-haiku-4-5",
+                    body={
+                        "type": "error",
+                        "error": {
+                            "type": "rate_limit_error",
+                            "message": "too many tokens",
+                        },
+                    },
+                )
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
+        service = _make_service()
+        failing_agent = MagicMock()
+        failing_agent.iter = MagicMock(return_value=_FailingRun())
+        service._assistant_service.prepare_agent_context = AsyncMock(
+            return_value=_agent_context(failing_agent)
+        )
+        await service.start()
+
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        error = next(event for event in events if event["type"] == "error")
+
+        assert final["error"] is True
+        assert final["error_type"] == "rate_limit"
+        assert error["error_type"] == "rate_limit"
+        assert error["retry_allowed"] is True
+        assert "RATE_LIMIT" in error["message"]

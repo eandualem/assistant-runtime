@@ -65,6 +65,7 @@ from lovely_assistant.services.tools._screen_tools import (
     set_current_screenshot,
     strip_screenshot_from_tool_result,
 )
+from lovely_assistant.services.llm.exceptions import LLMCallError, classify_llm_error
 from lovely_assistant.services.tracing import create_request_trace
 
 if TYPE_CHECKING:
@@ -480,27 +481,45 @@ class StreamingService:
         except StreamingError:
             raise
         except Exception as e:
-            logger.exception(
-                "[STREAM] Continuation failed",
-                session_id=session_id,
-                error_type=e.__class__.__name__,
-                error=str(e),
+            llm_error = self._classify_provider_error(e)
+            error_type = self._llm_error_type(llm_error) if llm_error is not None else "internal"
+            retry_allowed = llm_error.retry_allowed if llm_error is not None else False
+            message = (
+                str(llm_error)
+                if llm_error is not None
+                else f"Continuation failed: {e.__class__.__name__}: {e}"
             )
+
+            if llm_error is None:
+                logger.exception(
+                    "[STREAM] Continuation failed",
+                    session_id=session_id,
+                    error_type=e.__class__.__name__,
+                    error=str(e),
+                )
+            else:
+                logger.warning(
+                    "[STREAM] Continuation failed with provider error",
+                    session_id=session_id,
+                    error_type=error_type,
+                    retry_allowed=retry_allowed,
+                    error=str(llm_error),
+                )
             final = coordinator.try_final_response(
                 None,
                 resolved_model if "resolved_model" in locals() else "unknown",
                 session_id=session_id,
                 error=True,
-                error_type="internal",
+                error_type=error_type,
             )
             if final:
                 yield final
             yield coordinator.track(
                 make_error_event(
-                    f"Continuation failed: {e.__class__.__name__}: {e}",
-                    error_type="internal",
+                    message,
+                    error_type=error_type,
                     terminal=True,
-                    retry_allowed=False,
+                    retry_allowed=retry_allowed,
                 )
             )
         finally:
@@ -844,29 +863,49 @@ class StreamingService:
         except StreamingError:
             raise
         except Exception as e:
-            logger.exception(
-                "[STREAM] Streaming request failed",
-                session_id=session_id,
-                model=resolved_model if "resolved_model" in locals() else None,
-                duration_ms=(time.monotonic() - start_time) * 1000,
-                error_type=e.__class__.__name__,
-                error=str(e),
+            llm_error = self._classify_provider_error(e)
+            error_type = self._llm_error_type(llm_error) if llm_error is not None else "internal"
+            retry_allowed = llm_error.retry_allowed if llm_error is not None else False
+            message = (
+                str(llm_error)
+                if llm_error is not None
+                else f"Streaming failed: {e.__class__.__name__}: {e}"
             )
+
+            if llm_error is None:
+                logger.exception(
+                    "[STREAM] Streaming request failed",
+                    session_id=session_id,
+                    model=resolved_model if "resolved_model" in locals() else None,
+                    duration_ms=(time.monotonic() - start_time) * 1000,
+                    error_type=e.__class__.__name__,
+                    error=str(e),
+                )
+            else:
+                logger.warning(
+                    "[STREAM] Streaming request failed with provider error",
+                    session_id=session_id,
+                    model=resolved_model if "resolved_model" in locals() else None,
+                    duration_ms=(time.monotonic() - start_time) * 1000,
+                    error_type=error_type,
+                    retry_allowed=retry_allowed,
+                    error=str(llm_error),
+                )
             final = coordinator.try_final_response(
                 None,
                 resolved_model if "resolved_model" in locals() else "unknown",
                 session_id=session_id,
                 error=True,
-                error_type="internal",
+                error_type=error_type,
             )
             if final:
                 yield final
             yield coordinator.track(
                 make_error_event(
-                    f"Streaming failed: {e.__class__.__name__}: {e}",
-                    error_type="internal",
+                    message,
+                    error_type=error_type,
                     terminal=True,
-                    retry_allowed=False,
+                    retry_allowed=retry_allowed,
                 )
             )
         finally:
@@ -1022,6 +1061,30 @@ class StreamingService:
         if completed:
             events.append(completed)
         return events
+
+    @staticmethod
+    def _classify_provider_error(exc: Exception) -> LLMCallError | None:
+        """Return a classified LLM/provider error when the exception matches a known shape."""
+        if isinstance(exc, LLMCallError):
+            return exc
+        classified = classify_llm_error(exc)
+        if classified.error_category == "UNKNOWN":
+            return None
+        return classified
+
+    @staticmethod
+    def _llm_error_type(error: LLMCallError | None) -> str:
+        """Map LLM error categories onto the streaming protocol error types."""
+        if error is None:
+            return "internal"
+        return {
+            "RATE_LIMIT": "rate_limit",
+            "SERVER_ERROR": "provider_error",
+            "CONNECTION_ERROR": "connection_error",
+            "TIMEOUT": "timeout",
+            "AUTH_ERROR": "provider_auth",
+            "CLIENT_ERROR": "provider_client_error",
+        }.get(error.error_category, "provider_error")
 
     @staticmethod
     async def _timed_async(awaitable: Any) -> tuple[Any, float]:

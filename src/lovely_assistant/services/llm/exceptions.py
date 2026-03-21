@@ -40,6 +40,38 @@ class LLMCallError(LLMError):
         self.is_retryable = is_retryable
 
 
+def _classify_model_http_error(exc: Exception) -> tuple[str, bool] | None:
+    """Map Pydantic AI ModelHTTPError instances to a provider error category."""
+    if type(exc).__name__ != "ModelHTTPError":
+        return None
+
+    status_code = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    provider_error_type: str | None = None
+
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            raw_type = error.get("type")
+            if isinstance(raw_type, str):
+                provider_error_type = raw_type
+
+    if status_code == 429 or provider_error_type == "rate_limit_error":
+        return "RATE_LIMIT", True
+    if provider_error_type == "overloaded_error":
+        return "SERVER_ERROR", True
+    if status_code == 408:
+        return "TIMEOUT", True
+    if status_code in {401, 403}:
+        return "AUTH_ERROR", False
+    if isinstance(status_code, int) and 400 <= status_code < 500:
+        return "CLIENT_ERROR", False
+    if isinstance(status_code, int) and status_code >= 500:
+        return "SERVER_ERROR", True
+
+    return None
+
+
 def classify_llm_error(exc: Exception) -> LLMCallError:
     """Classify a provider exception into a categorized LLMCallError.
 
@@ -74,6 +106,15 @@ def classify_llm_error(exc: Exception) -> LLMCallError:
 
     if exc_name in non_retryable_names:
         cat, retryable = non_retryable_names[exc_name]
+        return LLMCallError(
+            f"LLM call failed ({cat}): {exc}",
+            error_category=cat,
+            is_retryable=retryable,
+        )
+
+    model_http = _classify_model_http_error(exc)
+    if model_http is not None:
+        cat, retryable = model_http
         return LLMCallError(
             f"LLM call failed ({cat}): {exc}",
             error_category=cat,
