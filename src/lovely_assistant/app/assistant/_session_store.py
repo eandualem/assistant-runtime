@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,60 @@ if TYPE_CHECKING:
 
 
 _MAX_MEMORY_SESSIONS = 200
+
+_STALE_FRONTEND_TOOL_OUTPUT = (
+    "[Deferred frontend tool was not completed before the session was reloaded. "
+    "The action did not complete.]"
+)
+
+
+def _repair_stale_tool_segments(
+    segments: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Mark tools without output as stale.
+
+    Returns (repaired_segments, list_of_repaired_tool_ids).
+    Original segments are not mutated.
+    """
+    repaired_ids: list[str] = []
+    updated = copy.deepcopy(segments)
+    for segment in updated:
+        if segment.get("kind") != "tool_group":
+            continue
+        for tool in segment.get("tools", []):
+            if not isinstance(tool, dict):
+                continue
+            if "output" not in tool:
+                tool["output"] = _STALE_FRONTEND_TOOL_OUTPUT
+                repaired_ids.append(str(tool.get("id", "")))
+    return updated, repaired_ids
+
+
+def _repair_stale_tools_in_context(
+    ctx: dict[str, Any],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Scan all assistant messages for tools without output and mark as stale.
+
+    Returns list of (message_id, repaired_segments) for messages that were repaired.
+    Mutates the records in ctx["message_index"] in place.
+    """
+    repaired: list[tuple[str, list[dict[str, Any]]]] = []
+    for msg_id, record in ctx["message_index"].items():
+        if record.get("role") != "assistant":
+            continue
+        segments = record.get("segments")
+        if not segments:
+            continue
+        updated_segments, repaired_ids = _repair_stale_tool_segments(segments)
+        if repaired_ids:
+            record["segments"] = updated_segments
+            repaired.append((msg_id, updated_segments))
+            logger.debug(
+                "[SESSION] Marked stale frontend tools",
+                message_id=msg_id,
+                repaired_tool_ids=repaired_ids,
+            )
+    return repaired
 
 
 class SessionStore:
@@ -501,6 +556,64 @@ class SessionStore:
             repo = SessionRepository(db_session)
             return await repo.cleanup_expired()
 
+    async def repair_stale_frontend_tools(self, session_id: str) -> dict[str, Any]:
+        """Repair stale frontend tools in a session.
+
+        Clears in-memory pending state and marks any tool without output
+        as stale in both the in-memory context and the database.
+
+        Returns a report dict with what was repaired.
+        """
+        report: dict[str, Any] = {
+            "session_id": session_id,
+            "cleared_pending": None,
+            "repaired_tools": [],
+        }
+
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError(f"Session '{session_id}' not found")
+
+        # Clear in-memory pending state
+        cleared = ctx.get("pending_tool_call_id")
+        if cleared:
+            report["cleared_pending"] = {
+                "tool_call_id": cleared,
+                "tool_name": ctx.get("pending_tool_name"),
+            }
+            ctx.pop("pending_tool_call_id", None)
+            ctx.pop("pending_tool_name", None)
+            ctx.pop("pending_assistant_message_id", None)
+
+        # Repair stale tool segments
+        repaired = _repair_stale_tools_in_context(ctx)
+        if repaired and self._db is not None:
+            async with self._db.session_context() as db_session:
+                from lovely_assistant.services.database.repositories import MessageRepository
+
+                repo = MessageRepository(db_session)
+                for msg_id, updated_segments in repaired:
+                    await repo.update(msg_id, segments=updated_segments)
+
+        for msg_id, _segments in repaired:
+            report["repaired_tools"].append(msg_id)
+
+        # Also update cached_path to reflect repaired segments
+        if repaired:
+            active_leaf = ctx.get("active_leaf_id")
+            if active_leaf:
+                ctx["cached_path"] = self._resolve_path(ctx, active_leaf)
+
+        if cleared or repaired:
+            logger.info(
+                "[SESSION] Repaired stale frontend tools",
+                session_id=session_id,
+                cleared_pending=bool(cleared),
+                repaired_messages=len(repaired),
+            )
+
+        return report
+
     async def _ensure_session_row(self, session_id: str, ctx: dict[str, Any]) -> None:
         if self._db is None:
             return
@@ -683,6 +796,20 @@ class SessionStore:
 
                 ctx["active_leaf_id"] = self._latest_leaf_id(ctx)
                 ctx["cached_path"] = self._resolve_path(ctx, ctx["active_leaf_id"])
+
+                # Repair stale frontend tools on cold load.
+                # pending_tool_call_id is in-memory only — on reload it's gone,
+                # so any frontend tool without output will never get a continuation.
+                repaired = _repair_stale_tools_in_context(ctx)
+                if repaired:
+                    for msg_id, updated_segments in repaired:
+                        await message_repo.update(msg_id, segments=updated_segments)
+                    logger.info(
+                        "[SESSION] Repaired stale frontend tools on DB load",
+                        session_id=session_id,
+                        repaired_messages=len(repaired),
+                    )
+
                 return ctx
 
         return await _load()
