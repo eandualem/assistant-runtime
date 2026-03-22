@@ -56,7 +56,7 @@ class MessageORM(Base):
     __table_args__ = (
         CheckConstraint("role IN ('user', 'assistant')", name="ck_messages_role_valid"),
         CheckConstraint(
-            "message_type IN ('standard', 'guidance')",
+            "message_type = 'standard'",
             name="ck_messages_message_type_valid",
         ),
         Index("ix_messages_session_id_created_at", "session_id", "created_at"),
@@ -86,6 +86,31 @@ class MessageORM(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class SteeringORM(Base):
+    """Out-of-band steering records — separate from the message tree."""
+
+    __tablename__ = "steering"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'promoted')",
+            name="ck_steering_status_valid",
+        ),
+        Index("ix_steering_session_id_created_at", "session_id", "created_at"),
+        Index("ix_steering_session_id_status_created_at", "session_id", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TraceORM(Base):

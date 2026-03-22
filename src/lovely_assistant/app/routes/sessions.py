@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from lovely_assistant.app.assistant._serialization import (
-    tree_messages_to_display,
+    merge_display_messages,
     tree_messages_to_tree,
 )
 from lovely_assistant.app.assistant.deps import AssistantServiceDep
@@ -73,9 +73,10 @@ async def get_session_messages(
         raise HTTPException(status_code=404, detail="Session not found")
     try:
         path = await sessions.get_message_path(session_id, leaf_id=leaf_id)
+        steering = await sessions.get_display_steering(session_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-    return tree_messages_to_display(path)
+    return merge_display_messages(path, steering)
 
 
 @router.get("/sessions/{session_id}/tree")

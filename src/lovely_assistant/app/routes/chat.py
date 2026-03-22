@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
 from lovely_assistant.app.assistant.deps import AssistantServiceDep
@@ -22,6 +22,12 @@ async def chat(
         "Received chat request",
         session_id=assistant_request.session_id,
     )
+
+    if assistant_request.is_steering:
+        raise HTTPException(
+            status_code=422,
+            detail="Steering messages are only supported over the streaming Socket.IO transport",
+        )
 
     # Refresh OAuth token if needed (lightweight check)
     oauth_service = getattr(request.app.state, "oauth_service", None)

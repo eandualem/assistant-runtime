@@ -18,8 +18,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RequestUsage
 
-
 MessageRecord = dict[str, Any]
+SteeringRecord = dict[str, Any]
+
+_STEERING_PREFIX = "Additional user steering while you were working:\n"
 
 
 def canonicalize_assistant_segments(segments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -98,6 +100,56 @@ def tree_messages_to_display(messages: list[MessageRecord]) -> list[dict[str, An
     return display
 
 
+def steering_records_to_display(steering_records: list[SteeringRecord]) -> list[dict[str, Any]]:
+    """Serialize delivered/promoted steering records for `/messages`."""
+    display: list[dict[str, Any]] = []
+    for steering in steering_records:
+        status = steering.get("status")
+        if status not in {"delivered", "promoted"}:
+            continue
+        timestamp = _iso(steering.get("delivered_at")) or _iso(steering.get("created_at"))
+        display.append(
+            {
+                "id": steering["id"],
+                "role": "steering",
+                "text": steering.get("content", ""),
+                "message_type": "steering",
+                "status": status,
+                "timestamp": timestamp,
+            }
+        )
+    return display
+
+
+def merge_display_messages(
+    path_messages: list[MessageRecord],
+    steering_records: list[SteeringRecord],
+) -> list[dict[str, Any]]:
+    """Merge a root-to-leaf message path with delivered steering display entries."""
+    timeline: list[tuple[datetime, datetime, int, dict[str, Any]]] = []
+
+    for index, message in enumerate(path_messages):
+        created_at = _coerce_datetime(message.get("created_at")) or datetime.now(UTC)
+        display = tree_messages_to_display([message])[0]
+        timeline.append((created_at, created_at, index, display))
+
+    for index, steering in enumerate(steering_records):
+        status = steering.get("status")
+        if status not in {"delivered", "promoted"}:
+            continue
+        delivered_at = _coerce_datetime(steering.get("delivered_at")) or _coerce_datetime(
+            steering.get("created_at")
+        )
+        created_at = _coerce_datetime(steering.get("created_at")) or delivered_at or datetime.now(UTC)
+        display_items = steering_records_to_display([steering])
+        if not display_items:
+            continue
+        timeline.append((delivered_at or created_at, created_at, len(path_messages) + index, display_items[0]))
+
+    timeline.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[-1] for item in timeline]
+
+
 def tree_messages_to_tree(messages: list[MessageRecord]) -> list[dict[str, Any]]:
     """Serialize all session messages for `/tree`."""
     return [
@@ -164,6 +216,20 @@ def build_assistant_message_content(
     return assistant_segments_to_text(canonical), canonical, timestamp
 
 
+def build_steering_request(steering_records: list[SteeringRecord]) -> ModelRequest:
+    """Build a model request that frames steering distinctly from user messages."""
+    parts = [
+        UserPromptPart(
+            content=f"{_STEERING_PREFIX}{steering.get('content', '')}",
+            timestamp=_coerce_datetime(steering.get("delivered_at"))
+            or _coerce_datetime(steering.get("created_at"))
+            or datetime.now(UTC),
+        )
+        for steering in steering_records
+    ]
+    return ModelRequest(parts=parts)
+
+
 def normalize_tool_output_for_storage(tool_name: str, content: Any) -> Any:
     """Strip binary / multimodal payloads so persisted tool outputs stay serializable."""
     if tool_name == "look_at_screen":
@@ -171,10 +237,11 @@ def normalize_tool_output_for_storage(tool_name: str, content: Any) -> Any:
     if isinstance(content, BinaryContent):
         return "[Binary content omitted]"
     try:
-        from pydantic_ai.messages import FileUrl
+        import pydantic_ai.messages as pydantic_messages
     except ImportError:  # pragma: no cover
-        FileUrl = None  # type: ignore[assignment]
-    if FileUrl is not None and isinstance(content, FileUrl):
+        pydantic_messages = None  # type: ignore[assignment]
+    file_url_cls = getattr(pydantic_messages, "FileUrl", None)
+    if file_url_cls is not None and isinstance(content, file_url_cls):
         result: dict[str, Any] = {"url": content.url}
         if hasattr(content, "kind"):
             result["kind"] = content.kind

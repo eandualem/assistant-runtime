@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
-from lovely_assistant.services.database.models import MessageORM, SessionORM
+from lovely_assistant.services.database.models import MessageORM, SessionORM, SteeringORM
 
 
 class TestSessionORM:
@@ -59,3 +59,27 @@ class TestMessageORM:
         assert "ix_messages_parent_id" in index_names
         assert "ix_messages_session_id_created_at" in index_names
         assert "uq_messages_single_root_per_session" in index_names
+
+
+class TestSteeringORM:
+    def test_steering_columns_match_out_of_band_schema(self) -> None:
+        columns = SteeringORM.__table__.columns
+
+        assert {column.name for column in columns} == {
+            "id",
+            "session_id",
+            "content",
+            "status",
+            "created_at",
+            "delivered_at",
+        }
+        assert isinstance(columns["content"].type, Text)
+        assert isinstance(columns["status"].type, String)
+
+    def test_steering_indexes_exist(self) -> None:
+        constraint_names = {constraint.name for constraint in SteeringORM.__table__.constraints}
+        index_names = {index.name for index in SteeringORM.__table__.indexes}
+
+        assert any("ck_steering_status_valid" in name for name in constraint_names)
+        assert "ix_steering_session_id_created_at" in index_names
+        assert "ix_steering_session_id_status_created_at" in index_names

@@ -18,10 +18,13 @@ from pydantic_ai.usage import RequestUsage
 from lovely_assistant.app.assistant._serialization import (
     assistant_segments_to_text,
     build_assistant_message_content,
+    build_steering_request,
     canonicalize_assistant_segments,
+    merge_display_messages,
     normalize_tool_output_for_storage,
     path_records_to_model_history,
     sanitize_image_tool_returns,
+    steering_records_to_display,
     tree_messages_to_display,
     tree_messages_to_tree,
 )
@@ -188,6 +191,107 @@ def test_tree_messages_to_tree_preserves_parent_links() -> None:
             "created_at": created_at.isoformat(),
         },
     ]
+
+
+def test_steering_records_to_display_filters_pending_records() -> None:
+    created_at = datetime(2026, 3, 21, 12, 0, tzinfo=UTC)
+    delivered_at = datetime(2026, 3, 21, 12, 1, tzinfo=UTC)
+
+    display = steering_records_to_display(
+        [
+            {
+                "id": "steering-1",
+                "content": "Focus on Leo",
+                "status": "pending",
+                "created_at": created_at,
+                "delivered_at": None,
+            },
+            {
+                "id": "steering-2",
+                "content": "Skip Ada",
+                "status": "delivered",
+                "created_at": created_at,
+                "delivered_at": delivered_at,
+            },
+        ]
+    )
+
+    assert display == [
+        {
+            "id": "steering-2",
+            "role": "steering",
+            "text": "Skip Ada",
+            "message_type": "steering",
+            "status": "delivered",
+            "timestamp": delivered_at.isoformat(),
+        }
+    ]
+
+
+def test_merge_display_messages_inserts_steering_by_delivery_time() -> None:
+    user_time = datetime(2026, 3, 21, 12, 0, tzinfo=UTC)
+    assistant_time = datetime(2026, 3, 21, 12, 1, tzinfo=UTC)
+    steering_time = datetime(2026, 3, 21, 12, 2, tzinfo=UTC)
+
+    merged = merge_display_messages(
+        [
+            {
+                "id": "user-1",
+                "parent_id": None,
+                "role": "user",
+                "message_type": "standard",
+                "content": "Hello",
+                "created_at": user_time,
+            },
+            {
+                "id": "assistant-1",
+                "parent_id": "user-1",
+                "role": "assistant",
+                "message_type": "standard",
+                "content": "Hi there",
+                "segments": [{"kind": "text", "text": "Hi there"}],
+                "usage": None,
+                "created_at": assistant_time,
+            },
+        ],
+        [
+            {
+                "id": "steering-1",
+                "content": "Focus on Leo",
+                "status": "delivered",
+                "created_at": user_time,
+                "delivered_at": steering_time,
+            }
+        ],
+    )
+
+    assert [message["id"] for message in merged] == ["user-1", "assistant-1", "steering-1"]
+
+
+def test_build_steering_request_frames_each_steering_item() -> None:
+    request = build_steering_request(
+        [
+            {
+                "id": "steering-1",
+                "content": "Focus on Leo",
+                "status": "delivered",
+                "created_at": datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                "delivered_at": None,
+            },
+            {
+                "id": "steering-2",
+                "content": "Skip Ada",
+                "status": "delivered",
+                "created_at": datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                "delivered_at": None,
+            },
+        ]
+    )
+
+    assert len(request.parts) == 2
+    assert all(isinstance(part, UserPromptPart) for part in request.parts)
+    assert "Additional user steering" in request.parts[0].content
+    assert request.parts[1].content.endswith("Skip Ada")
 
 
 def test_build_assistant_message_content_collects_segments_and_usage() -> None:
