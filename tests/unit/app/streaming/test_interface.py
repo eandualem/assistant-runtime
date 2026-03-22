@@ -330,6 +330,76 @@ class TestStreamingService:
         assert sessions.get_context("sess-1").get("pending_tool_call_id") is None
 
     @pytest.mark.asyncio
+    async def test_new_message_resolves_stale_pending_frontend_tool_before_new_turn(self) -> None:
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Opening page",
+            segments=[
+                {
+                    "kind": "tool_group",
+                    "tools": [{"id": "call-old", "name": "navigate", "input": {"page": "agents"}}],
+                }
+            ],
+            usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        )
+        stale_ctx = sessions.get_context("sess-1")
+        stale_ctx["pending_tool_call_id"] = "call-old"
+        stale_ctx["pending_tool_name"] = "navigate"
+        stale_ctx["pending_assistant_message_id"] = "assistant-1"
+
+        deferred = DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name="navigate",
+                    args={"page": "dashboard"},
+                    tool_call_id="call-new",
+                )
+            ]
+        )
+        run = _MockRun(
+            output=deferred,
+            all_messages=[
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="navigate",
+                            args={"page": "dashboard"},
+                            tool_call_id="call-new",
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 21, 12, 2, tzinfo=UTC),
+                )
+            ],
+        )
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        events = [
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="user-2",
+                    parent_id="assistant-1",
+                    content="Try again",
+                )
+            )
+        ]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        ctx = sessions.get_context("sess-1")
+        stale_record = ctx["message_index"]["assistant-1"]
+        stale_tool = stale_record["segments"][0]["tools"][0]
+
+        assert stale_tool["output"] == service._STALE_FRONTEND_TOOL_OUTPUT
+        assert final["pending_tool_call"]["call_id"] == "call-new"
+        assert ctx["pending_tool_call_id"] == "call-new"
+        assert ctx["pending_assistant_message_id"] == final["message_id"]
+
+    @pytest.mark.asyncio
     async def test_accept_steering_queues_when_stream_is_live(self) -> None:
         sessions = SessionStore()
         await _seed_basic_turn(sessions)
