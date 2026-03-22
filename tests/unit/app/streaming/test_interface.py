@@ -209,6 +209,44 @@ class TestStreamingService:
         assert final["pending_tool_call"]["call_id"] == "call-nav-1"
 
     @pytest.mark.asyncio
+    async def test_deferred_frontend_tool_prefers_history_call_id_when_output_drifts(self) -> None:
+        deferred = DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name="navigate",
+                    args={"page": "agents"},
+                    tool_call_id="call-output-id",
+                )
+            ]
+        )
+        run = _MockRun(
+            output=deferred,
+            all_messages=[
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="navigate",
+                            args={"page": "agents"},
+                            tool_call_id="call-history-id",
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                )
+            ],
+        )
+        service = _make_service(run=run)
+        await service.start()
+
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        ctx = service._assistant_service.get_session_store().get_context("sess-1")
+
+        assert final["pending_tool_call"]["call_id"] == "call-history-id"
+        assert ctx["pending_tool_call_id"] == "call-history-id"
+        assert ctx["pending_tool_name"] == "navigate"
+
+    @pytest.mark.asyncio
     async def test_continuation_updates_existing_assistant_message(self) -> None:
         sessions = SessionStore()
         await sessions.register_user_message(_request(message_id="user-1", parent_id=None))

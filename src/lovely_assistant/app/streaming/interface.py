@@ -463,7 +463,11 @@ class StreamingService:
             output = run.result.output
             if isinstance(output, DeferredToolRequests):
                 # tool_call already emitted during _iterate_run() — just store pending state
-                pending_info = self._store_pending_frontend_tool(output, session_context)
+                pending_info = self._store_pending_frontend_tool(
+                    output,
+                    session_context,
+                    assistant_segments=assistant_segments,
+                )
                 session_context["pending_assistant_message_id"] = assistant_message_id
                 session_context.pop("current_assistant_message_id", None)
 
@@ -886,7 +890,11 @@ class StreamingService:
                 # Frontend tool call — store pending state for continuation.
                 # The tool_call event was already emitted during
                 # _iterate_run() (via _stream_node or CallToolsNode handler).
-                pending_info = self._store_pending_frontend_tool(output, session_context)
+                pending_info = self._store_pending_frontend_tool(
+                    output,
+                    session_context,
+                    assistant_segments=assistant_segments,
+                )
                 session_context["pending_assistant_message_id"] = assistant_message_id
                 session_context.pop("current_assistant_message_id", None)
 
@@ -1130,7 +1138,11 @@ class StreamingService:
         session_context.pop("current_assistant_message_id", None)
 
     def _store_pending_frontend_tool(
-        self, output: DeferredToolRequests, session_context: dict[str, Any]
+        self,
+        output: DeferredToolRequests,
+        session_context: dict[str, Any],
+        *,
+        assistant_segments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Persist the single supported frontend tool request and return final_response metadata."""
         calls = list(output.calls)
@@ -1147,16 +1159,69 @@ class StreamingService:
                 f"unknown deferred frontend tool '{first.tool_name}'"
             )
 
-        session_context["pending_tool_call_id"] = first.tool_call_id
-        session_context["pending_tool_name"] = first.tool_name
-        try:
-            args = first.args_as_dict()
-        except Exception:
-            args = {}
+        pending_tool = self._extract_pending_frontend_tool_from_segments(assistant_segments)
+        if pending_tool is not None:
+            if pending_tool["tool_name"] != first.tool_name or pending_tool["call_id"] != first.tool_call_id:
+                logger.warning(
+                    "Deferred frontend tool metadata drift detected; using assistant history values",
+                    output_tool_name=first.tool_name,
+                    output_call_id=first.tool_call_id,
+                    history_tool_name=pending_tool["tool_name"],
+                    history_call_id=pending_tool["call_id"],
+                )
+            tool_name = pending_tool["tool_name"]
+            call_id = pending_tool["call_id"]
+            args = pending_tool["arguments"]
+        else:
+            tool_name = first.tool_name
+            call_id = first.tool_call_id
+            try:
+                args = first.args_as_dict()
+            except Exception:
+                args = {}
+
+        session_context["pending_tool_call_id"] = call_id
+        session_context["pending_tool_name"] = tool_name
         return {
-            "tool_name": first.tool_name,
-            "call_id": first.tool_call_id,
+            "tool_name": tool_name,
+            "call_id": call_id,
             "arguments": args,
+        }
+
+    @staticmethod
+    def _extract_pending_frontend_tool_from_segments(
+        assistant_segments: list[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        """Resolve the canonical deferred frontend tool from persisted assistant segments."""
+        if not assistant_segments:
+            return None
+
+        pending_tools: list[dict[str, Any]] = []
+        for segment in assistant_segments:
+            if segment.get("kind") != "tool_group":
+                continue
+            for tool in segment.get("tools", []):
+                if not isinstance(tool, dict):
+                    continue
+                if tool.get("name") not in FRONTEND_TOOL_SCHEMAS:
+                    continue
+                if "output" in tool:
+                    continue
+                pending_tools.append(tool)
+
+        if not pending_tools:
+            return None
+        if len(pending_tools) != 1:
+            raise ValueError(
+                "Frontend tool protocol violation: "
+                f"expected exactly 1 pending frontend tool in assistant history, got {len(pending_tools)}"
+            )
+
+        tool = pending_tools[0]
+        return {
+            "tool_name": str(tool.get("name", "")),
+            "call_id": str(tool.get("id", "")),
+            "arguments": tool.get("input") if isinstance(tool.get("input"), dict) else {},
         }
 
     @staticmethod
@@ -1591,7 +1656,11 @@ class StreamingService:
 
             output = run.result.output
             if isinstance(output, DeferredToolRequests):
-                pending_info = self._store_pending_frontend_tool(output, session_context)
+                pending_info = self._store_pending_frontend_tool(
+                    output,
+                    session_context,
+                    assistant_segments=assistant_segments,
+                )
                 session_context["pending_assistant_message_id"] = assistant_message_id
                 final_output = None
             else:
