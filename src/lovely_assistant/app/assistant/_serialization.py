@@ -337,6 +337,58 @@ def _assistant_record_to_messages(message: MessageRecord) -> list[ModelMessage]:
     return model_messages
 
 
+def assistant_record_to_flat_messages(message: MessageRecord) -> list[ModelMessage]:
+    """Build a flat ModelResponse + ModelRequest for continuation history.
+
+    Unlike _assistant_record_to_messages (which splits tool groups into separate
+    ModelResponse/ModelRequest pairs), this creates a SINGLE ModelResponse with
+    all parts and a SINGLE ModelRequest with all resolved tool results. This
+    matches what Pydantic AI's _handle_deferred_tool_results expects when
+    resuming with DeferredToolResults.
+    """
+    segments = canonicalize_assistant_segments(message.get("segments"))
+    if not segments and message.get("content"):
+        segments = [{"kind": "text", "text": message["content"]}]
+
+    response_parts: list[Any] = []
+    tool_return_parts: list[ToolReturnPart] = []
+    timestamp = _coerce_datetime(message.get("created_at")) or datetime.now(UTC)
+
+    for segment in segments:
+        kind = segment["kind"]
+        if kind == "thinking":
+            response_parts.append(ThinkingPart(content=segment["text"]))
+        elif kind == "text":
+            response_parts.append(TextPart(content=segment["text"]))
+        elif kind == "tool_group":
+            for tool in segment.get("tools", []):
+                response_parts.append(
+                    ToolCallPart(
+                        tool_name=str(tool.get("name", "")),
+                        args=tool.get("input") if isinstance(tool.get("input"), dict) else {},
+                        tool_call_id=str(tool.get("id", "")),
+                    )
+                )
+                if "output" in tool:
+                    tool_return_parts.append(
+                        ToolReturnPart(
+                            tool_name=str(tool.get("name", "")),
+                            content=tool.get("output"),
+                            tool_call_id=str(tool.get("id", "")),
+                            timestamp=timestamp,
+                        )
+                    )
+
+    if not response_parts:
+        return []
+
+    usage = _request_usage(message.get("usage"))
+    result: list[ModelMessage] = [ModelResponse(parts=response_parts, usage=usage, timestamp=timestamp)]
+    if tool_return_parts:
+        result.append(ModelRequest(parts=tool_return_parts, timestamp=timestamp))
+    return result
+
+
 def _user_record_to_request(message: MessageRecord) -> ModelRequest:
     content = message.get("content", "")
     timestamp = _coerce_datetime(message.get("created_at"))

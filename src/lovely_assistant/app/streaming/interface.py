@@ -32,6 +32,7 @@ from pydantic_graph.nodes import End
 
 from lovely_assistant.app.assistant._serialization import (
     SteeringRecord,
+    assistant_record_to_flat_messages,
     build_assistant_message_content,
     build_steering_request,
     path_records_to_model_history,
@@ -343,13 +344,20 @@ class StreamingService:
                     )
                 )
 
-            history = self._sessions.get_history(session_id)
+            # Build continuation history: everything up to (but excluding) the
+            # current assistant message, plus a flat reconstruction of that message.
+            # The flat form puts ALL tool calls in one ModelResponse — required by
+            # Pydantic AI's _handle_deferred_tool_results which expects a single
+            # last ModelResponse with all tool calls for the turn.
+            history_without_leaf = self._sessions.get_history(session_id, exclude_leaf=True)
             assistant_record = session_context["message_index"].get(assistant_message_id)
             if assistant_record is None:
                 raise SessionError(
                     "Continuation rejected: "
                     f"assistant message '{assistant_message_id}' is not cached for session '{session_id}'"
                 )
+            flat_assistant = assistant_record_to_flat_messages(assistant_record)
+            continuation_history = [*history_without_leaf, *flat_assistant]
             assistant_history = path_records_to_model_history([assistant_record])
             (ctx, agent_setup_ms), (history_result, history_prep_ms) = await asyncio.gather(
                 self._timed_async(
@@ -357,7 +365,7 @@ class StreamingService:
                 ),
                 self._timed_async(
                     self._history.prepare_history_with_metadata(
-                        history,
+                        continuation_history,
                         session_context,
                         is_continuation=True,
                         exclude_tool_call_ids={pending_tool_call_id},
