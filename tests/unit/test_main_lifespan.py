@@ -37,6 +37,9 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
             set_runtime_settings=MagicMock(),
         )
 
+    async def _register_heartbeat(app_state, lifecycle):
+        app_state.heartbeat_service = SimpleNamespace()
+
     async def _register_streaming(app_state, lifecycle):
         app_state.streaming_service = SimpleNamespace(set_runtime_settings=MagicMock())
 
@@ -47,6 +50,7 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     monkeypatch.setattr("lovely_assistant.main.register_oauth", _register_oauth)
     monkeypatch.setattr("lovely_assistant.main.register_tools", _register_tools)
     monkeypatch.setattr("lovely_assistant.main.register_assistant", _register_assistant)
+    monkeypatch.setattr("lovely_assistant.main.register_heartbeat", _register_heartbeat)
     monkeypatch.setattr("lovely_assistant.main.register_streaming", _register_streaming)
     monkeypatch.setattr("lovely_assistant.main.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr("lovely_assistant.main.setup_logging", lambda *args, **kwargs: None)

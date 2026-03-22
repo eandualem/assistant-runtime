@@ -12,6 +12,7 @@ from loguru import logger
 
 from lovely_assistant.app.assistant.exceptions import AssistantError
 from lovely_assistant.app.assistant.factory import register_assistant
+from lovely_assistant.app.heartbeat.factory import register_heartbeat
 from lovely_assistant.app.routes import router
 from lovely_assistant.app.settings import RuntimeSettings
 from lovely_assistant.app.streaming.exceptions import StreamingError
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await register_mcp(app.state, lifecycle)
     await register_tools(app.state, lifecycle)
     await register_assistant(app.state, lifecycle)
+    await register_heartbeat(app.state, lifecycle)
     await register_streaming(app.state, lifecycle)
 
     await lifecycle.start_all()
@@ -85,9 +87,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Cleanup expired sessions on startup (before accepting requests)
     if getattr(app.state, "assistant_service", None) is not None:
-        cleaned = await app.state.assistant_service.cleanup_expired_sessions()
-        if cleaned:
-            logger.info("Cleaned up expired sessions on startup", count=cleaned)
+        try:
+            cleaned = await app.state.assistant_service.cleanup_expired_sessions()
+            if cleaned:
+                logger.info("Cleaned up expired sessions on startup", count=cleaned)
+        except Exception as e:
+            logger.warning("Session cleanup skipped on startup", error=str(e))
 
     logger.info("Application started", app=settings.app_name)
 
