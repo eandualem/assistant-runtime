@@ -598,3 +598,352 @@ class TestStreamingService:
             and event["error_type"] == "provider_client_error"
             for event in trace_args.args[1]
         )
+
+
+class TestMultiToolContinuation:
+    """Integration tests for continuations when the assistant calls both
+    backend and frontend tools in the same turn.
+
+    These tests verify that the flat message reconstruction
+    (assistant_record_to_flat_messages) produces a single ModelResponse
+    with all tool calls — matching Pydantic AI's _handle_deferred_tool_results
+    contract. The old split reconstruction would fail with:
+    "Tool call results need to be provided for all deferred tool calls."
+    """
+
+    @pytest.mark.asyncio
+    async def test_backend_plus_frontend_continuation_succeeds(self) -> None:
+        """1 backend tool (resolved) + 1 frontend tool (pending) → continuation succeeds."""
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+
+        # Assistant message with TWO tool groups:
+        # 1. Backend tool (get_agent_status) — resolved, has output
+        # 2. Frontend tool (ui_send_event) — pending, no output
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Checking status then sending event",
+            segments=[
+                {"kind": "text", "text": "Let me check status first."},
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-backend-1",
+                            "name": "get_agent_status",
+                            "input": {"agent": "ike"},
+                            "output": {"status": "idle", "entity": "ike"},
+                        }
+                    ],
+                },
+                {"kind": "text", "text": "Now sending the event."},
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-frontend-1",
+                            "name": "ui_send_event",
+                            "input": {"event": "REFRESH", "data": {}},
+                            # no "output" — pending frontend tool
+                        }
+                    ],
+                },
+            ],
+            usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+        )
+
+        ctx = sessions.get_context("sess-1")
+        ctx["pending_tool_call_id"] = "call-frontend-1"
+        ctx["pending_tool_name"] = "ui_send_event"
+        ctx["pending_assistant_message_id"] = "assistant-1"
+
+        # Build what agent.iter would return after a successful continuation:
+        # The flat history + tool return for the frontend tool + LLM's final response
+        from lovely_assistant.app.assistant._serialization import assistant_record_to_flat_messages
+
+        flat_msgs = assistant_record_to_flat_messages(ctx["message_index"]["assistant-1"])
+        user_msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="ui_send_event",
+                    content={"ok": True},
+                    tool_call_id="call-frontend-1",
+                    timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+                )
+            ],
+            timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+        )
+        final_response = ModelResponse(
+            parts=[TextPart(content="Event sent successfully.")],
+            timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+        )
+
+        history_without_leaf = sessions.get_history("sess-1", exclude_leaf=True)
+        all_messages = [*history_without_leaf, *flat_msgs, user_msg, final_response]
+
+        run = _MockRun(
+            output="Event sent successfully.",
+            all_messages=all_messages,
+            new_messages=[user_msg, final_response],
+        )
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        events = [
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="cont-1",
+                    parent_id="assistant-1",
+                    content="",
+                    tool_call_id="call-frontend-1",
+                    tool_result={"ok": True},
+                )
+            )
+        ]
+
+        # Continuation should succeed — no set-equality mismatch
+        final = next(event for event in events if event["type"] == "final_response")
+        assert final["message_id"] == "assistant-1"
+        assert not final.get("error")
+
+        # Verify agent.iter was called with the flat history structure
+        agent = service._assistant_service.prepare_agent_context.return_value.agent
+        iter_call = agent.iter.call_args
+        message_history = iter_call.kwargs.get("message_history") or iter_call.args[1]
+
+        # Find the last ModelResponse — it should contain BOTH tool calls
+        last_model_response = None
+        for msg in reversed(message_history):
+            if isinstance(msg, ModelResponse):
+                last_model_response = msg
+                break
+
+        assert last_model_response is not None
+        tool_call_ids = {
+            part.tool_call_id
+            for part in last_model_response.parts
+            if isinstance(part, ToolCallPart)
+        }
+        assert tool_call_ids == {"call-backend-1", "call-frontend-1"}, (
+            f"Expected both tool calls in a single ModelResponse, got: {tool_call_ids}"
+        )
+
+        # Verify deferred_tool_results was passed correctly
+        deferred = iter_call.kwargs.get("deferred_tool_results")
+        assert deferred is not None
+        assert "call-frontend-1" in deferred.calls
+
+        # Verify pending state was cleared
+        assert sessions.get_context("sess-1").get("pending_tool_call_id") is None
+
+    @pytest.mark.asyncio
+    async def test_two_backend_plus_frontend_continuation_succeeds(self) -> None:
+        """2 backend tools (resolved) + 1 frontend tool (pending) → continuation succeeds."""
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+
+        # Three tool calls: 2 backend (resolved) + 1 frontend (pending)
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Checking multiple things then navigating",
+            segments=[
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-backend-1",
+                            "name": "get_agent_status",
+                            "input": {"agent": "ike"},
+                            "output": {"status": "idle"},
+                        }
+                    ],
+                },
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-backend-2",
+                            "name": "get_agent_status",
+                            "input": {"agent": "bell"},
+                            "output": {"status": "processing"},
+                        }
+                    ],
+                },
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-frontend-1",
+                            "name": "navigate",
+                            "input": {"page": "agents"},
+                        }
+                    ],
+                },
+            ],
+            usage={"input_tokens": 15, "output_tokens": 25, "total_tokens": 40},
+        )
+
+        ctx = sessions.get_context("sess-1")
+        ctx["pending_tool_call_id"] = "call-frontend-1"
+        ctx["pending_tool_name"] = "navigate"
+        ctx["pending_assistant_message_id"] = "assistant-1"
+
+        from lovely_assistant.app.assistant._serialization import assistant_record_to_flat_messages
+
+        flat_msgs = assistant_record_to_flat_messages(ctx["message_index"]["assistant-1"])
+        user_msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="navigate",
+                    content={"page": "agents", "ok": True},
+                    tool_call_id="call-frontend-1",
+                    timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+                )
+            ],
+            timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+        )
+        final_response = ModelResponse(
+            parts=[TextPart(content="Navigated to agents page.")],
+            timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+        )
+
+        history_without_leaf = sessions.get_history("sess-1", exclude_leaf=True)
+        all_messages = [*history_without_leaf, *flat_msgs, user_msg, final_response]
+
+        run = _MockRun(
+            output="Navigated to agents page.",
+            all_messages=all_messages,
+            new_messages=[user_msg, final_response],
+        )
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        events = [
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="cont-1",
+                    parent_id="assistant-1",
+                    content="",
+                    tool_call_id="call-frontend-1",
+                    tool_result={"page": "agents", "ok": True},
+                )
+            )
+        ]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        assert final["message_id"] == "assistant-1"
+        assert not final.get("error")
+
+        # Verify ALL 3 tool calls are in a single ModelResponse
+        agent = service._assistant_service.prepare_agent_context.return_value.agent
+        iter_call = agent.iter.call_args
+        message_history = iter_call.kwargs.get("message_history") or iter_call.args[1]
+
+        last_model_response = None
+        for msg in reversed(message_history):
+            if isinstance(msg, ModelResponse):
+                last_model_response = msg
+                break
+
+        assert last_model_response is not None
+        tool_call_ids = {
+            part.tool_call_id
+            for part in last_model_response.parts
+            if isinstance(part, ToolCallPart)
+        }
+        assert tool_call_ids == {"call-backend-1", "call-backend-2", "call-frontend-1"}, (
+            f"Expected all 3 tool calls in a single ModelResponse, got: {tool_call_ids}"
+        )
+
+        # Verify the ModelRequest before it has ToolReturnParts for ONLY the resolved tools
+        last_model_request = None
+        for msg in reversed(message_history):
+            if isinstance(msg, ModelRequest):
+                last_model_request = msg
+                break
+            if isinstance(msg, ModelResponse):
+                break
+
+        # last_model_request should be the one right before last_model_response
+        # It should contain ToolReturnParts for backend-1 and backend-2 only
+        if last_model_request is not None:
+            return_ids = {
+                part.tool_call_id
+                for part in last_model_request.parts
+                if isinstance(part, ToolReturnPart)
+            }
+            assert "call-frontend-1" not in return_ids, (
+                "Frontend tool should NOT have a ToolReturnPart in the history"
+            )
+
+    @pytest.mark.asyncio
+    async def test_flat_reconstruction_differs_from_split(self) -> None:
+        """Verify the flat form produces a different (correct) structure than the split form.
+
+        This test demonstrates that the old split reconstruction would have
+        produced multiple ModelResponses, while the flat form produces one.
+        """
+        from lovely_assistant.app.assistant._serialization import (
+            assistant_record_to_flat_messages,
+            path_records_to_model_history,
+        )
+
+        record = {
+            "id": "assistant-1",
+            "role": "assistant",
+            "content": "text",
+            "segments": [
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {"id": "call-A", "name": "backend_tool", "input": {}, "output": "done"},
+                    ],
+                },
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {"id": "call-B", "name": "frontend_tool", "input": {}},
+                    ],
+                },
+            ],
+            "usage": None,
+            "created_at": datetime(2026, 3, 22, tzinfo=UTC),
+        }
+
+        # Split form: produces MULTIPLE ModelResponses (one per tool group)
+        split_messages = path_records_to_model_history([record])
+        split_responses = [m for m in split_messages if isinstance(m, ModelResponse)]
+        assert len(split_responses) == 2, (
+            f"Split form should produce 2 ModelResponses, got {len(split_responses)}"
+        )
+
+        # Flat form: produces ONE ModelResponse with ALL tool calls
+        flat_messages = assistant_record_to_flat_messages(record)
+        flat_responses = [m for m in flat_messages if isinstance(m, ModelResponse)]
+        assert len(flat_responses) == 1, (
+            f"Flat form should produce 1 ModelResponse, got {len(flat_responses)}"
+        )
+
+        # Flat response has BOTH tool calls
+        flat_tool_ids = {
+            part.tool_call_id
+            for part in flat_responses[0].parts
+            if isinstance(part, ToolCallPart)
+        }
+        assert flat_tool_ids == {"call-A", "call-B"}
+
+        # Flat form's ModelRequest has only the resolved tool's ToolReturnPart
+        flat_requests = [m for m in flat_messages if isinstance(m, ModelRequest)]
+        assert len(flat_requests) == 1
+        return_ids = {
+            part.tool_call_id
+            for part in flat_requests[0].parts
+            if isinstance(part, ToolReturnPart)
+        }
+        assert return_ids == {"call-A"}, "Only the resolved tool should have a ToolReturnPart"
