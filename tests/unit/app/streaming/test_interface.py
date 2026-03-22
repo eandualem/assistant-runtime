@@ -110,7 +110,10 @@ def _make_service(*, sessions: SessionStore | None = None, run: _MockRun | None 
     history_service = AsyncMock()
 
     async def _prepare(
-        history: list[Any], _ctx: dict[str, Any], is_continuation: bool = False
+        history: list[Any],
+        _ctx: dict[str, Any],
+        is_continuation: bool = False,
+        exclude_tool_call_ids: set[str] | None = None,
     ) -> HistoryPreparationResult:
         return HistoryPreparationResult(
             history=history,

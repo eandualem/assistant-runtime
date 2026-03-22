@@ -356,15 +356,37 @@ class TestPrepareHistory:
         # Working memory should be set in session context
         assert "working_memory" in session_context
 
-    async def test_continuation_skips_dangling_resolution(self, manager):
-        """is_continuation=True skips dangling tool call resolution."""
+    async def test_continuation_excludes_pending_tool_from_resolution(self, manager):
+        """Continuation resolves all dangling EXCEPT the excluded pending tool."""
         history = [
             _make_user_msg("start"),
             _make_tool_call_msg("ui_navigate"),  # Dangling — will be resolved by frontend
         ]
-        result, _ = await manager.prepare_history(history, {}, is_continuation=True)
-        # Should NOT have added a synthetic tool result
+        result, _ = await manager.prepare_history(
+            history,
+            {},
+            is_continuation=True,
+            exclude_tool_call_ids={"call_ui_navigate"},
+        )
+        # Should NOT have added a synthetic tool result for the excluded tool
         assert len(result) == 2
+
+    async def test_continuation_resolves_non_excluded_dangling(self, manager):
+        """Continuation still resolves dangling tools that are NOT excluded."""
+        history = [
+            _make_user_msg("start"),
+            _make_tool_call_msg("old_stale_tool"),  # Dangling from earlier turn
+            _make_user_msg("next message"),
+            _make_tool_call_msg("ui_navigate"),  # Current pending tool
+        ]
+        result, _ = await manager.prepare_history(
+            history,
+            {},
+            is_continuation=True,
+            exclude_tool_call_ids={"call_ui_navigate"},
+        )
+        # old_stale_tool should get a synthetic result, ui_navigate should not
+        assert len(result) == 5  # original 4 + 1 synthetic for old_stale_tool
 
     async def test_non_continuation_resolves_dangling(self, manager):
         """Without is_continuation, dangling tool calls get synthetic results."""

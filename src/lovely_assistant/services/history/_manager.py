@@ -58,6 +58,7 @@ class HistoryManager:
         session_context: dict[str, Any],
         *,
         is_continuation: bool = False,
+        exclude_tool_call_ids: set[str] | None = None,
         config_override: HistoryConfig | None = None,
     ) -> tuple[list[ModelMessage], bool]:
         """Prepare history for the agent loop.
@@ -70,9 +71,10 @@ class HistoryManager:
         if not history:
             return history, False
 
-        # Resolve dangling tool calls (skip during continuations)
-        if not is_continuation:
-            history = self._resolve_dangling_tool_calls(history)
+        # Resolve dangling tool calls. For continuations, exclude the pending
+        # tool_call_id (DeferredToolResults will provide its result) but still
+        # resolve any other dangling calls from earlier turns.
+        history = self._resolve_dangling_tool_calls(history, exclude_ids=exclude_tool_call_ids)
 
         estimated_tokens = self._estimate_tokens(history)
 
@@ -153,10 +155,21 @@ class HistoryManager:
         return result
 
     @staticmethod
-    def _resolve_dangling_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]:
-        """Add synthetic tool results for unresolved tool calls anywhere in history."""
+    def _resolve_dangling_tool_calls(
+        history: list[ModelMessage],
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[ModelMessage]:
+        """Add synthetic tool results for unresolved tool calls anywhere in history.
+
+        Args:
+            exclude_ids: Tool call IDs to skip resolution for (e.g., the pending
+                frontend tool that DeferredToolResults will handle).
+        """
         if not history:
             return history
+
+        _exclude = exclude_ids or set()
 
         resolved: list[ModelMessage] = []
         pending_calls: dict[str, ToolCallPart] = {}
@@ -175,7 +188,8 @@ class HistoryManager:
             if isinstance(message, ModelResponse):
                 for part in message.parts:
                     if isinstance(part, ToolCallPart):
-                        pending_calls[part.tool_call_id] = part
+                        if part.tool_call_id not in _exclude:
+                            pending_calls[part.tool_call_id] = part
                 continue
 
             if isinstance(message, ModelRequest):
@@ -192,6 +206,7 @@ class HistoryManager:
             logger.warning(
                 "[HISTORY] Added synthetic tool results for unresolved tool calls",
                 count=inserted_count,
+                excluded_ids=list(_exclude) if _exclude else None,
             )
             return resolved
 
