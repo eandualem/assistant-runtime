@@ -276,8 +276,16 @@ class HistoryManager:
 
         first_user_msg = self._extract_first_user_message(history)
 
-        to_summarize: list[ModelMessage] = history[:-retain_count]
-        to_keep: list[ModelMessage] = history[-retain_count:]
+        # Find a safe split point. The naive boundary (len - retain_count)
+        # could land between a ModelResponse(ToolCallPart) and its paired
+        # ModelRequest(ToolReturnPart), orphaning the tool result. Shift
+        # the boundary forward past any pure tool-result messages.
+        split = len(history) - retain_count
+        while split < len(history) and self._is_pure_tool_result_message(history[split]):
+            split += 1
+
+        to_summarize: list[ModelMessage] = history[:split]
+        to_keep: list[ModelMessage] = history[split:]
 
         existing_summary: str | None = None
         if to_summarize and self._is_summary_message(to_summarize[0]):
