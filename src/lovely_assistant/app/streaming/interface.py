@@ -43,6 +43,7 @@ from lovely_assistant.app.streaming._coordinator import EventCoordinator
 from lovely_assistant.app.streaming._event_builder import (
     make_debug_agent_config_event,
     make_debug_completed_event,
+    make_debug_error_event,
     make_debug_final_response_event,
     make_debug_history_event,
     make_debug_request_event,
@@ -220,6 +221,7 @@ class StreamingService:
             # envelope so the frontend can exit the "thinking" state.
             from lovely_assistant.app.streaming._event_builder import (
                 make_agent_status_event,
+                make_debug_error_event,
                 make_error_event,
                 make_final_response_event,
             )
@@ -232,17 +234,37 @@ class StreamingService:
             )
             error_type = "session_error" if isinstance(e, SessionError) else "setup_error"
             retry_allowed = not isinstance(e, SessionError)
+            trace_id = str(uuid.uuid4())
+            trace_message = self._format_error_message(f"Setup failed: {e}", trace_id)
+            await self._save_trace(
+                request.session_id,
+                [
+                    make_debug_error_event(
+                        f"Setup failed: {e}",
+                        error_type=error_type,
+                        retry_allowed=retry_allowed,
+                        trace_id=trace_id,
+                        model="unknown",
+                        phase="setup",
+                    )
+                ],
+                trace_id=trace_id,
+                user_message=request.message,
+                screenshot=request.images[0] if request.images else None,
+            )
             yield make_agent_status_event("started")
             yield make_final_response_event(
                 None,
                 "unknown",
                 session_id=request.session_id,
+                trace_id=trace_id,
                 error=True,
                 error_type=error_type,
             )
             yield make_error_event(
-                f"Setup failed: {e}",
+                trace_message,
                 error_type=error_type,
+                trace_id=trace_id,
                 terminal=True,
                 retry_allowed=retry_allowed,
             )
@@ -255,6 +277,7 @@ class StreamingService:
         coordinator = EventCoordinator(self._config.max_events_per_stream)
         emit_debug = self._config.emit_debug_events
         start_time = time.monotonic()
+        trace_id = str(uuid.uuid4())
 
         try:
             session_id = request.session_id
@@ -382,6 +405,8 @@ class StreamingService:
                 message=f"Setup failed: {e}",
                 error_type=error_type,
                 retry_allowed=retry_allowed,
+                trace_id=trace_id,
+                emit_debug=emit_debug,
             ):
                 yield event
             return
@@ -511,15 +536,32 @@ class StreamingService:
                 None,
                 resolved_model if "resolved_model" in locals() else "unknown",
                 session_id=session_id,
+                trace_id=trace_id,
                 error=True,
                 error_type="timeout",
             )
             if final:
                 yield final
+            debug_error = self._track_debug_error(
+                coordinator,
+                message=f"Continuation timed out after {self._config.stream_timeout_seconds}s",
+                error_type="timeout",
+                retry_allowed=True,
+                trace_id=trace_id,
+                model=resolved_model if "resolved_model" in locals() else "unknown",
+                phase="stream",
+                emit_debug=emit_debug,
+            )
+            if debug_error:
+                yield debug_error
             yield coordinator.track(
                 make_error_event(
-                    f"Continuation timed out after {self._config.stream_timeout_seconds}s",
+                    self._format_error_message(
+                        f"Continuation timed out after {self._config.stream_timeout_seconds}s",
+                        trace_id,
+                    ),
                     error_type="timeout",
+                    trace_id=trace_id,
                     terminal=True,
                     retry_allowed=True,
                 )
@@ -555,15 +597,29 @@ class StreamingService:
                 None,
                 resolved_model if "resolved_model" in locals() else "unknown",
                 session_id=session_id,
+                trace_id=trace_id,
                 error=True,
                 error_type=error_type,
             )
             if final:
                 yield final
+            debug_error = self._track_debug_error(
+                coordinator,
+                message=message,
+                error_type=error_type,
+                retry_allowed=retry_allowed,
+                trace_id=trace_id,
+                model=resolved_model if "resolved_model" in locals() else "unknown",
+                phase="stream",
+                emit_debug=emit_debug,
+            )
+            if debug_error:
+                yield debug_error
             yield coordinator.track(
                 make_error_event(
-                    message,
+                    self._format_error_message(message, trace_id),
                     error_type=error_type,
+                    trace_id=trace_id,
                     terminal=True,
                     retry_allowed=retry_allowed,
                 )
@@ -593,6 +649,7 @@ class StreamingService:
             await self._save_trace(
                 session_id,
                 coordinator.debug_events,
+                trace_id=trace_id,
                 user_message=request.message or "(continuation)",
                 duration_ms=duration_ms,
                 screenshot=screenshot,
@@ -607,6 +664,7 @@ class StreamingService:
         coordinator = EventCoordinator(self._config.max_events_per_stream)
         emit_debug = self._config.emit_debug_events
         start_time = time.monotonic()
+        trace_id = str(uuid.uuid4())
 
         # Setup phase
         try:
@@ -745,6 +803,8 @@ class StreamingService:
                 message=f"Setup failed: {e}",
                 error_type=error_type,
                 retry_allowed=retry_allowed,
+                trace_id=trace_id,
+                emit_debug=emit_debug,
             ):
                 yield event
             return
@@ -900,15 +960,32 @@ class StreamingService:
                 None,
                 resolved_model if "resolved_model" in locals() else "unknown",
                 session_id=session_id,
+                trace_id=trace_id,
                 error=True,
                 error_type="timeout",
             )
             if final:
                 yield final
+            debug_error = self._track_debug_error(
+                coordinator,
+                message=f"Request timed out after {self._config.stream_timeout_seconds}s",
+                error_type="timeout",
+                retry_allowed=True,
+                trace_id=trace_id,
+                model=resolved_model if "resolved_model" in locals() else "unknown",
+                phase="stream",
+                emit_debug=emit_debug,
+            )
+            if debug_error:
+                yield debug_error
             yield coordinator.track(
                 make_error_event(
-                    f"Request timed out after {self._config.stream_timeout_seconds}s",
+                    self._format_error_message(
+                        f"Request timed out after {self._config.stream_timeout_seconds}s",
+                        trace_id,
+                    ),
                     error_type="timeout",
+                    trace_id=trace_id,
                     terminal=True,
                     retry_allowed=True,
                 )
@@ -948,15 +1025,29 @@ class StreamingService:
                 None,
                 resolved_model if "resolved_model" in locals() else "unknown",
                 session_id=session_id,
+                trace_id=trace_id,
                 error=True,
                 error_type=error_type,
             )
             if final:
                 yield final
+            debug_error = self._track_debug_error(
+                coordinator,
+                message=message,
+                error_type=error_type,
+                retry_allowed=retry_allowed,
+                trace_id=trace_id,
+                model=resolved_model if "resolved_model" in locals() else "unknown",
+                phase="stream",
+                emit_debug=emit_debug,
+            )
+            if debug_error:
+                yield debug_error
             yield coordinator.track(
                 make_error_event(
-                    message,
+                    self._format_error_message(message, trace_id),
                     error_type=error_type,
+                    trace_id=trace_id,
                     terminal=True,
                     retry_allowed=retry_allowed,
                 )
@@ -1001,6 +1092,7 @@ class StreamingService:
             await self._save_trace(
                 session_id,
                 coordinator.debug_events,
+                trace_id=trace_id,
                 user_message=request.message,
                 duration_ms=duration_ms,
                 screenshot=screenshot,
@@ -1075,14 +1167,29 @@ class StreamingService:
         message: str,
         error_type: str,
         retry_allowed: bool,
+        trace_id: str,
+        emit_debug: bool,
         model: str = "unknown",
     ) -> list[dict[str, Any]]:
         """Build the terminal lifecycle envelope for failures after started was emitted."""
         events: list[dict[str, Any]] = []
+        debug_error = coordinator.track_debug(
+            make_debug_error_event(
+                message,
+                error_type=error_type,
+                retry_allowed=retry_allowed,
+                trace_id=trace_id,
+                model=model,
+                phase="setup",
+            )
+        )
+        if emit_debug:
+            events.append(debug_error)
         final = coordinator.try_final_response(
             None,
             model,
             session_id=session_id,
+            trace_id=trace_id,
             error=True,
             error_type=error_type,
         )
@@ -1091,8 +1198,9 @@ class StreamingService:
         events.append(
             coordinator.track(
                 make_error_event(
-                    message,
+                    StreamingService._format_error_message(message, trace_id),
                     error_type=error_type,
+                    trace_id=trace_id,
                     terminal=True,
                     retry_allowed=retry_allowed,
                 )
@@ -1126,6 +1234,38 @@ class StreamingService:
             "AUTH_ERROR": "provider_auth",
             "CLIENT_ERROR": "provider_client_error",
         }.get(error.error_category, "provider_error")
+
+    @staticmethod
+    def _format_error_message(message: str, trace_id: str | None) -> str:
+        """Append a trace id so frontend-visible errors can be correlated quickly."""
+        if trace_id is None or "[trace_id:" in message:
+            return message
+        return f"{message} [trace_id: {trace_id}]"
+
+    @staticmethod
+    def _track_debug_error(
+        coordinator: EventCoordinator,
+        *,
+        message: str,
+        error_type: str | None,
+        retry_allowed: bool,
+        trace_id: str,
+        model: str | None,
+        phase: str,
+        emit_debug: bool,
+    ) -> dict[str, Any] | None:
+        """Persist terminal error details and optionally emit them live as assistant:debug."""
+        event = coordinator.track_debug(
+            make_debug_error_event(
+                message,
+                error_type=error_type,
+                retry_allowed=retry_allowed,
+                trace_id=trace_id,
+                model=model,
+                phase=phase,
+            )
+        )
+        return event if emit_debug else None
 
     @staticmethod
     async def _timed_async(awaitable: Any) -> tuple[Any, float]:
@@ -1289,6 +1429,7 @@ class StreamingService:
         coordinator = EventCoordinator(self._config.max_events_per_stream)
         emit_debug = self._config.emit_debug_events
         start_time = time.monotonic()
+        trace_id = str(uuid.uuid4())
 
         try:
             session_id = request.session_id
@@ -1395,6 +1536,8 @@ class StreamingService:
                 message=f"Setup failed: {e}",
                 error_type=error_type,
                 retry_allowed=retry_allowed,
+                trace_id=trace_id,
+                emit_debug=emit_debug,
             ):
                 yield event
             return
@@ -1492,15 +1635,32 @@ class StreamingService:
                 None,
                 resolved_model if "resolved_model" in locals() else "unknown",
                 session_id=session_id,
+                trace_id=trace_id,
                 error=True,
                 error_type="timeout",
             )
             if final:
                 yield final
+            debug_error = self._track_debug_error(
+                coordinator,
+                message=f"Request timed out after {self._config.stream_timeout_seconds}s",
+                error_type="timeout",
+                retry_allowed=True,
+                trace_id=trace_id,
+                model=resolved_model if "resolved_model" in locals() else "unknown",
+                phase="stream",
+                emit_debug=emit_debug,
+            )
+            if debug_error:
+                yield debug_error
             yield coordinator.track(
                 make_error_event(
-                    f"Request timed out after {self._config.stream_timeout_seconds}s",
+                    self._format_error_message(
+                        f"Request timed out after {self._config.stream_timeout_seconds}s",
+                        trace_id,
+                    ),
                     error_type="timeout",
+                    trace_id=trace_id,
                     terminal=True,
                     retry_allowed=True,
                 )
@@ -1520,15 +1680,29 @@ class StreamingService:
                 None,
                 resolved_model if "resolved_model" in locals() else "unknown",
                 session_id=session_id,
+                trace_id=trace_id,
                 error=True,
                 error_type=error_type,
             )
             if final:
                 yield final
+            debug_error = self._track_debug_error(
+                coordinator,
+                message=message,
+                error_type=error_type,
+                retry_allowed=retry_allowed,
+                trace_id=trace_id,
+                model=resolved_model if "resolved_model" in locals() else "unknown",
+                phase="stream",
+                emit_debug=emit_debug,
+            )
+            if debug_error:
+                yield debug_error
             yield coordinator.track(
                 make_error_event(
-                    message,
+                    self._format_error_message(message, trace_id),
                     error_type=error_type,
+                    trace_id=trace_id,
                     terminal=True,
                     retry_allowed=retry_allowed,
                 )
@@ -1570,6 +1744,7 @@ class StreamingService:
             await self._save_trace(
                 session_id,
                 coordinator.debug_events,
+                trace_id=trace_id,
                 user_message=request.message,
                 duration_ms=duration_ms,
             )
@@ -1797,6 +1972,7 @@ class StreamingService:
         session_id: str,
         trace_events: list[dict[str, Any]],
         *,
+        trace_id: str | None = None,
         user_message: str | None = None,
         duration_ms: float | None = None,
         screenshot: str | None = None,
@@ -1811,7 +1987,7 @@ class StreamingService:
 
                 repo = TraceRepository(db_session)
                 await repo.create(
-                    trace_id=str(uuid.uuid4()),
+                    trace_id=trace_id or str(uuid.uuid4()),
                     session_id=session_id,
                     events=trace_events,
                     user_message=user_message,

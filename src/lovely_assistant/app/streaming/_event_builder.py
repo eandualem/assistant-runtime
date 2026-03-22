@@ -146,6 +146,7 @@ def make_final_response_event(
     *,
     session_id: str | None = None,
     message_id: str | None = None,
+    trace_id: str | None = None,
     streamed: bool = False,
     thinking_streamed: bool = False,
     error: bool = False,
@@ -169,6 +170,8 @@ def make_final_response_event(
         event["session_id"] = session_id
     if message_id is not None:
         event["message_id"] = message_id
+    if trace_id is not None:
+        event["trace_id"] = trace_id
     if thinking_streamed:
         event["thinking_streamed"] = True
     if error:
@@ -186,6 +189,7 @@ def make_error_event(
     message: str,
     *,
     error_type: str | None = None,
+    trace_id: str | None = None,
     terminal: bool = True,
     retry_allowed: bool = False,
 ) -> dict[str, Any]:
@@ -198,6 +202,8 @@ def make_error_event(
     }
     if error_type is not None:
         event["error_type"] = error_type
+    if trace_id is not None:
+        event["trace_id"] = trace_id
     return event
 
 
@@ -319,6 +325,32 @@ def make_debug_final_response_event(
     event: dict[str, Any] = {"type": "debug_final_response", "content": content, "model": model}
     if usage is not None:
         event["usage"] = usage
+    return event
+
+
+def make_debug_error_event(
+    message: str,
+    *,
+    error_type: str | None = None,
+    retry_allowed: bool = False,
+    trace_id: str | None = None,
+    model: str | None = None,
+    phase: str | None = None,
+) -> dict[str, Any]:
+    """Create a debug_error event for trace persistence and live debug streams."""
+    event: dict[str, Any] = {
+        "type": "debug_error",
+        "message": message,
+        "retry_allowed": retry_allowed,
+    }
+    if error_type is not None:
+        event["error_type"] = error_type
+    if trace_id is not None:
+        event["trace_id"] = trace_id
+    if model is not None:
+        event["model"] = model
+    if phase is not None:
+        event["phase"] = phase
     return event
 
 

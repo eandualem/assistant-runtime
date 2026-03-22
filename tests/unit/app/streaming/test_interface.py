@@ -411,6 +411,7 @@ class TestStreamingService:
                 return None
 
         service = _make_service()
+        service._save_trace = AsyncMock()
         failing_agent = MagicMock()
         failing_agent.iter = MagicMock(return_value=_FailingRun())
         service._assistant_service.prepare_agent_context = AsyncMock(
@@ -425,6 +426,64 @@ class TestStreamingService:
 
         assert final["error"] is True
         assert final["error_type"] == "rate_limit"
+        assert isinstance(final.get("trace_id"), str)
         assert error["error_type"] == "rate_limit"
         assert error["retry_allowed"] is True
         assert "RATE_LIMIT" in error["message"]
+        assert error["trace_id"] == final["trace_id"]
+        assert final["trace_id"] in error["message"]
+
+        trace_args = service._save_trace.await_args
+        assert trace_args is not None
+        assert trace_args.kwargs["trace_id"] == final["trace_id"]
+        assert any(event["type"] == "debug_error" for event in trace_args.args[1])
+
+    @pytest.mark.asyncio
+    async def test_provider_client_error_persists_debug_error_with_trace_id(self) -> None:
+        class _FailingRun:
+            async def __aenter__(self) -> _FailingRun:
+                raise ModelHTTPError(
+                    status_code=400,
+                    model_name="gpt-5.4",
+                    body={
+                        "message": "No tool output found for function call call_hIufoBmnNsKcS4GlaEckDtRn.",
+                        "type": "invalid_request_error",
+                        "param": "input",
+                        "code": None,
+                    },
+                )
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
+        service = _make_service()
+        service._save_trace = AsyncMock()
+        failing_agent = MagicMock()
+        failing_agent.iter = MagicMock(return_value=_FailingRun())
+        service._assistant_service.prepare_agent_context = AsyncMock(
+            return_value=_agent_context(failing_agent)
+        )
+        await service.start()
+
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        error = next(event for event in events if event["type"] == "error")
+
+        assert final["error"] is True
+        assert final["error_type"] == "provider_client_error"
+        assert isinstance(final.get("trace_id"), str)
+        assert error["error_type"] == "provider_client_error"
+        assert error["trace_id"] == final["trace_id"]
+        assert "No tool output found" in error["message"]
+        assert final["trace_id"] in error["message"]
+
+        trace_args = service._save_trace.await_args
+        assert trace_args is not None
+        assert trace_args.kwargs["trace_id"] == final["trace_id"]
+        assert any(
+            event["type"] == "debug_error"
+            and event["trace_id"] == final["trace_id"]
+            and event["error_type"] == "provider_client_error"
+            for event in trace_args.args[1]
+        )

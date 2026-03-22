@@ -208,6 +208,37 @@ class TestResolveDanglingToolCalls:
         HistoryManager._resolve_dangling_tool_calls(history)
         assert len(history) == original_len
 
+    def test_inserts_synthetic_result_before_followup_user_message(self):
+        history = [
+            _make_user_msg("start"),
+            _make_tool_call_msg("navigate"),
+            _make_user_msg("edited branch"),
+        ]
+
+        result = HistoryManager._resolve_dangling_tool_calls(history)
+
+        assert len(result) == 4
+        assert result[0].parts[0].content == "start"
+        assert isinstance(result[1], ModelResponse)
+        assert isinstance(result[2], ModelRequest)
+        assert isinstance(result[2].parts[0], ToolReturnPart)
+        assert result[2].parts[0].tool_name == "navigate"
+        assert result[3].parts[0].content == "edited branch"
+
+    def test_does_not_add_synthetic_result_when_tool_output_exists_before_followup(self):
+        history = [
+            _make_user_msg("start"),
+            _make_tool_call_msg("navigate"),
+            _make_tool_result_msg("navigate", "done", tool_call_id="call_navigate"),
+            _make_user_msg("continue"),
+        ]
+
+        result = HistoryManager._resolve_dangling_tool_calls(history)
+
+        assert len(result) == 4
+        assert isinstance(result[2], ModelRequest)
+        assert result[2].parts[0].content == "done"
+
 
 class TestIsSummaryMessage:
     def test_summary_message(self):
