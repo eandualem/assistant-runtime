@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Iterable
 from typing import Any
 
 from loguru import logger
@@ -153,38 +154,64 @@ class HistoryManager:
 
     @staticmethod
     def _resolve_dangling_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]:
-        """Add synthetic tool results for unresolved tool calls at end of history."""
+        """Add synthetic tool results for unresolved tool calls anywhere in history."""
         if not history:
             return history
 
-        last_msg = history[-1]
-        if not isinstance(last_msg, ModelResponse):
-            return history
+        resolved: list[ModelMessage] = []
+        pending_calls: dict[str, ToolCallPart] = {}
+        inserted_synthetic = False
+        inserted_count = 0
 
-        tool_calls = [p for p in last_msg.parts if isinstance(p, ToolCallPart)]
-        if not tool_calls:
-            return history
+        for message in history:
+            if pending_calls and not HistoryManager._is_pure_tool_result_message(message):
+                inserted_count += len(pending_calls)
+                resolved.append(HistoryManager._make_synthetic_tool_result_message(pending_calls.values()))
+                inserted_synthetic = True
+                pending_calls = {}
 
-        logger.warning(
-            f"[HISTORY] Found {len(tool_calls)} dangling tool call(s) in history, "
-            f"adding synthetic results: {[tc.tool_name for tc in tool_calls]}"
-        )
+            resolved.append(message)
 
+            if isinstance(message, ModelResponse):
+                for part in message.parts:
+                    if isinstance(part, ToolCallPart):
+                        pending_calls[part.tool_call_id] = part
+                continue
+
+            if isinstance(message, ModelRequest):
+                for part in message.parts:
+                    if isinstance(part, ToolReturnPart):
+                        pending_calls.pop(part.tool_call_id, None)
+
+        if pending_calls:
+            inserted_count += len(pending_calls)
+            resolved.append(HistoryManager._make_synthetic_tool_result_message(pending_calls.values()))
+            inserted_synthetic = True
+
+        if inserted_synthetic:
+            logger.warning(
+                "[HISTORY] Added synthetic tool results for unresolved tool calls",
+                count=inserted_count,
+            )
+            return resolved
+
+        return history
+
+    @staticmethod
+    def _make_synthetic_tool_result_message(tool_calls: Iterable[ToolCallPart]) -> ModelRequest:
+        """Create synthetic tool results for unresolved tool calls."""
         synthetic_parts = [
             ToolReturnPart(
-                tool_name=tc.tool_name,
+                tool_name=tool_call.tool_name,
                 content=(
                     "[Tool execution was interrupted by a system error on the previous turn. "
                     "The action did not complete. You may retry if needed.]"
                 ),
-                tool_call_id=tc.tool_call_id,
+                tool_call_id=tool_call.tool_call_id,
             )
-            for tc in tool_calls
+            for tool_call in tool_calls
         ]
-
-        history = list(history)
-        history.append(ModelRequest(parts=synthetic_parts))
-        return history
+        return ModelRequest(parts=synthetic_parts)
 
     def _estimate_tokens(self, history: list[ModelMessage]) -> int:
         """Estimate token count using char_count / 4 heuristic."""
@@ -340,6 +367,13 @@ class HistoryManager:
         if not isinstance(message, ModelRequest):
             return False
         return any(isinstance(part, ToolReturnPart) for part in message.parts)
+
+    @staticmethod
+    def _is_pure_tool_result_message(message: ModelMessage) -> bool:
+        """Check whether a request contains only tool return parts."""
+        if not isinstance(message, ModelRequest) or not message.parts:
+            return False
+        return all(isinstance(part, ToolReturnPart) for part in message.parts)
 
     @staticmethod
     def _format_typed_to_dicts(

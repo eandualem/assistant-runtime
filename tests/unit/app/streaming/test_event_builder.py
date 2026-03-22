@@ -5,6 +5,7 @@ from lovely_assistant.app.streaming._event_builder import (
     make_agent_status_event,
     make_debug_agent_config_event,
     make_debug_completed_event,
+    make_debug_error_event,
     make_debug_final_response_event,
     make_debug_history_event,
     make_debug_request_event,
@@ -148,6 +149,10 @@ class TestFinalResponseEvent:
         event = make_final_response_event("Done!", "model")
         assert "session_id" not in event
 
+    def test_trace_id_included(self):
+        event = make_final_response_event("Done!", "model", trace_id="trace-1")
+        assert event["trace_id"] == "trace-1"
+
 
 class TestErrorEvent:
     def test_basic(self):
@@ -165,6 +170,10 @@ class TestErrorEvent:
     def test_error_type_absent(self):
         event = make_error_event("fail")
         assert "error_type" not in event
+
+    def test_trace_id_included(self):
+        event = make_error_event("fail", trace_id="trace-1")
+        assert event["trace_id"] == "trace-1"
 
 
 # --- Debug event tests ---
@@ -227,6 +236,27 @@ class TestDebugRequestEvent:
     def test_image_count_included(self):
         event = make_debug_request_event("sess-1", "Hello", False, True, image_count=3)
         assert event["image_count"] == 3
+
+
+class TestDebugErrorEvent:
+    def test_basic(self):
+        event = make_debug_error_event(
+            "boom",
+            error_type="provider_client_error",
+            retry_allowed=False,
+            trace_id="trace-1",
+            model="openai:gpt-5.4",
+            phase="stream",
+        )
+        assert event == {
+            "type": "debug_error",
+            "message": "boom",
+            "error_type": "provider_client_error",
+            "retry_allowed": False,
+            "trace_id": "trace-1",
+            "model": "openai:gpt-5.4",
+            "phase": "stream",
+        }
 
 
 class TestDebugSystemPromptEvent:
