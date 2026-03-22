@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -84,6 +85,11 @@ if TYPE_CHECKING:
 
 class StreamingService:
     """Streaming orchestrator. Implements LifecycleAware."""
+
+    _STALE_FRONTEND_TOOL_OUTPUT = (
+        "[Deferred frontend tool was superseded by a later user turn before its "
+        "continuation arrived. The action did not complete.]"
+    )
 
     def __init__(
         self,
@@ -674,7 +680,7 @@ class StreamingService:
         try:
             session_id = request.session_id
             session_context, _user_record = await self._sessions.register_user_message(request)
-            self._ensure_no_pending_frontend_tool(session_context, session_id)
+            await self._ensure_no_pending_frontend_tool(session_context, session_id)
             turn_number = session_context.get("turn_number", 0)
             assistant_message_id = str(uuid.uuid4())
             session_context["current_assistant_message_id"] = assistant_message_id
@@ -1110,7 +1116,7 @@ class StreamingService:
             if completed:
                 yield completed
 
-    def _ensure_no_pending_frontend_tool(
+    async def _ensure_no_pending_frontend_tool(
         self, session_context: dict[str, Any], session_id: str
     ) -> None:
         """Clear stale pending frontend tool state if a new message arrives.
@@ -1126,16 +1132,99 @@ class StreamingService:
             return
 
         pending_tool_name = session_context.get("pending_tool_name") or "unknown"
+        pending_assistant_message_id = session_context.get("pending_assistant_message_id")
         logger.warning(
             "Clearing pending frontend tool for new message",
             session_id=session_id,
             pending_tool=pending_tool_name,
             pending_call_id=pending_tool_call_id,
         )
+        if pending_assistant_message_id:
+            await self._resolve_stale_pending_frontend_tool(
+                session_id=session_id,
+                session_context=session_context,
+                assistant_message_id=pending_assistant_message_id,
+                tool_call_id=pending_tool_call_id,
+                tool_name=pending_tool_name,
+            )
         session_context.pop("pending_tool_call_id", None)
         session_context.pop("pending_tool_name", None)
         session_context.pop("pending_assistant_message_id", None)
         session_context.pop("current_assistant_message_id", None)
+
+    async def _resolve_stale_pending_frontend_tool(
+        self,
+        *,
+        session_id: str,
+        session_context: dict[str, Any],
+        assistant_message_id: str,
+        tool_call_id: str,
+        tool_name: str,
+    ) -> None:
+        """Persist a synthetic output for an abandoned deferred frontend tool."""
+        assistant_record = session_context["message_index"].get(assistant_message_id)
+        if assistant_record is None:
+            logger.warning(
+                "Pending assistant message missing while clearing stale frontend tool",
+                session_id=session_id,
+                assistant_message_id=assistant_message_id,
+                pending_call_id=tool_call_id,
+            )
+            return
+
+        updated_segments = self._mark_frontend_tool_as_superseded(
+            assistant_record.get("segments"),
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+        )
+        if updated_segments is None:
+            logger.warning(
+                "Stale frontend tool not found in assistant history; pending state cleared only",
+                session_id=session_id,
+                assistant_message_id=assistant_message_id,
+                pending_call_id=tool_call_id,
+                pending_tool=tool_name,
+            )
+            return
+
+        await self._sessions.update_message(
+            session_id,
+            assistant_message_id,
+            segments=updated_segments,
+        )
+
+    def _mark_frontend_tool_as_superseded(
+        self,
+        segments: list[dict[str, Any]] | None,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+    ) -> list[dict[str, Any]] | None:
+        """Return updated assistant segments with the abandoned frontend tool resolved."""
+        if not segments:
+            return None
+
+        updated_segments = copy.deepcopy(segments)
+        matched = False
+        for segment in updated_segments:
+            if segment.get("kind") != "tool_group":
+                continue
+            for tool in segment.get("tools", []):
+                if not isinstance(tool, dict):
+                    continue
+                if tool.get("id") != tool_call_id:
+                    continue
+                if tool.get("name") != tool_name:
+                    continue
+                if "output" in tool:
+                    return updated_segments
+                tool["output"] = self._STALE_FRONTEND_TOOL_OUTPUT
+                matched = True
+                break
+            if matched:
+                break
+
+        return updated_segments if matched else None
 
     def _store_pending_frontend_tool(
         self,
