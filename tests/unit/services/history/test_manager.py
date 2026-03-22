@@ -481,6 +481,44 @@ class TestCompact:
 
         assert result == history
 
+    async def test_compaction_boundary_skips_orphaned_tool_result(self, mock_summarizer):
+        """When retain boundary lands on a tool result, shift it to avoid orphaning."""
+        config = HistoryConfig(token_budget=5000, retain_recent=2)
+        manager = HistoryManager(config, mock_summarizer)
+
+        # History: user → assistant(tool_call) → tool_result → assistant(text)
+        # With retain_recent=2, the naive split puts tool_result + assistant(text) in to_keep.
+        # That orphans the tool_result (tool_call is summarized away).
+        history = [
+            _make_user_msg("old question"),
+            _make_tool_call_msg("check_status"),       # index 1 — ModelResponse with ToolCallPart
+            _make_tool_result_msg("check_status"),      # index 2 — ModelRequest with ToolReturnPart
+            _make_assistant_msg("Here are the results"),  # index 3
+        ]
+
+        result = await manager._compact(history, {}, config)
+
+        # The tool_result should NOT be the first message in to_keep.
+        # The boundary should shift so only the assistant text is retained.
+        # Result should be: [first_user, summary, assistant_text] or similar.
+        for msg in result:
+            if isinstance(msg, ModelRequest):
+                for part in msg.parts:
+                    # No orphaned ToolReturnPart should appear without a preceding ToolCallPart
+                    if isinstance(part, ToolReturnPart):
+                        # Find the preceding messages and verify there's a matching ToolCallPart
+                        idx = result.index(msg)
+                        preceding = result[:idx]
+                        has_matching_call = any(
+                            isinstance(p, ToolCallPart) and p.tool_call_id == part.tool_call_id
+                            for m in preceding
+                            if isinstance(m, ModelResponse)
+                            for p in m.parts
+                        )
+                        assert has_matching_call, (
+                            f"Orphaned ToolReturnPart({part.tool_call_id}) with no matching ToolCallPart"
+                        )
+
     async def test_existing_summary_passed_to_summarizer(self, mock_summarizer):
         config = HistoryConfig(token_budget=5000, retain_recent=1)
         manager = HistoryManager(config, mock_summarizer)
