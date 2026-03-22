@@ -66,13 +66,16 @@ class HistoryService:
         session_context: dict[str, Any],
         *,
         is_continuation: bool = False,
+        exclude_tool_call_ids: set[str] | None = None,
     ) -> tuple[list[ModelMessage], bool]:
         """Prepare history for the agent loop.
 
         Args:
             history: Current conversation history.
             session_context: Session context dict (may be updated with working memory).
-            is_continuation: If True, dangling tool calls are expected (deferred UI tool).
+            is_continuation: If True, passed through to manager.
+            exclude_tool_call_ids: Tool call IDs to exclude from dangling resolution
+                (the pending frontend tool that DeferredToolResults will handle).
 
         Returns:
             Tuple of (prepared_history, context_was_modified).
@@ -85,7 +88,10 @@ class HistoryService:
 
         try:
             return await self._manager.prepare_history(
-                history, session_context, is_continuation=is_continuation
+                history,
+                session_context,
+                is_continuation=is_continuation,
+                exclude_tool_call_ids=exclude_tool_call_ids,
             )
         except Exception as e:
             if isinstance(e, CompactionError):
@@ -98,6 +104,7 @@ class HistoryService:
         session_context: dict[str, Any],
         *,
         is_continuation: bool = False,
+        exclude_tool_call_ids: set[str] | None = None,
     ) -> HistoryPreparationResult:
         """Prepare history and return debug metadata.
 
@@ -106,7 +113,8 @@ class HistoryService:
         Args:
             history: Current conversation history.
             session_context: Session context dict.
-            is_continuation: If True, dangling tool calls are expected.
+            is_continuation: If True, passed through to manager.
+            exclude_tool_call_ids: Tool call IDs to exclude from dangling resolution.
 
         Returns:
             HistoryPreparationResult with history and debug metadata.
@@ -121,7 +129,10 @@ class HistoryService:
 
         try:
             prepared, was_compacted = await self._manager.prepare_history(
-                history, session_context, is_continuation=is_continuation
+                history,
+                session_context,
+                is_continuation=is_continuation,
+                exclude_tool_call_ids=exclude_tool_call_ids,
             )
         except Exception as e:
             if isinstance(e, CompactionError):

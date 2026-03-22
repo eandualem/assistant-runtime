@@ -232,13 +232,14 @@ class StreamingService:
                 make_final_response_event,
             )
 
-            logger.error(
+            error_type = "session_error" if isinstance(e, SessionError) else "setup_error"
+            log = logger.warning if isinstance(e, SessionError) else logger.error
+            log(
                 "[STREAM] Setup failed — emitting minimal lifecycle envelope",
                 session_id=request.session_id,
-                error_type=type(e).__name__,
+                error_type=error_type,
                 error=str(e),
             )
-            error_type = "session_error" if isinstance(e, SessionError) else "setup_error"
             retry_allowed = not isinstance(e, SessionError)
             trace_id = str(uuid.uuid4())
             trace_message = self._format_error_message(f"Setup failed: {e}", trace_id)
@@ -356,7 +357,10 @@ class StreamingService:
                 ),
                 self._timed_async(
                     self._history.prepare_history_with_metadata(
-                        history, session_context, is_continuation=True
+                        history,
+                        session_context,
+                        is_continuation=True,
+                        exclude_tool_call_ids={pending_tool_call_id},
                     )
                 ),
             )
