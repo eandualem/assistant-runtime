@@ -116,12 +116,17 @@ class AssistantNamespace(socketio.AsyncNamespace):
         session_id = request.session_id
         is_continuation = request.is_continuation
 
-        if request.is_guidance:
+        if request.is_steering:
+            active_task = self._active_streams.get(session_id)
+            has_live_stream = active_task is not None and not active_task.done()
             try:
-                await self._streaming_service.queue_guidance(request)
+                action = await self._streaming_service.accept_steering(
+                    request,
+                    has_live_stream=has_live_stream,
+                )
             except Exception as e:
                 logger.error(
-                    "Guidance queueing failed",
+                    "Steering queueing failed",
                     sid=sid,
                     session_id=session_id,
                     error=str(e),
@@ -131,6 +136,16 @@ class AssistantNamespace(socketio.AsyncNamespace):
                     {"type": "session", "message": str(e)},
                     to=sid,
                 )
+            else:
+                if action == "promoted":
+                    task = asyncio.create_task(self._run_stream(sid, session_id, request))
+                    self._active_streams[session_id] = task
+
+                    def _done_cleanup(_t: asyncio.Task[None]) -> None:
+                        if self._active_streams.get(session_id) is _t:
+                            self._active_streams.pop(session_id, None)
+
+                    task.add_done_callback(_done_cleanup)
             return
 
         # If a stream is already active for this session, cancel it and replace.

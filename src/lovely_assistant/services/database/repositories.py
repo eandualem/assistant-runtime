@@ -15,6 +15,7 @@ from lovely_assistant.services.database.models import (
     MessageORM,
     OAuthTokenORM,
     SessionORM,
+    SteeringORM,
     TraceORM,
     UserSettingsORM,
 )
@@ -248,6 +249,72 @@ class MessageRepository:
         if not fields:
             return
         await self._session.execute(update(MessageORM).where(MessageORM.id == message_id).values(**fields))
+        await self._session.flush()
+
+
+class SteeringRepository:
+    """CRUD operations for steering records."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        steering_id: str,
+        session_id: str,
+        content: str,
+        status: str,
+        delivered_at: datetime | None = None,
+    ) -> SteeringORM:
+        result = await self._session.execute(
+            insert(SteeringORM)
+            .values(
+                id=steering_id,
+                session_id=session_id,
+                content=content,
+                status=status,
+                delivered_at=delivered_at,
+            )
+            .returning(SteeringORM)
+        )
+        await self._session.flush()
+        return result.scalar_one()
+
+    async def list_by_session(self, session_id: str) -> list[SteeringORM]:
+        result = await self._session.execute(
+            select(SteeringORM)
+            .where(SteeringORM.session_id == session_id)
+            .order_by(SteeringORM.created_at.asc(), SteeringORM.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def list_pending_by_session(self, session_id: str) -> list[SteeringORM]:
+        result = await self._session.execute(
+            select(SteeringORM)
+            .where(
+                SteeringORM.session_id == session_id,
+                SteeringORM.status == "pending",
+            )
+            .order_by(SteeringORM.created_at.asc(), SteeringORM.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def mark_status(
+        self,
+        steering_ids: list[str],
+        *,
+        status: str,
+        delivered_at: datetime | None,
+    ) -> None:
+        if not steering_ids:
+            return
+
+        await self._session.execute(
+            update(SteeringORM)
+            .where(SteeringORM.id.in_(steering_ids))
+            .values(status=status, delivered_at=delivered_at)
+        )
         await self._session.flush()
 
 

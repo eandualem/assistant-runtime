@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from lovely_assistant.app.assistant._session_store import SessionStore
 from lovely_assistant.app.assistant.models import AssistantRequest
 
@@ -35,14 +37,16 @@ async def _seed_basic_turn(store: SessionStore) -> tuple[dict, dict, dict]:
 
 
 class TestSessionStoreBasics:
-    def test_get_context_initializes_tree_state(self) -> None:
+    def test_get_context_initializes_tree_and_steering_state(self) -> None:
         ctx = SessionStore().get_context("sess-1")
 
         assert ctx["turn_number"] == 0
         assert ctx["message_count"] == 0
         assert ctx["cached_path"] == []
         assert ctx["active_leaf_id"] is None
-        assert ctx["pending_guidance"] == []
+        assert ctx["pending_steering_ids"] == []
+        assert ctx["steering_index"] == {}
+        assert ctx["steering_order"] == []
 
 
 class TestRegisterUserMessage:
@@ -63,14 +67,10 @@ class TestRegisterUserMessage:
         store = SessionStore()
         await store.register_user_message(_request(message_id="user-1", parent_id=None))
 
-        try:
+        with pytest.raises(ValueError, match="already exists"):
             await store.register_user_message(
                 _request(message_id="user-1", parent_id="user-1", content="Duplicate")
             )
-        except ValueError as exc:
-            assert "already exists" in str(exc)
-        else:
-            raise AssertionError("expected duplicate id validation")
 
     async def test_rebuilds_cached_path_when_branching_from_ancestor(self) -> None:
         store = SessionStore()
@@ -87,6 +87,18 @@ class TestRegisterUserMessage:
         assert branch["parent_id"] == "user-1"
         assert ctx["active_leaf_id"] == "user-2"
         assert [message["id"] for message in ctx["cached_path"]] == ["user-1", "user-2"]
+
+    async def test_rejects_steering_for_tree_registration(self) -> None:
+        store = SessionStore()
+
+        with pytest.raises(ValueError, match="stored separately"):
+            await store.register_user_message(
+                _request(
+                    message_id="steering-1",
+                    content="Focus on Leo",
+                    message_type="steering",
+                )
+            )
 
 
 class TestAssistantMessages:
@@ -126,37 +138,82 @@ class TestAssistantMessages:
         assert path[-1]["usage"] == {"input_tokens": 3, "output_tokens": 4}
 
 
-class TestGuidanceMessages:
-    async def test_persists_guidance_in_submission_order(self) -> None:
+class TestSteeringMessages:
+    async def test_queues_steering_in_submission_order(self) -> None:
         store = SessionStore()
         await _seed_basic_turn(store)
-        await store.queue_guidance(
+
+        await store.queue_steering(
             "sess-1",
             _request(
-                message_id="guidance-1",
-                parent_id="assistant-1",
+                message_id="steering-1",
                 content="Focus on Leo only",
-                message_type="guidance",
+                message_type="steering",
             ),
         )
-        await store.queue_guidance(
+        await store.queue_steering(
             "sess-1",
             _request(
-                message_id="guidance-2",
-                parent_id="assistant-1",
+                message_id="steering-2",
                 content="Skip Ada",
-                message_type="guidance",
+                message_type="steering",
             ),
         )
 
-        persisted = await store.persist_guidance_messages("sess-1", parent_id="assistant-1")
+        queued = await store.list_pending_steering("sess-1")
 
-        assert [message["id"] for message in persisted] == ["guidance-1", "guidance-2"]
-        assert persisted[0]["parent_id"] == "assistant-1"
-        assert persisted[1]["parent_id"] == "guidance-1"
+        assert [message["id"] for message in queued] == ["steering-1", "steering-2"]
+        assert store.get_context("sess-1")["pending_steering_ids"] == ["steering-1", "steering-2"]
+
+    async def test_delivers_steering_without_mutating_tree(self) -> None:
+        store = SessionStore()
+        await _seed_basic_turn(store)
+        await store.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+        )
+        await store.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-2",
+                content="Skip Ada",
+                message_type="steering",
+            ),
+        )
+
+        delivered = await store.deliver_pending_steering("sess-1")
         ctx = store.get_context("sess-1")
-        assert ctx["pending_guidance"] == []
-        assert ctx["active_leaf_id"] == "guidance-2"
+        path = await store.get_message_path("sess-1")
+        display_steering = await store.get_display_steering("sess-1")
+
+        assert [record["id"] for record in delivered] == ["steering-1", "steering-2"]
+        assert all(record["status"] == "delivered" for record in delivered)
+        assert ctx["pending_steering_ids"] == []
+        assert ctx["active_leaf_id"] == "assistant-1"
+        assert [message["id"] for message in path] == ["user-1", "assistant-1"]
+        assert [record["id"] for record in display_steering] == ["steering-1", "steering-2"]
+
+    async def test_marks_steering_promoted_for_idle_delivery(self) -> None:
+        store = SessionStore()
+        await _seed_basic_turn(store)
+        await store.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+        )
+
+        promoted = await store.mark_steering_promoted("sess-1", "steering-1")
+
+        assert promoted["status"] == "promoted"
+        assert promoted["delivered_at"] is not None
+        assert store.get_context("sess-1")["pending_steering_ids"] == []
 
 
 class TestMessagePathResolution:

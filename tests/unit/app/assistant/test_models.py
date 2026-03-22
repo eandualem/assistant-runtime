@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from lovely_assistant.app.assistant.models import (
     AssistantRequest,
@@ -39,7 +40,7 @@ class TestAssistantRequest:
         assert request.content == "Hello"
         assert request.message == "Hello"
         assert request.is_continuation is False
-        assert request.is_guidance is False
+        assert request.is_steering is False
 
     def test_normalizes_camel_case_and_machine_state_aliases(self) -> None:
         request = AssistantRequest.model_validate(
@@ -61,19 +62,51 @@ class TestAssistantRequest:
         }
         assert request.config == RequestConfigOverride(default_model="openai/gpt-5.4")
 
-    def test_guidance_and_continuation_flags(self) -> None:
+    def test_steering_has_distinct_shape(self) -> None:
         request = AssistantRequest(
-            id="guidance-1",
+            id="steering-1",
             session_id="sess-1",
-            parent_id="assistant-1",
             content="Focus on Leo",
-            message_type="guidance",
-            tool_call_id="call-1",
-            tool_result={"ok": True},
+            message_type="steering",
         )
 
-        assert request.is_guidance is True
-        assert request.is_continuation is True
+        assert request.is_steering is True
+        assert request.is_continuation is False
+        assert request.parent_id is None
+
+    def test_guidance_alias_normalizes_to_steering(self) -> None:
+        request = AssistantRequest.model_validate(
+            {
+                "id": "steering-1",
+                "session_id": "sess-1",
+                "content": "Focus on Leo",
+                "message_type": "guidance",
+            }
+        )
+
+        assert request.message_type == "steering"
+        assert request.is_steering is True
+
+    def test_steering_rejects_parent_id(self) -> None:
+        with pytest.raises(ValueError, match="must not include parent_id"):
+            AssistantRequest(
+                id="steering-1",
+                session_id="sess-1",
+                parent_id="assistant-1",
+                content="Focus on Leo",
+                message_type="steering",
+            )
+
+    def test_steering_rejects_tool_continuation_fields(self) -> None:
+        with pytest.raises(ValueError, match="must not include tool continuation fields"):
+            AssistantRequest(
+                id="steering-1",
+                session_id="sess-1",
+                content="Focus on Leo",
+                message_type="steering",
+                tool_call_id="call-1",
+                tool_result={"ok": True},
+            )
 
     def test_screenshot_fields_fold_into_images(self) -> None:
         request = AssistantRequest.model_validate(
@@ -89,7 +122,7 @@ class TestAssistantRequest:
         assert request.images == ["data:image/png;base64,abc123"]
 
     def test_missing_id_is_validation_error(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             AssistantRequest.model_validate(
                 {"session_id": "sess-1", "parent_id": None, "content": "Hello"}
             )

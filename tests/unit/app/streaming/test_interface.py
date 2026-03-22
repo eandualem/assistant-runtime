@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -44,30 +43,23 @@ def _request(
     )
 
 
-@asynccontextmanager
-async def _empty_stream() -> Any:
-    async def _iter() -> Any:
-        return
-        yield  # pragma: no cover
-
-    yield _iter()
-
-
 class _MockRun:
-    def __init__(self, *, output: Any, all_messages: list[Any]) -> None:
+    def __init__(self, *, output: Any, all_messages: list[Any], new_messages: list[Any] | None = None) -> None:
         self.result = MagicMock()
         self.result.output = output
         self.result.all_messages.return_value = all_messages
+        self.result.new_messages.return_value = new_messages if new_messages is not None else all_messages
         self.result.usage.return_value = MagicMock(
-            request_tokens=5,
-            response_tokens=7,
+            input_tokens=5,
+            output_tokens=7,
             total_tokens=12,
+            requests=1,
         )
         self.next_node = End(data=output)
         self.ctx = MagicMock()
         self.ctx.state.message_history = all_messages
 
-    async def __aenter__(self) -> "_MockRun":
+    async def __aenter__(self) -> _MockRun:
         return self
 
     async def __aexit__(self, *_args: Any) -> None:
@@ -117,7 +109,9 @@ def _make_service(*, sessions: SessionStore | None = None, run: _MockRun | None 
 
     history_service = AsyncMock()
 
-    async def _prepare(history: list[Any], _ctx: dict[str, Any], is_continuation: bool = False) -> HistoryPreparationResult:
+    async def _prepare(
+        history: list[Any], _ctx: dict[str, Any], is_continuation: bool = False
+    ) -> HistoryPreparationResult:
         return HistoryPreparationResult(
             history=history,
             was_compacted=False,
@@ -132,7 +126,7 @@ def _make_service(*, sessions: SessionStore | None = None, run: _MockRun | None 
     assistant_service.prepare_agent_context = AsyncMock(return_value=_agent_context(agent))
     assistant_service._update_working_memory = AsyncMock()
 
-    service = StreamingService(
+    return StreamingService(
         config=StreamingConfig(emit_debug_events=False),
         llm_service=MagicMock(),
         history_service=history_service,
@@ -142,7 +136,18 @@ def _make_service(*, sessions: SessionStore | None = None, run: _MockRun | None 
         assistant_config=AssistantConfig(),
         database_service=None,
     )
-    return service
+
+
+async def _seed_basic_turn(store: SessionStore) -> None:
+    await store.register_user_message(_request(message_id="user-1", parent_id=None))
+    await store.register_assistant_message(
+        "sess-1",
+        message_id="assistant-1",
+        parent_id="user-1",
+        content="Opening page",
+        segments=[{"kind": "text", "text": "Opening page"}],
+        usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+    )
 
 
 class TestStreamingService:
@@ -218,7 +223,7 @@ class TestStreamingService:
                     "tools": [{"id": "call-nav-1", "name": "navigate", "input": {"page": "agents"}}],
                 }
             ],
-            usage={"input_tokens": 1, "output_tokens": 2},
+            usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
         )
         ctx = sessions.get_context("sess-1")
         ctx["pending_tool_call_id"] = "call-nav-1"
@@ -229,6 +234,23 @@ class TestStreamingService:
             output="Done",
             all_messages=[
                 *history,
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="navigate",
+                            content={"ok": True},
+                            tool_call_id="call-nav-1",
+                            timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                ),
+                ModelResponse(
+                    parts=[TextPart(content="Done")],
+                    timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                ),
+            ],
+            new_messages=[
                 ModelRequest(
                     parts=[
                         ToolReturnPart(
@@ -270,32 +292,109 @@ class TestStreamingService:
         assert sessions.get_context("sess-1").get("pending_tool_call_id") is None
 
     @pytest.mark.asyncio
-    async def test_guidance_is_queued_without_starting_a_new_run(self) -> None:
+    async def test_accept_steering_queues_when_stream_is_live(self) -> None:
         sessions = SessionStore()
-        ctx = sessions.get_context("sess-1")
-        ctx["current_assistant_message_id"] = "assistant-1"
+        await _seed_basic_turn(sessions)
         service = _make_service(sessions=sessions)
         await service.start()
 
-        events = [
-            event
-            async for event in service.stream_message(
-                _request(
-                    message_id="guidance-1",
-                    parent_id="assistant-1",
-                    content="Focus on Leo only",
-                    message_type="guidance",
-                )
-            )
-        ]
+        action = await service.accept_steering(
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+            has_live_stream=True,
+        )
 
-        assert events == []
-        assert ctx["pending_guidance"][0]["id"] == "guidance-1"
+        ctx = sessions.get_context("sess-1")
+        assert action == "queued"
+        assert ctx["pending_steering_ids"] == ["steering-1"]
+
+    @pytest.mark.asyncio
+    async def test_accept_steering_promotes_when_idle(self) -> None:
+        sessions = SessionStore()
+        await _seed_basic_turn(sessions)
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        action = await service.accept_steering(
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+            has_live_stream=False,
+        )
+
+        record = sessions.get_context("sess-1")["steering_index"]["steering-1"]
+        assert action == "promoted"
+        assert record["status"] == "promoted"
+
+    @pytest.mark.asyncio
+    async def test_deliver_steering_into_request_marks_pending_records_delivered(self) -> None:
+        sessions = SessionStore()
+        await _seed_basic_turn(sessions)
+        await sessions.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+        )
+        await sessions.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-2",
+                content="Skip Ada",
+                message_type="steering",
+            ),
+        )
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        node = MagicMock()
+        node.request = ModelRequest(parts=[])
+
+        delivered = await service._deliver_steering_into_request(
+            session_id="sess-1",
+            session_context=sessions.get_context("sess-1"),
+            next_node=node,
+        )
+
+        assert [record["id"] for record in delivered] == ["steering-1", "steering-2"]
+        assert len(node.request.parts) == 2
+        assert "Additional user steering" in node.request.parts[0].content
+        assert sessions.get_context("sess-1")["pending_steering_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_promoted_steering_updates_existing_assistant_message(self) -> None:
+        sessions = SessionStore()
+        await _seed_basic_turn(sessions)
+        service = _make_service(sessions=sessions)
+        await service.start()
+        request = _request(
+            message_id="steering-1",
+            content="Focus on Leo only",
+            message_type="steering",
+        )
+
+        action = await service.accept_steering(request, has_live_stream=False)
+        events = [event async for event in service.stream_message(request)]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        path = await sessions.get_message_path("sess-1")
+
+        assert action == "promoted"
+        assert final["message_id"] == "assistant-1"
+        assert path[-1]["id"] == "assistant-1"
+        assert path[-1]["content"].endswith("Hello!")
 
     @pytest.mark.asyncio
     async def test_provider_rate_limit_emits_retryable_rate_limit_error(self) -> None:
         class _FailingRun:
-            async def __aenter__(self) -> "_FailingRun":
+            async def __aenter__(self) -> _FailingRun:
                 raise ModelHTTPError(
                     status_code=429,
                     model_name="claude-haiku-4-5",

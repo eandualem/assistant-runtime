@@ -124,8 +124,8 @@ class AssistantRequest(BaseModel):
 
     id: str
     session_id: str
-    parent_id: str | None
-    message_type: Literal["standard", "guidance"] = Field(default="standard")
+    parent_id: str | None = None
+    message_type: Literal["standard", "steering"] = Field(default="standard")
     content: str
     images: list[str] = Field(default_factory=list)
     machine_state: dict[str, Any] | None = None
@@ -139,14 +139,26 @@ class AssistantRequest(BaseModel):
         return self.tool_call_id is not None
 
     @property
-    def is_guidance(self) -> bool:
-        """Whether this is a mid-stream guidance message."""
-        return self.message_type == "guidance"
+    def is_steering(self) -> bool:
+        """Whether this is a mid-stream steering message."""
+        return self.message_type == "steering"
 
     @property
     def message(self) -> str:
         """Compatibility accessor for internal call sites during the cutover."""
         return self.content
+
+    @model_validator(mode="after")
+    def validate_message_shape(self) -> AssistantRequest:
+        """Enforce distinct wire contracts for standard messages vs steering."""
+        if self.is_steering:
+            if self.parent_id is not None:
+                raise ValueError("Steering requests must not include parent_id")
+            if self.tool_call_id is not None or self.tool_result is not None:
+                raise ValueError("Steering requests must not include tool continuation fields")
+            return self
+
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -175,6 +187,9 @@ class AssistantRequest(BaseModel):
         cfg = data.get("config")
         if isinstance(cfg, dict):
             data = {**data, "config": {_camel_to_snake(k): v for k, v in cfg.items()}}
+
+        if data.get("message_type") == "guidance":
+            data = {**data, "message_type": "steering"}
 
         return data
 

@@ -85,3 +85,22 @@ class TestChatEndpoint:
             response = await client.post("/api/chat", json={"session_id": "sess-1", "content": "Hi"})
 
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_chat_rejects_steering_shape(self) -> None:
+        service = AsyncMock()
+        app = _create_test_app(assistant_service=service)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/chat",
+                json={
+                    "id": "steering-1",
+                    "session_id": "sess-1",
+                    "content": "Focus on Leo",
+                    "message_type": "steering",
+                },
+            )
+
+        assert response.status_code == 422
+        service.process_message.assert_not_called()

@@ -11,6 +11,7 @@ from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
 
 from lovely_assistant.app.assistant._serialization import (
     MessageRecord,
+    SteeringRecord,
     path_records_to_model_history,
 )
 from lovely_assistant.base.resilience import retry_with_backoff
@@ -86,6 +87,9 @@ class SessionStore:
 
     async def register_user_message(self, request: AssistantRequest) -> tuple[dict[str, Any], MessageRecord]:
         """Persist a user-side message send and update the active cached path."""
+        if request.is_steering:
+            raise ValueError("Steering messages are stored separately from the conversation tree")
+
         session_id = request.session_id
         existing = await self.get_context_if_exists_async(session_id)
         ctx = existing
@@ -247,70 +251,108 @@ class SessionStore:
 
         return record
 
-    async def queue_guidance(self, session_id: str, request: AssistantRequest) -> dict[str, Any]:
-        """Queue guidance for delivery at the next pause point."""
-        ctx = await self.get_context_if_exists_async(session_id)
-        if ctx is None:
-            raise LookupError("Session not found")
-        queued = {
-            "id": request.id,
-            "content": request.content,
-            "message_type": request.message_type,
-            "created_at": datetime.now(UTC),
-        }
-        ctx["pending_guidance"].append(queued)
-        return queued
-
-    async def persist_guidance_messages(
+    async def queue_steering(
         self,
         session_id: str,
+        request: AssistantRequest,
         *,
-        parent_id: str,
-    ) -> list[MessageRecord]:
-        """Persist queued guidance messages in submission order."""
+        status: str = "pending",
+        delivered_at: datetime | None = None,
+    ) -> SteeringRecord:
+        """Persist steering outside the message tree."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        if request.id in ctx["steering_index"]:
+            raise ValueError(f"Steering '{request.id}' already exists")
+        now = datetime.now(UTC)
+        queued: SteeringRecord = {
+            "id": request.id,
+            "session_id": session_id,
+            "content": request.content,
+            "status": status,
+            "created_at": now,
+            "delivered_at": delivered_at,
+        }
+
+        if self._db is not None:
+            async with self._db.session_context() as db_session:
+                from lovely_assistant.services.database.repositories import SteeringRepository
+
+                repo = SteeringRepository(db_session)
+                await repo.create(
+                    steering_id=queued["id"],
+                    session_id=session_id,
+                    content=queued["content"],
+                    status=queued["status"],
+                    delivered_at=queued["delivered_at"],
+                )
+
+        self._add_steering_to_context(ctx, queued)
+        return queued
+
+    async def list_pending_steering(
+        self,
+        session_id: str,
+    ) -> list[SteeringRecord]:
+        """Return pending steering in submission order."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        return [ctx["steering_index"][gid] for gid in ctx["pending_steering_ids"]]
+
+    async def deliver_pending_steering(
+        self,
+        session_id: str,
+    ) -> list[SteeringRecord]:
+        """Mark all currently pending steering as delivered."""
+        return await self._mark_pending_steering(session_id, status="delivered")
+
+    async def get_display_steering(self, session_id: str) -> list[SteeringRecord]:
+        """Return delivered/promoted steering ordered for display."""
         ctx = await self.get_context_if_exists_async(session_id)
         if ctx is None:
             raise LookupError("Session not found")
 
-        persisted: list[MessageRecord] = []
-        current_parent_id = parent_id
-        for queued in ctx["pending_guidance"]:
-            record: MessageRecord = {
-                "id": queued["id"],
-                "session_id": session_id,
-                "parent_id": current_parent_id,
-                "role": "user",
-                "message_type": "guidance",
-                "content": queued["content"],
-                "segments": None,
-                "usage": None,
-                "created_at": queued["created_at"],
-            }
+        steering = [
+            record
+            for record in (ctx["steering_index"][gid] for gid in ctx["steering_order"])
+            if record.get("status") in {"delivered", "promoted"}
+        ]
+        return sorted(
+            steering,
+            key=lambda record: (
+                self._coerce_datetime(record.get("delivered_at"))
+                or self._coerce_datetime(record.get("created_at"))
+                or datetime.now(UTC),
+                self._coerce_datetime(record.get("created_at")) or datetime.now(UTC),
+                record["id"],
+            ),
+        )
 
-            if self._db is not None:
-                async with self._db.session_context() as db_session:
-                    from lovely_assistant.services.database.repositories import MessageRepository
+    async def mark_steering_promoted(self, session_id: str, steering_id: str) -> SteeringRecord:
+        """Mark a queued steering record as promoted for immediate idle delivery."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        if steering_id not in ctx["steering_index"]:
+            raise LookupError(f"Steering '{steering_id}' not found")
 
-                    repo = MessageRepository(db_session)
-                    await repo.create(
-                        message_id=record["id"],
-                        session_id=session_id,
-                        parent_id=record["parent_id"],
-                        role=record["role"],
-                        message_type=record["message_type"],
-                        content=record["content"],
-                    )
+        delivered_at = datetime.now(UTC)
+        record = dict(ctx["steering_index"][steering_id])
+        record["status"] = "promoted"
+        record["delivered_at"] = delivered_at
+        ctx["steering_index"][steering_id] = record
+        ctx["pending_steering_ids"] = [gid for gid in ctx["pending_steering_ids"] if gid != steering_id]
 
-            self._add_message_to_context(ctx, record)
-            self._refresh_cached_path_for_new_leaf(ctx, record)
-            ctx["turn_number"] = ctx.get("turn_number", 0) + 1
-            persisted.append(record)
-            current_parent_id = record["id"]
+        if self._db is not None:
+            async with self._db.session_context() as db_session:
+                from lovely_assistant.services.database.repositories import SteeringRepository
 
-        ctx["pending_guidance"] = []
-        if persisted:
-            await self.save_session_state_async(session_id)
-        return persisted
+                repo = SteeringRepository(db_session)
+                await repo.mark_status([steering_id], status="promoted", delivered_at=delivered_at)
+
+        return record
 
     async def get_message_path(
         self,
@@ -477,11 +519,15 @@ class SessionStore:
             "title": None,
             "telegram_chat_id": None,
             "telegram_bound_at": None,
+            "last_machine_state": None,
+            "last_request_config": None,
             "pending_tool_call_id": None,
             "pending_tool_name": None,
             "pending_assistant_message_id": None,
             "current_assistant_message_id": None,
-            "pending_guidance": [],
+            "pending_steering_ids": [],
+            "steering_index": {},
+            "steering_order": [],
             "message_count": 0,
             "message_index": {},
             "children_by_parent": {},
@@ -496,6 +542,13 @@ class SessionStore:
         children_by_parent.setdefault(record.get("parent_id"), []).append(record["id"])
         children_by_parent.setdefault(record["id"], [])
         ctx["message_count"] = len(message_index)
+
+    def _add_steering_to_context(self, ctx: dict[str, Any], record: SteeringRecord) -> None:
+        ctx["steering_index"][record["id"]] = record
+        if record["id"] not in ctx["steering_order"]:
+            ctx["steering_order"].append(record["id"])
+        if record.get("status") == "pending" and record["id"] not in ctx["pending_steering_ids"]:
+            ctx["pending_steering_ids"].append(record["id"])
 
     def _refresh_cached_path_for_new_leaf(self, ctx: dict[str, Any], record: MessageRecord) -> None:
         active_leaf_id = ctx.get("active_leaf_id")
@@ -586,6 +639,7 @@ class SessionStore:
                 from lovely_assistant.services.database.repositories import (
                     MessageRepository,
                     SessionRepository,
+                    SteeringRepository,
                 )
 
                 session_repo = SessionRepository(db_session)
@@ -594,6 +648,7 @@ class SessionStore:
                 if row is None:
                     return None
                 messages = await message_repo.list_by_session(session_id)
+                steering_records = await SteeringRepository(db_session).list_by_session(session_id)
                 ctx = self._build_empty_context()
                 ctx["turn_number"] = row.turn_number
                 ctx["working_memory"] = row.working_memory
@@ -614,6 +669,17 @@ class SessionStore:
                         "created_at": message.created_at,
                     }
                     self._add_message_to_context(ctx, record)
+
+                for steering in steering_records:
+                    record: SteeringRecord = {
+                        "id": steering.id,
+                        "session_id": steering.session_id,
+                        "content": steering.content,
+                        "status": steering.status,
+                        "created_at": steering.created_at,
+                        "delivered_at": steering.delivered_at,
+                    }
+                    self._add_steering_to_context(ctx, record)
 
                 ctx["active_leaf_id"] = self._latest_leaf_id(ctx)
                 ctx["cached_path"] = self._resolve_path(ctx, ctx["active_leaf_id"])
@@ -637,3 +703,39 @@ class SessionStore:
         if current is None:
             return True
         return candidate > current
+
+    async def _mark_pending_steering(
+        self,
+        session_id: str,
+        *,
+        status: str,
+    ) -> list[SteeringRecord]:
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        if not ctx["pending_steering_ids"]:
+            return []
+
+        delivered_at = datetime.now(UTC)
+        updated: list[SteeringRecord] = []
+        for steering_id in list(ctx["pending_steering_ids"]):
+            record = dict(ctx["steering_index"][steering_id])
+            record["status"] = status
+            record["delivered_at"] = delivered_at
+            ctx["steering_index"][steering_id] = record
+            updated.append(record)
+
+        ctx["pending_steering_ids"] = []
+
+        if self._db is not None:
+            async with self._db.session_context() as db_session:
+                from lovely_assistant.services.database.repositories import SteeringRepository
+
+                repo = SteeringRepository(db_session)
+                await repo.mark_status(
+                    [record["id"] for record in updated],
+                    status=status,
+                    delivered_at=delivered_at,
+                )
+
+        return updated

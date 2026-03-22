@@ -78,7 +78,7 @@ class TestAssistantNamespaceMessages:
 
         streaming_service = MagicMock()
         streaming_service.stream_message = _stream
-        streaming_service.queue_guidance = AsyncMock()
+        streaming_service.accept_steering = AsyncMock()
         namespace.server = _server_with_streaming_service(streaming_service)
 
         await namespace.on_assistant_message(
@@ -109,7 +109,7 @@ class TestAssistantNamespaceMessages:
 
         streaming_service = MagicMock()
         streaming_service.stream_message = _stream
-        streaming_service.queue_guidance = AsyncMock()
+        streaming_service.accept_steering = AsyncMock()
         namespace.server = _server_with_streaming_service(streaming_service)
 
         await namespace.on_assistant_message(
@@ -139,7 +139,7 @@ class TestAssistantNamespaceMessages:
 
         streaming_service = MagicMock()
         streaming_service.stream_message = _stream
-        streaming_service.queue_guidance = AsyncMock()
+        streaming_service.accept_steering = AsyncMock()
         namespace.server = _server_with_streaming_service(streaming_service)
 
         await namespace.on_assistant_message(
@@ -161,25 +161,59 @@ class TestAssistantNamespaceMessages:
         old_task.cancel()
 
     @pytest.mark.asyncio
-    async def test_guidance_is_queued_without_starting_stream(self) -> None:
+    async def test_steering_is_queued_without_starting_stream(self) -> None:
         namespace = AssistantNamespace("/assistant")
         namespace.emit = AsyncMock()
         streaming_service = MagicMock()
-        streaming_service.queue_guidance = AsyncMock()
+        streaming_service.accept_steering = AsyncMock(return_value="queued")
         streaming_service.stream_message = AsyncMock()
         namespace.server = _server_with_streaming_service(streaming_service)
 
         await namespace.on_assistant_message(
             "sid-1",
             {
-                "id": "guidance-1",
+                "id": "steering-1",
                 "session_id": "sess-1",
-                "parent_id": "assistant-1",
                 "content": "Focus on Leo",
-                "message_type": "guidance",
+                "message_type": "steering",
             },
         )
 
-        streaming_service.queue_guidance.assert_awaited_once()
+        streaming_service.accept_steering.assert_awaited_once()
         streaming_service.stream_message.assert_not_called()
         assert namespace._active_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_promoted_steering_starts_stream_immediately(self) -> None:
+        namespace = AssistantNamespace("/assistant")
+        namespace.emit = AsyncMock()
+
+        async def _stream(_request):
+            yield {"type": "agent_status", "status": "started"}
+            yield {
+                "type": "final_response",
+                "content": "Done",
+                "model": "openai:gpt-5.4",
+                "message_id": "assistant-1",
+            }
+            yield {"type": "agent_status", "status": "completed"}
+
+        streaming_service = MagicMock()
+        streaming_service.accept_steering = AsyncMock(return_value="promoted")
+        streaming_service.stream_message = _stream
+        namespace.server = _server_with_streaming_service(streaming_service)
+
+        await namespace.on_assistant_message(
+            "sid-1",
+            {
+                "id": "steering-1",
+                "session_id": "sess-1",
+                "content": "Focus on Leo",
+                "message_type": "steering",
+            },
+        )
+
+        task = namespace._active_streams["sess-1"]
+        await task
+        streaming_service.accept_steering.assert_awaited_once()
+        assert namespace.emit.await_count == 3

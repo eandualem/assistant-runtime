@@ -135,6 +135,8 @@ class AssistantService:
 
         started_at = time.monotonic()
         await sessions.get_context_async(session_id)
+        if machine_state is not None:
+            sessions.get_context(session_id)["last_machine_state"] = machine_state
         try:
             self._tools.warm_machine_state(machine_state)
         except Exception as e:
@@ -183,16 +185,27 @@ class AssistantService:
         Shared by both AssistantService and StreamingService to prevent drift.
         """
         with create_span("agent-setup"):
+            machine_state = (
+                request.machine_state
+                if request.machine_state is not None
+                else session_context.get("last_machine_state")
+            )
+            request_config = request.config or session_context.get("last_request_config")
+            if request.machine_state is not None:
+                session_context["last_machine_state"] = request.machine_state
+            if request.config is not None:
+                session_context["last_request_config"] = request.config
+
             # 1. Tools
-            available_tools = self._tools.get_available_tools(request.machine_state)
-            toolsets = self._tools.build_toolset(request.machine_state)
+            available_tools = self._tools.get_available_tools(machine_state)
+            toolsets = self._tools.build_toolset(machine_state)
 
             mcp_summary_task = asyncio.create_task(self._tools.get_mcp_summary())
             artifacts_task = asyncio.create_task(self._load_active_artifacts())
 
             # 2. Config resolution can run while prompt inputs load.
             effective = resolve_effective_config(
-                self._config, self._runtime_settings, request.config
+                self._config, self._runtime_settings, request_config
             )
             resolved_model = self._llm.resolve_model(effective.default_model)
             usage_limits = UsageLimits(request_limit=effective.max_turns)
@@ -205,7 +218,7 @@ class AssistantService:
             prompt_result = build_system_prompt(
                 available_tools=available_tools,
                 session_context=session_context,
-                machine_state=request.machine_state,
+                machine_state=machine_state,
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
             )

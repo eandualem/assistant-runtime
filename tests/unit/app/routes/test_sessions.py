@@ -150,6 +150,29 @@ class TestGetSessionMessages:
 
         assert response.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_messages_include_delivered_steering_without_tree_mutation(self) -> None:
+        sessions = SessionStore()
+        await _seed_branching_session(sessions)
+        await sessions.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo",
+                message_type="steering",
+            ),
+        )
+        await sessions.deliver_pending_steering("sess-1")
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1/messages?leaf_id=assistant-1")
+
+        assert response.status_code == 200
+        messages = response.json()
+        assert [message["id"] for message in messages] == ["user-1", "assistant-1", "steering-1"]
+        assert messages[-1]["role"] == "steering"
+
 
 class TestGetSessionTree:
     @pytest.mark.asyncio

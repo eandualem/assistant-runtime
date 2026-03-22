@@ -4,11 +4,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.services.database.models import MessageORM, SessionORM, UserSettingsORM
+from lovely_assistant.services.database.models import (
+    MessageORM,
+    SessionORM,
+    SteeringORM,
+    UserSettingsORM,
+)
 from lovely_assistant.services.database.repositories import (
     MessageRepository,
     SessionRepository,
     SettingsRepository,
+    SteeringRepository,
 )
 
 
@@ -88,6 +94,36 @@ class TestMessageRepository:
 
     async def test_update_is_noop_when_no_fields_provided(self, mock_session: AsyncMock) -> None:
         await MessageRepository(mock_session).update("assistant-1")
+
+        mock_session.execute.assert_not_called()
+        mock_session.flush.assert_not_called()
+
+
+class TestSteeringRepository:
+    async def test_create_persists_steering_fields(self, mock_session: AsyncMock) -> None:
+        row = SteeringORM(
+            id="steering-1",
+            session_id="sess-1",
+            content="Focus on Leo",
+            status="pending",
+        )
+        result = MagicMock()
+        result.scalar_one.return_value = row
+        mock_session.execute.return_value = result
+
+        created = await SteeringRepository(mock_session).create(
+            steering_id="steering-1",
+            session_id="sess-1",
+            content="Focus on Leo",
+            status="pending",
+        )
+
+        assert created.id == "steering-1"
+        assert created.status == "pending"
+        mock_session.flush.assert_awaited_once()
+
+    async def test_mark_status_is_noop_for_empty_id_list(self, mock_session: AsyncMock) -> None:
+        await SteeringRepository(mock_session).mark_status([], status="delivered", delivered_at=None)
 
         mock_session.execute.assert_not_called()
         mock_session.flush.assert_not_called()

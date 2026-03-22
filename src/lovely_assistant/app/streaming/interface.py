@@ -11,6 +11,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -29,7 +30,9 @@ from pydantic_ai.messages import (
 from pydantic_graph.nodes import End
 
 from lovely_assistant.app.assistant._serialization import (
+    SteeringRecord,
     build_assistant_message_content,
+    build_steering_request,
     path_records_to_model_history,
     sanitize_image_tool_returns,
 )
@@ -56,6 +59,7 @@ from lovely_assistant.app.streaming.exceptions import (
     StreamingError,
     StreamSetupError,
 )
+from lovely_assistant.services.llm.exceptions import LLMCallError, classify_llm_error
 from lovely_assistant.services.tools._frontend_tools import FRONTEND_TOOL_SCHEMAS
 from lovely_assistant.services.tools._registry import get_tool_invalidates
 from lovely_assistant.services.tools._request_context import assistant_request_context
@@ -65,7 +69,6 @@ from lovely_assistant.services.tools._screen_tools import (
     set_current_screenshot,
     strip_screenshot_from_tool_result,
 )
-from lovely_assistant.services.llm.exceptions import LLMCallError, classify_llm_error
 from lovely_assistant.services.tracing import create_request_trace
 
 if TYPE_CHECKING:
@@ -138,25 +141,49 @@ class StreamingService:
             return
         await self._assistant_service.warm_session(session_id, machine_state)
 
-    async def queue_guidance(self, request: AssistantRequest) -> dict[str, Any]:
-        """Queue a mid-turn guidance message without starting a new run."""
-        if not request.is_guidance:
-            raise SessionError("Only guidance requests can be queued")
+    async def accept_steering(
+        self,
+        request: AssistantRequest,
+        *,
+        has_live_stream: bool,
+    ) -> str:
+        """Accept steering and return `queued` or `promoted`."""
+        if not request.is_steering:
+            raise SessionError("Only steering requests can be accepted")
 
         session_context = await self._sessions.get_context_if_exists_async(request.session_id)
         if session_context is None:
-            raise SessionError(f"Guidance rejected: session '{request.session_id}' does not exist")
+            raise SessionError(f"Steering rejected: session '{request.session_id}' does not exist")
 
-        active_assistant_message_id = (
-            session_context.get("current_assistant_message_id")
-            or session_context.get("pending_assistant_message_id")
-        )
-        if not active_assistant_message_id:
+        if has_live_stream or session_context.get("pending_tool_call_id"):
+            await self._sessions.queue_steering(request.session_id, request)
+            return "queued"
+
+        active_leaf_id = session_context.get("active_leaf_id")
+        if active_leaf_id is None:
             raise SessionError(
-                f"Guidance rejected: session '{request.session_id}' has no active assistant turn"
+                f"Steering rejected: session '{request.session_id}' has no active conversation"
             )
 
-        return await self._sessions.queue_guidance(request.session_id, request)
+        if session_context["message_index"].get(active_leaf_id) is None:
+            raise SessionError(
+                f"Steering rejected: session '{request.session_id}' has no active conversation"
+            )
+
+        if (
+            session_context.get("current_assistant_message_id") is None
+            and session_context.get("pending_assistant_message_id") is None
+        ):
+            await self._sessions.queue_steering(
+                request.session_id,
+                request,
+                status="promoted",
+                delivered_at=datetime.now(UTC),
+            )
+            return "promoted"
+
+        await self._sessions.queue_steering(request.session_id, request)
+        return "queued"
 
     async def stream_message(self, request: AssistantRequest) -> AsyncIterator[dict[str, Any]]:
         """Stream a response as event dicts.
@@ -178,10 +205,10 @@ class StreamingService:
             raise StreamingError("Streaming service not started")
 
         try:
-            if request.is_guidance:
-                await self.queue_guidance(request)
-                return
-            if request.is_continuation:
+            if request.is_steering:
+                async for event in self._stream_promoted_steering(request):
+                    yield event
+            elif request.is_continuation:
                 async for event in self._stream_continuation(request):
                     yield event
             else:
@@ -263,12 +290,7 @@ class StreamingService:
                     "Continuation rejected: "
                     f"session '{session_id}' is missing the pending assistant message id"
                 )
-
-            if session_context.get("pending_guidance"):
-                await self._sessions.persist_guidance_messages(
-                    session_id,
-                    parent_id=assistant_message_id,
-                )
+            session_context["current_assistant_message_id"] = assistant_message_id
 
         except SessionError:
             raise
@@ -381,6 +403,8 @@ class StreamingService:
                             resolved_model,
                             emit_debug=emit_debug,
                             suppress_tool_call_ids={request.tool_call_id},
+                            session_id=session_id,
+                            session_context=session_context,
                         ):
                             yield event
 
@@ -392,19 +416,14 @@ class StreamingService:
             session_context.pop("pending_tool_name", None)
 
             # Extract usage
-            usage_dict: dict[str, int] | None = None
-            try:
-                usage = run.result.usage()
-                usage_dict = {
-                    "input_tokens": usage.request_tokens or 0,
-                    "output_tokens": usage.response_tokens or 0,
-                    "total_tokens": usage.total_tokens or 0,
-                }
-            except Exception:
-                pass
+            usage_dict = self._merge_usage(
+                assistant_record.get("usage"),
+                self._safe_usage_dict(run.result),
+            )
+            assistant_turn_messages = [*assistant_history, *continuation_messages]
 
             assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
-                [*assistant_history, *continuation_messages]
+                assistant_turn_messages
             )
             await self._sessions.update_message(
                 session_id,
@@ -421,6 +440,7 @@ class StreamingService:
                 # tool_call already emitted during _iterate_run() — just store pending state
                 pending_info = self._store_pending_frontend_tool(output, session_context)
                 session_context["pending_assistant_message_id"] = assistant_message_id
+                session_context.pop("current_assistant_message_id", None)
 
                 final = coordinator.try_final_response(
                     None,
@@ -432,19 +452,45 @@ class StreamingService:
                 )
             else:
                 session_context.pop("pending_assistant_message_id", None)
+                pending_info = None
+                final_output = str(output)
+                if session_context.get("pending_steering_ids"):
+                    followup_outcome: dict[str, Any] = {}
+                    async for event in self._stream_steering_followups(
+                        session_id=session_id,
+                        session_context=session_context,
+                        assistant_message_id=assistant_message_id,
+                        agent_context=ctx,
+                        coordinator=coordinator,
+                        emit_debug=emit_debug,
+                        resolved_model=resolved_model,
+                        conversation_history=all_messages,
+                        assistant_messages=assistant_turn_messages,
+                        cumulative_usage=run.result.usage(),
+                        outcome=followup_outcome,
+                    ):
+                        yield event
+                    final_output = followup_outcome.get("final_output", final_output)
+                    usage_dict = followup_outcome.get("usage", usage_dict)
+                    pending_info = followup_outcome.get("pending_tool_call")
                 session_context.pop("current_assistant_message_id", None)
-                if session_context.get("pending_guidance"):
-                    await self._sessions.persist_guidance_messages(
-                        session_id,
-                        parent_id=assistant_message_id,
+                if pending_info is not None:
+                    final = coordinator.try_final_response(
+                        None,
+                        resolved_model,
+                        session_id=session_id,
+                        message_id=assistant_message_id,
+                        usage=usage_dict,
+                        pending_tool_call=pending_info,
                     )
-                final = coordinator.try_final_response(
-                    str(output),
-                    resolved_model,
-                    session_id=session_id,
-                    message_id=assistant_message_id,
-                    usage=usage_dict,
-                )
+                else:
+                    final = coordinator.try_final_response(
+                        final_output,
+                        resolved_model,
+                        session_id=session_id,
+                        message_id=assistant_message_id,
+                        usage=usage_dict,
+                    )
             if final:
                 yield final
 
@@ -529,22 +575,11 @@ class StreamingService:
             if emit_debug:
                 coordinator.flush_thinking()
             if emit_debug and coordinator.accumulated_response:
-                usage_for_trace: dict[str, int] | None = None
-                try:
-                    if "run" in dir() and hasattr(run, "result") and run.result is not None:
-                        u = run.result.usage()
-                        usage_for_trace = {
-                            "input_tokens": u.request_tokens or 0,
-                            "output_tokens": u.response_tokens or 0,
-                            "total_tokens": u.total_tokens or 0,
-                        }
-                except Exception:
-                    pass
                 yield coordinator.track_debug(
                     make_debug_final_response_event(
                         coordinator.accumulated_response,
                         resolved_model if "resolved_model" in locals() else "unknown",
-                        usage=usage_for_trace,
+                        usage=self._safe_usage_dict(run.result if "run" in locals() else None),
                     )
                 )
 
@@ -734,7 +769,12 @@ class StreamingService:
                         usage_limits=ctx.usage_limits,
                     ) as run:
                         async for event in self._iterate_run(
-                            run, coordinator, resolved_model, emit_debug=emit_debug
+                            run,
+                            coordinator,
+                            resolved_model,
+                            emit_debug=emit_debug,
+                            session_id=session_id,
+                            session_context=session_context,
                         ):
                             yield event
 
@@ -745,30 +785,25 @@ class StreamingService:
             if emit_debug:
                 try:
                     usage = run.result.usage()
+                    usage_snapshot = self._safe_usage_dict(usage) or {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
+                    }
                     yield coordinator.track_debug(
                         make_debug_usage_event(
-                            input_tokens=usage.request_tokens or 0,
-                            output_tokens=usage.response_tokens or 0,
+                            input_tokens=usage_snapshot["input_tokens"],
+                            output_tokens=usage_snapshot["output_tokens"],
                             cache_read=getattr(usage, "cache_read_input_tokens", 0) or 0,
                             cache_write=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-                            requests=usage.requests,
-                            total=usage.total_tokens or 0,
+                            requests=getattr(usage, "requests", 0) or 0,
+                            total=usage_snapshot["total_tokens"],
                         )
                     )
                 except Exception as e:
                     logger.debug("Failed to extract usage stats", error=str(e))
 
-            # Extract usage for final_response
-            usage_dict: dict[str, int] | None = None
-            try:
-                usage = run.result.usage()
-                usage_dict = {
-                    "input_tokens": usage.request_tokens or 0,
-                    "output_tokens": usage.response_tokens or 0,
-                    "total_tokens": usage.total_tokens or 0,
-                }
-            except Exception:
-                pass
+            usage_dict = self._safe_usage_dict(run.result)
 
             assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
                 turn_messages
@@ -783,7 +818,6 @@ class StreamingService:
                 created_at=assistant_timestamp,
             )
             _assistant_persisted = True
-            session_context.pop("current_assistant_message_id", None)
 
             # Handle output
             output = run.result.output
@@ -794,6 +828,7 @@ class StreamingService:
                 # _iterate_run() (via _stream_node or CallToolsNode handler).
                 pending_info = self._store_pending_frontend_tool(output, session_context)
                 session_context["pending_assistant_message_id"] = assistant_message_id
+                session_context.pop("current_assistant_message_id", None)
 
                 final = coordinator.try_final_response(
                     None,
@@ -814,17 +849,35 @@ class StreamingService:
                 )
             else:
                 session_context.pop("pending_assistant_message_id", None)
-                if session_context.get("pending_guidance"):
-                    await self._sessions.persist_guidance_messages(
-                        session_id,
-                        parent_id=assistant_message_id,
-                    )
+                pending_info = None
+                final_output = str(output)
+                if session_context.get("pending_steering_ids"):
+                    followup_outcome: dict[str, Any] = {}
+                    async for event in self._stream_steering_followups(
+                        session_id=session_id,
+                        session_context=session_context,
+                        assistant_message_id=assistant_message_id,
+                        agent_context=ctx,
+                        coordinator=coordinator,
+                        emit_debug=emit_debug,
+                        resolved_model=resolved_model,
+                        conversation_history=all_messages,
+                        assistant_messages=turn_messages,
+                        cumulative_usage=run.result.usage(),
+                        outcome=followup_outcome,
+                    ):
+                        yield event
+                    final_output = followup_outcome.get("final_output", final_output)
+                    usage_dict = followup_outcome.get("usage", usage_dict)
+                    pending_info = followup_outcome.get("pending_tool_call")
+                session_context.pop("current_assistant_message_id", None)
                 final = coordinator.try_final_response(
-                    str(output),
+                    None if pending_info is not None else final_output,
                     resolved_model,
                     session_id=session_id,
                     message_id=assistant_message_id,
                     usage=usage_dict,
+                    pending_tool_call=pending_info,
                 )
                 if final:
                     yield final
@@ -924,22 +977,11 @@ class StreamingService:
             if emit_debug:
                 coordinator.flush_thinking()
             if emit_debug and coordinator.accumulated_response:
-                usage_for_trace: dict[str, int] | None = None
-                try:
-                    if "run" in dir() and hasattr(run, "result") and run.result is not None:
-                        u = run.result.usage()
-                        usage_for_trace = {
-                            "input_tokens": u.request_tokens or 0,
-                            "output_tokens": u.response_tokens or 0,
-                            "total_tokens": u.total_tokens or 0,
-                        }
-                except Exception:
-                    pass
                 yield coordinator.track_debug(
                     make_debug_final_response_event(
                         coordinator.accumulated_response,
                         resolved_model if "resolved_model" in locals() else "unknown",
-                        usage=usage_for_trace,
+                        usage=self._safe_usage_dict(run.result if "run" in locals() else None),
                     )
                 )
 
@@ -994,7 +1036,6 @@ class StreamingService:
         session_context.pop("pending_tool_name", None)
         session_context.pop("pending_assistant_message_id", None)
         session_context.pop("current_assistant_message_id", None)
-        session_context["pending_guidance"] = []
 
     def _store_pending_frontend_tool(
         self, output: DeferredToolRequests, session_context: dict[str, Any]
@@ -1093,6 +1134,450 @@ class StreamingService:
         result = await awaitable
         return result, (time.monotonic() - started_at) * 1000
 
+    @staticmethod
+    def _usage_value(usage: Any, *names: str) -> int:
+        """Read a usage field while tolerating provider-specific attribute names."""
+        for name in names:
+            value = getattr(usage, name, None)
+            if isinstance(value, int):
+                return value
+        return 0
+
+    def _safe_usage_dict(self, result_or_usage: Any) -> dict[str, int] | None:
+        """Extract usage stats from a run result or RunUsage object."""
+        try:
+            usage = (
+                result_or_usage.usage()
+                if callable(getattr(result_or_usage, "usage", None))
+                else result_or_usage
+            )
+        except Exception as e:
+            logger.debug("Failed to extract usage stats", error=str(e))
+            return None
+
+        if usage is None:
+            return None
+
+        input_tokens = self._usage_value(usage, "input_tokens", "request_tokens")
+        output_tokens = self._usage_value(usage, "output_tokens", "response_tokens")
+        total_tokens = self._usage_value(usage, "total_tokens")
+        if total_tokens == 0:
+            total_tokens = input_tokens + output_tokens
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        }
+
+    @staticmethod
+    def _merge_usage(*usage_dicts: dict[str, int] | None) -> dict[str, int] | None:
+        """Sum usage snapshots across multiple runs."""
+        merged = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        saw_usage = False
+        for usage in usage_dicts:
+            if not usage:
+                continue
+            saw_usage = True
+            for key in merged:
+                value = usage.get(key)
+                if isinstance(value, int):
+                    merged[key] += value
+        return merged if saw_usage else None
+
+    async def _deliver_steering_into_request(
+        self,
+        *,
+        session_id: str | None,
+        session_context: dict[str, Any] | None,
+        next_node: ModelRequestNode,
+    ) -> list[SteeringRecord]:
+        """Append queued steering to the next model request and mark it delivered."""
+        if session_id is None or session_context is None:
+            return []
+        if not session_context.get("pending_steering_ids"):
+            return []
+
+        delivered_steering = await self._sessions.deliver_pending_steering(session_id)
+        if not delivered_steering:
+            return []
+
+        steering_request = build_steering_request(delivered_steering)
+        next_node.request.parts.extend(steering_request.parts)
+        return delivered_steering
+
+    async def _stream_steering_followups(
+        self,
+        *,
+        session_id: str,
+        session_context: dict[str, Any],
+        assistant_message_id: str,
+        agent_context: Any,
+        coordinator: EventCoordinator,
+        emit_debug: bool,
+        resolved_model: str,
+        conversation_history: list[Any],
+        assistant_messages: list[Any],
+        cumulative_usage: Any,
+        outcome: dict[str, Any],
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Deliver queued steering after a turn ends, updating the same assistant row."""
+        latest_output = ""
+        pending_info: dict[str, Any] | None = None
+        current_history = list(conversation_history)
+        accumulated_messages = list(assistant_messages)
+        usage_state = cumulative_usage
+        usage_dict = self._safe_usage_dict(usage_state)
+
+        while session_context.get("pending_steering_ids"):
+            delivered_steering = await self._sessions.deliver_pending_steering(session_id)
+            if not delivered_steering:
+                break
+
+            followup_history = [*current_history, build_steering_request(delivered_steering)]
+            async with asyncio.timeout(self._config.stream_timeout_seconds):
+                with assistant_request_context(session_id):
+                    async with agent_context.agent.iter(
+                        None,
+                        message_history=followup_history,
+                        usage_limits=agent_context.usage_limits,
+                        usage=usage_state,
+                    ) as run:
+                        async for event in self._iterate_run(
+                            run,
+                            coordinator,
+                            resolved_model,
+                            emit_debug=emit_debug,
+                            session_id=session_id,
+                            session_context=session_context,
+                        ):
+                            yield event
+
+            current_history = list(run.result.all_messages())
+            accumulated_messages.extend(run.result.new_messages())
+            usage_state = run.result.usage()
+            usage_dict = self._safe_usage_dict(usage_state)
+
+            assistant_content, assistant_segments, _assistant_timestamp = build_assistant_message_content(
+                accumulated_messages
+            )
+            await self._sessions.update_message(
+                session_id,
+                assistant_message_id,
+                content=assistant_content,
+                segments=assistant_segments,
+                usage=usage_dict,
+            )
+
+            output = run.result.output
+            latest_output = str(output)
+            if isinstance(output, DeferredToolRequests):
+                pending_info = self._store_pending_frontend_tool(output, session_context)
+                session_context["pending_assistant_message_id"] = assistant_message_id
+                break
+
+            session_context.pop("pending_assistant_message_id", None)
+            pending_info = None
+
+        outcome["final_output"] = latest_output
+        outcome["usage"] = usage_dict
+        outcome["pending_tool_call"] = pending_info
+
+    async def _stream_promoted_steering(
+        self, request: AssistantRequest
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Run a promoted steering turn immediately when the session is idle."""
+        coordinator = EventCoordinator(self._config.max_events_per_stream)
+        emit_debug = self._config.emit_debug_events
+        start_time = time.monotonic()
+
+        try:
+            session_id = request.session_id
+            session_context = await self._sessions.get_context_if_exists_async(session_id)
+            if session_context is None:
+                raise SessionError(f"Steering rejected: session '{session_id}' does not exist")
+
+            active_leaf_id = session_context.get("active_leaf_id")
+            if active_leaf_id is None:
+                raise SessionError(
+                    f"Steering rejected: session '{session_id}' has no active conversation"
+                )
+
+            active_leaf = session_context["message_index"].get(active_leaf_id)
+            if active_leaf is None:
+                raise SessionError(
+                    f"Steering rejected: session '{session_id}' has no active conversation"
+                )
+
+            steering_record = session_context["steering_index"].get(request.id)
+            if steering_record is None:
+                steering_record = await self._sessions.queue_steering(
+                    session_id,
+                    request,
+                    status="promoted",
+                    delivered_at=datetime.now(UTC),
+                )
+            elif steering_record.get("status") == "pending":
+                steering_record = await self._sessions.mark_steering_promoted(session_id, request.id)
+
+            create_new_assistant = active_leaf.get("role") == "user"
+            if active_leaf.get("role") not in {"user", "assistant"}:
+                raise SessionError(
+                    f"Steering rejected: session '{session_id}' has no active assistant context"
+                )
+
+            assistant_message_id = active_leaf_id if not create_new_assistant else str(uuid.uuid4())
+            assistant_messages = (
+                []
+                if create_new_assistant
+                else path_records_to_model_history([active_leaf])
+            )
+            assistant_parent_id = active_leaf_id if create_new_assistant else active_leaf.get("parent_id")
+            session_context["current_assistant_message_id"] = assistant_message_id
+
+            history = self._sessions.get_history(session_id)
+            (ctx, agent_setup_ms), (history_result, history_prep_ms) = await asyncio.gather(
+                self._timed_async(
+                    self._assistant_service.prepare_agent_context(request, session_context)
+                ),
+                self._timed_async(
+                    self._history.prepare_history_with_metadata(history, session_context)
+                ),
+            )
+            resolved_model = ctx.resolved_model
+            prepared_history = history_result.history
+            promoted_history = [*prepared_history, build_steering_request([steering_record])]
+            turn_number = session_context.get("turn_number", 0)
+
+            trace_cm = create_request_trace(
+                session_id=session_id,
+                model=resolved_model,
+                is_continuation=False,
+                input_message=request.message,
+                metadata={"steering": True},
+                set_current_observation=False,
+            )
+            trace_cm.__enter__()
+        except SessionError:
+            raise
+        except Exception as e:
+            raise StreamSetupError(f"Promoted steering setup failed: {e}") from e
+
+        started = coordinator.try_started()
+        if started:
+            yield started
+
+        try:
+            if emit_debug:
+                yield coordinator.track_debug(
+                    make_debug_request_event(
+                        session_id=session_id,
+                        message=request.message,
+                        is_continuation=False,
+                        has_machine_state=request.machine_state is not None,
+                        machine_state=request.machine_state,
+                    )
+                )
+
+            logger.info(
+                "[STREAM] Promoted steering setup ready",
+                session_id=session_id,
+                model=resolved_model,
+                agent_setup_ms=agent_setup_ms,
+                history_prep_ms=history_prep_ms,
+                pre_stream_ms=(time.monotonic() - start_time) * 1000,
+            )
+        except Exception as e:
+            error_type = "session_error" if isinstance(e, SessionError) else "setup_error"
+            retry_allowed = not isinstance(e, SessionError)
+            for event in self._iter_setup_failure_events(
+                coordinator,
+                session_id=session_id,
+                message=f"Setup failed: {e}",
+                error_type=error_type,
+                retry_allowed=retry_allowed,
+            ):
+                yield event
+            return
+
+        _assistant_persisted = False
+        try:
+            async with asyncio.timeout(self._config.stream_timeout_seconds):
+                with assistant_request_context(session_id):
+                    async with ctx.agent.iter(
+                        None,
+                        message_history=promoted_history,
+                        usage_limits=ctx.usage_limits,
+                    ) as run:
+                        async for event in self._iterate_run(
+                            run,
+                            coordinator,
+                            resolved_model,
+                            emit_debug=emit_debug,
+                            session_id=session_id,
+                            session_context=session_context,
+                        ):
+                            yield event
+
+            all_messages = list(run.result.all_messages())
+            promoted_messages = list(run.result.new_messages())
+            usage_dict = self._safe_usage_dict(run.result)
+            assistant_turn_messages = [*assistant_messages, *promoted_messages]
+
+            assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
+                assistant_turn_messages
+            )
+            if create_new_assistant:
+                await self._sessions.register_assistant_message(
+                    session_id,
+                    message_id=assistant_message_id,
+                    parent_id=assistant_parent_id,
+                    content=assistant_content,
+                    segments=assistant_segments,
+                    usage=usage_dict,
+                    created_at=assistant_timestamp,
+                )
+            else:
+                await self._sessions.update_message(
+                    session_id,
+                    assistant_message_id,
+                    content=assistant_content,
+                    segments=assistant_segments,
+                    usage=usage_dict,
+                )
+            _assistant_persisted = True
+
+            output = run.result.output
+            if isinstance(output, DeferredToolRequests):
+                pending_info = self._store_pending_frontend_tool(output, session_context)
+                session_context["pending_assistant_message_id"] = assistant_message_id
+                final_output = None
+            else:
+                session_context.pop("pending_assistant_message_id", None)
+                pending_info = None
+                final_output = str(output)
+                if session_context.get("pending_steering_ids"):
+                    followup_outcome: dict[str, Any] = {}
+                    async for event in self._stream_steering_followups(
+                        session_id=session_id,
+                        session_context=session_context,
+                        assistant_message_id=assistant_message_id,
+                        agent_context=ctx,
+                        coordinator=coordinator,
+                        emit_debug=emit_debug,
+                        resolved_model=resolved_model,
+                        conversation_history=all_messages,
+                        assistant_messages=assistant_turn_messages,
+                        cumulative_usage=run.result.usage(),
+                        outcome=followup_outcome,
+                    ):
+                        yield event
+                    final_output = followup_outcome.get("final_output", final_output)
+                    usage_dict = followup_outcome.get("usage", usage_dict)
+                    pending_info = followup_outcome.get("pending_tool_call")
+
+            session_context.pop("current_assistant_message_id", None)
+
+            final = coordinator.try_final_response(
+                final_output,
+                resolved_model,
+                session_id=session_id,
+                message_id=assistant_message_id,
+                usage=usage_dict,
+                pending_tool_call=pending_info,
+            )
+            if final:
+                yield final
+        except TimeoutError:
+            final = coordinator.try_final_response(
+                None,
+                resolved_model if "resolved_model" in locals() else "unknown",
+                session_id=session_id,
+                error=True,
+                error_type="timeout",
+            )
+            if final:
+                yield final
+            yield coordinator.track(
+                make_error_event(
+                    f"Request timed out after {self._config.stream_timeout_seconds}s",
+                    error_type="timeout",
+                    terminal=True,
+                    retry_allowed=True,
+                )
+            )
+        except StreamingError:
+            raise
+        except Exception as e:
+            llm_error = self._classify_provider_error(e)
+            error_type = self._llm_error_type(llm_error) if llm_error is not None else "internal"
+            retry_allowed = llm_error.retry_allowed if llm_error is not None else False
+            message = (
+                str(llm_error)
+                if llm_error is not None
+                else f"Streaming failed: {e.__class__.__name__}: {e}"
+            )
+            final = coordinator.try_final_response(
+                None,
+                resolved_model if "resolved_model" in locals() else "unknown",
+                session_id=session_id,
+                error=True,
+                error_type=error_type,
+            )
+            if final:
+                yield final
+            yield coordinator.track(
+                make_error_event(
+                    message,
+                    error_type=error_type,
+                    terminal=True,
+                    retry_allowed=retry_allowed,
+                )
+            )
+        finally:
+            session_context = locals().get("session_context")
+            if isinstance(session_context, dict):
+                session_context.pop("current_assistant_message_id", None)
+
+            try:
+                if (
+                    _assistant_persisted
+                    and "ctx" in locals()
+                    and ctx.effective_config.enable_working_memory
+                ):
+                    await self._assistant_service._update_working_memory(
+                        session_id, session_context, turn_number
+                    )
+            except Exception as e:
+                logger.debug("Working memory update failed in streaming path", error=str(e))
+
+            if emit_debug:
+                coordinator.flush_thinking()
+            if emit_debug and coordinator.accumulated_response:
+                yield coordinator.track_debug(
+                    make_debug_final_response_event(
+                        coordinator.accumulated_response,
+                        resolved_model if "resolved_model" in locals() else "unknown",
+                        usage=self._safe_usage_dict(run.result if "run" in locals() else None),
+                    )
+                )
+
+            duration_ms = (time.monotonic() - start_time) * 1000
+            if emit_debug:
+                yield coordinator.track_debug(make_debug_completed_event(duration_ms=duration_ms))
+
+            with contextlib.suppress(Exception):
+                trace_cm.__exit__(None, None, None)
+            await self._save_trace(
+                session_id,
+                coordinator.debug_events,
+                user_message=request.message,
+                duration_ms=duration_ms,
+            )
+
+            completed = coordinator.try_completed()
+            if completed:
+                yield completed
+
     async def _iterate_run(
         self,
         run: Any,
@@ -1101,6 +1586,8 @@ class StreamingService:
         *,
         emit_debug: bool = False,
         suppress_tool_call_ids: set[str] | None = None,
+        session_id: str | None = None,
+        session_context: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Iterate over agent run nodes, yielding streaming events."""
         _pending_image_sanitize = False
@@ -1192,6 +1679,12 @@ class StreamingService:
                             )
                             coordinator.track_debug(retry_evt)
                             yield coordinator.track(retry_evt)
+
+                    await self._deliver_steering_into_request(
+                        session_id=session_id,
+                        session_context=session_context,
+                        next_node=next_node,
+                    )
 
                 # Flag deferred sanitization: the image must survive until
                 # the next ModelRequestNode streams (LLM sees it), then gets
