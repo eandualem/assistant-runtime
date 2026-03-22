@@ -9,11 +9,11 @@ import httpx
 from loguru import logger
 
 from lovely_assistant.base.resilience import retry_with_backoff
+from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools._request_context import (
     get_current_assistant_session_id,
     record_current_telegram_chat_binding,
 )
-from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
 TELEGRAM_API_BASE = "https://api.telegram.org"

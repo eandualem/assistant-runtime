@@ -3,6 +3,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lovely_assistant.app.assistant.config import AssistantConfig
+from lovely_assistant.app.heartbeat.config import HeartbeatConfig
 from lovely_assistant.app.streaming.config import StreamingConfig
 from lovely_assistant.services.database.config import DatabaseConfig
 from lovely_assistant.services.history.config import HistoryConfig
@@ -27,6 +28,7 @@ class AppSettings(BaseSettings):
     oauth: OAuthConfig = OAuthConfig()
     tools: ToolConfig = ToolConfig()
     assistant: AssistantConfig = AssistantConfig()
+    heartbeat: HeartbeatConfig = HeartbeatConfig()
     streaming: StreamingConfig = StreamingConfig()
 
     model_config = SettingsConfigDict(

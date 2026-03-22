@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,8 @@ class MCPService:
         self._failed: list[dict[str, str]] = []  # Name + reason for failures
         self._exit_stack: AsyncExitStack | None = None
         self._detailed_cache: list[dict[str, Any]] | None = None
+        self._detailed_cache_task: asyncio.Task[list[dict[str, Any]]] | None = None
+        self._detailed_cache_lock = asyncio.Lock()
         self._started = False
 
     async def start(self) -> None:
@@ -84,6 +87,7 @@ class MCPService:
         self._failed.clear()
         self._servers.clear()
         self._detailed_cache = None
+        self._detailed_cache_task = None
         self._started = False
         logger.info("MCP service stopped")
 
@@ -130,16 +134,40 @@ class MCPService:
         if self._detailed_cache is not None:
             return self._detailed_cache
 
-        summaries: list[dict[str, Any]] = []
-        for server in self._live_servers:
-            name = getattr(server, "id", None) or getattr(server, "tool_prefix", None) or "unknown"
-            tools: list[str] = []
-            try:
-                tool_defs = await server.list_tools()
-                tools = [t.name for t in tool_defs]
-            except Exception as e:
-                logger.warning("Failed to list tools for MCP server", name=name, error=str(e))
-            summaries.append({"name": name, "tools": tools, "tool_count": len(tools)})
+        created = False
+        async with self._detailed_cache_lock:
+            if self._detailed_cache is not None:
+                return self._detailed_cache
+            if self._detailed_cache_task is None:
+                self._detailed_cache_task = asyncio.create_task(self._build_detailed_summary())
+                created = True
+            task = self._detailed_cache_task
+
+        try:
+            summaries = await task
+        finally:
+            if created:
+                async with self._detailed_cache_lock:
+                    if self._detailed_cache_task is task:
+                        self._detailed_cache_task = None
 
         self._detailed_cache = summaries
         return summaries
+
+    async def _build_detailed_summary(self) -> list[dict[str, Any]]:
+        """Build detailed summaries for all live servers in parallel."""
+        summaries = await asyncio.gather(
+            *(self._summarize_server(server) for server in self._live_servers)
+        )
+        return list(summaries)
+
+    async def _summarize_server(self, server: Any) -> dict[str, Any]:
+        """Return the detailed tool summary for one MCP server."""
+        name = getattr(server, "id", None) or getattr(server, "tool_prefix", None) or "unknown"
+        tools: list[str] = []
+        try:
+            tool_defs = await server.list_tools()
+            tools = [t.name for t in tool_defs]
+        except Exception as e:
+            logger.warning("Failed to list tools for MCP server", name=name, error=str(e))
+        return {"name": name, "tools": tools, "tool_count": len(tools)}

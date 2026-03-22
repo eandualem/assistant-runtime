@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lovely_assistant.app.assistant.models import AssistantRequest
 from lovely_assistant.app.assistant._session_store import SessionStore
+from lovely_assistant.app.assistant.models import AssistantRequest
 from lovely_assistant.services.history.interface import HistoryService
 
 
