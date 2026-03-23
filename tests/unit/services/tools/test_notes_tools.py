@@ -11,6 +11,8 @@ from lovely_assistant.services.tools._notes_tools import (
     _parse_note,
     _slugify,
     _validate_filename,
+    _validate_folder,
+    _validate_note_path,
     manage_notes,
     register_notes_tools,
 )
@@ -94,6 +96,64 @@ class TestValidateFilename:
 
 
 # ---------------------------------------------------------------------------
+# TestValidateNotePath
+# ---------------------------------------------------------------------------
+
+
+class TestValidateNotePath:
+    def test_valid_path_with_folder(self, notes_dir):
+        assert _validate_note_path("governance/tracks/my-note.md") is None
+
+    def test_valid_bare_filename(self, notes_dir):
+        assert _validate_note_path("my-note.md") is None
+
+    def test_deeply_nested(self, notes_dir):
+        assert _validate_note_path("a/b/c/note.md") is None
+
+    def test_empty(self):
+        assert _validate_note_path("") is not None
+
+    def test_path_traversal_dotdot(self):
+        result = _validate_note_path("../outside/note.md")
+        assert result is not None
+        assert "traversal" in result.lower()
+
+    def test_backslash_rejected(self):
+        result = _validate_note_path("folder\\note.md")
+        assert result is not None
+
+    def test_invalid_filename_in_path(self, notes_dir):
+        result = _validate_note_path("folder/has spaces.md")
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# TestValidateFolder
+# ---------------------------------------------------------------------------
+
+
+class TestValidateFolder:
+    def test_valid_single(self, notes_dir):
+        assert _validate_folder("governance") is None
+
+    def test_valid_nested(self, notes_dir):
+        assert _validate_folder("governance/tracks") is None
+
+    def test_empty(self):
+        result = _validate_folder("")
+        assert result is not None
+
+    def test_dotdot(self):
+        result = _validate_folder("../outside")
+        assert result is not None
+        assert "traversal" in result.lower()
+
+    def test_backslash(self):
+        result = _validate_folder("a\\b")
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
 # TestParseNote
 # ---------------------------------------------------------------------------
 
@@ -110,6 +170,18 @@ class TestParseNote:
         assert result["date"] == "2026-02-19"
         assert result["tags"] == ["auth", "api"]
         assert result["content"] == "Note body here."
+        assert result["folder"] == ""
+
+    def test_with_folder(self, notes_dir):
+        sub = notes_dir / "governance" / "tracks"
+        sub.mkdir(parents=True)
+        path = sub / "design.md"
+        path.write_text('---\ntitle: "Design"\ndate: 2026-03-23\ntags: []\n---\n\nDesign doc.\n')
+
+        result = _parse_note(path)
+        assert result is not None
+        assert result["folder"] == "governance/tracks"
+        assert result["path"] == "governance/tracks/design.md"
 
     def test_without_frontmatter(self, notes_dir):
         path = notes_dir / "plain.md"
@@ -207,6 +279,61 @@ class TestCreateNote:
         assert r2["success"] is True
         assert r1["filename"] != r2["filename"]
 
+    @patch(f"{MODULE}.date")
+    async def test_create_in_folder(self, mock_date, notes_dir):
+        mock_date.today.return_value = mock_date
+        mock_date.__str__ = lambda self: "2026-03-23"
+        mock_date.__format__ = lambda self, fmt: "2026-03-23"
+
+        result = await manage_notes(
+            action="create",
+            title="Design Doc",
+            content="Governance track design.",
+            folder="governance/tracks",
+        )
+        assert result["success"] is True
+        assert "path" in result
+        assert "governance/tracks" in result["path"]
+
+        # Verify file exists in subfolder
+        path = notes_dir / "governance" / "tracks" / result["filename"]
+        assert path.exists()
+
+    @patch(f"{MODULE}.date")
+    async def test_create_in_folder_creates_parents(self, mock_date, notes_dir):
+        mock_date.today.return_value = mock_date
+        mock_date.__str__ = lambda self: "2026-03-23"
+        mock_date.__format__ = lambda self, fmt: "2026-03-23"
+
+        result = await manage_notes(
+            action="create",
+            title="Deep Note",
+            content="Body.",
+            folder="a/b/c",
+        )
+        assert result["success"] is True
+        assert (notes_dir / "a" / "b" / "c").is_dir()
+
+    async def test_create_in_folder_traversal_rejected(self, notes_dir):
+        result = await manage_notes(
+            action="create",
+            title="Bad",
+            content="Body.",
+            folder="../outside",
+        )
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
+
+    @patch(f"{MODULE}.date")
+    async def test_create_returns_path(self, mock_date, notes_dir):
+        mock_date.today.return_value = mock_date
+        mock_date.__str__ = lambda self: "2026-03-23"
+        mock_date.__format__ = lambda self, fmt: "2026-03-23"
+
+        result = await manage_notes(action="create", title="Root Note", content="Body.")
+        assert result["success"] is True
+        assert "path" in result
+
 
 # ---------------------------------------------------------------------------
 # TestManageNotes — list
@@ -254,6 +381,57 @@ class TestListNotes:
         assert result["success"] is True
         assert result["count"] == 3
 
+    async def test_lists_notes_in_subdirectories(self, notes_dir):
+        """rglob finds notes in subfolders."""
+        sub = notes_dir / "governance"
+        sub.mkdir()
+        (sub / "track.md").write_text(
+            '---\ntitle: "Track"\ndate: 2026-03-23\ntags: []\n---\n\nTrack body.\n'
+        )
+        (notes_dir / "root.md").write_text(
+            '---\ntitle: "Root"\ndate: 2026-03-23\ntags: []\n---\n\nRoot body.\n'
+        )
+
+        result = await manage_notes(action="list")
+        assert result["success"] is True
+        assert result["count"] == 2
+        titles = {n["title"] for n in result["notes"]}
+        assert titles == {"Track", "Root"}
+
+    async def test_list_includes_folder_field(self, notes_dir):
+        sub = notes_dir / "docs"
+        sub.mkdir()
+        (sub / "note.md").write_text(
+            '---\ntitle: "Note"\ndate: 2026-03-23\ntags: []\n---\n\nBody.\n'
+        )
+
+        result = await manage_notes(action="list")
+        assert result["success"] is True
+        note = result["notes"][0]
+        assert note["folder"] == "docs"
+        assert note["path"] == "docs/note.md"
+
+    async def test_list_scoped_to_folder(self, notes_dir):
+        """folder param scopes listing to a subdirectory."""
+        gov = notes_dir / "governance"
+        gov.mkdir()
+        (gov / "track.md").write_text(
+            '---\ntitle: "Track"\ndate: 2026-03-23\ntags: []\n---\n\nBody.\n'
+        )
+        (notes_dir / "root.md").write_text(
+            '---\ntitle: "Root"\ndate: 2026-03-23\ntags: []\n---\n\nBody.\n'
+        )
+
+        result = await manage_notes(action="list", folder="governance")
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["notes"][0]["title"] == "Track"
+
+    async def test_list_nonexistent_folder(self, notes_dir):
+        result = await manage_notes(action="list", folder="nonexistent")
+        assert result["success"] is True
+        assert result["count"] == 0
+
 
 # ---------------------------------------------------------------------------
 # TestManageNotes — read
@@ -279,6 +457,26 @@ class TestReadNote:
     async def test_read_invalid_filename(self, notes_dir):
         result = await manage_notes(action="read", filename="../etc/passwd")
         assert result["success"] is False
+
+    async def test_read_with_path(self, notes_dir):
+        """Can read notes in subfolders via path."""
+        sub = notes_dir / "governance"
+        sub.mkdir()
+        (sub / "track.md").write_text(
+            '---\ntitle: "Track"\ndate: 2026-03-23\ntags: []\n---\n\nTrack content.\n'
+        )
+
+        result = await manage_notes(action="read", filename="governance/track.md")
+        assert result["success"] is True
+        assert result["title"] == "Track"
+        assert result["content"] == "Track content."
+        assert result["folder"] == "governance"
+
+    async def test_read_with_path_not_found(self, notes_dir):
+        (notes_dir / "governance").mkdir()
+        result = await manage_notes(action="read", filename="governance/nope.md")
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +542,33 @@ class TestSearchNotes:
         assert "MATCH_HERE" in snippet
         assert "..." in snippet  # truncation indicator
 
+    async def test_search_finds_notes_in_subdirs(self, notes_dir):
+        sub = notes_dir / "governance"
+        sub.mkdir()
+        (sub / "track.md").write_text(
+            '---\ntitle: "Track"\ndate: 2026-03-23\ntags: []\n---\n\nGovernance track design.\n'
+        )
+
+        result = await manage_notes(action="search", query="governance track")
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["folder"] == "governance"
+
+    async def test_search_scoped_to_folder(self, notes_dir):
+        gov = notes_dir / "governance"
+        gov.mkdir()
+        (gov / "track.md").write_text(
+            '---\ntitle: "Track"\ndate: 2026-03-23\ntags: []\n---\n\nDesign doc.\n'
+        )
+        (notes_dir / "root.md").write_text(
+            '---\ntitle: "Root"\ndate: 2026-03-23\ntags: []\n---\n\nDesign doc.\n'
+        )
+
+        result = await manage_notes(action="search", query="design", folder="governance")
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["title"] == "Track"
+
 
 # ---------------------------------------------------------------------------
 # TestManageNotes — update
@@ -388,6 +613,20 @@ class TestUpdateNote:
         assert result["success"] is False
         assert "Provide" in result["error"]
 
+    async def test_update_note_in_subfolder(self, notes_dir):
+        sub = notes_dir / "docs"
+        sub.mkdir()
+        (sub / "note.md").write_text(
+            '---\ntitle: "Doc"\ndate: 2026-03-23\ntags: []\n---\n\nOld body.\n'
+        )
+
+        result = await manage_notes(action="update", filename="docs/note.md", content="New body.")
+        assert result["success"] is True
+
+        text = (sub / "note.md").read_text()
+        assert "New body" in text
+        assert "Doc" in text  # title preserved
+
 
 # ---------------------------------------------------------------------------
 # TestManageNotes — delete
@@ -412,6 +651,117 @@ class TestDeleteNote:
     async def test_delete_invalid_filename(self, notes_dir):
         result = await manage_notes(action="delete", filename="../bad.md")
         assert result["success"] is False
+
+    async def test_delete_note_in_subfolder(self, notes_dir):
+        sub = notes_dir / "docs"
+        sub.mkdir()
+        path = sub / "doomed.md"
+        path.write_text("content")
+
+        result = await manage_notes(action="delete", filename="docs/doomed.md")
+        assert result["success"] is True
+        assert result["deleted"] is True
+        assert not path.exists()
+
+
+# ---------------------------------------------------------------------------
+# TestManageNotes — create_folder
+# ---------------------------------------------------------------------------
+
+
+class TestCreateFolder:
+    async def test_create_folder(self, notes_dir):
+        result = await manage_notes(action="create_folder", folder="governance/tracks")
+        assert result["success"] is True
+        assert result["created"] is True
+        assert (notes_dir / "governance" / "tracks").is_dir()
+
+    async def test_create_folder_already_exists(self, notes_dir):
+        (notes_dir / "existing").mkdir()
+        result = await manage_notes(action="create_folder", folder="existing")
+        assert result["success"] is True
+        assert result["created"] is False
+        assert "already exists" in result["message"].lower()
+
+    async def test_create_folder_no_folder(self, notes_dir):
+        result = await manage_notes(action="create_folder")
+        assert result["success"] is False
+        assert "required" in result["error"].lower()
+
+    async def test_create_folder_traversal(self, notes_dir):
+        result = await manage_notes(action="create_folder", folder="../outside")
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
+
+    async def test_create_nested_folder(self, notes_dir):
+        result = await manage_notes(action="create_folder", folder="a/b/c/d")
+        assert result["success"] is True
+        assert (notes_dir / "a" / "b" / "c" / "d").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# TestManageNotes — move_note
+# ---------------------------------------------------------------------------
+
+
+class TestMoveNote:
+    async def test_move_note(self, notes_dir):
+        (notes_dir / "note.md").write_text("content")
+        (notes_dir / "target").mkdir()
+
+        result = await manage_notes(action="move_note", filename="note.md", folder="target")
+        assert result["success"] is True
+        assert not (notes_dir / "note.md").exists()
+        assert (notes_dir / "target" / "note.md").exists()
+        assert result["to"] == "target/note.md"
+
+    async def test_move_creates_destination(self, notes_dir):
+        (notes_dir / "note.md").write_text("content")
+
+        result = await manage_notes(action="move_note", filename="note.md", folder="new/sub/dir")
+        assert result["success"] is True
+        assert (notes_dir / "new" / "sub" / "dir" / "note.md").exists()
+
+    async def test_move_no_filename(self, notes_dir):
+        result = await manage_notes(action="move_note", folder="target")
+        assert result["success"] is False
+        assert "filename" in result["error"].lower()
+
+    async def test_move_no_folder(self, notes_dir):
+        result = await manage_notes(action="move_note", filename="note.md")
+        assert result["success"] is False
+        assert "folder" in result["error"].lower()
+
+    async def test_move_source_not_found(self, notes_dir):
+        result = await manage_notes(action="move_note", filename="nope.md", folder="target")
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
+
+    async def test_move_destination_conflict(self, notes_dir):
+        (notes_dir / "note.md").write_text("original")
+        target = notes_dir / "target"
+        target.mkdir()
+        (target / "note.md").write_text("existing")
+
+        result = await manage_notes(action="move_note", filename="note.md", folder="target")
+        assert result["success"] is False
+        assert "already exists" in result["error"].lower()
+
+    async def test_move_traversal_on_folder(self, notes_dir):
+        (notes_dir / "note.md").write_text("content")
+        result = await manage_notes(action="move_note", filename="note.md", folder="../outside")
+        assert result["success"] is False
+
+    async def test_move_from_subfolder(self, notes_dir):
+        """Can move a note from a subfolder to another subfolder."""
+        src = notes_dir / "old"
+        src.mkdir()
+        (src / "note.md").write_text("content")
+
+        result = await manage_notes(action="move_note", filename="old/note.md", folder="new")
+        assert result["success"] is True
+        assert not (src / "note.md").exists()
+        assert (notes_dir / "new" / "note.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -460,4 +810,12 @@ class TestRegisterNotesTools:
             "search",
             "update",
             "delete",
+            "create_folder",
+            "move_note",
         }
+
+    def test_schema_has_folder_property(self):
+        registry = ToolRegistry(ToolConfig())
+        register_notes_tools(registry)
+        schema = registry._backend_definitions["manage_notes"].parameters_schema
+        assert "folder" in schema["properties"]

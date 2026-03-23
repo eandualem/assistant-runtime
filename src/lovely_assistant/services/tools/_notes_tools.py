@@ -1,9 +1,13 @@
-"""Notes management tool -- CRUD operations on a markdown notes folder."""
+"""Notes management tool -- CRUD operations on a markdown notes folder.
+
+Supports flat notes and subdirectory organization (folders).
+"""
 
 from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -36,6 +40,14 @@ def _slugify(text: str) -> str:
     return slug.strip("-")[:80]
 
 
+def _is_safe_path(target: Path) -> bool:
+    """Check that *target* resolves within NOTES_DIR (traversal guard)."""
+    try:
+        return target.resolve().is_relative_to(NOTES_DIR.resolve())
+    except (ValueError, OSError):
+        return False
+
+
 def _validate_filename(filename: str) -> str | None:
     """Validate a note filename. Returns error message or None if valid."""
     if not filename:
@@ -46,6 +58,57 @@ def _validate_filename(filename: str) -> str | None:
     if ".." in filename or "/" in filename:
         return "Invalid filename — path traversal not allowed"
     return None
+
+
+def _validate_note_path(note_path: str) -> str | None:
+    """Validate a note path that may include subdirectories.
+
+    Accepts ``folder/subfolder/note-name.md`` style paths.
+    Returns error message or None if valid.
+    """
+    if not note_path:
+        return "Note path cannot be empty"
+    if "\\" in note_path or ".." in note_path:
+        return "Invalid note path — path traversal not allowed"
+
+    # Each segment must be safe
+    parts = Path(note_path).parts
+    if not parts:
+        return "Note path cannot be empty"
+
+    # Last part must be a valid .md filename
+    basename = parts[-1]
+    if not FILENAME_PATTERN.match(basename):
+        return "Invalid filename — must match pattern: alphanumeric, hyphens, underscores, ending in .md"
+
+    # Check the resolved path stays inside NOTES_DIR
+    target = NOTES_DIR / note_path
+    if not _is_safe_path(target):
+        return "Invalid note path — resolves outside notes directory"
+
+    return None
+
+
+def _validate_folder(folder: str) -> str | None:
+    """Validate a folder path. Returns error message or None if valid."""
+    if not folder:
+        return "Folder path cannot be empty"
+    if "\\" in folder or ".." in folder:
+        return "Invalid folder — path traversal not allowed"
+
+    target = NOTES_DIR / folder
+    if not _is_safe_path(target):
+        return "Invalid folder — resolves outside notes directory"
+
+    return None
+
+
+def _relative_path(path: Path) -> str:
+    """Return the path of a note relative to NOTES_DIR."""
+    try:
+        return str(path.resolve().relative_to(NOTES_DIR.resolve()))
+    except ValueError:
+        return path.name
 
 
 def _parse_note(path: Path) -> dict[str, Any] | None:
@@ -67,8 +130,16 @@ def _parse_note(path: Path) -> dict[str, Any] | None:
                 frontmatter = {}
             body = parts[2].strip()
 
+    # Compute folder relative to NOTES_DIR
+    rel = _relative_path(path)
+    folder = str(Path(rel).parent)
+    if folder == ".":
+        folder = ""
+
     return {
         "filename": path.name,
+        "path": rel,
+        "folder": folder,
         "title": frontmatter.get("title", path.stem),
         "date": str(frontmatter.get("date", "")),
         "tags": frontmatter.get("tags", []),
@@ -88,7 +159,7 @@ def _build_note_content(title: str, content: str, tags: list[str] | None = None)
 
 
 # ---------------------------------------------------------------------------
-# Tool handler
+# Tool handlers
 # ---------------------------------------------------------------------------
 
 
@@ -101,8 +172,9 @@ async def manage_notes(
     tag: str = "",
     query: str = "",
     limit: int = 20,
+    folder: str = "",
 ) -> dict[str, Any]:
-    """Manage notes in ~/notes/. Supports create, list, read, search, update, delete."""
+    """Manage notes in ~/notes/. Supports create, list, read, search, update, delete, create_folder, move_note."""
 
     actions = {
         "create": _create_note,
@@ -111,6 +183,8 @@ async def manage_notes(
         "search": _search_notes,
         "update": _update_note,
         "delete": _delete_note,
+        "create_folder": _create_folder,
+        "move_note": _move_note,
     }
 
     if action not in actions:
@@ -127,11 +201,12 @@ async def manage_notes(
         tag=tag,
         query=query,
         limit=limit,
+        folder=folder,
     )
 
 
 async def _create_note(
-    title: str, content: str, tags: list[str] | None = None, **_kwargs: Any
+    title: str, content: str, tags: list[str] | None = None, folder: str = "", **_kwargs: Any
 ) -> dict[str, Any]:
     if not title:
         return {"error": "Title is required for create", "success": False}
@@ -139,32 +214,53 @@ async def _create_note(
         return {"error": "Content is required for create", "success": False}
 
     notes_dir = _ensure_notes_dir()
+
+    # Determine target directory
+    target_dir = notes_dir
+    if folder:
+        error = _validate_folder(folder)
+        if error:
+            return {"error": error, "success": False}
+        target_dir = notes_dir / folder
+        target_dir.mkdir(parents=True, exist_ok=True)
+
     slug = _slugify(title)
     if not slug:
         return {"error": "Title produces empty slug", "success": False}
 
     filename = f"{date.today()}-{slug}.md"
-    path = notes_dir / filename
+    path = target_dir / filename
 
     # Avoid overwriting
     if path.exists():
         counter = 1
         while path.exists():
             filename = f"{date.today()}-{slug}-{counter}.md"
-            path = notes_dir / filename
+            path = target_dir / filename
             counter += 1
 
     note_content = _build_note_content(title, content, tags)
     await asyncio.to_thread(path.write_text, note_content, "utf-8")
 
-    logger.info("Created note", filename=filename, title=title)
-    return {"filename": filename, "title": title, "success": True}
+    rel_path = _relative_path(path)
+    logger.info("Created note", path=rel_path, title=title)
+    return {"filename": filename, "path": rel_path, "title": title, "success": True}
 
 
-async def _list_notes(tag: str = "", limit: int = 20, **_kwargs: Any) -> dict[str, Any]:
+async def _list_notes(tag: str = "", limit: int = 20, folder: str = "", **_kwargs: Any) -> dict[str, Any]:
     notes_dir = _ensure_notes_dir()
 
-    md_files = sorted(notes_dir.glob("*.md"), reverse=True)
+    # Search scope
+    search_dir = notes_dir
+    if folder:
+        error = _validate_folder(folder)
+        if error:
+            return {"error": error, "success": False}
+        search_dir = notes_dir / folder
+        if not search_dir.is_dir():
+            return {"notes": [], "count": 0, "success": True}
+
+    md_files = sorted(search_dir.rglob("*.md"), reverse=True)
     notes = []
     for path in md_files:
         parsed = await asyncio.to_thread(_parse_note, path)
@@ -177,6 +273,8 @@ async def _list_notes(tag: str = "", limit: int = 20, **_kwargs: Any) -> dict[st
         notes.append(
             {
                 "filename": parsed["filename"],
+                "path": parsed["path"],
+                "folder": parsed["folder"],
                 "title": parsed["title"],
                 "date": parsed["date"],
                 "tags": parsed["tags"],
@@ -190,11 +288,18 @@ async def _list_notes(tag: str = "", limit: int = 20, **_kwargs: Any) -> dict[st
 
 
 async def _read_note(filename: str = "", **_kwargs: Any) -> dict[str, Any]:
-    error = _validate_filename(filename)
-    if error:
-        return {"error": error, "success": False}
+    # Support both bare filenames and paths with folders
+    if "/" in filename:
+        error = _validate_note_path(filename)
+        if error:
+            return {"error": error, "success": False}
+        path = NOTES_DIR / filename
+    else:
+        error = _validate_filename(filename)
+        if error:
+            return {"error": error, "success": False}
+        path = NOTES_DIR / filename
 
-    path = NOTES_DIR / filename
     parsed = await asyncio.to_thread(_parse_note, path)
     if parsed is None:
         return {"error": f"Note not found: {filename}", "success": False}
@@ -202,7 +307,7 @@ async def _read_note(filename: str = "", **_kwargs: Any) -> dict[str, Any]:
     return {**parsed, "success": True}
 
 
-async def _search_notes(query: str = "", limit: int = 20, **_kwargs: Any) -> dict[str, Any]:
+async def _search_notes(query: str = "", limit: int = 20, folder: str = "", **_kwargs: Any) -> dict[str, Any]:
     if not query:
         return {"error": "Query is required for search", "success": False}
 
@@ -210,7 +315,16 @@ async def _search_notes(query: str = "", limit: int = 20, **_kwargs: Any) -> dic
     query_lower = query.lower()
     results = []
 
-    md_files = sorted(notes_dir.glob("*.md"), reverse=True)
+    search_dir = notes_dir
+    if folder:
+        error = _validate_folder(folder)
+        if error:
+            return {"error": error, "success": False}
+        search_dir = notes_dir / folder
+        if not search_dir.is_dir():
+            return {"results": [], "count": 0, "query": query, "success": True}
+
+    md_files = sorted(search_dir.rglob("*.md"), reverse=True)
     for path in md_files:
         parsed = await asyncio.to_thread(_parse_note, path)
         if parsed is None:
@@ -240,6 +354,8 @@ async def _search_notes(query: str = "", limit: int = 20, **_kwargs: Any) -> dic
         results.append(
             {
                 "filename": parsed["filename"],
+                "path": parsed["path"],
+                "folder": parsed["folder"],
                 "title": parsed["title"],
                 "date": parsed["date"],
                 "tags": parsed["tags"],
@@ -258,11 +374,18 @@ async def _update_note(
     tags: list[str] | None = None,
     **_kwargs: Any,
 ) -> dict[str, Any]:
-    error = _validate_filename(filename)
-    if error:
-        return {"error": error, "success": False}
+    # Support both bare filenames and paths with folders
+    if "/" in filename:
+        error = _validate_note_path(filename)
+        if error:
+            return {"error": error, "success": False}
+        path = NOTES_DIR / filename
+    else:
+        error = _validate_filename(filename)
+        if error:
+            return {"error": error, "success": False}
+        path = NOTES_DIR / filename
 
-    path = NOTES_DIR / filename
     parsed = await asyncio.to_thread(_parse_note, path)
     if parsed is None:
         return {"error": f"Note not found: {filename}", "success": False}
@@ -276,22 +399,95 @@ async def _update_note(
     await asyncio.to_thread(path.write_text, note_content, "utf-8")
 
     logger.info("Updated note", filename=filename)
-    return {"filename": filename, "title": parsed["title"], "updated": True, "success": True}
+    return {"filename": parsed["filename"], "path": _relative_path(path), "title": parsed["title"], "updated": True, "success": True}
 
 
 async def _delete_note(filename: str = "", **_kwargs: Any) -> dict[str, Any]:
-    error = _validate_filename(filename)
-    if error:
-        return {"error": error, "success": False}
+    # Support both bare filenames and paths with folders
+    if "/" in filename:
+        error = _validate_note_path(filename)
+        if error:
+            return {"error": error, "success": False}
+        path = NOTES_DIR / filename
+    else:
+        error = _validate_filename(filename)
+        if error:
+            return {"error": error, "success": False}
+        path = NOTES_DIR / filename
 
-    path = NOTES_DIR / filename
     if not path.exists():
         return {"error": f"Note not found: {filename}", "success": False}
 
     await asyncio.to_thread(path.unlink)
 
     logger.info("Deleted note", filename=filename)
-    return {"filename": filename, "deleted": True, "success": True}
+    return {"filename": path.name, "path": _relative_path(path), "deleted": True, "success": True}
+
+
+async def _create_folder(folder: str = "", **_kwargs: Any) -> dict[str, Any]:
+    if not folder:
+        return {"error": "Folder path is required for create_folder", "success": False}
+
+    error = _validate_folder(folder)
+    if error:
+        return {"error": error, "success": False}
+
+    notes_dir = _ensure_notes_dir()
+    target = notes_dir / folder
+
+    if target.exists():
+        return {"folder": folder, "created": False, "message": "Folder already exists", "success": True}
+
+    await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
+
+    logger.info("Created notes folder", folder=folder)
+    return {"folder": folder, "created": True, "success": True}
+
+
+async def _move_note(filename: str = "", folder: str = "", **_kwargs: Any) -> dict[str, Any]:
+    if not filename:
+        return {"error": "Filename is required for move_note", "success": False}
+    if not folder:
+        return {"error": "Destination folder is required for move_note", "success": False}
+
+    # Validate source — can be bare filename or path
+    if "/" in filename:
+        error = _validate_note_path(filename)
+        if error:
+            return {"error": error, "success": False}
+        src = NOTES_DIR / filename
+    else:
+        error = _validate_filename(filename)
+        if error:
+            return {"error": error, "success": False}
+        src = NOTES_DIR / filename
+
+    if not src.exists():
+        return {"error": f"Note not found: {filename}", "success": False}
+
+    # Validate destination folder
+    error = _validate_folder(folder)
+    if error:
+        return {"error": error, "success": False}
+
+    notes_dir = _ensure_notes_dir()
+    dest_dir = notes_dir / folder
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = dest_dir / src.name
+    if dest.exists():
+        return {"error": f"A note named '{src.name}' already exists in '{folder}'", "success": False}
+
+    await asyncio.to_thread(shutil.move, str(src), str(dest))
+
+    new_path = _relative_path(dest)
+    logger.info("Moved note", source=filename, destination=new_path)
+    return {
+        "filename": src.name,
+        "from": _relative_path(src) if src.exists() else filename,
+        "to": new_path,
+        "success": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -306,15 +502,25 @@ def register_notes_tools(registry: ToolRegistry) -> None:
             name="manage_notes",
             description=(
                 "Manage Elias's personal notes. Supports create, list, read, search, "
-                "update, and delete operations on markdown notes with YAML frontmatter. "
-                "Notes are stored as files in ~/notes/."
+                "update, delete, create_folder, and move_note operations on markdown notes "
+                "with YAML frontmatter. Notes are stored as files in ~/notes/ and can be "
+                "organized into subdirectories (folders)."
             ),
             parameters_schema={
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["create", "list", "read", "search", "update", "delete"],
+                        "enum": [
+                            "create",
+                            "list",
+                            "read",
+                            "search",
+                            "update",
+                            "delete",
+                            "create_folder",
+                            "move_note",
+                        ],
                         "description": "The action to perform",
                     },
                     "title": {
@@ -332,7 +538,21 @@ def register_notes_tools(registry: ToolRegistry) -> None:
                     },
                     "filename": {
                         "type": "string",
-                        "description": "Note filename (required for read/update/delete)",
+                        "description": (
+                            "Note filename or path. Bare filename (e.g., 'my-note.md') for root notes. "
+                            "Path with folder (e.g., 'governance/tracks/my-note.md') for notes in subdirectories. "
+                            "Required for read/update/delete/move_note."
+                        ),
+                    },
+                    "folder": {
+                        "type": "string",
+                        "description": (
+                            "Folder path relative to ~/notes/. "
+                            "For create: target folder for the new note (e.g., 'governance/tracks'). "
+                            "For create_folder: the folder to create. "
+                            "For move_note: destination folder. "
+                            "For list/search: scope results to this folder and its subfolders."
+                        ),
                     },
                     "tag": {
                         "type": "string",
