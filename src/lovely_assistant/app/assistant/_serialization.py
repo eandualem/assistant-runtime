@@ -338,39 +338,49 @@ def _assistant_record_to_messages(message: MessageRecord) -> list[ModelMessage]:
 
 
 def assistant_record_to_flat_messages(message: MessageRecord) -> list[ModelMessage]:
-    """Build a flat ModelResponse + ModelRequest for continuation history.
+    """Build continuation history that separates completed tools from pending ones.
 
-    Unlike _assistant_record_to_messages (which splits tool groups into separate
-    ModelResponse/ModelRequest pairs), this creates a SINGLE ModelResponse with
-    all parts and a SINGLE ModelRequest with all resolved tool results. This
-    matches what Pydantic AI's _handle_deferred_tool_results expects when
-    resuming with DeferredToolResults.
+    Pydantic AI's ``_handle_deferred_tool_results`` finds the **last**
+    ``ModelResponse`` in the history and validates that every tool call in it
+    has a matching entry in ``tool_call_results``.  When completed backend
+    tools and a pending frontend tool share the same ``ModelResponse``, the
+    backend tool's 'skip' entry (added from ``last_model_request``) creates a
+    set-equality mismatch (more IDs in ``tool_call_results`` than in the
+    response's tool calls).
+
+    The fix: emit completed tools in one ``ModelResponse`` + ``ModelRequest``
+    pair, then emit pending (no-output) tools in a **separate trailing**
+    ``ModelResponse``.  This way ``_handle_deferred_tool_results`` sees only the
+    pending tool in ``last_model_response`` and ``last_model_request`` is ``None``
+    — no 'skip' entries are added and the sets match.
     """
     segments = canonicalize_assistant_segments(message.get("segments"))
     if not segments and message.get("content"):
         segments = [{"kind": "text", "text": message["content"]}]
 
-    response_parts: list[Any] = []
-    tool_return_parts: list[ToolReturnPart] = []
+    # Collect all parts, separating completed tools from pending ones.
+    content_parts: list[Any] = []  # thinking, text
+    completed_tool_calls: list[ToolCallPart] = []
+    completed_tool_returns: list[ToolReturnPart] = []
+    pending_tool_calls: list[ToolCallPart] = []
     timestamp = _coerce_datetime(message.get("created_at")) or datetime.now(UTC)
 
     for segment in segments:
         kind = segment["kind"]
         if kind == "thinking":
-            response_parts.append(ThinkingPart(content=segment["text"]))
+            content_parts.append(ThinkingPart(content=segment["text"]))
         elif kind == "text":
-            response_parts.append(TextPart(content=segment["text"]))
+            content_parts.append(TextPart(content=segment["text"]))
         elif kind == "tool_group":
             for tool in segment.get("tools", []):
-                response_parts.append(
-                    ToolCallPart(
-                        tool_name=str(tool.get("name", "")),
-                        args=tool.get("input") if isinstance(tool.get("input"), dict) else {},
-                        tool_call_id=str(tool.get("id", "")),
-                    )
+                call_part = ToolCallPart(
+                    tool_name=str(tool.get("name", "")),
+                    args=tool.get("input") if isinstance(tool.get("input"), dict) else {},
+                    tool_call_id=str(tool.get("id", "")),
                 )
                 if "output" in tool:
-                    tool_return_parts.append(
+                    completed_tool_calls.append(call_part)
+                    completed_tool_returns.append(
                         ToolReturnPart(
                             tool_name=str(tool.get("name", "")),
                             content=tool.get("output"),
@@ -378,14 +388,27 @@ def assistant_record_to_flat_messages(message: MessageRecord) -> list[ModelMessa
                             timestamp=timestamp,
                         )
                     )
+                else:
+                    pending_tool_calls.append(call_part)
 
-    if not response_parts:
+    if not content_parts and not completed_tool_calls and not pending_tool_calls:
         return []
 
     usage = _request_usage(message.get("usage"))
-    result: list[ModelMessage] = [ModelResponse(parts=response_parts, usage=usage, timestamp=timestamp)]
-    if tool_return_parts:
-        result.append(ModelRequest(parts=tool_return_parts, timestamp=timestamp))
+    result: list[ModelMessage] = []
+
+    # Completed tools (+ content) go in the first ModelResponse/ModelRequest.
+    completed_response_parts = [*content_parts, *completed_tool_calls]
+    if completed_response_parts:
+        result.append(ModelResponse(parts=completed_response_parts, usage=usage, timestamp=timestamp))
+    if completed_tool_returns:
+        result.append(ModelRequest(parts=completed_tool_returns, timestamp=timestamp))
+
+    # Pending tools go in a separate trailing ModelResponse so that
+    # _handle_deferred_tool_results sees only these in last_model_response.
+    if pending_tool_calls:
+        result.append(ModelResponse(parts=pending_tool_calls, timestamp=timestamp))
+
     return result
 
 
