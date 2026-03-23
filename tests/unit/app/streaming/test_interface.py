@@ -714,7 +714,8 @@ class TestMultiToolContinuation:
         iter_call = agent.iter.call_args
         message_history = iter_call.kwargs.get("message_history") or iter_call.args[1]
 
-        # Find the last ModelResponse — it should contain BOTH tool calls
+        # The LAST ModelResponse should contain ONLY the pending frontend tool.
+        # Completed backend tools go in an earlier ModelResponse + ModelRequest.
         last_model_response = None
         for msg in reversed(message_history):
             if isinstance(msg, ModelResponse):
@@ -727,8 +728,8 @@ class TestMultiToolContinuation:
             for part in last_model_response.parts
             if isinstance(part, ToolCallPart)
         }
-        assert tool_call_ids == {"call-backend-1", "call-frontend-1"}, (
-            f"Expected both tool calls in a single ModelResponse, got: {tool_call_ids}"
+        assert tool_call_ids == {"call-frontend-1"}, (
+            f"Expected only the pending frontend tool in last ModelResponse, got: {tool_call_ids}"
         )
 
         # Verify deferred_tool_results was passed correctly
@@ -840,7 +841,7 @@ class TestMultiToolContinuation:
         assert final["message_id"] == "assistant-1"
         assert not final.get("error")
 
-        # Verify ALL 3 tool calls are in a single ModelResponse
+        # The LAST ModelResponse should contain ONLY the pending frontend tool
         agent = service._assistant_service.prepare_agent_context.return_value.agent
         iter_call = agent.iter.call_args
         message_history = iter_call.kwargs.get("message_history") or iter_call.args[1]
@@ -857,37 +858,31 @@ class TestMultiToolContinuation:
             for part in last_model_response.parts
             if isinstance(part, ToolCallPart)
         }
-        assert tool_call_ids == {"call-backend-1", "call-backend-2", "call-frontend-1"}, (
-            f"Expected all 3 tool calls in a single ModelResponse, got: {tool_call_ids}"
+        assert tool_call_ids == {"call-frontend-1"}, (
+            f"Expected only the pending frontend tool in last ModelResponse, got: {tool_call_ids}"
         )
 
         # Verify the ModelRequest before it has ToolReturnParts for ONLY the resolved tools
-        last_model_request = None
-        for msg in reversed(message_history):
-            if isinstance(msg, ModelRequest):
-                last_model_request = msg
-                break
-            if isinstance(msg, ModelResponse):
-                break
-
-        # last_model_request should be the one right before last_model_response
-        # It should contain ToolReturnParts for backend-1 and backend-2 only
-        if last_model_request is not None:
-            return_ids = {
-                part.tool_call_id
-                for part in last_model_request.parts
-                if isinstance(part, ToolReturnPart)
-            }
-            assert "call-frontend-1" not in return_ids, (
-                "Frontend tool should NOT have a ToolReturnPart in the history"
-            )
+        model_responses = [m for m in message_history if isinstance(m, ModelResponse)]
+        assert len(model_responses) >= 2, "Should have at least 2 ModelResponses (completed + pending)"
+        completed_response = model_responses[-2]
+        completed_ids = {
+            part.tool_call_id
+            for part in completed_response.parts
+            if isinstance(part, ToolCallPart)
+        }
+        assert completed_ids == {"call-backend-1", "call-backend-2"}, (
+            f"Completed ModelResponse should have both backend tools, got: {completed_ids}"
+        )
 
     @pytest.mark.asyncio
-    async def test_flat_reconstruction_differs_from_split(self) -> None:
-        """Verify the flat form produces a different (correct) structure than the split form.
+    async def test_continuation_reconstruction_separates_completed_from_pending(self) -> None:
+        """Verify the continuation form splits completed and pending tools.
 
-        This test demonstrates that the old split reconstruction would have
-        produced multiple ModelResponses, while the flat form produces one.
+        Completed tools (with output) go in one ModelResponse + ModelRequest.
+        Pending tools (no output) go in a separate trailing ModelResponse.
+        This structure ensures _handle_deferred_tool_results sees only the
+        pending tool in last_model_response and doesn't add 'skip' entries.
         """
         from lovely_assistant.app.assistant._serialization import (
             assistant_record_to_flat_messages,
@@ -916,29 +911,37 @@ class TestMultiToolContinuation:
             "created_at": datetime(2026, 3, 22, tzinfo=UTC),
         }
 
-        # Split form: produces MULTIPLE ModelResponses (one per tool group)
+        # Split form (path_records_to_model_history): one ModelResponse per tool_group
         split_messages = path_records_to_model_history([record])
         split_responses = [m for m in split_messages if isinstance(m, ModelResponse)]
         assert len(split_responses) == 2, (
             f"Split form should produce 2 ModelResponses, got {len(split_responses)}"
         )
 
-        # Flat form: produces ONE ModelResponse with ALL tool calls
+        # Continuation form: 2 ModelResponses — completed + pending
         flat_messages = assistant_record_to_flat_messages(record)
         flat_responses = [m for m in flat_messages if isinstance(m, ModelResponse)]
-        assert len(flat_responses) == 1, (
-            f"Flat form should produce 1 ModelResponse, got {len(flat_responses)}"
+        assert len(flat_responses) == 2, (
+            f"Continuation form should produce 2 ModelResponses (completed + pending), got {len(flat_responses)}"
         )
 
-        # Flat response has BOTH tool calls
-        flat_tool_ids = {
+        # First response has the completed tool
+        completed_ids = {
             part.tool_call_id
             for part in flat_responses[0].parts
             if isinstance(part, ToolCallPart)
         }
-        assert flat_tool_ids == {"call-A", "call-B"}
+        assert completed_ids == {"call-A"}, "First ModelResponse should have completed tool"
 
-        # Flat form's ModelRequest has only the resolved tool's ToolReturnPart
+        # Last response has ONLY the pending tool
+        pending_ids = {
+            part.tool_call_id
+            for part in flat_responses[1].parts
+            if isinstance(part, ToolCallPart)
+        }
+        assert pending_ids == {"call-B"}, "Last ModelResponse should have only the pending tool"
+
+        # ModelRequest has only the resolved tool's ToolReturnPart
         flat_requests = [m for m in flat_messages if isinstance(m, ModelRequest)]
         assert len(flat_requests) == 1
         return_ids = {
