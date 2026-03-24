@@ -46,12 +46,14 @@ def _tool_set() -> ToolSet:
 def _run_result(output: str = "Hello!") -> MagicMock:
     result = MagicMock()
     result.output = output
-    result.all_messages.return_value = [
+    messages = [
         ModelResponse(
             parts=[TextPart(content=output)],
             timestamp=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
         )
     ]
+    result.all_messages.return_value = messages
+    result.new_messages.return_value = messages
     usage = MagicMock(request_tokens=11, response_tokens=13, total_tokens=24)
     result.usage.return_value = usage
     return result
