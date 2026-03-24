@@ -19,7 +19,6 @@ from loguru import logger
 from pydantic_ai import DeferredToolRequests, DeferredToolResults
 from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
 from pydantic_ai.messages import (
-    ModelRequest,
     ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
@@ -360,33 +359,35 @@ class StreamingService:
                     f"assistant message '{assistant_message_id}' is not cached for session '{session_id}'"
                 )
             flat_assistant = assistant_record_to_flat_messages(assistant_record)
+
+            # Defense-in-depth: if segments were empty (prior off-by-one bug
+            # stored empty segments), synthesize a minimal trailing
+            # ModelResponse so _handle_deferred_tool_results finds the pending
+            # tool in last_model_response.
+            pending_tool_name = session_context.get("pending_tool_name") or "unknown"
+            if not flat_assistant and pending_tool_call_id:
+                logger.warning(
+                    "Empty segments for assistant record — synthesizing ModelResponse from pending tool state",
+                    session_id=session_id,
+                    assistant_message_id=assistant_message_id,
+                    pending_tool_call_id=pending_tool_call_id,
+                    pending_tool_name=pending_tool_name,
+                )
+                flat_assistant = [
+                    ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name=pending_tool_name,
+                                args={},
+                                tool_call_id=pending_tool_call_id,
+                            )
+                        ],
+                        timestamp=datetime.now(UTC),
+                    )
+                ]
+
             continuation_history = [*history_without_leaf, *flat_assistant]
             assistant_history = path_records_to_model_history([assistant_record])
-
-            # Diagnostic: dump the segment structure and flat reconstruction
-            _segments = assistant_record.get("segments") or []
-            _tool_groups = [s for s in _segments if s.get("kind") == "tool_group"]
-            _all_tool_ids = [
-                t.get("id") for tg in _tool_groups for t in tg.get("tools", [])
-            ]
-            _flat_tool_ids = [
-                p.tool_call_id
-                for msg in flat_assistant
-                if isinstance(msg, ModelResponse)
-                for p in msg.parts
-                if isinstance(p, ToolCallPart)
-            ]
-            logger.warning(
-                "[CONTINUATION-DEBUG] History structure for continuation",
-                session_id=session_id,
-                pending_tool_call_id=pending_tool_call_id,
-                segment_tool_groups=len(_tool_groups),
-                segment_tool_ids=_all_tool_ids,
-                flat_tool_ids=_flat_tool_ids,
-                flat_message_count=len(flat_assistant),
-                history_without_leaf_count=len(history_without_leaf),
-                continuation_history_count=len(continuation_history),
-            )
             (ctx, agent_setup_ms), (history_result, history_prep_ms) = await asyncio.gather(
                 self._timed_async(
                     self._assistant_service.prepare_agent_context(request, session_context)
@@ -402,31 +403,6 @@ class StreamingService:
             )
             resolved_model = ctx.resolved_model
             prepared_history = history_result.history
-
-            # Diagnostic: what does prepared_history look like?
-            _last_responses = [
-                {
-                    "idx": i,
-                    "type": type(msg).__name__,
-                    "tool_calls": [
-                        p.tool_call_id
-                        for p in msg.parts
-                        if isinstance(p, ToolCallPart)
-                    ] if isinstance(msg, ModelResponse) else None,
-                    "tool_returns": [
-                        p.tool_call_id
-                        for p in msg.parts
-                        if isinstance(p, ToolReturnPart)
-                    ] if isinstance(msg, ModelRequest) else None,
-                }
-                for i, msg in enumerate(prepared_history[-6:])
-            ]
-            logger.warning(
-                "[CONTINUATION-DEBUG] Prepared history tail",
-                session_id=session_id,
-                prepared_history_count=len(prepared_history),
-                last_6_messages=_last_responses,
-            )
 
             # Extract screenshot from tool_result BEFORE passing to LLM.
             # The screenshot goes into the ContextVar (for look_at_screen);
@@ -505,7 +481,11 @@ class StreamingService:
                             yield event
 
             all_messages = list(run.result.all_messages())
-            continuation_messages = all_messages[len(prepared_history) :]
+            # Use new_messages() — not index slicing — because Pydantic AI's
+            # _clean_message_history may merge consecutive ModelRequests (e.g.
+            # a SYNTHETIC ToolReturn + user prompt), shrinking the list and
+            # making len(prepared_history) overshoot.
+            continuation_messages = list(run.result.new_messages())
 
             # Clear pending tool call state
             session_context.pop("pending_tool_call_id", None)
@@ -914,7 +894,11 @@ class StreamingService:
                             yield event
 
             all_messages = list(run.result.all_messages())
-            turn_messages = all_messages[len(prepared_history) :]
+            # Use new_messages() — not index slicing — because Pydantic AI's
+            # _clean_message_history may merge consecutive ModelRequests (e.g.
+            # a SYNTHETIC ToolReturn + user prompt), shrinking the list and
+            # making len(prepared_history) overshoot.
+            turn_messages = list(run.result.new_messages())
 
             # Debug: usage
             if emit_debug:
@@ -943,22 +927,6 @@ class StreamingService:
             assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
                 turn_messages
             )
-
-            # Diagnostic: what segments are being persisted?
-            _seg_tools = [
-                {"kind": s.get("kind"), "tool_ids": [t.get("id") for t in s.get("tools", [])], "has_output": ["output" in t for t in s.get("tools", [])]}
-                for s in (assistant_segments or [])
-                if s.get("kind") == "tool_group"
-            ]
-            if _seg_tools:
-                logger.warning(
-                    "[STREAM-DEBUG] Persisting assistant segments with tool groups",
-                    session_id=session_id,
-                    turn_message_count=len(turn_messages),
-                    all_message_count=len(all_messages),
-                    prepared_history_count=len(prepared_history),
-                    tool_groups=_seg_tools,
-                )
 
             await self._sessions.register_assistant_message(
                 session_id,

@@ -339,8 +339,11 @@ class AssistantService:
                 await sessions.save_session_state_async(session_id)
 
             # 5. Persist the assistant message row for this turn
-            all_messages = list(result.all_messages())
-            turn_messages = all_messages[len(prepared_history) :]
+            # Use new_messages() — not index slicing — because Pydantic AI's
+            # _clean_message_history may merge consecutive ModelRequests (e.g.
+            # a SYNTHETIC ToolReturn + user prompt), shrinking the list and
+            # making len(prepared_history) overshoot.
+            turn_messages = list(result.new_messages())
             assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
                 turn_messages
             )

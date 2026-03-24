@@ -950,3 +950,174 @@ class TestMultiToolContinuation:
             if isinstance(part, ToolReturnPart)
         }
         assert return_ids == {"call-A"}, "Only the resolved tool should have a ToolReturnPart"
+
+
+class TestNewMessagesMergeResilience:
+    """Verify that using new_messages() handles Pydantic AI's _clean_message_history merging."""
+
+    @pytest.mark.asyncio
+    async def test_new_message_uses_new_messages_not_index_slicing(self) -> None:
+        """When _clean_message_history merges consecutive ModelRequests,
+        new_messages() still returns the correct new messages — unlike
+        all_messages[len(prepared_history):] which would return [].
+        """
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        # First assistant turn has a frontend tool call (no output = pending)
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Let me open that",
+            segments=[
+                {"kind": "text", "text": "Let me open that"},
+                {
+                    "kind": "tool_group",
+                    "tools": [{"id": "call-old", "name": "navigate", "input": {"page": "agents"}}],
+                },
+            ],
+            usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        )
+        # Mark the frontend tool as abandoned (user sends new message instead)
+        ctx = sessions.get_context("sess-1")
+        ctx.pop("pending_tool_call_id", None)
+        ctx.pop("pending_tool_name", None)
+
+        # User sends a new message — this will trigger _resolve_dangling_tool_calls
+        # which inserts a SYNTHETIC ModelRequest(ToolReturnPart) before the user prompt.
+        # Pydantic AI's _clean_message_history then merges the two consecutive ModelRequests.
+        #
+        # Simulate: prepared_history has 3 messages (history + synthetic + user),
+        # but after merge, all_messages has 2 (history + merged) + 1 new = 3.
+        # all_messages[3:] = [] — BUG. new_messages() = [new_response] — CORRECT.
+
+        new_response = ModelResponse(
+            parts=[TextPart(content="Here's the info"), ToolCallPart(tool_name="ui_navigate", args={}, tool_call_id="call-new")],
+            timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
+        )
+
+        # The mock simulates: prepared_history had 3 items, but _clean_message_history
+        # merged 2 ModelRequests into 1, so all_messages has 3 total (not 4).
+        # new_messages() correctly returns only the new response.
+        run = _MockRun(
+            output="Here's the info",
+            all_messages=[
+                # After merge: original history (1 msg) + merged request + new response
+                ModelResponse(
+                    parts=[TextPart(content="Let me open that"), ToolCallPart(tool_name="navigate", args={}, tool_call_id="call-old")],
+                    timestamp=datetime(2026, 3, 24, 11, 0, tzinfo=UTC),
+                ),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(tool_name="navigate", content="[abandoned]", tool_call_id="call-old", timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC)),
+                        # Merged: user prompt is in the same ModelRequest
+                    ],
+                    timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
+                ),
+                new_response,
+            ],
+            new_messages=[new_response],
+        )
+
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        # Consume the stream — we're testing that segments are persisted correctly
+        async for _ in service.stream_message(
+            _request(message_id="user-2", parent_id="assistant-1", content="Show me agent status")
+        ):
+            pass
+
+        # The key assertion: the assistant message should have segments with the tool call,
+        # NOT empty segments (which is what the old index-slicing bug produced).
+        path = await sessions.get_message_path("sess-1")
+        assistant_msg = path[-1]
+        assert assistant_msg["role"] == "assistant"
+        segments = assistant_msg.get("segments") or []
+        tool_groups = [s for s in segments if s.get("kind") == "tool_group"]
+        assert len(tool_groups) > 0, "Segments must contain the tool call — empty segments means new_messages() fix is not working"
+
+    @pytest.mark.asyncio
+    async def test_continuation_with_empty_segments_synthesizes_model_response(self) -> None:
+        """When an assistant record has empty segments (corrupt DB from prior bug),
+        the continuation path should synthesize a minimal ModelResponse from
+        pending tool state rather than failing.
+        """
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        # Register assistant with EMPTY segments — simulates the corrupt state
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="",
+            segments=[],
+            usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        )
+        ctx = sessions.get_context("sess-1")
+        ctx["pending_tool_call_id"] = "call-pending"
+        ctx["pending_tool_name"] = "ui_navigate"
+        ctx["pending_assistant_message_id"] = "assistant-1"
+
+        run = _MockRun(
+            output="Navigation complete",
+            all_messages=[
+                ModelResponse(
+                    parts=[ToolCallPart(tool_name="ui_navigate", args={}, tool_call_id="call-pending")],
+                    timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
+                ),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="ui_navigate",
+                            content={"ok": True},
+                            tool_call_id="call-pending",
+                            timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                ),
+                ModelResponse(
+                    parts=[TextPart(content="Navigation complete")],
+                    timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                ),
+            ],
+            new_messages=[
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="ui_navigate",
+                            content={"ok": True},
+                            tool_call_id="call-pending",
+                            timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                ),
+                ModelResponse(
+                    parts=[TextPart(content="Navigation complete")],
+                    timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                ),
+            ],
+        )
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        events = [
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="cont-1",
+                    parent_id="assistant-1",
+                    content="",
+                    tool_call_id="call-pending",
+                    tool_result={"ok": True},
+                )
+            )
+        ]
+
+        # Should succeed — not raise a set-equality mismatch
+        final = next(event for event in events if event["type"] == "final_response")
+        assert final["message_id"] == "assistant-1"
+        path = await sessions.get_message_path("sess-1")
+        assert path[-1]["content"] == "Navigation complete"
