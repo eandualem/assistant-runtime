@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.fernet import Fernet
 
 from lovely_assistant.services.llm._codex_model import OpenAICodexResponsesModel
 from lovely_assistant.services.llm.config import LLMConfig
@@ -447,3 +448,210 @@ class TestExecuteLlmCallRetry:
                 )
 
             assert exc_info.value.error_category == "RATE_LIMIT"
+
+
+class TestDbProviderKeys:
+    """Tests for database-sourced provider API keys — load, reload, remove, status."""
+
+    @pytest.fixture
+    def fernet(self):
+        return Fernet(Fernet.generate_key())
+
+    @pytest.fixture
+    def mock_db(self):
+        """Mock database service with an async session context manager."""
+        from contextlib import asynccontextmanager
+
+        db = MagicMock()
+        db._healthy = True
+        session = AsyncMock()
+        session.commit = AsyncMock()
+
+        @asynccontextmanager
+        async def fake_session_context():
+            yield session
+
+        db.session_context = fake_session_context
+        db._mock_session = session
+        return db
+
+    def _make_service_with_db(self, mock_db, fernet):
+        """Create an LlmService wired to mock DB + encryption."""
+        config = LLMConfig()
+        service = LlmService(config=config)
+        service._db_service = mock_db
+        service._fernet = fernet
+        return service
+
+    async def test_start_loads_keys_from_database(self, mock_db, fernet, monkeypatch):
+        """When DB has an encrypted key, start() loads it and exports to env."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        encrypted = fernet.encrypt(b"sk-from-database").decode()
+        mock_token = SimpleNamespace(encrypted_api_key=encrypted)
+
+        async def fake_get(provider):
+            if provider == "anthropic":
+                return mock_token
+            return None
+
+        with patch(
+            "lovely_assistant.services.database.repositories.OAuthTokenRepository"
+        ) as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(side_effect=fake_get)
+            mock_repo_cls.return_value = mock_repo
+
+            service = self._make_service_with_db(mock_db, fernet)
+            await service.start()
+
+        assert len(service._providers) == 1
+        assert service._providers[0].provider == "anthropic"
+        assert service._providers[0].api_key.get_secret_value() == "sk-from-database"
+        assert service._db_providers.get("anthropic") == "database"
+
+        import os
+        assert os.getenv("ANTHROPIC_API_KEY") == "sk-from-database"
+
+    async def test_db_keys_take_priority_over_env(self, mock_db, fernet, monkeypatch):
+        """DB key is used even when the env var already exists."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        encrypted = fernet.encrypt(b"sk-from-db").decode()
+        mock_token = SimpleNamespace(encrypted_api_key=encrypted)
+
+        async def fake_get(provider):
+            if provider == "anthropic":
+                return mock_token
+            return None
+
+        with patch(
+            "lovely_assistant.services.database.repositories.OAuthTokenRepository"
+        ) as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.get = AsyncMock(side_effect=fake_get)
+            mock_repo_cls.return_value = mock_repo
+
+            service = self._make_service_with_db(mock_db, fernet)
+            await service.start()
+
+        # DB key should be in the provider list (not the env-var one)
+        anthropic_providers = [p for p in service._providers if p.provider == "anthropic"]
+        assert len(anthropic_providers) == 1
+        assert anthropic_providers[0].api_key.get_secret_value() == "sk-from-db"
+
+        # DB loads first, and env auto-detect skips already-existing providers
+        assert service._db_providers.get("anthropic") == "database"
+
+    async def test_reload_provider_key_updates_providers_and_env(self, monkeypatch):
+        """reload_provider_key hot-reloads the key in memory and env."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        service = LlmService(config=LLMConfig())
+        await service.start()
+
+        # Initially no providers
+        assert len(service._providers) == 0
+
+        # Reload a key
+        await service.reload_provider_key("anthropic", "sk-new-key")
+
+        assert len(service._providers) == 1
+        assert service._providers[0].provider == "anthropic"
+        assert service._providers[0].api_key.get_secret_value() == "sk-new-key"
+        assert service._db_providers["anthropic"] == "database"
+
+        import os
+        assert os.getenv("ANTHROPIC_API_KEY") == "sk-new-key"
+
+    async def test_remove_provider_key_clears_providers_and_env(self, monkeypatch):
+        """remove_provider_key removes from in-memory providers and env."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-to-remove")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        service = LlmService(config=LLMConfig())
+        await service.start()
+
+        # Should have anthropic loaded from env
+        assert any(p.provider == "anthropic" for p in service._providers)
+
+        # Remove it
+        await service.remove_provider_key("anthropic")
+
+        assert not any(p.provider == "anthropic" for p in service._providers)
+        assert "anthropic" not in service._db_providers
+
+        import os
+        assert os.getenv("ANTHROPIC_API_KEY") is None
+
+    async def test_get_provider_status_returns_all_providers(self, monkeypatch):
+        """get_provider_status includes entries for all four known providers."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        service = LlmService(config=LLMConfig())
+        await service.start()
+
+        statuses = service.get_provider_status()
+        provider_names = {s["provider"] for s in statuses}
+        assert provider_names == {"anthropic", "openai", "google", "openrouter"}
+
+        # All should be unconfigured
+        for status in statuses:
+            assert status["configured"] is False
+            assert status["source"] is None
+
+    async def test_get_provider_status_shows_db_source(self, monkeypatch):
+        """DB-loaded keys show source='database' in provider status."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        service = LlmService(config=LLMConfig())
+        await service.start()
+
+        # Simulate a DB-loaded key via reload
+        await service.reload_provider_key("anthropic", "sk-db-key-5678")
+
+        statuses = service.get_provider_status()
+        by_provider = {s["provider"]: s for s in statuses}
+
+        anthropic = by_provider["anthropic"]
+        assert anthropic["configured"] is True
+        assert anthropic["source"] == "database"
+        assert anthropic["api_key_preview"] == "...5678"
+
+        # Other providers should remain unconfigured
+        assert by_provider["openai"]["configured"] is False
+
+    async def test_get_provider_status_shows_env_source(self, monkeypatch):
+        """Env-loaded keys show source='environment' in provider status."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-abcd")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        service = LlmService(config=LLMConfig())
+        await service.start()
+
+        statuses = service.get_provider_status()
+        by_provider = {s["provider"]: s for s in statuses}
+
+        anthropic = by_provider["anthropic"]
+        assert anthropic["configured"] is True
+        assert anthropic["source"] == "environment"
+        assert anthropic["api_key_preview"] == "...abcd"

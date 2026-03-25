@@ -81,6 +81,9 @@ class LlmService:
         self._config = config
         self._providers: list[ProviderConfig] = []
         self._oauth_service: Any | None = None
+        self._db_service: Any | None = None
+        self._fernet: Any | None = None
+        self._db_providers: dict[str, str] = {}  # provider → "database" (tracks DB-sourced keys)
         self._codex_provider: OpenAIProvider | None = None
         self._codex_provider_identity: tuple[str, str] | None = None
         self._codex_http_clients: list[httpx.AsyncClient] = []
@@ -90,15 +93,35 @@ class LlmService:
         """Attach OAuth service after lifecycle registration."""
         self._oauth_service = oauth_service
 
+    def set_database_service(self, db_service: Any, encryption_key: str = "") -> None:
+        """Attach database service and encryption key for DB-stored API keys."""
+        self._db_service = db_service
+        if encryption_key:
+            from cryptography.fernet import Fernet
+
+            self._fernet = Fernet(encryption_key.encode())
+
     async def start(self) -> None:
-        """Load providers from env/JSON, export keys for Pydantic AI auto-detection."""
+        """Load providers from DB/env/JSON, export keys for Pydantic AI auto-detection."""
+        from pydantic import SecretStr
+
         providers: list[ProviderConfig] = []
 
-        # 1. Parse providers_json if set
+        # 0. Load API keys from database (highest priority — user explicitly configured)
+        if self._db_service is not None and self._fernet is not None:
+            db_providers = await self._load_db_provider_keys()
+            providers.extend(db_providers)
+
+        # 1. Parse providers_json if set (supplement, don't overwrite DB keys)
+        existing = {p.provider for p in providers}
         if self._config.providers_json:
             try:
                 providers_data = json.loads(self._config.providers_json)
-                providers = [ProviderConfig(**p) for p in providers_data]
+                for p_data in providers_data:
+                    pc = ProviderConfig(**p_data)
+                    if pc.provider not in existing:
+                        providers.append(pc)
+                        existing.add(pc.provider)
                 logger.info(
                     "Loaded providers from JSON config",
                     count=len(providers),
@@ -108,13 +131,10 @@ class LlmService:
                 raise ProviderConfigError(f"Invalid providers_json: {e}") from e
 
         # 2. Auto-detect from individual env vars (supplement, don't overwrite)
-        existing = {p.provider for p in providers}
         for provider_name, env_var in _PROVIDER_ENV_VAR_MAP.items():
             if provider_name not in existing:
                 api_key = os.getenv(env_var)
                 if api_key:
-                    from pydantic import SecretStr
-
                     providers.append(
                         ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
                     )
@@ -159,6 +179,88 @@ class LlmService:
             "providers": providers,
             "primary_model": self._config.primary_model,
         }
+
+    async def reload_provider_key(self, provider: str, api_key: str) -> None:
+        """Hot-reload a provider API key — updates in-memory state and env var.
+
+        Called by the providers route after storing the key in the DB.
+        """
+        from pydantic import SecretStr
+
+        if provider not in _PROVIDER_ENV_VAR_MAP:
+            raise ProviderConfigError(f"Unknown provider: {provider}")
+
+        # Update or add provider in memory
+        self._providers = [p for p in self._providers if p.provider != provider]
+        self._providers.append(ProviderConfig(provider=provider, api_key=SecretStr(api_key)))
+
+        # Track as DB-sourced and export to env var for Pydantic AI
+        self._db_providers[provider] = "database"
+        env_var = _PROVIDER_ENV_VAR_MAP[provider]
+        os.environ[env_var] = api_key
+        logger.info("Provider API key reloaded", provider=provider)
+
+    async def remove_provider_key(self, provider: str) -> None:
+        """Remove a provider API key from in-memory state and env var.
+
+        Called by the providers route after deleting the key from the DB.
+        """
+        if provider not in _PROVIDER_ENV_VAR_MAP:
+            raise ProviderConfigError(f"Unknown provider: {provider}")
+
+        self._providers = [p for p in self._providers if p.provider != provider]
+        self._db_providers.pop(provider, None)
+        env_var = _PROVIDER_ENV_VAR_MAP[provider]
+        os.environ.pop(env_var, None)
+        logger.info("Provider API key removed", provider=provider)
+
+    def get_provider_status(self) -> list[dict[str, Any]]:
+        """Return provider auth status for each known provider."""
+        configured = {p.provider for p in self._providers}
+        result = []
+        for provider_name in _PROVIDER_ENV_VAR_MAP:
+            has_key = provider_name in configured
+            # Determine source: check if from DB (tracked in _db_providers) or env
+            source = None
+            if has_key:
+                source = self._db_providers.get(provider_name, "environment")
+            api_key_preview = None
+            if has_key:
+                for p in self._providers:
+                    if p.provider == provider_name:
+                        raw = p.api_key.get_secret_value()
+                        api_key_preview = f"...{raw[-4:]}" if len(raw) >= 4 else "***"
+                        break
+            result.append({
+                "provider": provider_name,
+                "configured": has_key,
+                "source": source,
+                "api_key_preview": api_key_preview,
+            })
+        return result
+
+    async def _load_db_provider_keys(self) -> list[ProviderConfig]:
+        """Load encrypted API keys from the oauth_tokens table."""
+        from pydantic import SecretStr
+
+        providers: list[ProviderConfig] = []
+        try:
+            async with self._db_service.session_context() as session:
+                from lovely_assistant.services.database.repositories import OAuthTokenRepository
+
+                repo = OAuthTokenRepository(session)
+                for provider_name in _PROVIDER_ENV_VAR_MAP:
+                    token = await repo.get(provider_name)
+                    if token is not None and token.encrypted_api_key:
+                        api_key = self._fernet.decrypt(token.encrypted_api_key.encode()).decode()
+                        providers.append(
+                            ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
+                        )
+                        self._db_providers[provider_name] = "database"
+                        logger.debug("Loaded API key from database", provider=provider_name)
+        except Exception as exc:
+            logger.warning("Failed to load provider keys from database", error=str(exc))
+        return providers
 
     def resolve_model(self, model: str | None = None) -> str:
         """Resolve, normalize, and validate a model identifier."""
