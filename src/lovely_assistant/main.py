@@ -139,9 +139,11 @@ def create_app() -> FastAPI:
     app.include_router(router, prefix="/api")
 
     @app.get("/health")
-    async def health() -> dict:
+    async def health() -> JSONResponse:
         lifecycle: LifecycleManager = app.state.lifecycle
-        return await lifecycle.health()
+        result = await lifecycle.health()
+        status_code = 200 if result.get("healthy") else 503
+        return JSONResponse(content=result, status_code=status_code)
 
     return app
 
