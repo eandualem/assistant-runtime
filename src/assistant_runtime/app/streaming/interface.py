@@ -30,7 +30,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
-from pydantic_graph.nodes import End
+from pydantic_graph import End
 
 from assistant_runtime.app.assistant._serialization import (
     SteeringRecord,
@@ -546,7 +546,7 @@ class StreamingService:
                         resolved_model=resolved_model,
                         conversation_history=all_messages,
                         assistant_messages=assistant_turn_messages,
-                        cumulative_usage=run.result.usage(),
+                        cumulative_usage=run.result.usage,
                         outcome=followup_outcome,
                     ):
                         yield event
@@ -903,7 +903,7 @@ class StreamingService:
             # Debug: usage
             if emit_debug:
                 try:
-                    usage = run.result.usage()
+                    usage = run.result.usage
                     usage_snapshot = self._safe_usage_dict(usage) or {
                         "input_tokens": 0,
                         "output_tokens": 0,
@@ -987,7 +987,7 @@ class StreamingService:
                         resolved_model=resolved_model,
                         conversation_history=all_messages,
                         assistant_messages=turn_messages,
-                        cumulative_usage=run.result.usage(),
+                        cumulative_usage=run.result.usage,
                         outcome=followup_outcome,
                     ):
                         yield event
@@ -1493,11 +1493,9 @@ class StreamingService:
     def _safe_usage_dict(self, result_or_usage: Any) -> dict[str, int] | None:
         """Extract usage stats from a run result or RunUsage object."""
         try:
-            usage = (
-                result_or_usage.usage()
-                if callable(getattr(result_or_usage, "usage", None))
-                else result_or_usage
-            )
+            # AgentRunResult / StreamedRunResult expose `.usage` as a property (pydantic-ai 2);
+            # a bare RunUsage has no `.usage` attribute and is used as-is.
+            usage = getattr(result_or_usage, "usage", result_or_usage)
         except Exception as e:
             logger.debug("Failed to extract usage stats", error=str(e))
             return None
@@ -1601,7 +1599,7 @@ class StreamingService:
 
             current_history = list(run.result.all_messages())
             accumulated_messages.extend(run.result.new_messages())
-            usage_state = run.result.usage()
+            usage_state = run.result.usage
             usage_dict = self._safe_usage_dict(usage_state)
 
             assistant_content, assistant_segments, _assistant_timestamp = (
@@ -1823,7 +1821,7 @@ class StreamingService:
                         resolved_model=resolved_model,
                         conversation_history=all_messages,
                         assistant_messages=assistant_turn_messages,
-                        cumulative_usage=run.result.usage(),
+                        cumulative_usage=run.result.usage,
                         outcome=followup_outcome,
                     ):
                         yield event

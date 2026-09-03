@@ -67,7 +67,7 @@ class TestStartLoadsServers:
         server2 = _make_mock_server("brave-search")
 
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server1, server2],
         ):
             service = MCPService(config_path=config_file)
@@ -84,7 +84,7 @@ class TestStartLoadsServers:
 
         server = _make_mock_server("memory")
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server],
         ):
             service = MCPService(config_path=config_file)
@@ -104,7 +104,7 @@ class TestGracefulServerFailure:
         bad_server = _make_mock_server("broken", fail_on_enter=True)
 
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[good_server, bad_server],
         ):
             service = MCPService(config_path=config_file)
@@ -122,7 +122,7 @@ class TestGracefulServerFailure:
         bad2 = _make_mock_server("bad2", fail_on_enter=True)
 
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[bad1, bad2],
         ):
             service = MCPService(config_path=config_file)
@@ -137,7 +137,7 @@ class TestGracefulServerFailure:
         config_file.write_text('{"mcpServers": {}}')
 
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             side_effect=ValueError("bad config"),
         ):
             service = MCPService(config_path=config_file)
@@ -154,7 +154,7 @@ class TestStop:
 
         server = _make_mock_server("memory")
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server],
         ):
             service = MCPService(config_path=config_file)
@@ -186,7 +186,7 @@ class TestHealthCheck:
         server = _make_mock_server("memory")
         bad = _make_mock_server("broken", fail_on_enter=True)
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server, bad],
         ):
             service = MCPService(config_path=config_file)
@@ -212,7 +212,7 @@ class TestGetServerSummary:
         server1 = _make_mock_server("memory")
         server2 = _make_mock_server("brave-search")
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server1, server2],
         ):
             service = MCPService(config_path=config_file)
@@ -241,7 +241,7 @@ class TestGetDetailedSummary:
         )
         server2 = _make_mock_server("brave-search", tool_names=["brave_web_search"])
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server1, server2],
         ):
             service = MCPService(config_path=config_file)
@@ -264,7 +264,7 @@ class TestGetDetailedSummary:
 
         server = _make_mock_server("memory", tool_names=["tool_a"])
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server],
         ):
             service = MCPService(config_path=config_file)
@@ -283,7 +283,7 @@ class TestGetDetailedSummary:
         server = _make_mock_server("memory")
         server.list_tools = AsyncMock(side_effect=RuntimeError("connection lost"))
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server],
         ):
             service = MCPService(config_path=config_file)
@@ -301,7 +301,7 @@ class TestGetDetailedSummary:
 
         server = _make_mock_server("memory", tool_names=["tool_a"])
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[server],
         ):
             service = MCPService(config_path=config_file)
@@ -320,7 +320,7 @@ class TestEmptyServerList:
         config_file.write_text('{"mcpServers": {}}')
 
         with patch(
-            "assistant_runtime.services.mcp.interface.load_mcp_servers",
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
             return_value=[],
         ):
             service = MCPService(config_path=config_file)

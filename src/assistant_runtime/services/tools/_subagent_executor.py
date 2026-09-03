@@ -129,10 +129,8 @@ def _extract_metadata(messages: list, duration: float) -> dict[str, Any]:
 
         # Extract usage if available
         if hasattr(msg, "usage") and msg.usage:
-            if hasattr(msg.usage, "request_tokens"):
-                input_tokens += msg.usage.request_tokens or 0
-            if hasattr(msg.usage, "response_tokens"):
-                output_tokens += msg.usage.response_tokens or 0
+            input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
+            output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
 
     return {
         "iterations": iterations,
