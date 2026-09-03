@@ -46,8 +46,8 @@ OPENAI_API_KEY=sk-...
 GOOGLE_API_KEY=...
 OPENROUTER_API_KEY=sk-or-...
 
-# Model selection (optional — defaults to anthropic:claude-haiku-4-5)
-LLM__PRIMARY_MODEL=anthropic:claude-sonnet-4-6
+# Model selection (optional — defaults to anthropic:claude-opus-5 / anthropic:claude-haiku-4-5)
+LLM__PRIMARY_MODEL=anthropic:claude-sonnet-5
 LLM__SUMMARIZATION_MODEL=anthropic:claude-haiku-4-5
 ```
 

@@ -62,7 +62,7 @@ class TestLLMConfig:
 
     def test_defaults(self):
         config = LLMConfig()
-        assert config.primary_model == "anthropic:claude-haiku-4-5"
+        assert config.primary_model == "anthropic:claude-opus-5"
         assert config.summarization_model == "anthropic:claude-haiku-4-5"
         assert config.providers_json is None
 

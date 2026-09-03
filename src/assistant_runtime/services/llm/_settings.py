@@ -15,6 +15,7 @@ from loguru import logger
 from pydantic_ai.models.anthropic import AnthropicModelSettings
 from pydantic_ai.models.google import GoogleModelSettings
 from pydantic_ai.models.openrouter import OpenRouterModelSettings
+from pydantic_ai.profiles.anthropic import anthropic_model_profile
 
 from assistant_runtime.services.llm.exceptions import ProviderConfigError
 
@@ -34,6 +35,17 @@ def _map_openai_reasoning_effort(*, model_id: str, thinking_budget: int) -> str:
     if thinking_budget <= 12_000:
         return "medium"
     if thinking_budget <= 32_000:
+        return "high"
+    return "xhigh"
+
+
+def _map_anthropic_effort(*, thinking_budget: int, supports_xhigh: bool) -> str:
+    """Map the numeric thinking budget onto Anthropic effort levels for adaptive thinking."""
+    if thinking_budget <= 4_000:
+        return "low"
+    if thinking_budget <= 12_000:
+        return "medium"
+    if thinking_budget <= 32_000 or not supports_xhigh:
         return "high"
     return "xhigh"
 
@@ -62,24 +74,26 @@ def validate_model_id(model_id: str) -> str:
             f"Use '{model_id.replace('/', ':', 1)}'"
         )
 
-    # Reject legacy google: prefix
-    if model_id.startswith("google:"):
-        raise ProviderConfigError(
-            f"Use 'google-gla:' prefix, not 'google:': '{model_id}'. "
-            f"Use 'google-gla:{model_id[len('google:') :]}'"
-        )
+    # pydantic-ai 2.x uses google: (Gemini API) and google-cloud: (Vertex); the 1.x
+    # prefixes google-gla: / google-vertex: are no longer recognised.
+    for legacy, current in (("google-gla:", "google:"), ("google-vertex:", "google-cloud:")):
+        if model_id.startswith(legacy):
+            raise ProviderConfigError(
+                f"Use '{current}' prefix, not '{legacy}': '{model_id}'. "
+                f"Use '{current}{model_id[len(legacy) :]}'"
+            )
 
     # Validate colon-separated format
     if ":" not in model_id:
         raise ProviderConfigError(
             f"Invalid model ID: '{model_id}'. "
-            f"Must use 'provider:model-name' format (e.g., 'anthropic:claude-sonnet-4-6')."
+            f"Must use 'provider:model-name' format (e.g., 'anthropic:claude-sonnet-5')."
         )
     parts = model_id.split(":", 1)
     if not parts[0] or not parts[1]:
         raise ProviderConfigError(
             f"Invalid model ID: '{model_id}'. "
-            f"Must use 'provider:model-name' format (e.g., 'anthropic:claude-sonnet-4-6')."
+            f"Must use 'provider:model-name' format (e.g., 'anthropic:claude-sonnet-5')."
         )
 
     return model_id
@@ -105,7 +119,7 @@ def build_model_settings(
     """
     is_openrouter = model_id.startswith("openrouter:")
     is_anthropic = "anthropic" in model_id and not is_openrouter
-    is_google = model_id.startswith("google-gla:") or model_id.startswith("google-vertex:")
+    is_google = model_id.startswith("google:") or model_id.startswith("google-cloud:")
     is_openai_reasoning = model_id.startswith("openai:gpt-5")
 
     # Compute effective temperature and max_tokens
@@ -120,8 +134,13 @@ def build_model_settings(
         effective_max_tokens = base_max_tokens
 
     if is_anthropic:
+        model_name = model_id.split(":", 1)[1]
+        profile = dict(anthropic_model_profile(model_name) or {})
+        adaptive = bool(profile.get("anthropic_supports_adaptive_thinking", False))
+        no_sampling = bool(profile.get("anthropic_disallows_sampling_settings", False))
+        supports_xhigh = bool(profile.get("anthropic_supports_xhigh_effort", False))
+
         anthropic_kwargs: dict[str, Any] = {
-            "temperature": effective_temperature,
             "max_tokens": effective_max_tokens,
             "anthropic_cache_instructions": True,
             "anthropic_cache_tool_definitions": True,
@@ -129,13 +148,23 @@ def build_model_settings(
             # non-streaming requests when max_tokens exceeds ~21k.
             "timeout": httpx.Timeout(1200.0, connect=5.0),
         }
+        # Opus 4.7+, Sonnet 5 and the Fable/Mythos family reject temperature/top_p/top_k.
+        if not no_sampling:
+            anthropic_kwargs["temperature"] = effective_temperature
 
         # Only include thinking when enabled — passing None triggers a 400 error.
         if thinking_budget:
-            anthropic_kwargs["anthropic_thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            }
+            if adaptive:
+                # 4.6+ models: adaptive thinking; the numeric budget becomes an effort level.
+                anthropic_kwargs["anthropic_thinking"] = {"type": "adaptive"}
+                anthropic_kwargs["anthropic_effort"] = _map_anthropic_effort(
+                    thinking_budget=thinking_budget, supports_xhigh=supports_xhigh
+                )
+            else:
+                anthropic_kwargs["anthropic_thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": thinking_budget,
+                }
 
         settings: (
             AnthropicModelSettings | GoogleModelSettings | OpenRouterModelSettings | dict[str, Any]
@@ -144,9 +173,10 @@ def build_model_settings(
         logger.info(
             "LLM model settings built",
             provider="anthropic",
-            thinking="enabled" if thinking_budget else "disabled",
+            thinking=("adaptive" if adaptive else "enabled") if thinking_budget else "disabled",
             thinking_budget=thinking_budget,
-            temperature=effective_temperature,
+            effort=anthropic_kwargs.get("anthropic_effort"),
+            temperature=anthropic_kwargs.get("temperature"),
             max_tokens=effective_max_tokens,
         )
 

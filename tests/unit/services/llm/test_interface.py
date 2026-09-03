@@ -84,7 +84,7 @@ class TestLlmServiceLifecycle:
         health = await service.health_check()
         assert health["healthy"] is True
         assert "anthropic" in health["providers"]
-        assert health["primary_model"] == "anthropic:claude-haiku-4-5"
+        assert health["primary_model"] == "anthropic:claude-opus-5"
 
     async def test_health_check_counts_codex_oauth_as_openai_provider(self, service, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -229,7 +229,7 @@ class TestExecuteLlmCall:
 
         assert isinstance(result, LLMResult)
         assert result.content == "Hello world"
-        assert result.model == "anthropic:claude-haiku-4-5"
+        assert result.model == "anthropic:claude-opus-5"
 
     async def test_execute_with_model_override(self, service):
         mock_result = MagicMock()
