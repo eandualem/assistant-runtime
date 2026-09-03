@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lovely_assistant.services.tools._notes_tools import (
+from assistant_runtime.services.tools._notes_tools import (
     _build_note_content,
     _parse_note,
     _slugify,
@@ -16,10 +16,10 @@ from lovely_assistant.services.tools._notes_tools import (
     manage_notes,
     register_notes_tools,
 )
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "lovely_assistant.services.tools._notes_tools"
+MODULE = "assistant_runtime.services.tools._notes_tools"
 
 
 # ---------------------------------------------------------------------------

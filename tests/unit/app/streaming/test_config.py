@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.app.streaming.config import StreamingConfig
+from assistant_runtime.app.streaming.config import StreamingConfig
 
 
 class TestStreamingConfigDefaults:

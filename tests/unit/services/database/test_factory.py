@@ -2,8 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from lovely_assistant.services.database.factory import register_database
-from lovely_assistant.services.database.interface import DatabaseService
+from assistant_runtime.services.database.factory import register_database
+from assistant_runtime.services.database.interface import DatabaseService
 
 
 class TestRegisterDatabase:
@@ -13,7 +13,7 @@ class TestRegisterDatabase:
         app_state = MagicMock()
         lifecycle = AsyncMock()
 
-        with patch("lovely_assistant.services.database.factory.AppSettings") as mock_settings_cls:
+        with patch("assistant_runtime.services.database.factory.AppSettings") as mock_settings_cls:
             mock_settings_cls.return_value = MagicMock()
             await register_database(app_state, lifecycle)
 
@@ -24,7 +24,7 @@ class TestRegisterDatabase:
         app_state = MagicMock()
         lifecycle = AsyncMock()
 
-        with patch("lovely_assistant.services.database.factory.AppSettings") as mock_settings_cls:
+        with patch("assistant_runtime.services.database.factory.AppSettings") as mock_settings_cls:
             mock_settings_cls.return_value = MagicMock()
             await register_database(app_state, lifecycle)
 
@@ -37,7 +37,7 @@ class TestRegisterDatabase:
         app_state = MagicMock()
         lifecycle = AsyncMock()
 
-        with patch("lovely_assistant.services.database.factory.AppSettings") as mock_settings_cls:
+        with patch("assistant_runtime.services.database.factory.AppSettings") as mock_settings_cls:
             mock_db_config = MagicMock()
             mock_settings = MagicMock()
             mock_settings.database = mock_db_config

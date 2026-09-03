@@ -2,7 +2,7 @@
 
 import pytest
 
-from lovely_assistant.base.lifecycle import LifecycleManager
+from assistant_runtime.base.lifecycle import LifecycleManager
 
 
 class FakeComponent:

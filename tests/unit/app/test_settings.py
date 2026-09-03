@@ -8,9 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lovely_assistant.app.assistant.config import AssistantConfig
-from lovely_assistant.app.assistant.models import RequestConfigOverride
-from lovely_assistant.app.settings import EffectiveConfig, RuntimeSettings, resolve_effective_config
+from assistant_runtime.app.assistant.config import AssistantConfig
+from assistant_runtime.app.assistant.models import RequestConfigOverride
+from assistant_runtime.app.settings import (
+    EffectiveConfig,
+    RuntimeSettings,
+    resolve_effective_config,
+)
 
 
 class TestRuntimeSettings:
@@ -246,7 +250,7 @@ class TestRuntimeSettingsDB:
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             await rs.load_from_db()
@@ -270,7 +274,7 @@ class TestRuntimeSettingsDB:
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             await rs.load_from_db()
@@ -314,7 +318,7 @@ class TestRuntimeSettingsDB:
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             result = await rs.update(temperature=0.5)
@@ -334,7 +338,7 @@ class TestRuntimeSettingsDB:
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             await rs.update(temperature=0.8, max_turns=20)
@@ -378,7 +382,7 @@ class TestRuntimeSettingsDB:
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             await rs.load_from_db()
@@ -413,7 +417,7 @@ class TestRuntimeSettingsDB:
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             result = await rs.update(temperature=0.5)
@@ -451,7 +455,7 @@ class TestRuntimeSettingsDB:
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             await rs.load_from_db()
@@ -476,7 +480,7 @@ class TestRuntimeSettingsDB:
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             await rs.update(summarization_model="openai:gpt-4o-mini")

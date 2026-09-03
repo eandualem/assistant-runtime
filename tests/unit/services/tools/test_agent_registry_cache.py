@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lovely_assistant.services.tools._agent_registry_cache import (
+from assistant_runtime.services.tools._agent_registry_cache import (
     AgentRegistryCache,
     _reset_registry_cache,
     get_registry_cache,
 )
 
-MODULE = "lovely_assistant.services.tools._agent_registry_cache"
+MODULE = "assistant_runtime.services.tools._agent_registry_cache"
 
 SAMPLE_AGENTS = [
     {
@@ -244,7 +244,7 @@ class TestBuildEcosystemLines:
         lines = cache.build_ecosystem_lines()
 
         assert len(lines) == 4  # header + 3 agents
-        assert lines[0] == "The Lovely Universe \u2014 agents you work with:"
+        assert lines[0] == "Agents and systems you work with:"
         assert "Leo" in lines[1]
         assert "Strategy Co-Architect" in lines[1]
         assert "entity" in lines[1]

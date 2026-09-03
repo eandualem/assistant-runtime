@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.main import create_app
+from assistant_runtime.main import create_app
 
 from .conftest import _make_mock_agent
 
@@ -28,14 +28,14 @@ async def integration_client(monkeypatch):
     """Create a real app with services manually wired (ASGITransport skips lifespan)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-routes")
 
-    from lovely_assistant.app.assistant.interface import AssistantService
-    from lovely_assistant.app.settings import RuntimeSettings
-    from lovely_assistant.app.streaming.interface import StreamingService
-    from lovely_assistant.base.lifecycle import LifecycleManager
-    from lovely_assistant.config import AppSettings
-    from lovely_assistant.services.history.interface import HistoryService
-    from lovely_assistant.services.llm.interface import LlmService
-    from lovely_assistant.services.tools.interface import ToolService
+    from assistant_runtime.app.assistant.interface import AssistantService
+    from assistant_runtime.app.settings import RuntimeSettings
+    from assistant_runtime.app.streaming.interface import StreamingService
+    from assistant_runtime.base.lifecycle import LifecycleManager
+    from assistant_runtime.config import AppSettings
+    from assistant_runtime.services.history.interface import HistoryService
+    from assistant_runtime.services.llm.interface import LlmService
+    from assistant_runtime.services.tools.interface import ToolService
 
     app = create_app()
     settings = AppSettings()
@@ -108,7 +108,7 @@ class TestChatRouteIntegration:
         mock_agent = _make_mock_agent("Integration response")
 
         with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
+            "assistant_runtime.services.llm.interface.LlmService.build_agent",
             return_value=mock_agent,
         ):
             response = await client.post(
@@ -143,7 +143,7 @@ class TestSessionRouteIntegration:
         mock_agent = _make_mock_agent("First message")
 
         with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
+            "assistant_runtime.services.llm.interface.LlmService.build_agent",
             return_value=mock_agent,
         ):
             await client.post(
@@ -169,7 +169,7 @@ class TestSessionRouteIntegration:
         mock_agent = _make_mock_agent("To be deleted")
 
         with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
+            "assistant_runtime.services.llm.interface.LlmService.build_agent",
             return_value=mock_agent,
         ):
             await client.post(

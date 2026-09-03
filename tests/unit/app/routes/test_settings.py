@@ -6,9 +6,9 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.assistant.config import AssistantConfig
-from lovely_assistant.app.routes.settings import get_runtime_settings, router
-from lovely_assistant.app.settings import RuntimeSettings
+from assistant_runtime.app.assistant.config import AssistantConfig
+from assistant_runtime.app.routes.settings import get_runtime_settings, router
+from assistant_runtime.app.settings import RuntimeSettings
 
 
 def _make_app(runtime_settings: RuntimeSettings | None = None) -> FastAPI:
@@ -152,7 +152,7 @@ class TestPatchSettings:
         app = _make_app(rs)
 
         with patch(
-            "lovely_assistant.services.database.repositories.SettingsRepository",
+            "assistant_runtime.services.database.repositories.SettingsRepository",
             mock_settings_repo_cls,
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

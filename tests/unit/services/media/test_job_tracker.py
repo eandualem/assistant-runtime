@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from lovely_assistant.services.media._job_tracker import JobTracker, VideoJob
-from lovely_assistant.services.media._video_providers import VideoStatus
-from lovely_assistant.services.media.exceptions import VideoJobError
+from assistant_runtime.services.media._job_tracker import JobTracker, VideoJob
+from assistant_runtime.services.media._video_providers import VideoStatus
+from assistant_runtime.services.media.exceptions import VideoJobError
 
 
 @pytest.fixture

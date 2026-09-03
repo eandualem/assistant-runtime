@@ -4,10 +4,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lovely_assistant.services.tools.config import ToolConfig
-from lovely_assistant.services.tools.exceptions import ToolError
-from lovely_assistant.services.tools.interface import ToolService
-from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.exceptions import ToolError
+from assistant_runtime.services.tools.interface import ToolService
+from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 
 @pytest.fixture

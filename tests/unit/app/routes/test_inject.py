@@ -10,8 +10,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.inject import router
-from lovely_assistant.services.database.models import InboxItemORM
+from assistant_runtime.app.routes.inject import router
+from assistant_runtime.services.database.models import InboxItemORM
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -125,7 +125,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app._injector.InboxRepository",
+                "assistant_runtime.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -166,7 +166,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app._injector.InboxRepository",
+                "assistant_runtime.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -204,7 +204,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app._injector.InboxRepository",
+                "assistant_runtime.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -224,11 +224,11 @@ class TestInjectMessage:
 
     @pytest.mark.asyncio
     async def test_inject_telegram_reply_resolves_session_from_chat_binding(self):
-        """Telegram replies resolve the target Jarvis session from the bound chat id."""
+        """Telegram replies resolve the target assistant session from the bound chat id."""
         mock_row = _make_inbox_row()
         mock_db = _make_mock_db()
         session_store = _make_mock_session_store(
-            sessions={"sess-jarvis": {"turn_number": 3, "telegram_chat_id": "123456789"}}
+            sessions={"sess-assistant": {"turn_number": 3, "telegram_chat_id": "123456789"}}
         )
         assistant = _make_mock_assistant(session_store=session_store)
 
@@ -239,7 +239,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app._injector.InboxRepository",
+                "assistant_runtime.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -257,10 +257,10 @@ class TestInjectMessage:
         assert response.status_code == 201
         data = response.json()
         assert data["status"] == "delivered"
-        assert data["session_id"] == "sess-jarvis"
+        assert data["session_id"] == "sess-assistant"
 
         call_kwargs = mock_repo_inst.create.call_args.kwargs
-        assert call_kwargs["context"]["session_id"] == "sess-jarvis"
+        assert call_kwargs["context"]["session_id"] == "sess-assistant"
         assert call_kwargs["context"]["telegram_chat_id"] == "123456789"
 
     @pytest.mark.asyncio
@@ -278,7 +278,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app._injector.InboxRepository",
+                "assistant_runtime.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -353,7 +353,7 @@ class TestInjectMessage:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app._injector.InboxRepository",
+                "assistant_runtime.app._injector.InboxRepository",
                 mock_repo_cls,
             )
 

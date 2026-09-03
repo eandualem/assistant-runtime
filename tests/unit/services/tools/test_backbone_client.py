@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from lovely_assistant.services.tools._backbone_client import backbone_request
+from assistant_runtime.services.tools._backbone_client import backbone_request
 
-MODULE = "lovely_assistant.services.tools._backbone_client"
+MODULE = "assistant_runtime.services.tools._backbone_client"
 
 
 class TestBackboneRequest:

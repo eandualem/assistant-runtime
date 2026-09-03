@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lovely_assistant.services import tracing
-from lovely_assistant.services.tracing import (
+from assistant_runtime.services import tracing
+from assistant_runtime.services.tracing import (
     _NoOpHandle,
     _SpanHandle,
     _TraceHandle,

@@ -11,15 +11,15 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCall
 from pydantic_ai.usage import UsageLimits
 from pydantic_graph.nodes import End
 
-from lovely_assistant.app.assistant._session_store import SessionStore
-from lovely_assistant.app.assistant.config import AssistantConfig
-from lovely_assistant.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
-from lovely_assistant.app.settings import EffectiveConfig, RuntimeSettings
-from lovely_assistant.app.streaming.config import StreamingConfig
-from lovely_assistant.app.streaming.exceptions import StreamingError
-from lovely_assistant.app.streaming.interface import StreamingService
-from lovely_assistant.services.history.models import HistoryPreparationResult
-from lovely_assistant.services.tools.models import ToolSet
+from assistant_runtime.app.assistant._session_store import SessionStore
+from assistant_runtime.app.assistant.config import AssistantConfig
+from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
+from assistant_runtime.app.settings import EffectiveConfig, RuntimeSettings
+from assistant_runtime.app.streaming.config import StreamingConfig
+from assistant_runtime.app.streaming.exceptions import StreamingError
+from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.services.history.models import HistoryPreparationResult
+from assistant_runtime.services.tools.models import ToolSet
 
 
 def _request(
@@ -88,7 +88,7 @@ def _agent_context(agent: Any) -> AgentSetupContext:
         agent=agent,
         available_tools=ToolSet(),
         toolsets=[],
-        prompt_result=PromptResult(content="You are Jarvis.", fragments=[]),
+        prompt_result=PromptResult(content="You are the assistant.", fragments=[]),
         resolved_model="openai:gpt-5.4",
         usage_limits=UsageLimits(request_limit=10),
         output_type=str,
@@ -669,7 +669,7 @@ class TestMultiToolContinuation:
 
         # Build what agent.iter would return after a successful continuation:
         # The flat history + tool return for the frontend tool + LLM's final response
-        from lovely_assistant.app.assistant._serialization import assistant_record_to_flat_messages
+        from assistant_runtime.app.assistant._serialization import assistant_record_to_flat_messages
 
         flat_msgs = assistant_record_to_flat_messages(ctx["message_index"]["assistant-1"])
         user_msg = ModelRequest(
@@ -802,7 +802,7 @@ class TestMultiToolContinuation:
         ctx["pending_tool_name"] = "navigate"
         ctx["pending_assistant_message_id"] = "assistant-1"
 
-        from lovely_assistant.app.assistant._serialization import assistant_record_to_flat_messages
+        from assistant_runtime.app.assistant._serialization import assistant_record_to_flat_messages
 
         flat_msgs = assistant_record_to_flat_messages(ctx["message_index"]["assistant-1"])
         user_msg = ModelRequest(
@@ -892,7 +892,7 @@ class TestMultiToolContinuation:
         This structure ensures _handle_deferred_tool_results sees only the
         pending tool in last_model_response and doesn't add 'skip' entries.
         """
-        from lovely_assistant.app.assistant._serialization import (
+        from assistant_runtime.app.assistant._serialization import (
             assistant_record_to_flat_messages,
             path_records_to_model_history,
         )

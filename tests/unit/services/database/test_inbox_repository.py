@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.services.database.models import InboxItemORM
-from lovely_assistant.services.database.repositories import InboxRepository
+from assistant_runtime.services.database.models import InboxItemORM
+from assistant_runtime.services.database.repositories import InboxRepository
 
 # ---------------------------------------------------------------------------
 # Fixtures

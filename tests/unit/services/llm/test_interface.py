@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from cryptography.fernet import Fernet
 
-from lovely_assistant.services.llm._codex_model import OpenAICodexResponsesModel
-from lovely_assistant.services.llm.config import LLMConfig
-from lovely_assistant.services.llm.exceptions import LLMCallError, ProviderConfigError
-from lovely_assistant.services.llm.interface import LLMResult, LlmService
+from assistant_runtime.services.llm._codex_model import OpenAICodexResponsesModel
+from assistant_runtime.services.llm.config import LLMConfig
+from assistant_runtime.services.llm.exceptions import LLMCallError, ProviderConfigError
+from assistant_runtime.services.llm.interface import LLMResult, LlmService
 
 
 class TestLlmServiceLifecycle:
@@ -146,7 +146,7 @@ class TestBuildAgent:
             )
         )
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_cls.return_value = MagicMock()
             service.build_agent(model="openai:gpt-5.4", system_prompt="Test")
 
@@ -167,7 +167,7 @@ class TestBuildAgent:
             )
         )
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_cls.return_value = MagicMock()
             service.build_agent(
                 model="openai:gpt-5.4",
@@ -217,7 +217,7 @@ class TestExecuteLlmCall:
         mock_result = MagicMock()
         mock_result.output = "Hello world"
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run = AsyncMock(return_value=mock_result)
             mock_agent_cls.return_value = mock_agent_instance
@@ -235,7 +235,7 @@ class TestExecuteLlmCall:
         mock_result = MagicMock()
         mock_result.output = "Response"
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run = AsyncMock(return_value=mock_result)
             mock_agent_cls.return_value = mock_agent_instance
@@ -257,7 +257,7 @@ class TestExecuteLlmCall:
             )
 
     async def test_execute_wraps_exceptions_in_llm_call_error(self, service):
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run = AsyncMock(side_effect=RuntimeError("API timeout"))
             mock_agent_cls.return_value = mock_agent_instance
@@ -272,7 +272,7 @@ class TestExecuteLlmCall:
         mock_result = MagicMock()
         mock_result.output = "OK"
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run = AsyncMock(return_value=mock_result)
             mock_agent_cls.return_value = mock_agent_instance
@@ -302,7 +302,7 @@ class TestExecuteLlmCall:
             )
         )
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run = AsyncMock(return_value=mock_result)
             mock_agent_cls.return_value = mock_agent_instance
@@ -328,7 +328,7 @@ class TestExecuteLlmCall:
             )
         )
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run = AsyncMock(return_value=mock_result)
             mock_agent_cls.return_value = mock_agent_instance
@@ -361,7 +361,7 @@ class TestExecuteLlmCallRetry:
         mock_result = MagicMock()
         mock_result.output = "recovered"
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
 
             async def _run_side_effect(*args, **kwargs):
@@ -376,7 +376,7 @@ class TestExecuteLlmCallRetry:
 
             # Patch wait to avoid real sleeps
             with patch(
-                "lovely_assistant.base.resilience.wait_random_exponential",
+                "assistant_runtime.base.resilience.wait_random_exponential",
                 return_value=MagicMock(return_value=0),
             ):
                 result = await service.execute_llm_call(
@@ -389,7 +389,7 @@ class TestExecuteLlmCallRetry:
 
     async def test_gives_up_after_max_retries(self, service):
         """execute_llm_call raises LLMCallError after exhausting retries."""
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run = AsyncMock(side_effect=ConnectionError("permanent"))
             mock_agent_cls.return_value = mock_agent_instance
@@ -407,7 +407,7 @@ class TestExecuteLlmCallRetry:
         """Non-retryable errors (like RuntimeError) are not retried."""
         call_count = 0
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
 
             async def _run_side_effect(*args, **kwargs):
@@ -436,7 +436,7 @@ class TestExecuteLlmCallRetry:
         class RateLimitError(Exception):
             pass
 
-        with patch("lovely_assistant.services.llm.interface.Agent") as mock_agent_cls:
+        with patch("assistant_runtime.services.llm.interface.Agent") as mock_agent_cls:
             mock_agent_instance = MagicMock()
             mock_agent_instance.run = AsyncMock(side_effect=RateLimitError("slow down"))
             mock_agent_cls.return_value = mock_agent_instance
@@ -499,7 +499,7 @@ class TestDbProviderKeys:
             return None
 
         with patch(
-            "lovely_assistant.services.database.repositories.OAuthTokenRepository"
+            "assistant_runtime.services.database.repositories.OAuthTokenRepository"
         ) as mock_repo_cls:
             mock_repo = MagicMock()
             mock_repo.get = AsyncMock(side_effect=fake_get)
@@ -533,7 +533,7 @@ class TestDbProviderKeys:
             return None
 
         with patch(
-            "lovely_assistant.services.database.repositories.OAuthTokenRepository"
+            "assistant_runtime.services.database.repositories.OAuthTokenRepository"
         ) as mock_repo_cls:
             mock_repo = MagicMock()
             mock_repo.get = AsyncMock(side_effect=fake_get)

@@ -14,21 +14,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic_graph.nodes import End
 
-from lovely_assistant.app.assistant.interface import AssistantService
-from lovely_assistant.app.settings import RuntimeSettings
-from lovely_assistant.app.streaming.interface import StreamingService
-from lovely_assistant.base.lifecycle import LifecycleManager
-from lovely_assistant.config import AppSettings
-from lovely_assistant.services.history.interface import HistoryService
-from lovely_assistant.services.llm.interface import LlmService
-from lovely_assistant.services.tools.interface import ToolService
+from assistant_runtime.app.assistant.interface import AssistantService
+from assistant_runtime.app.settings import RuntimeSettings
+from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.base.lifecycle import LifecycleManager
+from assistant_runtime.config import AppSettings
+from assistant_runtime.services.history.interface import HistoryService
+from assistant_runtime.services.llm.interface import LlmService
+from assistant_runtime.services.tools.interface import ToolService
 
 # Required artifacts for integration tests (no DB available)
 _INTEGRATION_ARTIFACTS = {
-    "soul": "Jarvis exists to increase the operator's leverage inside a live operating environment.",
-    "persona": "You are Jarvis, the operational assistant for the Lovely Universe.",
+    "soul": "The assistant exists to increase the operator's leverage inside a live operating environment.",
+    "persona": "You are the assistant, the operational assistant for your environment.",
     "communication_protocol": "Messages may arrive with envelope tags indicating their source.",
-    "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
+    "ecosystem": "Agents: Leo, Ike, Feynman.",
 }
 
 

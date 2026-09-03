@@ -12,13 +12,13 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from lovely_assistant.services.history._manager import (
+from assistant_runtime.services.history._manager import (
     SUMMARY_MARKER,
     TOOL_RESULT_PLACEHOLDER,
     HistoryManager,
 )
-from lovely_assistant.services.history.config import HistoryConfig
-from lovely_assistant.services.history.models import CompactionResult, WorkingMemory
+from assistant_runtime.services.history.config import HistoryConfig
+from assistant_runtime.services.history.models import CompactionResult, WorkingMemory
 
 
 @pytest.fixture

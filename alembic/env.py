@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from lovely_assistant.services.database.base import Base
-from lovely_assistant.services.database.config import DatabaseConfig
-import lovely_assistant.services.database.models  # noqa: F401 — registers ORM models with Base.metadata
+from assistant_runtime.services.database.base import Base
+from assistant_runtime.services.database.config import DatabaseConfig
+import assistant_runtime.services.database.models  # noqa: F401 — registers ORM models with Base.metadata
 
 # Load .env so DatabaseConfig picks up env vars
 load_dotenv()

@@ -11,10 +11,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from lovely_assistant.services.history.config import HistoryConfig
-from lovely_assistant.services.history.exceptions import CompactionError
-from lovely_assistant.services.history.interface import HistoryService
-from lovely_assistant.services.history.models import HistoryPreparationResult, WorkingMemory
+from assistant_runtime.services.history.config import HistoryConfig
+from assistant_runtime.services.history.exceptions import CompactionError
+from assistant_runtime.services.history.interface import HistoryService
+from assistant_runtime.services.history.models import HistoryPreparationResult, WorkingMemory
 
 
 @pytest.fixture

@@ -9,8 +9,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.oauth import router
-from lovely_assistant.services.oauth.interface import AuthSource, AuthStatus, DeviceCodeStatus
+from assistant_runtime.app.routes.oauth import router
+from assistant_runtime.services.oauth.interface import AuthSource, AuthStatus, DeviceCodeStatus
 
 
 def _make_app(oauth_service) -> FastAPI:
@@ -26,7 +26,7 @@ async def client():
         connected=True,
         status=DeviceCodeStatus.AUTHORIZED,
         source=AuthSource.CODEX_CLI,
-        email="jarvis@example.com",
+        email="assistant@example.com",
         api_key_preview="sk-...1234",
     )
     oauth_service = SimpleNamespace(
@@ -50,7 +50,7 @@ class TestOAuthRoutes:
         data = response.json()
         assert data["connected"] is True
         assert data["source"] == "codex_cli"
-        assert data["email"] == "jarvis@example.com"
+        assert data["email"] == "assistant@example.com"
 
     @pytest.mark.asyncio
     async def test_status_includes_source(self, client):

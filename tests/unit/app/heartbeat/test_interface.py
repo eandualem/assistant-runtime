@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.app.heartbeat.config import HeartbeatConfig
-from lovely_assistant.app.heartbeat.exceptions import HeartbeatError
-from lovely_assistant.app.heartbeat.interface import HeartbeatService
+from assistant_runtime.app.heartbeat.config import HeartbeatConfig
+from assistant_runtime.app.heartbeat.exceptions import HeartbeatError
+from assistant_runtime.app.heartbeat.interface import HeartbeatService
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ class TestEnqueueOnce:
 
         inject = AsyncMock(return_value={"status": "delivered", "session_id": "sess-1"})
         monkeypatch.setattr(
-            "lovely_assistant.app.heartbeat.interface.inject_inbox_message",
+            "assistant_runtime.app.heartbeat.interface.inject_inbox_message",
             inject,
         )
 
