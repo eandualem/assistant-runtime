@@ -11,6 +11,30 @@ from loguru import logger
 from pydantic_ai.mcp import load_mcp_toolsets
 
 
+def _server_name(server: Any) -> str:
+    """Best-effort display name for a toolset returned by load_mcp_toolsets().
+
+    The loader returns PrefixedToolset wrappers whose ``prefix`` is the server name
+    from the config file; a bare MCPToolset carries the name in ``id``.
+    """
+    for attr in ("prefix", "id", "tool_prefix"):
+        value = getattr(server, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return "unknown"
+
+
+def _tool_source(server: Any) -> Any:
+    """Return the object that can ``list_tools()``: the server itself, or the MCPToolset
+    inside a PrefixedToolset wrapper."""
+    if callable(getattr(server, "list_tools", None)):
+        return server
+    inner = getattr(server, "wrapped", None)
+    if inner is not None and callable(getattr(inner, "list_tools", None)):
+        return inner
+    return server
+
+
 class MCPService:
     """MCP server lifecycle and toolset provider. Implements LifecycleAware.
 
@@ -59,7 +83,7 @@ class MCPService:
         # Enter each server's context manager individually
         self._exit_stack = AsyncExitStack()
         for server in self._servers:
-            name = getattr(server, "id", None) or getattr(server, "tool_prefix", None) or "unknown"
+            name = _server_name(server)
             try:
                 await self._exit_stack.enter_async_context(server)
                 self._live_servers.append(server)
@@ -99,10 +123,7 @@ class MCPService:
             "healthy": True,
             "connected": len(self._live_servers),
             "failed": self._failed,
-            "server_names": [
-                getattr(s, "id", None) or getattr(s, "tool_prefix", None) or "unknown"
-                for s in self._live_servers
-            ],
+            "server_names": [_server_name(s) for s in self._live_servers],
         }
 
     def get_toolsets(self) -> list[Any]:
@@ -121,7 +142,7 @@ class MCPService:
         """
         summaries: list[dict[str, Any]] = []
         for server in self._live_servers:
-            name = getattr(server, "id", None) or getattr(server, "tool_prefix", None) or "unknown"
+            name = _server_name(server)
             summaries.append({"name": name})
         return summaries
 
@@ -163,10 +184,12 @@ class MCPService:
 
     async def _summarize_server(self, server: Any) -> dict[str, Any]:
         """Return the detailed tool summary for one MCP server."""
-        name = getattr(server, "id", None) or getattr(server, "tool_prefix", None) or "unknown"
+        name = _server_name(server)
         tools: list[str] = []
         try:
-            tool_defs = await server.list_tools()
+            # load_mcp_toolsets() wraps each MCPToolset in a PrefixedToolset; the
+            # wrapper has no list_tools(), so query the underlying server.
+            tool_defs = await _tool_source(server).list_tools()
             tools = [t.name for t in tool_defs]
         except Exception as e:
             logger.warning("Failed to list tools for MCP server", name=name, error=str(e))
