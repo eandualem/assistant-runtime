@@ -329,3 +329,42 @@ class TestEmptyServerList:
         assert service._started is True
         assert service.get_toolsets() == []
         assert service._exit_stack is None
+
+
+def _make_prefixed_wrapper(name: str, tool_names: list[str]) -> MagicMock:
+    """Mimic the PrefixedToolset shape load_mcp_toolsets() returns in pydantic-ai 2:
+    ``prefix`` carries the server name, ``id`` is None, ``list_tools`` lives on ``wrapped``."""
+    inner = MagicMock()
+    inner.id = name
+    inner.list_tools = AsyncMock(return_value=[_make_mock_tool(t) for t in tool_names])
+    wrapper = MagicMock(spec=["__aenter__", "__aexit__", "prefix", "wrapped", "id"])
+    wrapper.prefix = name
+    wrapper.id = None
+    wrapper.wrapped = inner
+    wrapper.__aenter__ = AsyncMock(return_value=wrapper)
+    wrapper.__aexit__ = AsyncMock(return_value=None)
+    return wrapper
+
+
+class TestPrefixedToolsetShape:
+    async def test_names_and_tools_come_from_wrapper_and_inner_server(self, tmp_path):
+        config_file = tmp_path / "mcp.json"
+        config_file.write_text('{"mcpServers": {}}')
+        wrapper = _make_prefixed_wrapper("memory", ["create_entities", "search_nodes"])
+
+        with patch(
+            "assistant_runtime.services.mcp.interface.load_mcp_toolsets",
+            return_value=[wrapper],
+        ):
+            service = MCPService(config_path=config_file)
+            await service.start()
+
+        health = await service.health_check()
+        assert health["server_names"] == ["memory"]
+        assert service.get_server_summary() == [{"name": "memory"}]
+
+        detailed = await service.get_detailed_summary()
+        assert detailed == [
+            {"name": "memory", "tools": ["create_entities", "search_nodes"], "tool_count": 2}
+        ]
+        wrapper.wrapped.list_tools.assert_awaited_once()

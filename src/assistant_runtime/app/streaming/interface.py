@@ -913,8 +913,8 @@ class StreamingService:
                         make_debug_usage_event(
                             input_tokens=usage_snapshot["input_tokens"],
                             output_tokens=usage_snapshot["output_tokens"],
-                            cache_read=getattr(usage, "cache_read_input_tokens", 0) or 0,
-                            cache_write=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                            cache_read=self._usage_cache_counts(usage)[0],
+                            cache_write=self._usage_cache_counts(usage)[1],
                             requests=getattr(usage, "requests", 0) or 0,
                             total=usage_snapshot["total_tokens"],
                         )
@@ -1489,6 +1489,17 @@ class StreamingService:
             if isinstance(value, int):
                 return value
         return 0
+
+    @staticmethod
+    def _usage_cache_counts(usage: Any) -> tuple[int, int]:
+        """Return (cache_read, cache_write) token counts from a pydantic-ai 2 RunUsage.
+
+        RunUsage names these ``cache_read_tokens`` / ``cache_write_tokens``; the
+        provider-level ``*_input_tokens`` names are not present on the aggregate.
+        """
+        read = getattr(usage, "cache_read_tokens", 0) or 0
+        write = getattr(usage, "cache_write_tokens", 0) or 0
+        return int(read), int(write)
 
     def _safe_usage_dict(self, result_or_usage: Any) -> dict[str, int] | None:
         """Extract usage stats from a run result or RunUsage object."""
