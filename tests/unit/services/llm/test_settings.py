@@ -90,7 +90,8 @@ class TestBuildModelSettings:
         )
         assert isinstance(settings, dict)
         assert settings["temperature"] == 1.0  # forced for thinking on models that allow sampling
-        assert settings["max_tokens"] == 10_000 + _RESPONSE_MAX_TOKENS
+        # Adaptive thinking is paced by effort; the budget must not inflate max_tokens.
+        assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
         assert settings["anthropic_thinking"] == {"type": "adaptive"}
         assert settings["anthropic_effort"] == "medium"
 
@@ -103,6 +104,7 @@ class TestBuildModelSettings:
             "type": "enabled",
             "budget_tokens": 10_000,
         }
+        assert settings["max_tokens"] == 10_000 + _RESPONSE_MAX_TOKENS  # headroom for budget
         assert "anthropic_effort" not in settings
 
     def test_anthropic_effort_tiers(self):
