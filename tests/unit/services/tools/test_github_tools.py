@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from assistant_runtime.services.tools._github_tools import (
     _github_request,
     _has_label_prefix,
@@ -23,6 +25,30 @@ from assistant_runtime.services.tools.config import ToolConfig
 # ---------------------------------------------------------------------------
 
 MODULE = "assistant_runtime.services.tools._github_tools"
+
+
+@pytest.fixture(autouse=True)
+def _repo_env(monkeypatch):
+    """The issue tools need a target repository; point them at a test repo."""
+    monkeypatch.setenv("GITHUB_REPO_OWNER", "example-org")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "orchestration")
+
+
+class TestRepoConfig:
+    async def test_missing_repo_config_returns_error(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_REPO_OWNER", raising=False)
+        monkeypatch.delenv("GITHUB_REPO_NAME", raising=False)
+        result = await get_issue_details(1)
+        assert result["success"] is False
+        assert result["error_code"] == "GITHUB_REPO_MISSING"
+        assert "GITHUB_REPO_OWNER and GITHUB_REPO_NAME" in result["error"]
+
+    async def test_partial_repo_config_names_missing_variable(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_REPO_NAME", raising=False)
+        result = await comment_on_issue(1, "hello")
+        assert result["error_code"] == "GITHUB_REPO_MISSING"
+        assert "GITHUB_REPO_NAME" in result["error"]
+        assert "GITHUB_REPO_OWNER" not in result["error"]
 
 
 # ---------------------------------------------------------------------------
