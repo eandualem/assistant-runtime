@@ -91,16 +91,13 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "langfuse" },
     { name = "loguru" },
-    { name = "lumaai" },
     { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "google", "mcp", "openai", "openrouter"] },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "python-socketio" },
     { name = "pyyaml" },
-    { name = "runwayml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tenacity" },
     { name = "uvicorn", extra = ["standard"] },
@@ -113,6 +110,13 @@ dev = [
     { name = "pytest-mock" },
     { name = "ruff" },
 ]
+tracing = [
+    { name = "langfuse" },
+]
+video = [
+    { name = "lumaai" },
+    { name = "runwayml" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -121,9 +125,9 @@ requires-dist = [
     { name = "cryptography", specifier = ">=44.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "langfuse", specifier = ">=3.0.0" },
+    { name = "langfuse", marker = "extra == 'tracing'", specifier = ">=3.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },
-    { name = "lumaai", specifier = ">=1.0.0" },
+    { name = "lumaai", marker = "extra == 'video'", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-ai-slim", extras = ["anthropic", "openai", "google", "openrouter", "mcp"], specifier = ">=2.38.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
@@ -134,12 +138,12 @@ requires-dist = [
     { name = "python-socketio", specifier = ">=5.11" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14.0" },
-    { name = "runwayml", specifier = ">=1.0.0" },
+    { name = "runwayml", marker = "extra == 'video'", specifier = ">=1.0.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["video", "tracing", "dev"]
 
 [[package]]
 name = "asyncpg"
