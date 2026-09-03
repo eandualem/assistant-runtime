@@ -140,8 +140,11 @@ def build_model_settings(
         no_sampling = bool(profile.get("anthropic_disallows_sampling_settings", False))
         supports_xhigh = bool(profile.get("anthropic_supports_xhigh_effort", False))
 
+        # Adaptive models pace thinking via effort, so the numeric budget must not
+        # inflate the hard output limit; only legacy budget_tokens needs the headroom.
+        anthropic_max_tokens = base_max_tokens if adaptive else effective_max_tokens
         anthropic_kwargs: dict[str, Any] = {
-            "max_tokens": effective_max_tokens,
+            "max_tokens": anthropic_max_tokens,
             "anthropic_cache_instructions": True,
             "anthropic_cache_tool_definitions": True,
             # Explicit timeout bypasses SDK client-side heuristic that rejects
@@ -173,11 +176,16 @@ def build_model_settings(
         logger.info(
             "LLM model settings built",
             provider="anthropic",
-            thinking=("adaptive" if adaptive else "enabled") if thinking_budget else "disabled",
+            thinking=(
+                ("adaptive" if adaptive else "enabled")
+                if thinking_budget
+                # Opus 5 / Sonnet 5 / Fable run adaptive thinking when the field is omitted.
+                else ("provider_default" if adaptive else "disabled")
+            ),
             thinking_budget=thinking_budget,
             effort=anthropic_kwargs.get("anthropic_effort"),
             temperature=anthropic_kwargs.get("temperature"),
-            max_tokens=effective_max_tokens,
+            max_tokens=anthropic_max_tokens,
         )
 
     elif is_openrouter:
