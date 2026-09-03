@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.models import router
+from assistant_runtime.app.routes.models import router
 
 
 def _make_app() -> FastAPI:

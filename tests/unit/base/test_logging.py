@@ -1,6 +1,6 @@
 """Tests for structured logging helpers — tag constants and payload truncation."""
 
-from lovely_assistant.base._logging import (
+from assistant_runtime.base._logging import (
     FULL_LOG_THRESHOLD,
     TAG_DB,
     TAG_HISTORY,

@@ -8,9 +8,9 @@ import json
 import pytest
 from cryptography.fernet import Fernet
 
-from lovely_assistant.services.oauth.config import OAuthConfig
-from lovely_assistant.services.oauth.exceptions import OAuthCodexSyncError
-from lovely_assistant.services.oauth.interface import AuthSource, DeviceCodeStatus, OAuthService
+from assistant_runtime.services.oauth.config import OAuthConfig
+from assistant_runtime.services.oauth.exceptions import OAuthCodexSyncError
+from assistant_runtime.services.oauth.interface import AuthSource, DeviceCodeStatus, OAuthService
 
 
 def _make_jwt(payload: dict[str, object]) -> str:
@@ -19,7 +19,7 @@ def _make_jwt(payload: dict[str, object]) -> str:
     return f"{header}.{body}.sig"
 
 
-def _write_codex_auth(path, *, email: str = "jarvis@example.com") -> None:
+def _write_codex_auth(path, *, email: str = "assistant@example.com") -> None:
     path.write_text(
         json.dumps(
             {
@@ -75,7 +75,7 @@ class TestOAuthServiceCodexSync:
         assert status.connected is True
         assert status.status == DeviceCodeStatus.AUTHORIZED
         assert status.source == AuthSource.CODEX_CLI
-        assert status.email == "jarvis@example.com"
+        assert status.email == "assistant@example.com"
         session = service.get_codex_session()
         assert session is not None
         assert session.account_id == "acct_123"

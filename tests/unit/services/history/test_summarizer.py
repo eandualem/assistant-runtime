@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.services.history._summarizer import HistorySummarizer
-from lovely_assistant.services.history.config import HistoryConfig
-from lovely_assistant.services.history.models import (
+from assistant_runtime.services.history._summarizer import HistorySummarizer
+from assistant_runtime.services.history.config import HistoryConfig
+from assistant_runtime.services.history.models import (
     CompactionResult,
     MemoryDelta,
     MemoryDeltaResult,

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from lovely_assistant.app.assistant.interface import AssistantService
-from lovely_assistant.base.lifecycle import LifecycleManager
-from lovely_assistant.config import AppSettings
-from lovely_assistant.services.history.interface import HistoryService
-from lovely_assistant.services.llm.interface import LlmService
-from lovely_assistant.services.tools.interface import ToolService
+from assistant_runtime.app.assistant.interface import AssistantService
+from assistant_runtime.base.lifecycle import LifecycleManager
+from assistant_runtime.config import AppSettings
+from assistant_runtime.services.history.interface import HistoryService
+from assistant_runtime.services.llm.interface import LlmService
+from assistant_runtime.services.tools.interface import ToolService
 
 
 class TestFullLifecycle:

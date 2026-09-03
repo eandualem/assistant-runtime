@@ -2,7 +2,7 @@
 
 from pydantic_ai.exceptions import ModelHTTPError
 
-from lovely_assistant.services.llm.exceptions import LLMCallError, classify_llm_error
+from assistant_runtime.services.llm.exceptions import LLMCallError, classify_llm_error
 
 
 class TestLLMCallError:

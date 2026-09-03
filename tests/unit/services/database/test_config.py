@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.services.database.config import DatabaseConfig
+from assistant_runtime.services.database.config import DatabaseConfig
 
 
 class TestDatabaseConfigDefaults:
@@ -13,9 +13,9 @@ class TestDatabaseConfigDefaults:
         config = DatabaseConfig()
         assert config.host == "localhost"
         assert config.port == 5434
-        assert config.user == "lovely_assistant"
-        assert config.password == "lovely_assistant"
-        assert config.name == "lovely_assistant"
+        assert config.user == "assistant_runtime"
+        assert config.password == "assistant_runtime"
+        assert config.name == "assistant_runtime"
         assert config.pool_size == 5
         assert config.pool_overflow == 10
         assert config.echo is False
@@ -56,13 +56,13 @@ class TestDatabaseConfigComputedUrls:
     def test_async_url_default(self):
         config = DatabaseConfig()
         assert config.async_url == (
-            "postgresql+asyncpg://lovely_assistant:lovely_assistant@localhost:5434/lovely_assistant"
+            "postgresql+asyncpg://assistant_runtime:assistant_runtime@localhost:5434/assistant_runtime"
         )
 
     def test_sync_url_default(self):
         config = DatabaseConfig()
         assert config.sync_url == (
-            "postgresql://lovely_assistant:lovely_assistant@localhost:5434/lovely_assistant"
+            "postgresql://assistant_runtime:assistant_runtime@localhost:5434/assistant_runtime"
         )
 
     def test_async_url_custom(self):

@@ -2,12 +2,12 @@
 
 from pydantic_ai.toolsets import ExternalToolset
 
-from lovely_assistant.services.tools._frontend_tools import (
+from assistant_runtime.services.tools._frontend_tools import (
     FRONTEND_TOOL_SCHEMAS,
     build_frontend_toolset,
     get_frontend_definitions,
 )
-from lovely_assistant.services.tools.models import ToolCategory
+from assistant_runtime.services.tools.models import ToolCategory
 
 # ---------------------------------------------------------------------------
 # TestFrontendToolSchemas

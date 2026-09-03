@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.services.tools.models import (
+from assistant_runtime.services.tools.models import (
     ToolCategory,
     ToolDefinition,
     ToolResult,

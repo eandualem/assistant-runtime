@@ -7,8 +7,8 @@ import base64
 import pytest
 from pydantic_ai.messages import BinaryContent
 
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._screen_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._screen_tools import (
     _current_screenshot,
     _look_at_screen,
     clear_current_screenshot,
@@ -17,7 +17,7 @@ from lovely_assistant.services.tools._screen_tools import (
     set_current_screenshot,
     strip_screenshot_from_tool_result,
 )
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures

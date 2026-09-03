@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lovely_assistant.services.tools._plan_tools import (
+from assistant_runtime.services.tools._plan_tools import (
     _get_agent_state,
     _read_all_state_files,
     approve_plan,
@@ -16,10 +16,10 @@ from lovely_assistant.services.tools._plan_tools import (
     register_plan_tools,
     reject_plan,
 )
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "lovely_assistant.services.tools._plan_tools"
+MODULE = "assistant_runtime.services.tools._plan_tools"
 
 
 # ---------------------------------------------------------------------------

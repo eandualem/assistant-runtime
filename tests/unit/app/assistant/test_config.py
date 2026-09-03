@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.app.assistant.config import AssistantConfig
+from assistant_runtime.app.assistant.config import AssistantConfig
 
 
 class TestAssistantConfigDefaults:

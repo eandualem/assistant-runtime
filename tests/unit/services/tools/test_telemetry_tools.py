@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._telemetry_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._telemetry_tools import (
     get_activity_timeline,
     get_agent_activity,
     get_delivery_status,
@@ -13,9 +13,9 @@ from lovely_assistant.services.tools._telemetry_tools import (
     get_recent_deliveries,
     register_telemetry_tools,
 )
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "lovely_assistant.services.tools._telemetry_tools"
+MODULE = "assistant_runtime.services.tools._telemetry_tools"
 
 
 class TestGetDeliveryStatus:
@@ -62,7 +62,7 @@ class TestGetRecentDeliveries:
                         "id": 1,
                         "issue_number": 100,
                         "target_entity": "coding-agent",
-                        "session_name": "lovely-assistant",
+                        "session_name": "assistant-runtime",
                         "outcome": "delivered",
                     }
                 ],
@@ -103,7 +103,7 @@ class TestGetFailedDeliveries:
                         "id": 2,
                         "issue_number": 101,
                         "target_entity": "coding-agent",
-                        "session_name": "lovely-assistant",
+                        "session_name": "assistant-runtime",
                         "outcome": "offline",
                     }
                 ],
@@ -182,7 +182,7 @@ class TestGetActivityTimeline:
                         "ts": 1773409178.493482,
                         "type": "delivery",
                         "entity": "coding-agent",
-                        "summary": "#727 -> lovely-assistant (delivered)",
+                        "summary": "#727 -> assistant-runtime (delivered)",
                     }
                 ],
                 "total": 8,

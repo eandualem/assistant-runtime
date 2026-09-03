@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.app.models_registry import (
+from assistant_runtime.app.models_registry import (
     MODEL_CATALOG,
     ModelEntry,
     ProviderInfo,
@@ -13,7 +13,7 @@ from lovely_assistant.app.models_registry import (
     get_models,
     get_provider_info,
 )
-from lovely_assistant.services.media.interface import _PROVIDER_GENERATORS, _VIDEO_PROVIDERS
+from assistant_runtime.services.media.interface import _PROVIDER_GENERATORS, _VIDEO_PROVIDERS
 
 
 class TestModelCatalog:

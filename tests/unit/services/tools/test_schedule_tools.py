@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._schedule_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._schedule_tools import (
     add_schedule_item,
     register_schedule_tools,
     remove_schedule_item,
     toggle_schedule_item,
 )
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "lovely_assistant.services.tools._schedule_tools"
+MODULE = "assistant_runtime.services.tools._schedule_tools"
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from lovely_assistant.services.tools._github_tools import (
+from assistant_runtime.services.tools._github_tools import (
     _github_request,
     _has_label_prefix,
     close_issue,
@@ -15,14 +15,14 @@ from lovely_assistant.services.tools._github_tools import (
     register_github_tools,
     search_issues,
 )
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE = "lovely_assistant.services.tools._github_tools"
+MODULE = "assistant_runtime.services.tools._github_tools"
 
 
 # ---------------------------------------------------------------------------

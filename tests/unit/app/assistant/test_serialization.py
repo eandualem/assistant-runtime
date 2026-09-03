@@ -15,7 +15,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RequestUsage
 
-from lovely_assistant.app.assistant._serialization import (
+from assistant_runtime.app.assistant._serialization import (
     assistant_segments_to_text,
     build_assistant_message_content,
     build_steering_request,

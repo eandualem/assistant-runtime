@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.services.history.config import HistoryConfig
+from assistant_runtime.services.history.config import HistoryConfig
 
 
 class TestHistoryConfigDefaults:

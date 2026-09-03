@@ -2,7 +2,7 @@
 
 import re
 
-from lovely_assistant.services.media._cache import ImageCache
+from assistant_runtime.services.media._cache import ImageCache
 
 
 class TestStoreAndRetrieve:
@@ -60,7 +60,7 @@ class TestLen:
         """__len__ counts all entries, including expired ones (no lazy cleanup)."""
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=10, max_items=10)
@@ -70,7 +70,7 @@ class TestLen:
         # Advance past TTL — len still counts it (not cleaned up yet)
         current_time = 1020.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         assert len(cache) == 1
 
@@ -81,7 +81,7 @@ class TestTTLExpiry:
     def test_get_within_ttl_succeeds(self, monkeypatch):
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=60, max_items=10)
@@ -90,7 +90,7 @@ class TestTTLExpiry:
         # Advance time but stay within TTL
         current_time = 1059.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         assert cache.get(image_id) == (b"data", "image/png")
 
@@ -98,7 +98,7 @@ class TestTTLExpiry:
         """At exactly the expiry boundary (now == expiry), entry is still valid."""
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=60, max_items=10)
@@ -108,14 +108,14 @@ class TestTTLExpiry:
         # The condition is `time.monotonic() > expiry`, so equal is NOT expired
         current_time = 1060.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         assert cache.get(image_id) == (b"data", "image/png")
 
     def test_get_past_ttl_returns_none(self, monkeypatch):
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=60, max_items=10)
@@ -124,7 +124,7 @@ class TestTTLExpiry:
         # Advance past TTL
         current_time = 1061.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         assert cache.get(image_id) is None
 
@@ -132,7 +132,7 @@ class TestTTLExpiry:
         """Expired entry is deleted on get (lazy cleanup)."""
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=10, max_items=10)
@@ -142,7 +142,7 @@ class TestTTLExpiry:
         # Expire and access
         current_time = 1011.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         cache.get(image_id)
 
@@ -153,7 +153,7 @@ class TestTTLExpiry:
         """After get returns None for an expired entry, a second get also returns None."""
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=10, max_items=10)
@@ -161,7 +161,7 @@ class TestTTLExpiry:
 
         current_time = 1011.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         assert cache.get(image_id) is None
         # Second access — entry was deleted, so it hits the "entry is None" path
@@ -174,7 +174,7 @@ class TestCleanup:
     def test_cleanup_removes_expired_entries(self, monkeypatch):
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=10, max_items=10)
@@ -185,7 +185,7 @@ class TestCleanup:
         # Expire all
         current_time = 1011.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         cache.cleanup()
         assert len(cache) == 0
@@ -193,7 +193,7 @@ class TestCleanup:
     def test_cleanup_returns_count_of_evicted(self, monkeypatch):
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=10, max_items=10)
@@ -203,7 +203,7 @@ class TestCleanup:
 
         current_time = 1011.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         count = cache.cleanup()
         assert count == 3
@@ -211,7 +211,7 @@ class TestCleanup:
     def test_cleanup_returns_zero_when_nothing_expired(self, monkeypatch):
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=60, max_items=10)
@@ -227,7 +227,7 @@ class TestCleanup:
     def test_cleanup_only_removes_expired(self, monkeypatch):
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=10, max_items=10)
@@ -236,14 +236,14 @@ class TestCleanup:
         # Store second entry later
         current_time = 1005.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_b = cache.store(b"b", "image/png")
 
         # Advance so only the first entry is expired (expiry=1010) but not the second (expiry=1015)
         current_time = 1011.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         count = cache.cleanup()
 
@@ -260,7 +260,7 @@ class TestMaxItemsEviction:
         """When at capacity, store calls cleanup before evicting."""
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=10, max_items=2)
@@ -271,7 +271,7 @@ class TestMaxItemsEviction:
         # Expire all entries, then store a new one — cleanup frees space
         current_time = 1011.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_c = cache.store(b"c", "image/png")
 
@@ -283,7 +283,7 @@ class TestMaxItemsEviction:
         """When cleanup doesn't free space, the oldest (earliest expiry) is evicted."""
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=60, max_items=2)
@@ -291,14 +291,14 @@ class TestMaxItemsEviction:
 
         current_time = 1001.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_b = cache.store(b"b", "image/png")
 
         # At capacity, no expired entries — oldest (id_a, expiry=1060) gets evicted
         current_time = 1002.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_c = cache.store(b"c", "image/png")
 
@@ -311,7 +311,7 @@ class TestMaxItemsEviction:
         """Eviction targets the entry with the smallest expiry timestamp."""
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=100, max_items=3)
@@ -319,20 +319,20 @@ class TestMaxItemsEviction:
 
         current_time = 1010.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_second = cache.store(b"second", "image/png")  # expiry = 1110
 
         current_time = 1020.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_third = cache.store(b"third", "image/png")  # expiry = 1120
 
         # Store a 4th — should evict id_first (expiry=1100, the earliest)
         current_time = 1030.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_fourth = cache.store(b"fourth", "image/png")
 
@@ -346,7 +346,7 @@ class TestMaxItemsEviction:
         """Cache with max_items=1 always has at most one entry."""
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=60, max_items=1)
@@ -355,7 +355,7 @@ class TestMaxItemsEviction:
 
         current_time = 1001.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_b = cache.store(b"b", "image/png")
 
@@ -366,7 +366,7 @@ class TestMaxItemsEviction:
     def test_store_below_capacity_no_eviction(self, monkeypatch):
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=60, max_items=5)
@@ -390,7 +390,7 @@ class TestEvictOldest:
     def test_evict_oldest_removes_one_entry(self, monkeypatch):
         current_time = 1000.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
 
         cache = ImageCache(ttl_seconds=60, max_items=10)
@@ -398,7 +398,7 @@ class TestEvictOldest:
 
         current_time = 1001.0
         monkeypatch.setattr(
-            "lovely_assistant.services.media._cache.time.monotonic", lambda: current_time
+            "assistant_runtime.services.media._cache.time.monotonic", lambda: current_time
         )
         id_b = cache.store(b"b", "image/png")
 

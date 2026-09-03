@@ -2,12 +2,12 @@
 
 import pytest
 
-from lovely_assistant.services.llm._settings import (
+from assistant_runtime.services.llm._settings import (
     _RESPONSE_MAX_TOKENS,
     build_model_settings,
     validate_model_id,
 )
-from lovely_assistant.services.llm.exceptions import ProviderConfigError
+from assistant_runtime.services.llm.exceptions import ProviderConfigError
 
 
 class TestValidateModelId:

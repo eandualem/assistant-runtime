@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lovely_assistant.services.tools._artifact_tools import manage_artifacts
+from assistant_runtime.services.tools._artifact_tools import manage_artifacts
 
-MODULE = "lovely_assistant.services.database.repositories"
+MODULE = "assistant_runtime.services.database.repositories"
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +36,7 @@ def _make_mock_db():
 def _make_artifact_row(
     *,
     name: str = "persona",
-    content: str = "You are Jarvis.",
+    content: str = "You are the assistant.",
     version: int = 1,
     is_active: bool = True,
     proposed_by: str = "system",
@@ -85,7 +85,7 @@ class TestListAction:
         rows = [
             _make_artifact_row(name="soul", content="Deeper alignment", version=1),
             _make_artifact_row(name="ecosystem", content="Agent ecosystem info", version=3),
-            _make_artifact_row(name="persona", content="You are Jarvis.", version=2),
+            _make_artifact_row(name="persona", content="You are the assistant.", version=2),
             _make_artifact_row(name="scratchpad", content="Notes here", version=5),
         ]
         mock_repo_instance = MagicMock()
@@ -108,7 +108,7 @@ class TestListAction:
         # Check individual artifact structure
         persona = next(a for a in result["artifacts"] if a["name"] == "persona")
         assert persona["version"] == 2
-        assert persona["char_count"] == len("You are Jarvis.")
+        assert persona["char_count"] == len("You are the assistant.")
         assert persona["proposed_by"] == "system"
         assert persona["created_at"] is not None
 
@@ -121,7 +121,7 @@ class TestViewAction:
         mock_db = _make_mock_db()
         manage_artifacts._handler_deps = {"database_service": mock_db}
 
-        row = _make_artifact_row(name="persona", content="You are Jarvis.", version=2)
+        row = _make_artifact_row(name="persona", content="You are the assistant.", version=2)
         mock_repo_instance = MagicMock()
         mock_repo_instance.get_active = AsyncMock(return_value=row)
         mock_repo_cls.return_value = mock_repo_instance
@@ -130,7 +130,7 @@ class TestViewAction:
 
         assert result["success"] is True
         assert result["name"] == "persona"
-        assert result["content"] == "You are Jarvis."
+        assert result["content"] == "You are the assistant."
         assert result["version"] == 2
         assert result["proposed_by"] == "system"
         assert result["created_at"] is not None
@@ -182,7 +182,7 @@ class TestProposeEditAction:
             content="Updated persona.",
             version=3,
             is_active=False,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         mock_repo_instance = MagicMock()
         mock_repo_instance.propose = AsyncMock(return_value=new_row)
@@ -200,7 +200,7 @@ class TestProposeEditAction:
 
         # Verify propose was called with correct args
         mock_repo_instance.propose.assert_awaited_once_with(
-            "persona", "Updated persona.", proposed_by="jarvis"
+            "persona", "Updated persona.", proposed_by="assistant"
         )
 
     async def test_propose_edit_no_name_returns_error(self):
@@ -244,7 +244,7 @@ class TestUpdateScratchpadAction:
             content="New observations.",
             version=4,
             is_active=True,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         mock_repo_instance = MagicMock()
         mock_repo_instance.update_scratchpad = AsyncMock(return_value=row)
@@ -260,7 +260,7 @@ class TestUpdateScratchpadAction:
 
         # Verify update_scratchpad was called with correct args
         mock_repo_instance.update_scratchpad.assert_awaited_once_with(
-            "New observations.", proposed_by="jarvis"
+            "New observations.", proposed_by="assistant"
         )
 
     async def test_update_scratchpad_no_content_returns_error(self):
@@ -286,7 +286,7 @@ class TestApproveAction:
             content="Approved persona.",
             version=3,
             is_active=True,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         mock_repo_instance = MagicMock()
         mock_repo_instance.approve = AsyncMock(return_value=row)

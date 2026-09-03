@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.artifacts import router
+from assistant_runtime.app.routes.artifacts import router
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -72,7 +72,7 @@ def _patch_repo(mp, *, repo_mock: MagicMock) -> MagicMock:
     mock_cls = MagicMock()
     mock_cls.return_value = repo_mock
     mp.setattr(
-        "lovely_assistant.app.routes.artifacts.ArtifactRepository",
+        "assistant_runtime.app.routes.artifacts.ArtifactRepository",
         mock_cls,
     )
     return mock_cls
@@ -126,7 +126,7 @@ class TestListArtifacts:
 class TestGetArtifact:
     @pytest.mark.asyncio
     async def test_get_artifact(self):
-        row = _make_row(name="persona", content="You are Jarvis.")
+        row = _make_row(name="persona", content="You are the assistant.")
         mock_db = _make_mock_db()
         app = _make_app(db_service=mock_db)
 
@@ -141,7 +141,7 @@ class TestGetArtifact:
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "persona"
-        assert data["content"] == "You are Jarvis."
+        assert data["content"] == "You are the assistant."
         assert data["version"] == 1
         assert data["is_active"] is True
         assert data["proposed_by"] == "system"

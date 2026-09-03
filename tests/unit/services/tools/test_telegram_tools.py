@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._request_context import assistant_request_context
-from lovely_assistant.services.tools._telegram_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._request_context import assistant_request_context
+from assistant_runtime.services.tools._telegram_tools import (
     register_telegram_tools,
     respond_telegram,
 )
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.config import ToolConfig
 
 
 class TestRespondTelegram:
@@ -50,7 +50,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -79,7 +79,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -88,11 +88,11 @@ class TestRespondTelegram:
             mock_client.post = AsyncMock(return_value=mock_response)
             mock_client_cls.return_value = mock_client
 
-            with assistant_request_context("sess-jarvis"):
+            with assistant_request_context("sess-assistant"):
                 result = await respond_telegram("Hello there")
 
         assert result["success"] is True
-        assert result["reply_session_id"] == "sess-jarvis"
+        assert result["reply_session_id"] == "sess-assistant"
         assert result["chat_id"] == "123456789"
 
     async def test_missing_chat_id_returns_error(self):
@@ -114,7 +114,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -143,7 +143,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -167,7 +167,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -193,7 +193,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()

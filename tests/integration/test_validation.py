@@ -7,15 +7,15 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.assistant.interface import AssistantService
-from lovely_assistant.app.settings import RuntimeSettings
-from lovely_assistant.app.streaming.interface import StreamingService
-from lovely_assistant.base.lifecycle import LifecycleManager
-from lovely_assistant.config import AppSettings
-from lovely_assistant.main import create_app
-from lovely_assistant.services.history.interface import HistoryService
-from lovely_assistant.services.llm.interface import LlmService
-from lovely_assistant.services.tools.interface import ToolService
+from assistant_runtime.app.assistant.interface import AssistantService
+from assistant_runtime.app.settings import RuntimeSettings
+from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.base.lifecycle import LifecycleManager
+from assistant_runtime.config import AppSettings
+from assistant_runtime.main import create_app
+from assistant_runtime.services.history.interface import HistoryService
+from assistant_runtime.services.llm.interface import LlmService
+from assistant_runtime.services.tools.interface import ToolService
 
 from .conftest import _make_mock_agent
 
@@ -90,7 +90,7 @@ class TestAppStartup:
     def test_create_app_returns_fastapi(self):
         """create_app() produces a valid FastAPI instance."""
         app = create_app()
-        assert app.title == "Lovely Assistant"
+        assert app.title == "Assistant Runtime"
         assert app.version == "0.1.0"
 
     def test_all_routes_registered(self):
@@ -169,7 +169,7 @@ class TestEdgeCases:
         mock_agent = _make_mock_agent("Response to empty")
 
         with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
+            "assistant_runtime.services.llm.interface.LlmService.build_agent",
             return_value=mock_agent,
         ):
             response = await client.post(
@@ -193,7 +193,7 @@ class TestEdgeCases:
         mock_agent = _make_mock_agent("Long session OK")
 
         with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
+            "assistant_runtime.services.llm.interface.LlmService.build_agent",
             return_value=mock_agent,
         ):
             response = await client.post(
@@ -218,7 +218,7 @@ class TestEdgeCases:
         for i in range(1, 4):
             mock_agent = _make_mock_agent(f"Reply {i}")
             with patch(
-                "lovely_assistant.services.llm.interface.LlmService.build_agent",
+                "assistant_runtime.services.llm.interface.LlmService.build_agent",
                 return_value=mock_agent,
             ):
                 response = await client.post(
@@ -260,14 +260,14 @@ class TestPublicApiExports:
     """Verify all modules export their public API correctly."""
 
     def test_llm_exports(self):
-        from lovely_assistant.services.llm import LLMConfig, LLMResult, LlmService
+        from assistant_runtime.services.llm import LLMConfig, LLMResult, LlmService
 
         assert LlmService is not None
         assert LLMConfig is not None
         assert LLMResult is not None
 
     def test_history_exports(self):
-        from lovely_assistant.services.history import (
+        from assistant_runtime.services.history import (
             HistoryConfig,
             HistoryService,
             WorkingMemory,
@@ -278,7 +278,7 @@ class TestPublicApiExports:
         assert WorkingMemory is not None
 
     def test_tools_exports(self):
-        from lovely_assistant.services.tools import (
+        from assistant_runtime.services.tools import (
             ToolConfig,
             ToolDefinition,
             ToolService,
@@ -289,7 +289,7 @@ class TestPublicApiExports:
         assert ToolDefinition is not None
 
     def test_assistant_exports(self):
-        from lovely_assistant.app.assistant import (
+        from assistant_runtime.app.assistant import (
             AssistantRequest,
             AssistantResult,
             AssistantService,
@@ -300,24 +300,24 @@ class TestPublicApiExports:
         assert AssistantResult is not None
 
     def test_streaming_exports(self):
-        from lovely_assistant.app.streaming import StreamingService
+        from assistant_runtime.app.streaming import StreamingService
 
         assert StreamingService is not None
 
     def test_routes_exports(self):
-        from lovely_assistant.app.routes import router
+        from assistant_runtime.app.routes import router
 
         assert router is not None
 
     def test_base_exports(self):
-        from lovely_assistant.base import (
+        from assistant_runtime.base import (
+            AssistantRuntimeError,
             LifecycleAware,
             LifecycleManager,
-            LovelyAssistantError,
             instrument,
         )
 
         assert LifecycleManager is not None
         assert LifecycleAware is not None
-        assert LovelyAssistantError is not None
+        assert AssistantRuntimeError is not None
         assert instrument is not None

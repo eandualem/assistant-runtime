@@ -1,15 +1,15 @@
 """Tests for database exception hierarchy."""
 
-from lovely_assistant.base.exceptions import LovelyAssistantError
-from lovely_assistant.services.database.exceptions import DatabaseConnectionError, DatabaseError
+from assistant_runtime.base.exceptions import AssistantRuntimeError
+from assistant_runtime.services.database.exceptions import DatabaseConnectionError, DatabaseError
 
 
 class TestDatabaseError:
     """DatabaseError base class."""
 
-    def test_is_lovely_assistant_error(self):
+    def test_is_assistant_runtime_error(self):
         err = DatabaseError("test")
-        assert isinstance(err, LovelyAssistantError)
+        assert isinstance(err, AssistantRuntimeError)
 
     def test_default_category(self):
         err = DatabaseError("test")

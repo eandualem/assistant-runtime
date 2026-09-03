@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.debug import router
-from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from assistant_runtime.app.routes.debug import router
+from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 
 def _make_app(tool_service=None) -> FastAPI:

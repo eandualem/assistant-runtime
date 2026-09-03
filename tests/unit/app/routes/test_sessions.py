@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.assistant._session_store import SessionStore
-from lovely_assistant.app.assistant.models import AssistantRequest
-from lovely_assistant.main import create_app
+from assistant_runtime.app.assistant._session_store import SessionStore
+from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.main import create_app
 
 
 def _request(
@@ -29,7 +29,7 @@ def _request(
 
 
 def _create_test_app(*, sessions: SessionStore | None = None) -> Any:
-    from lovely_assistant.base.lifecycle import LifecycleManager
+    from assistant_runtime.base.lifecycle import LifecycleManager
 
     app = create_app()
     app.state.lifecycle = LifecycleManager()

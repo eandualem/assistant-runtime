@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lovely_assistant.app.assistant.models import AssistantRequest
+from assistant_runtime.app.assistant.models import AssistantRequest
 
 from .conftest import _make_mock_agent
 
@@ -111,7 +111,7 @@ class TestAssistantPipeline:
         call_kwargs = assistant_call
         assert "toolsets" in call_kwargs
         assert "system_prompt" in call_kwargs
-        assert "Jarvis" in call_kwargs["system_prompt"]
+        assert "The assistant" in call_kwargs["system_prompt"]
 
     @pytest.mark.asyncio
     async def test_machine_state_in_prompt(self, wired_services):

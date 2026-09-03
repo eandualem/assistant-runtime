@@ -7,17 +7,17 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._skill_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._skill_tools import (
     _parse_frontmatter,
     _scan_skills_dir,
     list_skills,
     read_skill,
     register_skill_tools,
 )
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "lovely_assistant.services.tools._skill_tools"
+MODULE = "assistant_runtime.services.tools._skill_tools"
 
 
 # ---------------------------------------------------------------------------

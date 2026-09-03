@@ -2,7 +2,7 @@
 
 import pytest
 
-from lovely_assistant.app.assistant._prompt_builder import (
+from assistant_runtime.app.assistant._prompt_builder import (
     REQUIRED_ARTIFACT_NAMES,
     _dashboard_context_fragment,
     _datetime_fragment,
@@ -12,15 +12,15 @@ from lovely_assistant.app.assistant._prompt_builder import (
     _working_memory_fragment,
     build_system_prompt,
 )
-from lovely_assistant.app.assistant.models import PromptResult
-from lovely_assistant.services.history.models import WorkingMemory
-from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from assistant_runtime.app.assistant.models import PromptResult
+from assistant_runtime.services.history.models import WorkingMemory
+from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 REQUIRED_ARTIFACTS = {
-    "soul": "Jarvis exists to increase the operator's leverage in a live AI workbench.",
-    "persona": "You are Jarvis, the operational assistant.",
+    "soul": "The assistant exists to increase the operator's leverage in a live AI workbench.",
+    "persona": "You are the assistant, the operational assistant.",
     "communication_protocol": "Messages may arrive with envelope tags.",
-    "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
+    "ecosystem": "Agents: Leo, Ike, Feynman.",
 }
 
 
@@ -754,7 +754,7 @@ class TestBuildSystemPrompt:
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
-        assert "Jarvis" in result.content
+        assert "The assistant" in result.content
 
     def test_contains_communication_protocol(self):
         result = build_system_prompt(

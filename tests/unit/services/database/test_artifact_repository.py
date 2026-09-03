@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.services.database.models import ArtifactORM
-from lovely_assistant.services.database.repositories import ArtifactRepository
+from assistant_runtime.services.database.models import ArtifactORM
+from assistant_runtime.services.database.repositories import ArtifactRepository
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -160,13 +160,13 @@ class TestPropose:
             content="initial content",
             version=1,
             is_active=False,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         insert_result = MagicMock()
         insert_result.scalar_one.return_value = created_row
         mock_session.execute.side_effect = [max_result, insert_result]
 
-        result = await repo.propose("brand_new", "initial content", "jarvis")
+        result = await repo.propose("brand_new", "initial content", "assistant")
 
         assert result.version == 1
         assert result.name == "brand_new"
@@ -180,13 +180,13 @@ class TestPropose:
             content="draft",
             version=6,
             is_active=False,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         insert_result = MagicMock()
         insert_result.scalar_one.return_value = created_row
         mock_session.execute.side_effect = [max_result, insert_result]
 
-        result = await repo.propose("persona", "draft", "jarvis")
+        result = await repo.propose("persona", "draft", "assistant")
 
         assert result.is_active is False
 
@@ -310,7 +310,7 @@ class TestUpdateScratchpad:
             content="new scratchpad content",
             version=4,
             is_active=False,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         insert_result = MagicMock()
         insert_result.scalar_one.return_value = proposed_row
@@ -320,7 +320,7 @@ class TestUpdateScratchpad:
             content="new scratchpad content",
             version=4,
             is_active=True,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         activate_result = MagicMock()
         activate_result.scalar_one.return_value = activated_row
@@ -338,7 +338,7 @@ class TestUpdateScratchpad:
         assert result.name == "scratchpad"
         assert result.version == 4  # 3 + 1
         assert result.is_active is True
-        assert result.proposed_by == "jarvis"
+        assert result.proposed_by == "assistant"
         assert mock_session.execute.await_count == 4
 
     async def test_update_scratchpad_first_version(self, repo, mock_session):
@@ -351,7 +351,7 @@ class TestUpdateScratchpad:
             content="first scratchpad",
             version=1,
             is_active=False,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         insert_result = MagicMock()
         insert_result.scalar_one.return_value = proposed_row
@@ -362,7 +362,7 @@ class TestUpdateScratchpad:
             content="first scratchpad",
             version=1,
             is_active=True,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
 
         mock_session.execute.side_effect = [
@@ -423,7 +423,7 @@ class TestUpdateScratchpad:
             content="content",
             version=3,
             is_active=False,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         insert_result = MagicMock()
         insert_result.scalar_one.return_value = proposed_row
@@ -434,7 +434,7 @@ class TestUpdateScratchpad:
             content="content",
             version=3,
             is_active=True,
-            proposed_by="jarvis",
+            proposed_by="assistant",
         )
         mock_session.execute.side_effect = [
             max_result,

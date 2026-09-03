@@ -2,8 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from lovely_assistant.services.mcp.factory import register_mcp
-from lovely_assistant.services.mcp.interface import MCPService
+from assistant_runtime.services.mcp.factory import register_mcp
+from assistant_runtime.services.mcp.interface import MCPService
 
 
 class TestRegisterMcp:
@@ -13,7 +13,7 @@ class TestRegisterMcp:
 
         # Point to a non-existent config file so MCPService gets config_path=None
         with patch(
-            "lovely_assistant.services.mcp.factory._DEFAULT_CONFIG_PATH",
+            "assistant_runtime.services.mcp.factory._DEFAULT_CONFIG_PATH",
             tmp_path / "nonexistent.json",
         ):
             await register_mcp(app_state, lifecycle)
@@ -26,7 +26,7 @@ class TestRegisterMcp:
         lifecycle = AsyncMock()
 
         with patch(
-            "lovely_assistant.services.mcp.factory._DEFAULT_CONFIG_PATH",
+            "assistant_runtime.services.mcp.factory._DEFAULT_CONFIG_PATH",
             tmp_path / "nonexistent.json",
         ):
             await register_mcp(app_state, lifecycle)
@@ -53,7 +53,7 @@ class TestRegisterMcp:
         lifecycle = AsyncMock()
 
         with patch(
-            "lovely_assistant.services.mcp.factory._DEFAULT_CONFIG_PATH",
+            "assistant_runtime.services.mcp.factory._DEFAULT_CONFIG_PATH",
             tmp_path / "nonexistent.json",
         ):
             await register_mcp(app_state, lifecycle)

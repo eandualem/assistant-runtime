@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._swarm_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._swarm_tools import (
     broadcast_to_swarm,
     complete_swarm,
     create_swarm,
@@ -14,23 +14,23 @@ from lovely_assistant.services.tools._swarm_tools import (
     register_swarm_tools,
     update_worker_status,
 )
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "lovely_assistant.services.tools._swarm_tools"
+MODULE = "assistant_runtime.services.tools._swarm_tools"
 
 SAMPLE_WORKER = {
     "name": "coder-1",
     "role": "coder",
     "branch": "feature/swarm",
     "worktree_path": "/tmp/swarm-coder-1",
-    "session": "lovely-assistant-coder-1",
+    "session": "assistant-runtime-coder-1",
 }
 
 SAMPLE_SWARM_DETAIL = {
     "swarm_id": "swarm-1",
-    "repo": "lovely-assistant",
+    "repo": "assistant-runtime",
     "task_id": "742",
-    "coding_agent_session": "lovely-assistant",
+    "coding_agent_session": "assistant-runtime",
     "phase": "working",
     "created_at": "2026-03-13T18:00:00Z",
     "completed_at": None,
@@ -44,7 +44,7 @@ SAMPLE_SWARM_DETAIL = {
             "role": "coder",
             "branch": "feature/swarm",
             "worktree_path": "/tmp/swarm-coder-1",
-            "session": "lovely-assistant-coder-1",
+            "session": "assistant-runtime-coder-1",
             "status": "working",
             "pr_number": None,
             "summary": None,
@@ -65,7 +65,7 @@ class TestCreateSwarm:
         mock_req.return_value = (201, {"swarm_id": "swarm-1"})
 
         result = await create_swarm(
-            " lovely-assistant ",
+            " assistant-runtime ",
             task_id="742",
             coding_agent_session=" coding-agent ",
             workers=[SAMPLE_WORKER],
@@ -73,14 +73,14 @@ class TestCreateSwarm:
 
         assert result["success"] is True
         assert result["swarm_id"] == "swarm-1"
-        assert result["repo"] == "lovely-assistant"
+        assert result["repo"] == "assistant-runtime"
         assert result["coding_agent_session"] == "coding-agent"
         assert result["worker_count"] == 1
         mock_req.assert_awaited_once_with(
             "POST",
             "/api/swarms",
             json_body={
-                "repo": "lovely-assistant",
+                "repo": "assistant-runtime",
                 "task_id": "742",
                 "coding_agent_session": "coding-agent",
                 "workers": [SAMPLE_WORKER],
@@ -89,7 +89,7 @@ class TestCreateSwarm:
 
     async def test_invalid_worker_role(self):
         result = await create_swarm(
-            "lovely-assistant",
+            "assistant-runtime",
             coding_agent_session="coding-agent",
             workers=[{**SAMPLE_WORKER, "role": "manager"}],
         )
@@ -101,7 +101,7 @@ class TestCreateSwarm:
     async def test_network_error(self, mock_req):
         mock_req.return_value = (-1, {"message": "Connection refused"})
 
-        result = await create_swarm("lovely-assistant", coding_agent_session="coding-agent")
+        result = await create_swarm("assistant-runtime", coding_agent_session="coding-agent")
 
         assert result["success"] is False
         assert "Connection refused" in result["error"]
@@ -116,7 +116,7 @@ class TestListSwarms:
                 "items": [
                     {
                         "swarm_id": "swarm-1",
-                        "repo": "lovely-assistant",
+                        "repo": "assistant-runtime",
                         "coding_agent_session": "coding-agent",
                         "phase": "working",
                         "created_at": "2026-03-13T18:00:00Z",
@@ -126,7 +126,7 @@ class TestListSwarms:
             },
         )
 
-        result = await list_swarms(repo=" lovely-assistant ", status="working")
+        result = await list_swarms(repo=" assistant-runtime ", status="working")
 
         assert result["success"] is True
         assert result["count"] == 1
@@ -134,7 +134,7 @@ class TestListSwarms:
         mock_req.assert_awaited_once_with(
             "GET",
             "/api/swarms",
-            params={"repo": "lovely-assistant", "phase": "working"},
+            params={"repo": "assistant-runtime", "phase": "working"},
         )
 
     @patch(f"{MODULE}.backbone_request")

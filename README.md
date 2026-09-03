@@ -1,6 +1,6 @@
-# Lovely Assistant
+# Assistant Runtime
 
-AI assistant backend for the **Lovely Console** — an agent operations dashboard. Receives chat messages, streams responses via Socket.IO, and routes tool calls to backend systems (tmux sessions, agent state, GitHub issues, backbone API, etc.).
+AI assistant backend for the **host dashboard** — an agent operations dashboard. Receives chat messages, streams responses via Socket.IO, and routes tool calls to backend systems (tmux sessions, agent state, GitHub issues, backbone API, etc.).
 
 Built with **FastAPI** + **Pydantic AI** + **Socket.IO**. Follows the backend module pattern — every capability is a module with the same 5-file skeleton (`config.py`, `deps.py`, `factory.py`, `interface.py`, `exceptions.py`).
 
@@ -53,7 +53,7 @@ LLM__SUMMARIZATION_MODEL=anthropic:claude-haiku-4-5
 
 ### OpenAI Subscription (OAuth)
 
-If you use ChatGPT/Codex sign-in locally, Jarvis can reuse that auth path instead of requiring a separate usage-billed `OPENAI_API_KEY`. The assistant authenticates via the same OAuth client the Codex CLI uses and talks to the ChatGPT/Codex backend directly for supported OpenAI chat models.
+If you use ChatGPT/Codex sign-in locally, the assistant can reuse that auth path instead of requiring a separate usage-billed `OPENAI_API_KEY`. The assistant authenticates via the same OAuth client the Codex CLI uses and talks to the ChatGPT/Codex backend directly for supported OpenAI chat models.
 
 This is a local personal-use integration. It is not a generic API-key conversion layer and is not intended for multi-user hosted service usage.
 
@@ -64,7 +64,7 @@ This is a local personal-use integration. It is not a generic API-key conversion
 
 #### OAuth Setup
 
-**Recommended for local use:** start device auth from Jarvis, then complete the browser step with your ChatGPT/Codex account.
+**Recommended for local use:** start device auth from the assistant, then complete the browser step with your ChatGPT/Codex account.
 
 ```bash
 # Initiate device auth
@@ -81,7 +81,7 @@ Response:
 }
 ```
 
-Open `verification_uri`, enter `user_code`, and Jarvis will poll the OpenAI device-auth endpoint, exchange the returned authorization code, and store the refreshed OAuth chain locally.
+Open `verification_uri`, enter `user_code`, and the assistant will poll the OpenAI device-auth endpoint, exchange the returned authorization code, and store the refreshed OAuth chain locally.
 
 #### Optional fallback: sync from an existing Codex CLI session
 
@@ -90,7 +90,7 @@ codex login
 curl -X POST http://localhost:7100/api/oauth/openai/codex-cli/sync
 ```
 
-This path imports the local Codex auth state from `~/.codex/auth.json` and refreshes it for Jarvis when needed.
+This path imports the local Codex auth state from `~/.codex/auth.json` and refreshes it for the assistant when needed.
 
 **Step 1: Generate an encryption key** (protects tokens stored in the database):
 
@@ -133,8 +133,8 @@ Once authorized, supported OpenAI chat models use the synced ChatGPT/Codex auth 
 - OpenAI image generation and other non-Codex OpenAI API features still require a direct `OPENAI_API_KEY`.
 - For `openai:gpt-5.4`, `thinking_budget` maps onto OpenAI reasoning effort tiers (`low`, `medium`, `high`, `xhigh`) and requests a detailed reasoning summary.
 - For `openai:gpt-5.4-pro`, enabling `thinking_budget` requests OpenAI reasoning summaries with fixed high reasoning effort.
-- OpenAI/Codex exposes reasoning summaries rather than raw chain-of-thought, so Jarvis's thinking panel shows the returned summary text when available.
-- If both OAuth and a direct `OPENAI_API_KEY` are configured, Jarvis uses OAuth for the supported Codex-backed chat models above. Other OpenAI API features continue to use the direct API key path.
+- OpenAI/Codex exposes reasoning summaries rather than raw chain-of-thought, so the assistant's thinking panel shows the returned summary text when available.
+- If both OAuth and a direct `OPENAI_API_KEY` are configured, the assistant uses OAuth for the supported Codex-backed chat models above. Other OpenAI API features continue to use the direct API key path.
 
 #### OAuth Management
 
@@ -151,9 +151,9 @@ curl -X DELETE http://localhost:7100/api/oauth/openai
 ```bash
 DATABASE__HOST=localhost
 DATABASE__PORT=5434
-DATABASE__USER=lovely_assistant
-DATABASE__PASSWORD=lovely_assistant
-DATABASE__NAME=lovely_assistant
+DATABASE__USER=assistant_runtime
+DATABASE__PASSWORD=assistant_runtime
+DATABASE__NAME=assistant_runtime
 ```
 
 Default port is 5434 (mapped from Postgres container's 5432 to avoid host collisions).
@@ -207,7 +207,7 @@ make db-migrate MSG="description"  # Create new migration
 ## Architecture
 
 ```
-src/lovely_assistant/
+src/assistant_runtime/
 ├── base/               # Foundation: lifecycle, resilience, instrumentation, errors
 ├── services/
 │   ├── database/       # SQLAlchemy + Alembic, repositories
@@ -253,7 +253,7 @@ Streaming responses are delivered via **Socket.IO** on the `/assistant` namespac
 
 ## Prompt Artifacts
 
-Jarvis's system prompt is assembled from five first-class artifacts with distinct roles:
+The assistant's system prompt is assembled from five first-class artifacts with distinct roles:
 
 - `soul`: enduring purpose, values, non-negotiables, deepest identity guidance
 - `persona`: style, stance, behavioral voice

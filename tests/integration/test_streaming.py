@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic_graph.nodes import End
 
-from lovely_assistant.app.assistant.models import AssistantRequest
+from assistant_runtime.app.assistant.models import AssistantRequest
 
 from .conftest import _make_mock_agent_result, _make_mock_agent_run
 

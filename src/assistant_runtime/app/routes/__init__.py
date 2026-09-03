@@ -1,0 +1,30 @@
+"""HTTP route layer — thin delegation to service modules."""
+
+from fastapi import APIRouter
+
+from assistant_runtime.app.routes.artifacts import router as artifacts_router
+from assistant_runtime.app.routes.chat import router as chat_router
+from assistant_runtime.app.routes.debug import router as debug_router
+from assistant_runtime.app.routes.inbox import router as inbox_router
+from assistant_runtime.app.routes.inject import router as inject_router
+from assistant_runtime.app.routes.media import router as media_router
+from assistant_runtime.app.routes.models import router as models_router
+from assistant_runtime.app.routes.oauth import router as oauth_router
+from assistant_runtime.app.routes.providers import router as providers_router
+from assistant_runtime.app.routes.sessions import router as sessions_router
+from assistant_runtime.app.routes.settings import router as settings_router
+
+router = APIRouter()
+router.include_router(artifacts_router)
+router.include_router(chat_router)
+router.include_router(debug_router)
+router.include_router(inbox_router)
+router.include_router(inject_router)
+router.include_router(media_router)
+router.include_router(models_router)
+router.include_router(oauth_router)
+router.include_router(providers_router)
+router.include_router(sessions_router)
+router.include_router(settings_router)
+
+__all__ = ["router"]

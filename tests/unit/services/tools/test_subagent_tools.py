@@ -4,21 +4,21 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._subagent_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._subagent_tools import (
     SUBAGENT_REGISTRY,
     SubagentDefinition,
     get_subagent,
     list_subagents,
     register_subagent_tools,
 )
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Module path for patching
 # ---------------------------------------------------------------------------
 
-MODULE = "lovely_assistant.services.tools._subagent_tools"
+MODULE = "assistant_runtime.services.tools._subagent_tools"
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ class TestRunSubagentRuntimeSettings:
         return mock_ctx
 
     @patch(
-        "lovely_assistant.services.tools._subagent_executor.execute_subagent",
+        "assistant_runtime.services.tools._subagent_executor.execute_subagent",
         new_callable=AsyncMock,
     )
     async def test_runtime_model_passed_to_executor(self, mock_execute):
@@ -230,7 +230,7 @@ class TestRunSubagentRuntimeSettings:
         assert call_kwargs["model_override"] == "openai:gpt-4o"
 
     @patch(
-        "lovely_assistant.services.tools._subagent_executor.execute_subagent",
+        "assistant_runtime.services.tools._subagent_executor.execute_subagent",
         new_callable=AsyncMock,
     )
     async def test_runtime_thinking_budget_passed_to_executor(self, mock_execute):
@@ -258,7 +258,7 @@ class TestRunSubagentRuntimeSettings:
         assert call_kwargs["thinking_budget_override"] == 5000
 
     @patch(
-        "lovely_assistant.services.tools._subagent_executor.execute_subagent",
+        "assistant_runtime.services.tools._subagent_executor.execute_subagent",
         new_callable=AsyncMock,
     )
     async def test_no_runtime_settings_passes_none(self, mock_execute):

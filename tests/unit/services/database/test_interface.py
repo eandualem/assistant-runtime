@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lovely_assistant.services.database.config import DatabaseConfig
-from lovely_assistant.services.database.exceptions import DatabaseError
-from lovely_assistant.services.database.interface import DatabaseService
+from assistant_runtime.services.database.config import DatabaseConfig
+from assistant_runtime.services.database.exceptions import DatabaseError
+from assistant_runtime.services.database.interface import DatabaseService
 
 
 def _make_mock_engine(*, connect_ok: bool = True):
@@ -59,7 +59,7 @@ class TestDatabaseServiceStart:
     async def test_start_creates_engine(self, service):
         mock_engine, _ = _make_mock_engine()
         with patch(
-            "lovely_assistant.services.database.interface.create_async_engine",
+            "assistant_runtime.services.database.interface.create_async_engine",
             return_value=mock_engine,
         ) as mock_create:
             await service.start()
@@ -72,7 +72,7 @@ class TestDatabaseServiceStart:
         service = DatabaseService(config=config)
         mock_engine, _ = _make_mock_engine()
         with patch(
-            "lovely_assistant.services.database.interface.create_async_engine",
+            "assistant_runtime.services.database.interface.create_async_engine",
             return_value=mock_engine,
         ) as mock_create:
             await service.start()
@@ -87,7 +87,7 @@ class TestDatabaseServiceStart:
     async def test_start_creates_session_factory(self, service):
         mock_engine, _ = _make_mock_engine()
         with patch(
-            "lovely_assistant.services.database.interface.create_async_engine",
+            "assistant_runtime.services.database.interface.create_async_engine",
             return_value=mock_engine,
         ):
             await service.start()
@@ -96,7 +96,7 @@ class TestDatabaseServiceStart:
     async def test_start_healthy_on_successful_connection(self, service):
         mock_engine, _ = _make_mock_engine(connect_ok=True)
         with patch(
-            "lovely_assistant.services.database.interface.create_async_engine",
+            "assistant_runtime.services.database.interface.create_async_engine",
             return_value=mock_engine,
         ):
             await service.start()
@@ -105,7 +105,7 @@ class TestDatabaseServiceStart:
     async def test_start_degrades_gracefully_on_connection_failure(self, service):
         mock_engine, _ = _make_mock_engine(connect_ok=False)
         with patch(
-            "lovely_assistant.services.database.interface.create_async_engine",
+            "assistant_runtime.services.database.interface.create_async_engine",
             return_value=mock_engine,
         ):
             await service.start()
@@ -122,7 +122,7 @@ class TestDatabaseServiceStop:
 
         mock_engine, _ = _make_mock_engine()
         with patch(
-            "lovely_assistant.services.database.interface.create_async_engine",
+            "assistant_runtime.services.database.interface.create_async_engine",
             return_value=mock_engine,
         ):
             await service.start()
@@ -156,7 +156,7 @@ class TestDatabaseServiceHealthCheck:
 
         mock_engine, _ = _make_mock_engine(connect_ok=True)
         with patch(
-            "lovely_assistant.services.database.interface.create_async_engine",
+            "assistant_runtime.services.database.interface.create_async_engine",
             return_value=mock_engine,
         ):
             await service.start()
@@ -171,7 +171,7 @@ class TestDatabaseServiceHealthCheck:
 
         mock_engine, _ = _make_mock_engine(connect_ok=True)
         with patch(
-            "lovely_assistant.services.database.interface.create_async_engine",
+            "assistant_runtime.services.database.interface.create_async_engine",
             return_value=mock_engine,
         ):
             await service.start()

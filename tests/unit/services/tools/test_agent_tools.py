@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lovely_assistant.services.tools._agent_tools import (
+from assistant_runtime.services.tools._agent_tools import (
     MAX_SESSION_NAME_LENGTH,
     _read_state_file,
     _run_command,
@@ -20,15 +20,15 @@ from lovely_assistant.services.tools._agent_tools import (
     start_agent,
     stop_agent,
 )
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._request_context import assistant_request_context
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._request_context import assistant_request_context
+from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-MODULE = "lovely_assistant.services.tools._agent_tools"
+MODULE = "assistant_runtime.services.tools._agent_tools"
 
 
 def _mock_run(returncode: int = 0, stdout: str = "", stderr: str = ""):
@@ -649,7 +649,7 @@ class TestSendAgentMessage:
         # The second call is send-keys -l with the envelope
         send_call = mock_run.call_args_list[1]
         args = send_call[0][0]  # positional args to _run_command
-        assert "[via:jarvis from:operator session:sess_abc123]" in args[-1]
+        assert "[via:assistant from:operator session:sess_abc123]" in args[-1]
         assert "hello" in args[-1]
 
     @patch(f"{MODULE}._run_command")

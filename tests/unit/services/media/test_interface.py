@@ -4,12 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lovely_assistant.services.media.config import MediaConfig
-from lovely_assistant.services.media.exceptions import MediaError, ProviderError
-from lovely_assistant.services.media.interface import MediaService
-from lovely_assistant.services.media.models import GeneratedImage, MediaResult
+from assistant_runtime.services.media.config import MediaConfig
+from assistant_runtime.services.media.exceptions import MediaError, ProviderError
+from assistant_runtime.services.media.interface import MediaService
+from assistant_runtime.services.media.models import GeneratedImage, MediaResult
 
-MODULE = "lovely_assistant.services.media.interface"
+MODULE = "assistant_runtime.services.media.interface"
 
 
 @pytest.fixture
@@ -391,7 +391,7 @@ class TestRuntimeSettingsOverride:
         )
         started_service._runtime_settings = runtime
 
-        from lovely_assistant.services.media._video_providers import VideoStatus
+        from assistant_runtime.services.media._video_providers import VideoStatus
 
         with (
             patch(

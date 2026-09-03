@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.services.database.models import (
+from assistant_runtime.services.database.models import (
     MessageORM,
     SessionORM,
     SteeringORM,
     UserSettingsORM,
 )
-from lovely_assistant.services.database.repositories import (
+from assistant_runtime.services.database.repositories import (
     MessageRepository,
     SessionRepository,
     SettingsRepository,

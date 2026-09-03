@@ -2,24 +2,24 @@
 
 from unittest.mock import MagicMock, patch
 
-from lovely_assistant.services.llm._cache_control_patch import EXPECTED_VERSION, apply_patch
+from assistant_runtime.services.llm._cache_control_patch import EXPECTED_VERSION, apply_patch
 
 
 class TestApplyPatch:
-    @patch("lovely_assistant.services.llm._cache_control_patch.importlib.metadata.version")
+    @patch("assistant_runtime.services.llm._cache_control_patch.importlib.metadata.version")
     def test_patches_successfully(self, mock_version):
         mock_version.return_value = EXPECTED_VERSION
         # Should not raise
         apply_patch()
 
-    @patch("lovely_assistant.services.llm._cache_control_patch.importlib.metadata.version")
+    @patch("assistant_runtime.services.llm._cache_control_patch.importlib.metadata.version")
     def test_warns_on_version_mismatch(self, mock_version):
         mock_version.return_value = "9.9.9"
         # apply_patch should still work but log a warning
         apply_patch()
         # The patch should still be applied even on version mismatch
 
-    @patch("lovely_assistant.services.llm._cache_control_patch.importlib.metadata.version")
+    @patch("assistant_runtime.services.llm._cache_control_patch.importlib.metadata.version")
     def test_patched_function_guards_missing_type(self, mock_version):
         """The patched function should not crash on params without 'type' key."""
         mock_version.return_value = EXPECTED_VERSION
@@ -34,7 +34,7 @@ class TestApplyPatch:
         cache_control = {"type": "ephemeral"}
         AnthropicModel._add_cache_control_to_last_param(instance, params, cache_control)
 
-    @patch("lovely_assistant.services.llm._cache_control_patch.importlib.metadata.version")
+    @patch("assistant_runtime.services.llm._cache_control_patch.importlib.metadata.version")
     def test_patched_function_guards_empty_params(self, mock_version):
         mock_version.return_value = EXPECTED_VERSION
         apply_patch()
@@ -46,7 +46,7 @@ class TestApplyPatch:
         # Empty params should not raise
         AnthropicModel._add_cache_control_to_last_param(instance, [], {"type": "ephemeral"})
 
-    @patch("lovely_assistant.services.llm._cache_control_patch.importlib.metadata.version")
+    @patch("assistant_runtime.services.llm._cache_control_patch.importlib.metadata.version")
     def test_patched_function_passes_through_valid_params(self, mock_version):
         """When params have 'type' key, the original function should be called."""
         mock_version.return_value = EXPECTED_VERSION

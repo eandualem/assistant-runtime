@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.app.assistant.models import (
+from assistant_runtime.app.assistant.models import (
     AssistantRequest,
     AssistantResult,
     RequestConfigOverride,

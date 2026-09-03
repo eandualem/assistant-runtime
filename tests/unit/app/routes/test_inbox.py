@@ -10,8 +10,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.inbox import router
-from lovely_assistant.services.database.models import InboxItemORM
+from assistant_runtime.app.routes.inbox import router
+from assistant_runtime.services.database.models import InboxItemORM
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -83,7 +83,7 @@ class TestPostInbox:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -146,7 +146,7 @@ class TestPostInbox:
             mock_repo_inst.create = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -185,7 +185,7 @@ class TestGetInbox:
             mock_repo_inst.list_unsurfaced = AsyncMock(return_value=rows)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -209,7 +209,7 @@ class TestGetInbox:
             mock_repo_inst.list_all = AsyncMock(return_value=rows)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -267,7 +267,7 @@ class TestPatchSurfaced:
             mock_repo_inst.mark_surfaced = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -289,7 +289,7 @@ class TestPatchSurfaced:
             mock_repo_inst.mark_surfaced = AsyncMock(return_value=None)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
