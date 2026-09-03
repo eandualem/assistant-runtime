@@ -7,7 +7,7 @@ Built with **FastAPI** + **Pydantic AI** + **Socket.IO**. Follows the backend mo
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Install dependencies (add --extra video / --extra tracing for optional features)
 make install
 
 # 2. Start Postgres

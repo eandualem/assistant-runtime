@@ -22,15 +22,21 @@ dependencies = [
     "tenacity>=8.2.0",
     "cryptography>=44.0",
     "pyyaml>=6.0",
-    "runwayml>=1.0.0",
-    "lumaai>=1.0.0",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
     "asyncpg>=0.29",
-    "langfuse>=3.0.0",
 ]
 
 [project.optional-dependencies]
+# Video generation providers (services/media/_video_providers.py imports them lazily)
+video = [
+    "runwayml>=1.0.0",
+    "lumaai>=1.0.0",
+]
+# Langfuse tracing (services/tracing.py imports it lazily; disabled when absent)
+tracing = [
+    "langfuse>=3.0.0",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-asyncio>=1.0.0",
