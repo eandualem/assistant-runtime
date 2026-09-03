@@ -18,10 +18,26 @@ GITHUB_REPO_NAME_ENV = "GITHUB_REPO_NAME"
 
 
 def _repo_slug() -> str:
-    """Return "owner/name" for the configured issue repository (empty parts if unset)."""
+    """Return "owner/name" for the configured issue repository."""
     owner = os.environ.get(GITHUB_REPO_OWNER_ENV, "")
     name = os.environ.get(GITHUB_REPO_NAME_ENV, "")
     return f"{owner}/{name}"
+
+
+def _repo_config_error() -> dict[str, Any] | None:
+    """Return an error dict when the target repository is not configured, else None."""
+    missing = [
+        env
+        for env in (GITHUB_REPO_OWNER_ENV, GITHUB_REPO_NAME_ENV)
+        if not os.environ.get(env, "").strip()
+    ]
+    if not missing:
+        return None
+    return {
+        "success": False,
+        "error": f"GitHub repository not configured. Set {' and '.join(missing)} in .env",
+        "error_code": "GITHUB_REPO_MISSING",
+    }
 
 
 GITHUB_API_BASE = "https://api.github.com"
@@ -124,7 +140,11 @@ async def create_issue(
     labels: list[str],
     priority: str = "",
 ) -> dict[str, Any]:
-    """Create a new issue in the orchestration repo."""
+    """Create a new issue in the configured repository."""
+    config_error = _repo_config_error()
+    if config_error:
+        return config_error
+
     if not title or not title.strip():
         return {"error": "Title cannot be empty", "success": False}
 
@@ -174,6 +194,10 @@ async def search_issues(
     limit: int = 20,
 ) -> dict[str, Any]:
     """Search issues in the orchestration repo."""
+    config_error = _repo_config_error()
+    if config_error:
+        return config_error
+
     if text:
         # Use search endpoint for text queries
         query = f"{text} repo:{_repo_slug()} is:issue state:{state}"
@@ -239,6 +263,10 @@ async def search_issues(
 
 async def get_issue_details(issue_number: int) -> dict[str, Any]:
     """Get full details of a specific issue including comments."""
+    config_error = _repo_config_error()
+    if config_error:
+        return config_error
+
     if issue_number <= 0:
         return {"error": "Issue number must be positive", "success": False}
 
@@ -284,6 +312,10 @@ async def get_issue_details(issue_number: int) -> dict[str, Any]:
 
 async def comment_on_issue(issue_number: int, body: str) -> dict[str, Any]:
     """Add a comment to an issue."""
+    config_error = _repo_config_error()
+    if config_error:
+        return config_error
+
     if not body or not body.strip():
         return {"error": "Comment body cannot be empty", "success": False}
 
@@ -311,6 +343,10 @@ async def comment_on_issue(issue_number: int, body: str) -> dict[str, Any]:
 
 async def close_issue(issue_number: int, comment: str = "") -> dict[str, Any]:
     """Close an issue, optionally adding a closing comment first."""
+    config_error = _repo_config_error()
+    if config_error:
+        return config_error
+
     comment_added = False
 
     if comment and comment.strip():

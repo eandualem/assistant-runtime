@@ -94,9 +94,10 @@ class TestAppStartup:
         assert app.version == "0.1.0"
 
     def test_all_routes_registered(self):
-        """App has all expected route paths registered."""
+        """App exposes all expected route paths (via the OpenAPI schema, which
+        is stable across FastAPI's internal router representation)."""
         app = create_app()
-        route_paths = [r.path for r in app.routes if hasattr(r, "path")]
+        route_paths = set(app.openapi()["paths"])
         assert "/health" in route_paths
         assert "/api/chat" in route_paths
         assert "/api/sessions/{session_id}" in route_paths
@@ -106,10 +107,8 @@ class TestAppStartup:
     def test_route_methods(self):
         """Routes have the correct HTTP methods."""
         app = create_app()
-        routes_by_path: dict[str, set[str]] = {}
-        for r in app.routes:
-            if hasattr(r, "path") and hasattr(r, "methods"):
-                routes_by_path.setdefault(r.path, set()).update(r.methods)
+        paths = app.openapi()["paths"]
+        routes_by_path = {path: {method.upper() for method in ops} for path, ops in paths.items()}
 
         assert "GET" in routes_by_path.get("/health", set())
         assert "POST" in routes_by_path.get("/api/chat", set())
