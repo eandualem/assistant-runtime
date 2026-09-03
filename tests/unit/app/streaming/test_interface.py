@@ -1138,3 +1138,18 @@ class TestNewMessagesMergeResilience:
         assert final["message_id"] == "assistant-1"
         path = await sessions.get_message_path("sess-1")
         assert path[-1]["content"] == "Navigation complete"
+
+
+class TestUsageCacheCounts:
+    """RunUsage (pydantic-ai 2) exposes cache_read_tokens / cache_write_tokens."""
+
+    def test_reads_run_usage_field_names(self):
+        from pydantic_ai.usage import RunUsage
+
+        usage = RunUsage(
+            input_tokens=10, output_tokens=5, cache_read_tokens=7, cache_write_tokens=3
+        )
+        assert StreamingService._usage_cache_counts(usage) == (7, 3)
+
+    def test_missing_fields_default_to_zero(self):
+        assert StreamingService._usage_cache_counts(object()) == (0, 0)
