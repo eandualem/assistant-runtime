@@ -54,8 +54,8 @@ def _run_result(output: str = "Hello!") -> MagicMock:
     ]
     result.all_messages.return_value = messages
     result.new_messages.return_value = messages
-    usage = MagicMock(request_tokens=11, response_tokens=13, total_tokens=24)
-    result.usage.return_value = usage
+    usage = MagicMock(input_tokens=11, output_tokens=13, total_tokens=24)
+    result.usage = usage
     return result
 
 

@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic_graph.nodes import End
+from pydantic_graph import End
 
 from assistant_runtime.app.assistant.interface import AssistantService
 from assistant_runtime.app.settings import RuntimeSettings
@@ -50,13 +50,13 @@ def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
     result.all_messages.return_value = []
     # Usage mock for debug events
     usage = MagicMock()
-    usage.request_tokens = 100
-    usage.response_tokens = 50
+    usage.input_tokens = 100
+    usage.output_tokens = 50
     usage.cache_read_input_tokens = 0
     usage.cache_creation_input_tokens = 0
     usage.requests = 1
     usage.total_tokens = 150
-    result.usage.return_value = usage
+    result.usage = usage
     return result
 
 

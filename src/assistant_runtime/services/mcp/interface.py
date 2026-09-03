@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from pydantic_ai.mcp import load_mcp_servers
+from pydantic_ai.mcp import load_mcp_toolsets
 
 
 class MCPService:
@@ -43,7 +43,7 @@ class MCPService:
             return
 
         try:
-            self._servers = load_mcp_servers(self._config_path)
+            self._servers = load_mcp_toolsets(self._config_path)
         except Exception as e:
             logger.error(
                 "Failed to load MCP server config", path=str(self._config_path), error=str(e)
