@@ -35,7 +35,7 @@ video = [
 ]
 # Langfuse tracing (services/tracing.py imports it lazily; disabled when absent)
 tracing = [
-    "langfuse>=3.0.0",
+    "langfuse>=4.0.0",
 ]
 dev = [
     "pytest>=9.0.0",

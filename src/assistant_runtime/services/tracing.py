@@ -25,6 +25,7 @@ from loguru import logger
 
 _tracing_enabled: bool = False
 _langfuse_client: Any = None  # langfuse.Langfuse when available
+_propagate_attributes: Any = None  # langfuse.propagate_attributes when available
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +101,7 @@ def initialize_tracing() -> bool:
     was successfully enabled, ``False`` otherwise (missing dependency,
     missing keys, auth failure, etc.).
     """
-    global _tracing_enabled, _langfuse_client  # noqa: PLW0603
+    global _tracing_enabled, _langfuse_client, _propagate_attributes  # noqa: PLW0603
 
     if _tracing_enabled:
         logger.debug("[TRACING] Already initialized — skipping")
@@ -123,7 +124,7 @@ def initialize_tracing() -> bool:
         return False
 
     try:
-        from langfuse import get_client
+        from langfuse import get_client, propagate_attributes
         from pydantic_ai import Agent
 
         client = get_client()
@@ -136,6 +137,7 @@ def initialize_tracing() -> bool:
         Agent.instrument_all()
 
         _langfuse_client = client
+        _propagate_attributes = propagate_attributes
         _tracing_enabled = True
         logger.info(f"[TRACING] Langfuse tracing enabled (host={host})")
         return True
@@ -153,7 +155,7 @@ def shutdown_tracing() -> None:
 
     Safe to call when tracing was never initialized.
     """
-    global _tracing_enabled, _langfuse_client  # noqa: PLW0603
+    global _tracing_enabled, _langfuse_client, _propagate_attributes  # noqa: PLW0603
 
     if not _tracing_enabled or _langfuse_client is None:
         logger.debug("[TRACING] Shutdown called but tracing was not active")
@@ -167,6 +169,7 @@ def shutdown_tracing() -> None:
     finally:
         _tracing_enabled = False
         _langfuse_client = None
+        _propagate_attributes = None
 
 
 def is_tracing_enabled() -> bool:
@@ -209,7 +212,21 @@ def create_request_trace(
     # Build metadata
     trace_metadata = dict(metadata) if metadata else {}
 
+    # Langfuse 4: trace-level attributes (user, session, tags, metadata) are
+    # propagated to observations created inside a propagate_attributes() context;
+    # update_trace() no longer exists. Metadata values must be strings.
+    propagate_cm = None
     try:
+        if _propagate_attributes is not None:
+            propagate_cm = _propagate_attributes(
+                user_id=os.environ.get("LANGFUSE_USER_ID", "operator"),
+                session_id=str(session_id),
+                tags=trace_tags,
+                metadata={k: str(v) for k, v in trace_metadata.items()},
+                trace_name="agent-request",
+            )
+            propagate_cm.__enter__()
+
         if set_current_observation:
             cm = _langfuse_client.start_as_current_observation(
                 as_type="span",
@@ -226,15 +243,9 @@ def create_request_trace(
                 input=input_message,
                 metadata=trace_metadata,
             )
-        obs.update_trace(
-            session_id=str(session_id),
-            user_id=os.environ.get("LANGFUSE_USER_ID", "operator"),
-            tags=trace_tags,
-            input=input_message,
-            metadata=trace_metadata,
-        )
     except Exception as e:
         logger.warning(f"[TRACING] Failed to start request trace: {e}")
+        _exit_quietly(propagate_cm)
         yield _NoOpHandle()
         return
 
@@ -248,6 +259,17 @@ def create_request_trace(
                 obs.end()
         except Exception as e:
             logger.warning(f"[TRACING] Error closing request trace: {e}")
+        _exit_quietly(propagate_cm)
+
+
+def _exit_quietly(cm: Any) -> None:
+    """Exit a context manager, logging instead of raising."""
+    if cm is None:
+        return
+    try:
+        cm.__exit__(None, None, None)
+    except Exception as e:
+        logger.warning(f"[TRACING] Error leaving attribute propagation: {e}")
 
 
 @contextmanager
