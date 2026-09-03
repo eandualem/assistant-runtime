@@ -44,11 +44,15 @@ def _request(
 
 
 class _MockRun:
-    def __init__(self, *, output: Any, all_messages: list[Any], new_messages: list[Any] | None = None) -> None:
+    def __init__(
+        self, *, output: Any, all_messages: list[Any], new_messages: list[Any] | None = None
+    ) -> None:
         self.result = MagicMock()
         self.result.output = output
         self.result.all_messages.return_value = all_messages
-        self.result.new_messages.return_value = new_messages if new_messages is not None else all_messages
+        self.result.new_messages.return_value = (
+            new_messages if new_messages is not None else all_messages
+        )
         self.result.usage.return_value = MagicMock(
             input_tokens=5,
             output_tokens=7,
@@ -93,7 +97,9 @@ def _agent_context(agent: Any) -> AgentSetupContext:
     )
 
 
-def _make_service(*, sessions: SessionStore | None = None, run: _MockRun | None = None) -> StreamingService:
+def _make_service(
+    *, sessions: SessionStore | None = None, run: _MockRun | None = None
+) -> StreamingService:
     sessions = sessions or SessionStore()
     run = run or _MockRun(
         output="Hello!",
@@ -261,7 +267,9 @@ class TestStreamingService:
             segments=[
                 {
                     "kind": "tool_group",
-                    "tools": [{"id": "call-nav-1", "name": "navigate", "input": {"page": "agents"}}],
+                    "tools": [
+                        {"id": "call-nav-1", "name": "navigate", "input": {"page": "agents"}}
+                    ],
                 }
             ],
             usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
@@ -864,12 +872,12 @@ class TestMultiToolContinuation:
 
         # Verify the ModelRequest before it has ToolReturnParts for ONLY the resolved tools
         model_responses = [m for m in message_history if isinstance(m, ModelResponse)]
-        assert len(model_responses) >= 2, "Should have at least 2 ModelResponses (completed + pending)"
+        assert len(model_responses) >= 2, (
+            "Should have at least 2 ModelResponses (completed + pending)"
+        )
         completed_response = model_responses[-2]
         completed_ids = {
-            part.tool_call_id
-            for part in completed_response.parts
-            if isinstance(part, ToolCallPart)
+            part.tool_call_id for part in completed_response.parts if isinstance(part, ToolCallPart)
         }
         assert completed_ids == {"call-backend-1", "call-backend-2"}, (
             f"Completed ModelResponse should have both backend tools, got: {completed_ids}"
@@ -927,17 +935,13 @@ class TestMultiToolContinuation:
 
         # First response has the completed tool
         completed_ids = {
-            part.tool_call_id
-            for part in flat_responses[0].parts
-            if isinstance(part, ToolCallPart)
+            part.tool_call_id for part in flat_responses[0].parts if isinstance(part, ToolCallPart)
         }
         assert completed_ids == {"call-A"}, "First ModelResponse should have completed tool"
 
         # Last response has ONLY the pending tool
         pending_ids = {
-            part.tool_call_id
-            for part in flat_responses[1].parts
-            if isinstance(part, ToolCallPart)
+            part.tool_call_id for part in flat_responses[1].parts if isinstance(part, ToolCallPart)
         }
         assert pending_ids == {"call-B"}, "Last ModelResponse should have only the pending tool"
 
@@ -945,9 +949,7 @@ class TestMultiToolContinuation:
         flat_requests = [m for m in flat_messages if isinstance(m, ModelRequest)]
         assert len(flat_requests) == 1
         return_ids = {
-            part.tool_call_id
-            for part in flat_requests[0].parts
-            if isinstance(part, ToolReturnPart)
+            part.tool_call_id for part in flat_requests[0].parts if isinstance(part, ToolReturnPart)
         }
         assert return_ids == {"call-A"}, "Only the resolved tool should have a ToolReturnPart"
 
@@ -992,7 +994,10 @@ class TestNewMessagesMergeResilience:
         # all_messages[3:] = [] — BUG. new_messages() = [new_response] — CORRECT.
 
         new_response = ModelResponse(
-            parts=[TextPart(content="Here's the info"), ToolCallPart(tool_name="ui_navigate", args={}, tool_call_id="call-new")],
+            parts=[
+                TextPart(content="Here's the info"),
+                ToolCallPart(tool_name="ui_navigate", args={}, tool_call_id="call-new"),
+            ],
             timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
         )
 
@@ -1004,12 +1009,20 @@ class TestNewMessagesMergeResilience:
             all_messages=[
                 # After merge: original history (1 msg) + merged request + new response
                 ModelResponse(
-                    parts=[TextPart(content="Let me open that"), ToolCallPart(tool_name="navigate", args={}, tool_call_id="call-old")],
+                    parts=[
+                        TextPart(content="Let me open that"),
+                        ToolCallPart(tool_name="navigate", args={}, tool_call_id="call-old"),
+                    ],
                     timestamp=datetime(2026, 3, 24, 11, 0, tzinfo=UTC),
                 ),
                 ModelRequest(
                     parts=[
-                        ToolReturnPart(tool_name="navigate", content="[abandoned]", tool_call_id="call-old", timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC)),
+                        ToolReturnPart(
+                            tool_name="navigate",
+                            content="[abandoned]",
+                            tool_call_id="call-old",
+                            timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
+                        ),
                         # Merged: user prompt is in the same ModelRequest
                     ],
                     timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
@@ -1035,7 +1048,9 @@ class TestNewMessagesMergeResilience:
         assert assistant_msg["role"] == "assistant"
         segments = assistant_msg.get("segments") or []
         tool_groups = [s for s in segments if s.get("kind") == "tool_group"]
-        assert len(tool_groups) > 0, "Segments must contain the tool call — empty segments means new_messages() fix is not working"
+        assert len(tool_groups) > 0, (
+            "Segments must contain the tool call — empty segments means new_messages() fix is not working"
+        )
 
     @pytest.mark.asyncio
     async def test_continuation_with_empty_segments_synthesizes_model_response(self) -> None:
@@ -1063,7 +1078,9 @@ class TestNewMessagesMergeResilience:
             output="Navigation complete",
             all_messages=[
                 ModelResponse(
-                    parts=[ToolCallPart(tool_name="ui_navigate", args={}, tool_call_id="call-pending")],
+                    parts=[
+                        ToolCallPart(tool_name="ui_navigate", args={}, tool_call_id="call-pending")
+                    ],
                     timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
                 ),
                 ModelRequest(

@@ -491,8 +491,8 @@ class TestCompact:
         # That orphans the tool_result (tool_call is summarized away).
         history = [
             _make_user_msg("old question"),
-            _make_tool_call_msg("check_status"),       # index 1 — ModelResponse with ToolCallPart
-            _make_tool_result_msg("check_status"),      # index 2 — ModelRequest with ToolReturnPart
+            _make_tool_call_msg("check_status"),  # index 1 — ModelResponse with ToolCallPart
+            _make_tool_result_msg("check_status"),  # index 2 — ModelRequest with ToolReturnPart
             _make_assistant_msg("Here are the results"),  # index 3
         ]
 

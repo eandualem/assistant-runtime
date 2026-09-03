@@ -344,8 +344,8 @@ class AssistantService:
             # a SYNTHETIC ToolReturn + user prompt), shrinking the list and
             # making len(prepared_history) overshoot.
             turn_messages = list(result.new_messages())
-            assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
-                turn_messages
+            assistant_content, assistant_segments, assistant_timestamp = (
+                build_assistant_message_content(turn_messages)
             )
             usage = self._safe_usage(result)
             await sessions.register_assistant_message(

@@ -22,7 +22,7 @@ SAMPLE_AGENTS = [
         "role": "Strategy Co-Architect",
         "session": "leo",
         "type": "entity",
-        "home": "/home/user/ws/leo",
+        "home": "/srv/agents/leo",
     },
     {
         "name": "ike",
@@ -30,7 +30,7 @@ SAMPLE_AGENTS = [
         "role": "Core Orchestrator",
         "session": "ike",
         "type": "entity",
-        "home": "/home/user/ws/core/ike",
+        "home": "/srv/agents/ike",
     },
     {
         "name": "agent-backbone",
@@ -38,7 +38,7 @@ SAMPLE_AGENTS = [
         "role": "Implementation",
         "session": "agent-backbone",
         "type": "coding-agent",
-        "home": "/home/user/ws/core/code/WF/agent-backbone",
+        "home": "/srv/agents/agent-backbone",
     },
 ]
 
@@ -212,7 +212,7 @@ class TestGetWorkingDirectory:
 
         home = cache.get_working_directory("leo")
 
-        assert home == "/home/user/ws/leo"
+        assert home == "/srv/agents/leo"
 
     async def test_returns_none_when_no_home(self):
         cache = AgentRegistryCache()

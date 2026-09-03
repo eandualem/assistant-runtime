@@ -1,7 +1,7 @@
 """Conversation history management with context window optimization.
 
 Internal module — only accessed through HistoryService (interface.py).
-Translated from arclio-assistant's history/manager.py.
+Translated from an earlier assistant implementation's history/manager.py.
 
 Manages conversation history using token-budget-based compaction triggers,
 tiered tool result clearing, head preservation, and structured working memory
@@ -179,7 +179,9 @@ class HistoryManager:
         for message in history:
             if pending_calls and not HistoryManager._is_pure_tool_result_message(message):
                 inserted_count += len(pending_calls)
-                resolved.append(HistoryManager._make_synthetic_tool_result_message(pending_calls.values()))
+                resolved.append(
+                    HistoryManager._make_synthetic_tool_result_message(pending_calls.values())
+                )
                 inserted_synthetic = True
                 pending_calls = {}
 
@@ -187,9 +189,8 @@ class HistoryManager:
 
             if isinstance(message, ModelResponse):
                 for part in message.parts:
-                    if isinstance(part, ToolCallPart):
-                        if part.tool_call_id not in _exclude:
-                            pending_calls[part.tool_call_id] = part
+                    if isinstance(part, ToolCallPart) and part.tool_call_id not in _exclude:
+                        pending_calls[part.tool_call_id] = part
                 continue
 
             if isinstance(message, ModelRequest):
@@ -199,7 +200,9 @@ class HistoryManager:
 
         if pending_calls:
             inserted_count += len(pending_calls)
-            resolved.append(HistoryManager._make_synthetic_tool_result_message(pending_calls.values()))
+            resolved.append(
+                HistoryManager._make_synthetic_tool_result_message(pending_calls.values())
+            )
             inserted_synthetic = True
 
         if inserted_synthetic:

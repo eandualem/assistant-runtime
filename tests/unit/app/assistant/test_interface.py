@@ -69,7 +69,7 @@ def _mock_artifacts() -> Any:
                 "persona": "You are Jarvis.",
                 "communication_protocol": "Envelope tags may be present.",
                 "ecosystem": "Lovely agents are available.",
-                "soul": "Increase Elias's leverage.",
+                "soul": "Increase the operator's leverage.",
             }
         ),
     ):
@@ -157,7 +157,9 @@ class TestProcessMessage:
             segments=[{"kind": "text", "text": "First answer"}],
             usage={"input_tokens": 1, "output_tokens": 2},
         )
-        history_service.prepare_history = AsyncMock(side_effect=lambda history, ctx: (history, False))
+        history_service.prepare_history = AsyncMock(
+            side_effect=lambda history, ctx: (history, False)
+        )
 
         await service.process_message(
             _request(

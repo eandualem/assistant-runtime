@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from loguru import logger
@@ -10,7 +11,13 @@ from lovely_assistant.services.tools._backbone_client import backbone_error, bac
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
-_VALID_ORGS: frozenset[str] = frozenset({"Arclio", "WF", "Loveble"})
+# Optional comma-separated allowlist of org names; unset means any non-empty org is accepted.
+REPO_ORGS_ENV = "REPO_ORGS"
+
+
+def _allowed_orgs() -> frozenset[str]:
+    raw = os.environ.get(REPO_ORGS_ENV, "")
+    return frozenset(o.strip() for o in raw.split(",") if o.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -22,8 +29,9 @@ def _validate_org(org: str) -> str | None:
     """Validate org parameter. Returns error message or None if valid."""
     if not org or not org.strip():
         return "Org cannot be empty"
-    if org not in _VALID_ORGS:
-        return f"Invalid org '{org}'. Must be one of: {', '.join(sorted(_VALID_ORGS))}"
+    allowed = _allowed_orgs()
+    if allowed and org not in allowed:
+        return f"Invalid org '{org}'. Must be one of: {', '.join(sorted(allowed))}"
     return None
 
 
@@ -123,7 +131,7 @@ def register_repo_tools(registry: ToolRegistry) -> None:
             description=(
                 "Onboard a new repository into the workspace. Clones the repo, "
                 "sets up CLAUDE.md, .claude/ directory, settings, and registers it "
-                "in the agent backbone. Requires the org (Arclio, WF, or Loveble) "
+                "in the agent backbone. Requires the org name "
                 "and the Git URL."
             ),
             parameters_schema={
@@ -131,7 +139,6 @@ def register_repo_tools(registry: ToolRegistry) -> None:
                 "properties": {
                     "org": {
                         "type": "string",
-                        "enum": ["Arclio", "WF", "Loveble"],
                         "description": "Organization the repo belongs to",
                     },
                     "url": {
@@ -159,7 +166,6 @@ def register_repo_tools(registry: ToolRegistry) -> None:
                 "properties": {
                     "org": {
                         "type": "string",
-                        "enum": ["Arclio", "WF", "Loveble"],
                         "description": "Organization the repo belongs to",
                     },
                     "repo": {

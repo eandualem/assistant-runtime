@@ -137,7 +137,7 @@ class TestCreateIssue:
             201,
             {
                 "number": 99,
-                "html_url": "https://github.com/eandualem/orchestration/issues/99",
+                "html_url": "https://github.com/example-org/orchestration/issues/99",
                 "title": "Test issue",
             },
         )
@@ -149,7 +149,7 @@ class TestCreateIssue:
         )
         assert result["success"] is True
         assert result["number"] == 99
-        assert result["url"] == "https://github.com/eandualem/orchestration/issues/99"
+        assert result["url"] == "https://github.com/example-org/orchestration/issues/99"
         assert result["title"] == "Test issue"
 
     async def test_missing_title(self):

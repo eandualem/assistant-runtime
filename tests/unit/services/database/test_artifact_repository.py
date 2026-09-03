@@ -134,19 +134,19 @@ class TestPropose:
             content="new content",
             version=3,
             is_active=False,
-            proposed_by="elias",
+            proposed_by="operator",
         )
         insert_result = MagicMock()
         insert_result.scalar_one.return_value = created_row
         mock_session.execute.side_effect = [max_result, insert_result]
 
-        result = await repo.propose("persona", "new content", "elias")
+        result = await repo.propose("persona", "new content", "operator")
 
         assert isinstance(result, ArtifactORM)
         assert result.version == 3
         assert result.name == "persona"
         assert result.content == "new content"
-        assert result.proposed_by == "elias"
+        assert result.proposed_by == "operator"
         assert result.is_active is False
         assert mock_session.execute.await_count == 2
         mock_session.flush.assert_awaited_once()
@@ -204,7 +204,7 @@ class TestApprove:
             content="v3",
             version=3,
             is_active=True,
-            proposed_by="elias",
+            proposed_by="operator",
         )
 
         select_result = MagicMock()
@@ -239,7 +239,7 @@ class TestApprove:
             content="v2",
             version=2,
             is_active=True,
-            proposed_by="elias",
+            proposed_by="operator",
         )
 
         select_result = MagicMock()
@@ -267,7 +267,7 @@ class TestRollback:
             content="v1",
             version=1,
             is_active=True,
-            proposed_by="elias",
+            proposed_by="operator",
         )
 
         select_result = MagicMock()
@@ -388,7 +388,7 @@ class TestUpdateScratchpad:
             content="content",
             version=2,
             is_active=False,
-            proposed_by="elias",
+            proposed_by="operator",
         )
         insert_result = MagicMock()
         insert_result.scalar_one.return_value = proposed_row
@@ -399,7 +399,7 @@ class TestUpdateScratchpad:
             content="content",
             version=2,
             is_active=True,
-            proposed_by="elias",
+            proposed_by="operator",
         )
         mock_session.execute.side_effect = [
             max_result,
@@ -408,9 +408,9 @@ class TestUpdateScratchpad:
             activate_result,
         ]
 
-        result = await repo.update_scratchpad("content", proposed_by="elias")
+        result = await repo.update_scratchpad("content", proposed_by="operator")
 
-        assert result.proposed_by == "elias"
+        assert result.proposed_by == "operator"
 
     async def test_update_scratchpad_flushes_twice(self, repo, mock_session):
         """propose flushes once, then update_scratchpad flushes again after activation."""

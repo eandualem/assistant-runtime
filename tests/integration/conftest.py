@@ -25,7 +25,7 @@ from lovely_assistant.services.tools.interface import ToolService
 
 # Required artifacts for integration tests (no DB available)
 _INTEGRATION_ARTIFACTS = {
-    "soul": "Jarvis exists to increase Elias's leverage inside a live operating environment.",
+    "soul": "Jarvis exists to increase the operator's leverage inside a live operating environment.",
     "persona": "You are Jarvis, the operational assistant for the Lovely Universe.",
     "communication_protocol": "Messages may arrive with envelope tags indicating their source.",
     "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",

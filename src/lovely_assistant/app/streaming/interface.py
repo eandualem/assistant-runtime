@@ -498,8 +498,8 @@ class StreamingService:
             )
             assistant_turn_messages = [*assistant_history, *continuation_messages]
 
-            assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
-                assistant_turn_messages
+            assistant_content, assistant_segments, assistant_timestamp = (
+                build_assistant_message_content(assistant_turn_messages)
             )
             await self._sessions.update_message(
                 session_id,
@@ -924,8 +924,8 @@ class StreamingService:
 
             usage_dict = self._safe_usage_dict(run.result)
 
-            assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
-                turn_messages
+            assistant_content, assistant_segments, assistant_timestamp = (
+                build_assistant_message_content(turn_messages)
             )
 
             await self._sessions.register_assistant_message(
@@ -1300,7 +1300,10 @@ class StreamingService:
 
         pending_tool = self._extract_pending_frontend_tool_from_segments(assistant_segments)
         if pending_tool is not None:
-            if pending_tool["tool_name"] != first.tool_name or pending_tool["call_id"] != first.tool_call_id:
+            if (
+                pending_tool["tool_name"] != first.tool_name
+                or pending_tool["call_id"] != first.tool_call_id
+            ):
                 logger.warning(
                     "Deferred frontend tool metadata drift detected; using assistant history values",
                     output_tool_name=first.tool_name,
@@ -1601,8 +1604,8 @@ class StreamingService:
             usage_state = run.result.usage()
             usage_dict = self._safe_usage_dict(usage_state)
 
-            assistant_content, assistant_segments, _assistant_timestamp = build_assistant_message_content(
-                accumulated_messages
+            assistant_content, assistant_segments, _assistant_timestamp = (
+                build_assistant_message_content(accumulated_messages)
             )
             await self._sessions.update_message(
                 session_id,
@@ -1662,7 +1665,9 @@ class StreamingService:
                     delivered_at=datetime.now(UTC),
                 )
             elif steering_record.get("status") == "pending":
-                steering_record = await self._sessions.mark_steering_promoted(session_id, request.id)
+                steering_record = await self._sessions.mark_steering_promoted(
+                    session_id, request.id
+                )
 
             create_new_assistant = active_leaf.get("role") == "user"
             if active_leaf.get("role") not in {"user", "assistant"}:
@@ -1672,11 +1677,11 @@ class StreamingService:
 
             assistant_message_id = active_leaf_id if not create_new_assistant else str(uuid.uuid4())
             assistant_messages = (
-                []
-                if create_new_assistant
-                else path_records_to_model_history([active_leaf])
+                [] if create_new_assistant else path_records_to_model_history([active_leaf])
             )
-            assistant_parent_id = active_leaf_id if create_new_assistant else active_leaf.get("parent_id")
+            assistant_parent_id = (
+                active_leaf_id if create_new_assistant else active_leaf.get("parent_id")
+            )
             session_context["current_assistant_message_id"] = assistant_message_id
 
             history = self._sessions.get_history(session_id)
@@ -1770,8 +1775,8 @@ class StreamingService:
             usage_dict = self._safe_usage_dict(run.result)
             assistant_turn_messages = [*assistant_messages, *promoted_messages]
 
-            assistant_content, assistant_segments, assistant_timestamp = build_assistant_message_content(
-                assistant_turn_messages
+            assistant_content, assistant_segments, assistant_timestamp = (
+                build_assistant_message_content(assistant_turn_messages)
             )
             if create_new_assistant:
                 await self._sessions.register_assistant_message(
@@ -2149,8 +2154,8 @@ class StreamingService:
             for part in next_node.request.parts:
                 if isinstance(part, ToolReturnPart) and part.tool_call_id == tool_call_id:
                     return str(part.content) if part.content is not None else ""
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Tool result extraction failed", tool_call_id=tool_call_id, error=str(exc))
         return ""
 
     @staticmethod
@@ -2160,8 +2165,10 @@ class StreamingService:
             for part in next_node.request.parts:
                 if isinstance(part, ToolReturnPart) and part.tool_call_id == tool_call_id:
                     return part.content
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Raw tool result extraction failed", tool_call_id=tool_call_id, error=str(exc)
+            )
         return None
 
     @staticmethod

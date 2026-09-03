@@ -65,10 +65,7 @@ def mock_registry(repo_skills_setup):
     _make_repo, repos = repo_skills_setup
 
     async def _get_agents():
-        return [
-            {"session": session, "home": str(home)}
-            for session, home in repos.items()
-        ]
+        return [{"session": session, "home": str(home)} for session, home in repos.items()]
 
     cache = AsyncMock()
     cache.get_agents = AsyncMock(side_effect=_get_agents)
@@ -291,7 +288,9 @@ class TestListSkillsRepoLevel:
         _make_repo, repos, _ = mock_registry
 
         # Global skill
-        _create_skill(global_skills_dir, "sdd-methodology", "---\nname: sdd-methodology\n---\n\nBody")
+        _create_skill(
+            global_skills_dir, "sdd-methodology", "---\nname: sdd-methodology\n---\n\nBody"
+        )
 
         # Repo skill
         repo_skills = _make_repo("my-repo")
@@ -345,10 +344,12 @@ class TestListSkillsRepoLevel:
     async def test_skips_agents_without_home(self, global_skills_dir):
         """Agents missing home or session fields are skipped."""
         cache = AsyncMock()
-        cache.get_agents = AsyncMock(return_value=[
-            {"session": "no-home-agent"},  # missing home
-            {"home": "/some/path"},  # missing session
-        ])
+        cache.get_agents = AsyncMock(
+            return_value=[
+                {"session": "no-home-agent"},  # missing home
+                {"home": "/some/path"},  # missing session
+            ]
+        )
         with patch(f"{MODULE}.get_registry_cache", return_value=cache):
             result = await list_skills()
             assert result["success"] is True

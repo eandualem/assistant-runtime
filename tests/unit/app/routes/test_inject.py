@@ -247,7 +247,7 @@ class TestInjectMessage:
                 response = await c.post(
                     "/assistant/inject",
                     json={
-                        "from": "elias",
+                        "from": "operator",
                         "via": "telegram",
                         "message": "Reply from Telegram",
                         "telegramChatId": "123456789",
@@ -286,7 +286,7 @@ class TestInjectMessage:
                 response = await c.post(
                     "/assistant/inject",
                     json={
-                        "from": "elias",
+                        "from": "operator",
                         "via": "telegram",
                         "message": "Reply from Telegram",
                         "telegramChatId": "123456789",

@@ -12,8 +12,18 @@ from lovely_assistant.base.resilience import retry_with_backoff
 from lovely_assistant.services.tools._registry import ToolRegistry
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
-GITHUB_REPO_OWNER = "eandualem"
-GITHUB_REPO_NAME = "orchestration"
+# Target repository for the issue tools, read from the environment at call time.
+GITHUB_REPO_OWNER_ENV = "GITHUB_REPO_OWNER"
+GITHUB_REPO_NAME_ENV = "GITHUB_REPO_NAME"
+
+
+def _repo_slug() -> str:
+    """Return "owner/name" for the configured issue repository (empty parts if unset)."""
+    owner = os.environ.get(GITHUB_REPO_OWNER_ENV, "")
+    name = os.environ.get(GITHUB_REPO_NAME_ENV, "")
+    return f"{owner}/{name}"
+
+
 GITHUB_API_BASE = "https://api.github.com"
 _GITHUB_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionError, TimeoutError)
 
@@ -136,7 +146,7 @@ async def create_issue(
 
     status, data = await _github_request(
         "POST",
-        f"/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/issues",
+        f"/repos/{_repo_slug()}/issues",
         json_body={"title": title.strip(), "body": body, "labels": issue_labels},
     )
 
@@ -166,7 +176,7 @@ async def search_issues(
     """Search issues in the orchestration repo."""
     if text:
         # Use search endpoint for text queries
-        query = f"{text} repo:{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME} is:issue state:{state}"
+        query = f"{text} repo:{_repo_slug()} is:issue state:{state}"
         if labels:
             for label in labels:
                 query += f' label:"{label}"'
@@ -198,7 +208,7 @@ async def search_issues(
 
         status, data = await _github_request(
             "GET",
-            f"/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/issues",
+            f"/repos/{_repo_slug()}/issues",
             params=params,
         )
 
@@ -232,7 +242,7 @@ async def get_issue_details(issue_number: int) -> dict[str, Any]:
     if issue_number <= 0:
         return {"error": "Issue number must be positive", "success": False}
 
-    path = f"/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/issues/{issue_number}"
+    path = f"/repos/{_repo_slug()}/issues/{issue_number}"
 
     status, data = await _github_request("GET", path)
 
@@ -279,7 +289,7 @@ async def comment_on_issue(issue_number: int, body: str) -> dict[str, Any]:
 
     status, data = await _github_request(
         "POST",
-        f"/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/issues/{issue_number}/comments",
+        f"/repos/{_repo_slug()}/issues/{issue_number}/comments",
         json_body={"body": body.strip()},
     )
 
@@ -306,7 +316,7 @@ async def close_issue(issue_number: int, comment: str = "") -> dict[str, Any]:
     if comment and comment.strip():
         c_status, c_data = await _github_request(
             "POST",
-            f"/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/issues/{issue_number}/comments",
+            f"/repos/{_repo_slug()}/issues/{issue_number}/comments",
             json_body={"body": comment.strip()},
         )
         if c_status == -1:
@@ -320,7 +330,7 @@ async def close_issue(issue_number: int, comment: str = "") -> dict[str, Any]:
 
     status, data = await _github_request(
         "PATCH",
-        f"/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/issues/{issue_number}",
+        f"/repos/{_repo_slug()}/issues/{issue_number}",
         json_body={"state": "closed", "state_reason": "completed"},
     )
 

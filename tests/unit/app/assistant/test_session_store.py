@@ -53,7 +53,9 @@ class TestRegisterUserMessage:
     async def test_registers_first_root_message(self) -> None:
         store = SessionStore()
 
-        ctx, record = await store.register_user_message(_request(message_id="user-1", parent_id=None))
+        ctx, record = await store.register_user_message(
+            _request(message_id="user-1", parent_id=None)
+        )
 
         assert record["id"] == "user-1"
         assert record["role"] == "user"

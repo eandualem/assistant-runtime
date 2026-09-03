@@ -17,7 +17,7 @@ from lovely_assistant.services.history.models import WorkingMemory
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 REQUIRED_ARTIFACTS = {
-    "soul": "Jarvis exists to increase Elias's leverage in a live AI workbench.",
+    "soul": "Jarvis exists to increase the operator's leverage in a live AI workbench.",
     "persona": "You are Jarvis, the operational assistant.",
     "communication_protocol": "Messages may arrive with envelope tags.",
     "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
@@ -482,9 +482,7 @@ class TestRenderMachines:
                     {
                         "event_type": "SELECT_AGENT",
                         "description": "Select an agent",
-                        "params": [
-                            {"name": "agentId", "type": "string", "required": True}
-                        ],
+                        "params": [{"name": "agentId", "type": "string", "required": True}],
                     },
                     {"event_type": "REFRESH", "description": "Refresh list"},
                 ],
@@ -590,9 +588,7 @@ class TestRenderMachines:
                 "available_transitions": [
                     {
                         "event_type": "LOAD",
-                        "params": [
-                            {"name": "id", "type": "string", "required": True}
-                        ],
+                        "params": [{"name": "id", "type": "string", "required": True}],
                     },
                 ],
             }
@@ -1002,13 +998,13 @@ class TestArtifactIntegration:
         assert "scratchpad" in fragment_names
 
     def test_scratchpad_appears_when_present(self):
-        artifacts = {**REQUIRED_ARTIFACTS, "scratchpad": "Remember: Elias prefers dark mode"}
+        artifacts = {**REQUIRED_ARTIFACTS, "scratchpad": "Remember: the user prefers dark mode"}
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
             artifacts=artifacts,
         )
-        assert "Remember: Elias prefers dark mode" in result.content
+        assert "Remember: the user prefers dark mode" in result.content
         fragment_names = [f["name"] for f in result.fragments]
         assert "scratchpad" in fragment_names
 

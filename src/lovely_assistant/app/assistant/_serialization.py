@@ -140,11 +140,15 @@ def merge_display_messages(
         delivered_at = _coerce_datetime(steering.get("delivered_at")) or _coerce_datetime(
             steering.get("created_at")
         )
-        created_at = _coerce_datetime(steering.get("created_at")) or delivered_at or datetime.now(UTC)
+        created_at = (
+            _coerce_datetime(steering.get("created_at")) or delivered_at or datetime.now(UTC)
+        )
         display_items = steering_records_to_display([steering])
         if not display_items:
             continue
-        timeline.append((delivered_at or created_at, created_at, len(path_messages) + index, display_items[0]))
+        timeline.append(
+            (delivered_at or created_at, created_at, len(path_messages) + index, display_items[0])
+        )
 
     timeline.sort(key=lambda item: (item[0], item[1], item[2]))
     return [item[-1] for item in timeline]
@@ -247,7 +251,10 @@ def normalize_tool_output_for_storage(tool_name: str, content: Any) -> Any:
             result["kind"] = content.kind
         return result
     if isinstance(content, dict):
-        return {key: normalize_tool_output_for_storage(tool_name, value) for key, value in content.items()}
+        return {
+            key: normalize_tool_output_for_storage(tool_name, value)
+            for key, value in content.items()
+        }
     if isinstance(content, list):
         return [normalize_tool_output_for_storage(tool_name, item) for item in content]
     return content
@@ -261,7 +268,9 @@ def sanitize_image_tool_returns(messages: list[ModelMessage]) -> list[ModelMessa
         for part in message.parts:
             if isinstance(part, ToolReturnPart) and part.tool_name == "look_at_screen":
                 part.content = "[Inspected current screen]"
-        message.parts = [part for part in message.parts if not _is_synthetic_binary_user_prompt(part)]
+        message.parts = [
+            part for part in message.parts if not _is_synthetic_binary_user_prompt(part)
+        ]
     return messages
 
 
@@ -400,7 +409,9 @@ def assistant_record_to_flat_messages(message: MessageRecord) -> list[ModelMessa
     # Completed tools (+ content) go in the first ModelResponse/ModelRequest.
     completed_response_parts = [*content_parts, *completed_tool_calls]
     if completed_response_parts:
-        result.append(ModelResponse(parts=completed_response_parts, usage=usage, timestamp=timestamp))
+        result.append(
+            ModelResponse(parts=completed_response_parts, usage=usage, timestamp=timestamp)
+        )
     if completed_tool_returns:
         result.append(ModelRequest(parts=completed_tool_returns, timestamp=timestamp))
 

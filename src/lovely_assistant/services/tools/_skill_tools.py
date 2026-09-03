@@ -164,7 +164,10 @@ async def read_skill(name: str, repo: str | None = None) -> dict[str, Any]:
         cache = get_registry_cache()
         agents = await cache.get_agents()
         if agents is None:
-            return {"success": False, "error": f"Agent registry unavailable — cannot resolve repo '{repo}'"}
+            return {
+                "success": False,
+                "error": f"Agent registry unavailable — cannot resolve repo '{repo}'",
+            }
 
         home = None
         for agent in agents:
@@ -182,7 +185,10 @@ async def read_skill(name: str, repo: str | None = None) -> dict[str, Any]:
         try:
             content = skill_file.read_text(encoding="utf-8")
         except OSError as exc:
-            return {"success": False, "error": f"Failed to read skill '{name}' from repo '{repo}': {exc}"}
+            return {
+                "success": False,
+                "error": f"Failed to read skill '{name}' from repo '{repo}': {exc}",
+            }
 
         return {"success": True, "name": name, "repo": repo, "content": content}
 

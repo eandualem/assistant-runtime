@@ -514,6 +514,7 @@ class TestDbProviderKeys:
         assert service._db_providers.get("anthropic") == "database"
 
         import os
+
         assert os.getenv("ANTHROPIC_API_KEY") == "sk-from-database"
 
     async def test_db_keys_take_priority_over_env(self, mock_db, fernet, monkeypatch):
@@ -571,6 +572,7 @@ class TestDbProviderKeys:
         assert service._db_providers["anthropic"] == "database"
 
         import os
+
         assert os.getenv("ANTHROPIC_API_KEY") == "sk-new-key"
 
     async def test_remove_provider_key_clears_providers_and_env(self, monkeypatch):
@@ -593,6 +595,7 @@ class TestDbProviderKeys:
         assert "anthropic" not in service._db_providers
 
         import os
+
         assert os.getenv("ANTHROPIC_API_KEY") is None
 
     async def test_get_provider_status_returns_all_providers(self, monkeypatch):

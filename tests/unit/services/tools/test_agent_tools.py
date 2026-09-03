@@ -218,7 +218,7 @@ class TestListAgents:
             "display_name": "Leo",
             "role": "Strategy Co-Architect",
             "type": "orchestrator",
-            "home": "/Users/elias/ws/leo",
+            "home": "/srv/agents/leo",
         }
         mock_cache = MagicMock()
         mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", **leo_info}])
@@ -235,7 +235,7 @@ class TestListAgents:
         assert sessions_by_name["leo"]["display_name"] == "Leo"
         assert sessions_by_name["leo"]["role"] == "Strategy Co-Architect"
         assert sessions_by_name["leo"]["type"] == "orchestrator"
-        assert sessions_by_name["leo"]["home"] == "/Users/elias/ws/leo"
+        assert sessions_by_name["leo"]["home"] == "/srv/agents/leo"
         # unknown-session is NOT in cache — no enrichment fields
         assert "display_name" not in sessions_by_name["unknown-session"]
         assert "role" not in sessions_by_name["unknown-session"]
@@ -424,7 +424,7 @@ class TestStartAgent:
     async def test_success_basic(self, mock_backbone):
         mock_backbone.return_value = (
             200,
-            {"working_directory": "/Users/elias/ws/leo", "session": "leo"},
+            {"working_directory": "/srv/agents/leo", "session": "leo"},
         )
 
         result = await start_agent("leo")
@@ -433,7 +433,7 @@ class TestStartAgent:
         assert result["runtime"] == "claude"
         assert result["model"] is None
         assert result["resume"] is False
-        assert result["working_directory"] == "/Users/elias/ws/leo"
+        assert result["working_directory"] == "/srv/agents/leo"
         assert result["initial_prompt"] is None
 
         # Verify backbone was called with correct args
@@ -447,7 +447,7 @@ class TestStartAgent:
     async def test_success_with_runtime_and_model(self, mock_backbone):
         mock_backbone.return_value = (
             200,
-            {"working_directory": "/Users/elias/ws/leo"},
+            {"working_directory": "/srv/agents/leo"},
         )
 
         result = await start_agent("leo", runtime="aider", model="sonnet")
@@ -465,7 +465,7 @@ class TestStartAgent:
     async def test_success_with_resume(self, mock_backbone):
         mock_backbone.return_value = (
             200,
-            {"working_directory": "/Users/elias/ws/leo"},
+            {"working_directory": "/srv/agents/leo"},
         )
 
         result = await start_agent("leo", resume=True)
@@ -483,7 +483,7 @@ class TestStartAgent:
     async def test_success_with_initial_prompt(self, mock_backbone, mock_run):
         mock_backbone.return_value = (
             200,
-            {"working_directory": "/Users/elias/ws/leo"},
+            {"working_directory": "/srv/agents/leo"},
         )
         mock_run.side_effect = [
             (0, "", ""),  # send-keys prompt
@@ -649,7 +649,7 @@ class TestSendAgentMessage:
         # The second call is send-keys -l with the envelope
         send_call = mock_run.call_args_list[1]
         args = send_call[0][0]  # positional args to _run_command
-        assert "[via:jarvis from:elias session:sess_abc123]" in args[-1]
+        assert "[via:jarvis from:operator session:sess_abc123]" in args[-1]
         assert "hello" in args[-1]
 
     @patch(f"{MODULE}._run_command")

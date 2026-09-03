@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,14 @@ from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 STATE_DIR = Path.home() / ".claude" / "state"
 SESSION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$")
 MAX_SESSION_NAME_LENGTH = 64
+
+
+OPERATOR_NAME_ENV = "ASSISTANT_OPERATOR_NAME"
+
+
+def _operator_name() -> str:
+    """Name used as the human sender in reply envelopes (configurable, defaults to 'operator')."""
+    return os.environ.get(OPERATOR_NAME_ENV, "operator")
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +333,7 @@ async def send_agent_message(session_name: str, message: str) -> dict[str, Any]:
         }
 
     # Send with reply-safe Jarvis envelope
-    envelope = f"[via:jarvis from:elias session:{reply_session_id}] {message.strip()}"
+    envelope = f"[via:jarvis from:{_operator_name()} session:{reply_session_id}] {message.strip()}"
     rc, _, stderr = await _run_command(["tmux", "send-keys", "-t", session_name, "-l", envelope])
     if rc != 0:
         return {"error": f"Failed to send message: {stderr}", "success": False}
@@ -487,7 +496,7 @@ def register_agent_tools(registry: ToolRegistry) -> None:
             name="send_agent_message",
             description=(
                 "Send a message to a running agent session. Prepends the "
-                "[via:jarvis from:elias session:...] envelope automatically "
+                "[via:jarvis from:<operator> session:...] envelope automatically "
                 "using the active assistant session so the recipient can reply "
                 "through Jarvis. "
                 "Warns if the agent is currently busy."

@@ -27,33 +27,31 @@ MODULE = "lovely_assistant.services.tools._repo_tools"
 
 
 class TestValidateOrg:
-    def test_valid_arclio(self):
-        assert _validate_org("Arclio") is None
+    def test_any_org_valid_when_allowlist_unset(self, monkeypatch):
+        monkeypatch.delenv("REPO_ORGS", raising=False)
+        assert _validate_org("org-a") is None
 
-    def test_valid_wf(self):
-        assert _validate_org("WF") is None
+    def test_valid_org_in_allowlist(self, monkeypatch):
+        monkeypatch.setenv("REPO_ORGS", "org-a, org-b")
+        assert _validate_org("org-a") is None
+        assert _validate_org("org-b") is None
 
-    def test_valid_loveble(self):
-        assert _validate_org("Loveble") is None
-
-    def test_invalid_org(self):
+    def test_invalid_org(self, monkeypatch):
+        monkeypatch.setenv("REPO_ORGS", "org-a,org-b")
         result = _validate_org("InvalidOrg")
         assert result is not None
         assert "Invalid org" in result
+        assert "org-a, org-b" in result
 
     def test_empty_org(self):
         result = _validate_org("")
         assert result is not None
         assert "empty" in result.lower()
 
-    def test_case_sensitive(self):
-        result = _validate_org("arclio")
-        assert result is not None
-        assert "Invalid org" in result
-
-    def test_whitespace_only(self):
+    def test_whitespace_org(self):
         result = _validate_org("   ")
         assert result is not None
+        assert "empty" in result.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -68,17 +66,17 @@ class TestOnboardRepo:
             200,
             {
                 "repo": "new-service",
-                "org": "Arclio",
+                "org": "org-a",
                 "steps": ["cloned", "claude_md", "settings", "registry"],
             },
         )
 
         result = await onboard_repo(
-            org="Arclio", url="https://github.com/eandualem/new-service.git"
+            org="org-a", url="https://github.com/example-org/new-service.git"
         )
         assert result["success"] is True
         assert result["repo"] == "new-service"
-        assert result["org"] == "Arclio"
+        assert result["org"] == "org-a"
         assert len(result["steps"]) == 4
 
     @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
@@ -88,7 +86,7 @@ class TestOnboardRepo:
             {"detail": "Clone failed"},
         )
 
-        result = await onboard_repo(org="WF", url="https://github.com/eandualem/broken.git")
+        result = await onboard_repo(org="org-b", url="https://github.com/example-org/broken.git")
         assert result["success"] is False
         assert "500" in result["error"]
 
@@ -99,34 +97,35 @@ class TestOnboardRepo:
             {"error": "Request timed out: POST /api/repos/onboard"},
         )
 
-        result = await onboard_repo(org="Arclio", url="https://github.com/eandualem/repo.git")
+        result = await onboard_repo(org="org-a", url="https://github.com/example-org/repo.git")
         assert result["success"] is False
         assert "timed out" in result["error"]
 
-    async def test_invalid_org(self):
-        result = await onboard_repo(org="BadOrg", url="https://github.com/eandualem/repo.git")
+    async def test_invalid_org(self, monkeypatch):
+        monkeypatch.setenv("REPO_ORGS", "org-a,org-b")
+        result = await onboard_repo(org="BadOrg", url="https://github.com/example-org/repo.git")
         assert result["success"] is False
         assert "Invalid org" in result["error"]
 
     async def test_empty_url(self):
-        result = await onboard_repo(org="Arclio", url="")
+        result = await onboard_repo(org="org-a", url="")
         assert result["success"] is False
         assert "empty" in result["error"].lower()
 
     async def test_whitespace_url(self):
-        result = await onboard_repo(org="Arclio", url="   ")
+        result = await onboard_repo(org="org-a", url="   ")
         assert result["success"] is False
         assert "empty" in result["error"].lower()
 
     @patch(f"{MODULE}.backbone_request", new_callable=AsyncMock)
     async def test_url_stripped(self, mock_req):
-        mock_req.return_value = (200, {"repo": "r", "org": "WF", "steps": []})
+        mock_req.return_value = (200, {"repo": "r", "org": "org-b", "steps": []})
 
-        await onboard_repo(org="WF", url="  https://github.com/eandualem/r.git  ")
+        await onboard_repo(org="org-b", url="  https://github.com/example-org/r.git  ")
 
         call_kwargs = mock_req.call_args
         json_body = call_kwargs.kwargs.get("json_body")
-        assert json_body["url"] == "https://github.com/eandualem/r.git"
+        assert json_body["url"] == "https://github.com/example-org/r.git"
 
 
 # ---------------------------------------------------------------------------
@@ -141,14 +140,14 @@ class TestCheckRepoStatus:
             200,
             {
                 "repo": "platform-api",
-                "org": "Arclio",
+                "org": "org-a",
                 "status": "configured",
                 "claude_md": True,
                 "settings": True,
             },
         )
 
-        result = await check_repo_status(org="Arclio", repo="platform-api")
+        result = await check_repo_status(org="org-a", repo="platform-api")
         assert result["success"] is True
         assert result["status"] == "configured"
         assert result["claude_md"] is True
@@ -157,7 +156,7 @@ class TestCheckRepoStatus:
     async def test_not_found(self, mock_req):
         mock_req.return_value = (404, {"detail": "Not found"})
 
-        result = await check_repo_status(org="Arclio", repo="nonexistent")
+        result = await check_repo_status(org="org-a", repo="nonexistent")
         assert result["success"] is False
         assert "not found" in result["error"].lower()
 
@@ -168,17 +167,18 @@ class TestCheckRepoStatus:
             {"error": "HTTP error: connection refused"},
         )
 
-        result = await check_repo_status(org="WF", repo="some-repo")
+        result = await check_repo_status(org="org-b", repo="some-repo")
         assert result["success"] is False
         assert "error" in result["error"].lower()
 
-    async def test_invalid_org(self):
+    async def test_invalid_org(self, monkeypatch):
+        monkeypatch.setenv("REPO_ORGS", "org-a,org-b")
         result = await check_repo_status(org="BadOrg", repo="some-repo")
         assert result["success"] is False
         assert "Invalid org" in result["error"]
 
     async def test_empty_repo(self):
-        result = await check_repo_status(org="Arclio", repo="")
+        result = await check_repo_status(org="org-a", repo="")
         assert result["success"] is False
         assert "empty" in result["error"].lower()
 
@@ -186,10 +186,10 @@ class TestCheckRepoStatus:
     async def test_repo_stripped(self, mock_req):
         mock_req.return_value = (200, {"repo": "r", "status": "ok"})
 
-        await check_repo_status(org="WF", repo="  my-repo  ")
+        await check_repo_status(org="org-b", repo="  my-repo  ")
 
         call_args = mock_req.call_args
-        assert "/api/repos/WF/my-repo/status" in call_args[0][1]
+        assert "/api/repos/org-b/my-repo/status" in call_args[0][1]
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +204,8 @@ class TestListRepos:
             200,
             {
                 "repos": [
-                    {"name": "platform-api", "org": "Arclio"},
-                    {"name": "agent-backbone", "org": "WF"},
+                    {"name": "platform-api", "org": "org-a"},
+                    {"name": "agent-backbone", "org": "org-b"},
                 ],
             },
         )
@@ -248,7 +248,7 @@ class TestListRepos:
         """Backbone may return 'items' instead of 'repos'."""
         mock_req.return_value = (
             200,
-            {"items": [{"name": "repo1", "org": "WF"}]},
+            {"items": [{"name": "repo1", "org": "org-b"}]},
         )
 
         result = await list_repos()

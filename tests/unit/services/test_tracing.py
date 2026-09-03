@@ -246,7 +246,7 @@ class TestCreateRequestTrace:
         mock_obs.update_trace.assert_called_once()
         call_kwargs = mock_obs.update_trace.call_args[1]
         assert call_kwargs["session_id"] == "s1"
-        assert call_kwargs["user_id"] == "elias"
+        assert call_kwargs["user_id"] == "operator"
         assert "model:anthropic:claude-sonnet-4-5" in call_kwargs["tags"]
         mock_cm.__exit__.assert_called_once()
 

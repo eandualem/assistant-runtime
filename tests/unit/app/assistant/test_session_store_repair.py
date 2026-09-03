@@ -203,7 +203,10 @@ class TestRepairStaleToolsInContext:
         assert msg_id == "assistant-1"
         assert segments[0]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
         # In-place mutation on ctx
-        assert ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
+        assert (
+            ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]["output"]
+            == _STALE_FRONTEND_TOOL_OUTPUT
+        )
 
     def test_user_only_messages_no_repairs(self) -> None:
         ctx: dict[str, Any] = {
@@ -401,7 +404,9 @@ class TestRepairStaleFrontendTools:
         # The cached_path should also reflect the repaired segments
         assistant_in_path = [m for m in ctx["cached_path"] if m["id"] == "assistant-1"]
         assert len(assistant_in_path) == 1
-        assert assistant_in_path[0]["segments"][0]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
+        assert (
+            assistant_in_path[0]["segments"][0]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
+        )
 
 
 # ---------------------------------------------------------------------------
