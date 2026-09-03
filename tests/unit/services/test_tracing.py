@@ -23,9 +23,11 @@ from assistant_runtime.services.tracing import (
 def _reset_module_state():
     """Reset module-level state before each test."""
     tracing._tracing_enabled = False
+    tracing._propagate_attributes = MagicMock(return_value=MagicMock())
     tracing._langfuse_client = None
     yield
     tracing._tracing_enabled = False
+    tracing._propagate_attributes = None
     tracing._langfuse_client = None
 
 
@@ -243,8 +245,8 @@ class TestCreateRequestTrace:
             assert isinstance(handle, _TraceHandle)
 
         mock_client.start_as_current_observation.assert_called_once()
-        mock_obs.update_trace.assert_called_once()
-        call_kwargs = mock_obs.update_trace.call_args[1]
+        tracing._propagate_attributes.assert_called_once()
+        call_kwargs = tracing._propagate_attributes.call_args[1]
         assert call_kwargs["session_id"] == "s1"
         assert call_kwargs["user_id"] == "operator"
         assert "model:anthropic:claude-sonnet-4-5" in call_kwargs["tags"]
@@ -269,7 +271,7 @@ class TestCreateRequestTrace:
         ):
             pass
 
-        call_kwargs = mock_obs.update_trace.call_args[1]
+        call_kwargs = tracing._propagate_attributes.call_args[1]
         tags = call_kwargs["tags"]
         assert "custom" in tags
         assert "model:anthropic:claude-haiku-4-5" in tags
@@ -289,7 +291,7 @@ class TestCreateRequestTrace:
         with create_request_trace(session_id="s1"):
             pass
 
-        call_kwargs = mock_obs.update_trace.call_args[1]
+        call_kwargs = tracing._propagate_attributes.call_args[1]
         assert call_kwargs["tags"] == []
 
     def test_start_failure_yields_noop(self):
@@ -335,9 +337,11 @@ class TestCreateRequestTrace:
         ):
             pass
 
-        call_kwargs = mock_obs.update_trace.call_args[1]
-        assert call_kwargs["metadata"] == {"has_images": True}
-        assert call_kwargs["input"] == "hello"
+        call_kwargs = tracing._propagate_attributes.call_args[1]
+        assert call_kwargs["metadata"] == {"has_images": "True"}  # langfuse 4: str values
+        obs_kwargs = mock_client.start_as_current_observation.call_args[1]
+        assert obs_kwargs["input"] == "hello"
+        assert obs_kwargs["metadata"] == {"has_images": True}
 
     def test_manual_mode_uses_non_current_observation(self):
         mock_client = MagicMock()
@@ -356,7 +360,7 @@ class TestCreateRequestTrace:
             input=None,
             metadata={},
         )
-        mock_obs.update_trace.assert_called_once()
+        tracing._propagate_attributes.assert_called_once()
         mock_obs.end.assert_called_once()
 
     def test_manual_mode_end_failure_is_swallowed(self):
