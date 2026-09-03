@@ -28,7 +28,9 @@ async def test_health_returns_503_when_unhealthy():
 
     # Register a component that reports unhealthy
     unhealthy_component = AsyncMock()
-    unhealthy_component.health_check = AsyncMock(return_value={"healthy": False, "error": "connection refused"})
+    unhealthy_component.health_check = AsyncMock(
+        return_value={"healthy": False, "error": "connection refused"}
+    )
     unhealthy_component.start = AsyncMock()
     unhealthy_component.stop = AsyncMock()
     await lifecycle.register("database_service", unhealthy_component)

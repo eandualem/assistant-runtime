@@ -17,7 +17,6 @@ from lovely_assistant.services.tools._request_context import (
 from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
-_DEFAULT_CHAT_ID = "897573812"  # Elias's Telegram chat ID
 _TELEGRAM_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionError, TimeoutError)
 
 
@@ -27,10 +26,10 @@ _TELEGRAM_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionErr
 
 
 async def respond_telegram(message: str) -> dict[str, Any]:
-    """Send a message to Elias via the Telegram Bot API.
+    """Send a message to the operator via the Telegram Bot API.
 
     Reads TELEGRAM_TOKEN and TELEGRAM_CHAT_ID from environment at call time.
-    TELEGRAM_CHAT_ID defaults to Elias's chat ID if not set.
+    Both must be set; there is no default chat.
 
     Returns {"success": True, "message_id": ...} on success,
     or {"success": False, "error": ..., "error_code": ...} on failure.
@@ -46,7 +45,13 @@ async def respond_telegram(message: str) -> dict[str, Any]:
             "error_code": "TELEGRAM_AUTH_MISSING",
         }
 
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", _DEFAULT_CHAT_ID)
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not chat_id:
+        return {
+            "success": False,
+            "error": "TELEGRAM_CHAT_ID not configured. Set TELEGRAM_CHAT_ID in .env",
+            "error_code": "TELEGRAM_CHAT_MISSING",
+        }
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
 
     @retry_with_backoff(
@@ -114,7 +119,7 @@ def register_telegram_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="respond_telegram",
             description=(
-                "Send a message to Elias via Telegram. "
+                "Send a message to the operator via Telegram. "
                 "Use this when responding to messages that arrived via Telegram "
                 "(indicated by [via:telegram] envelope tag). "
                 "Compose your full response as the message text."

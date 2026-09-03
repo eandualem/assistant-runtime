@@ -62,13 +62,15 @@ def _make_mock_oauth_service(
     return SimpleNamespace(
         configured=configured,
         _fernet=fernet,
-        get_device_code_status=lambda: device_code_status
-        or SimpleNamespace(
-            connected=False,
-            status="idle",
-            email=None,
-            source=None,
-            expires_at=None,
+        get_device_code_status=lambda: (
+            device_code_status
+            or SimpleNamespace(
+                connected=False,
+                status="idle",
+                email=None,
+                source=None,
+                expires_at=None,
+            )
         ),
     )
 
@@ -229,9 +231,7 @@ class TestSetApiKey:
                 mock_repo_cls,
             )
 
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as c:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 response = await c.put(
                     "/api/providers/anthropic/api-key",
                     json={"api_key": "sk-ant-test-key-1234"},
@@ -360,9 +360,7 @@ class TestDeleteApiKey:
                 mock_repo_cls,
             )
 
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as c:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 response = await c.delete("/api/providers/anthropic/api-key")
 
         assert response.status_code == 200
@@ -407,9 +405,7 @@ class TestDeleteApiKey:
                 mock_repo_cls,
             )
 
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as c:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 response = await c.delete("/api/providers/openai/api-key")
 
         assert response.status_code == 200

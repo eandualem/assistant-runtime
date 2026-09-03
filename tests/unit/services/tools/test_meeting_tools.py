@@ -89,7 +89,7 @@ class TestCreateMeetingRoom:
         call_kwargs = mock_req.call_args
         json_body = call_kwargs.kwargs.get("json_body") or call_kwargs[1].get("json_body")
         assert json_body["description"] == "Architecture review"
-        assert json_body["moderator"] == "elias"
+        assert json_body["moderator"] == "operator"
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 """Context engineering models — working memory, compaction, and memory deltas.
 
-Adapted from arclio-assistant's models/context_engineering.py for the agent
+Adapted from an earlier assistant implementation's models/context_engineering.py for the agent
 operations domain. Drops OperationalLearning and learnings migration (greenfield).
 """
 

@@ -137,10 +137,14 @@ class SessionStore:
     def get_history(self, session_id: str, *, exclude_leaf: bool = False) -> list[Any]:
         """Return the cached root-to-leaf history as ModelMessages."""
         ctx = self.get_context(session_id)
-        path = ctx["cached_path"][:-1] if exclude_leaf and ctx["cached_path"] else ctx["cached_path"]
+        path = (
+            ctx["cached_path"][:-1] if exclude_leaf and ctx["cached_path"] else ctx["cached_path"]
+        )
         return path_records_to_model_history(path)
 
-    async def register_user_message(self, request: AssistantRequest) -> tuple[dict[str, Any], MessageRecord]:
+    async def register_user_message(
+        self, request: AssistantRequest
+    ) -> tuple[dict[str, Any], MessageRecord]:
         """Persist a user-side message send and update the active cached path."""
         if request.is_steering:
             raise ValueError("Steering messages are stored separately from the conversation tree")
@@ -206,11 +210,7 @@ class SessionStore:
         self._add_message_to_context(ctx, record)
         self._refresh_cached_path_for_new_leaf(ctx, record)
         ctx["turn_number"] = ctx.get("turn_number", 0) + 1
-        if (
-            not ctx.get("title")
-            and request.message_type == "standard"
-            and request.content.strip()
-        ):
+        if not ctx.get("title") and request.message_type == "standard" and request.content.strip():
             text = request.content.strip()
             ctx["title"] = text[:50] + ("..." if len(text) > 50 else "")
 
@@ -398,7 +398,9 @@ class SessionStore:
         record["status"] = "promoted"
         record["delivered_at"] = delivered_at
         ctx["steering_index"][steering_id] = record
-        ctx["pending_steering_ids"] = [gid for gid in ctx["pending_steering_ids"] if gid != steering_id]
+        ctx["pending_steering_ids"] = [
+            gid for gid in ctx["pending_steering_ids"] if gid != steering_id
+        ]
 
         if self._db is not None:
             async with self._db.session_context() as db_session:
@@ -623,7 +625,9 @@ class SessionStore:
             repo = SessionRepository(db_session)
             existing = await repo.get(session_id)
             if existing is None:
-                await repo.create(session_id=session_id, title=ctx.get("title"), expires_at=self._expires_at())
+                await repo.create(
+                    session_id=session_id, title=ctx.get("title"), expires_at=self._expires_at()
+                )
 
     def _build_empty_context(self) -> dict[str, Any]:
         return {
@@ -665,7 +669,9 @@ class SessionStore:
 
     def _refresh_cached_path_for_new_leaf(self, ctx: dict[str, Any], record: MessageRecord) -> None:
         active_leaf_id = ctx.get("active_leaf_id")
-        if active_leaf_id == record.get("parent_id") or (active_leaf_id is None and record.get("parent_id") is None):
+        if active_leaf_id == record.get("parent_id") or (
+            active_leaf_id is None and record.get("parent_id") is None
+        ):
             ctx["cached_path"] = [*ctx["cached_path"], record]
         else:
             parent_path = self._resolve_path(ctx, record.get("parent_id"))

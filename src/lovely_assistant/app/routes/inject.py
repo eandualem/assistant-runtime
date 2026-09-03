@@ -9,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from lovely_assistant.app._injector import inject_inbox_message
+from lovely_assistant.services.database.deps import get_database_service
 
 router = APIRouter(prefix="/assistant", tags=["assistant-inject"])
 
@@ -33,16 +34,6 @@ class InjectRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _get_db(request: Request):
-    """Retrieve DatabaseService from app state."""
-    from lovely_assistant.services.database.interface import DatabaseService
-
-    db: DatabaseService | None = getattr(request.app.state, "database_service", None)
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return db
-
-
 def _get_assistant_service(request: Request):
     """Retrieve AssistantService from app state (may be None during startup)."""
     return getattr(request.app.state, "assistant_service", None)
@@ -61,7 +52,7 @@ async def inject_message(body: InjectRequest, request: Request) -> dict[str, Any
     with that session and returns status "delivered". Otherwise stores
     the message without session tagging and returns "deferred".
     """
-    db = await _get_db(request)
+    db = get_database_service(request)
     service = _get_assistant_service(request)
 
     try:

@@ -188,7 +188,9 @@ class TestGetSessionTree:
         tree = response.json()
         assert len(tree) == 4
         assert tree[0]["parent_id"] is None
-        assert any(message["id"] == "assistant-1" and message["parent_id"] == "user-1" for message in tree)
+        assert any(
+            message["id"] == "assistant-1" and message["parent_id"] == "user-1" for message in tree
+        )
 
 
 class TestDeleteSession:
@@ -210,6 +212,8 @@ class TestDeleteSession:
         app = _create_test_app()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post("/api/sessions/sess-1/branch", json={"message_id": "user-1"})
+            response = await client.post(
+                "/api/sessions/sess-1/branch", json={"message_id": "user-1"}
+            )
 
         assert response.status_code == 404

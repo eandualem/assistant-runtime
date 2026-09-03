@@ -47,7 +47,7 @@ class TestSessionRepository:
             title="Hello",
             turn_number=3,
             working_memory={"goal": "ship tree model"},
-            telegram_chat_id="897573812",
+            telegram_chat_id="123456789",
         )
 
         mock_session.execute.assert_awaited_once()
@@ -123,14 +123,18 @@ class TestSteeringRepository:
         mock_session.flush.assert_awaited_once()
 
     async def test_mark_status_is_noop_for_empty_id_list(self, mock_session: AsyncMock) -> None:
-        await SteeringRepository(mock_session).mark_status([], status="delivered", delivered_at=None)
+        await SteeringRepository(mock_session).mark_status(
+            [], status="delivered", delivered_at=None
+        )
 
         mock_session.execute.assert_not_called()
         mock_session.flush.assert_not_called()
 
 
 class TestSettingsRepository:
-    async def test_save_returns_existing_row_when_state_is_empty(self, mock_session: AsyncMock) -> None:
+    async def test_save_returns_existing_row_when_state_is_empty(
+        self, mock_session: AsyncMock
+    ) -> None:
         row = UserSettingsORM(id="default")
         result = MagicMock()
         result.scalar_one_or_none.return_value = row

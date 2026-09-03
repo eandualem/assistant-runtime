@@ -88,6 +88,7 @@ def artifact_role_boundaries_text() -> str:
     """Human-readable summary of the artifact role split."""
     return "; ".join(f"{item.name} = {item.role_boundary}" for item in ARTIFACT_CATALOG)
 
+
 # --- Fragment builders ---
 
 
@@ -356,7 +357,8 @@ def _smart_hints(machine_state: dict[str, Any] | None) -> str:
     machines = active_page.get("machines", {})
     if machines:
         error_machines = [
-            name for name, m in machines.items()
+            name
+            for name, m in machines.items()
             if isinstance(m, dict) and "error" in str(m.get("current_state", "")).lower()
         ]
         if error_machines:

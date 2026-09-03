@@ -20,7 +20,9 @@ from lovely_assistant.services.tools.interface import ToolService
 from .conftest import _make_mock_agent
 
 
-def _payload(*, message_id: str, session_id: str, parent_id: str | None, content: str) -> dict[str, object]:
+def _payload(
+    *, message_id: str, session_id: str, parent_id: str | None, content: str
+) -> dict[str, object]:
     return {
         "id": message_id,
         "session_id": session_id,

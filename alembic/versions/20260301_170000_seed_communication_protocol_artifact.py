@@ -22,11 +22,11 @@ depends_on: Union[str, Sequence[str], None] = None
 _COMMUNICATION_PROTOCOL_CONTENT = (
     "## Communication Protocol\n\n"
     "Messages may arrive with envelope tags indicating their source:\n"
-    "- `[via:telegram from:elias]` \u2014 Elias messaged via Telegram\n"
+    "- `[via:telegram from:<operator>]` \u2014 the operator messaged via Telegram\n"
     "- `[via:tmux from:{agent}]` \u2014 An agent sent a direct message\n"
     "- `[via:room room:{room_id} from:{sender}]` \u2014 A message from a meeting room\n"
     "- `[via:backbone]` \u2014 System notification from the backbone\n"
-    "- No tag \u2014 Elias is typing directly in the dashboard\n\n"
+    "- No tag \u2014 the operator is typing directly in the dashboard\n\n"
     "**Response Medium Rule:** Respond through the same channel you were reached on.\n"
     "- If `[via:telegram]`: After processing, use the `respond_telegram` tool to send your response\n"
     "- If `[via:tmux from:{agent}]`: After processing, use `send_agent_message` to reply to that agent\n"

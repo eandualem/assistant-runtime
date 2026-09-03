@@ -37,7 +37,7 @@ Your task:
 Memory entries are NOT summaries. They are durable, reusable facts. Examples:
 - "Agent state files at ~/.claude/state/ use JSON format with entity, session, state, issue, context, and ts fields"
 - "The backbone webhook gateway requires ngrok to be running — check with 'pgrep ngrok' before assuming delivery works"
-- "Elias prefers direct answers and dislikes step-by-step explanations"
+- "The user prefers direct answers and dislikes step-by-step explanations"
 
 Only create/update entries when something unexpected, error-producing, or preference-revealing occurred.
 
@@ -104,7 +104,7 @@ Example output structure:
       "operation": "update",
       "entry_id": "abc-123-def",
       "entry": {{
-        "content": "Elias prefers fixes over explanations when debugging agent issues",
+        "content": "The user prefers fixes over explanations when debugging agent issues",
         "category": "user_preference",
         "confidence": 0.9
       }},

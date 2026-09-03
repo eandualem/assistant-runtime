@@ -82,7 +82,9 @@ class TestChatEndpoint:
         app = _create_test_app()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post("/api/chat", json={"session_id": "sess-1", "content": "Hi"})
+            response = await client.post(
+                "/api/chat", json={"session_id": "sess-1", "content": "Hi"}
+            )
 
         assert response.status_code == 422
 

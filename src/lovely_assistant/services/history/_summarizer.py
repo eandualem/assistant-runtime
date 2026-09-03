@@ -1,7 +1,7 @@
 """LLM-backed conversation summarization and working memory extraction.
 
 Internal module — only accessed through HistoryService (interface.py).
-Translated from arclio-assistant's history/summarizer.py with key differences:
+Translated from an earlier assistant implementation's history/summarizer.py with key differences:
 - Takes LlmService instead of creating Agent directly (protocol boundary)
 - Prompts co-located in prompts/ subdirectory
 - No StructuredLogger — uses loguru directly

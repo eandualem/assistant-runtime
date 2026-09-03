@@ -228,7 +228,7 @@ class TestInjectMessage:
         mock_row = _make_inbox_row()
         mock_db = _make_mock_db()
         session_store = _make_mock_session_store(
-            sessions={"sess-jarvis": {"turn_number": 3, "telegram_chat_id": "897573812"}}
+            sessions={"sess-jarvis": {"turn_number": 3, "telegram_chat_id": "123456789"}}
         )
         assistant = _make_mock_assistant(session_store=session_store)
 
@@ -247,10 +247,10 @@ class TestInjectMessage:
                 response = await c.post(
                     "/assistant/inject",
                     json={
-                        "from": "elias",
+                        "from": "operator",
                         "via": "telegram",
                         "message": "Reply from Telegram",
-                        "telegramChatId": "897573812",
+                        "telegramChatId": "123456789",
                     },
                 )
 
@@ -261,7 +261,7 @@ class TestInjectMessage:
 
         call_kwargs = mock_repo_inst.create.call_args.kwargs
         assert call_kwargs["context"]["session_id"] == "sess-jarvis"
-        assert call_kwargs["context"]["telegram_chat_id"] == "897573812"
+        assert call_kwargs["context"]["telegram_chat_id"] == "123456789"
 
     @pytest.mark.asyncio
     async def test_inject_telegram_reply_without_binding_returns_deferred(self):
@@ -286,10 +286,10 @@ class TestInjectMessage:
                 response = await c.post(
                     "/assistant/inject",
                     json={
-                        "from": "elias",
+                        "from": "operator",
                         "via": "telegram",
                         "message": "Reply from Telegram",
-                        "telegramChatId": "897573812",
+                        "telegramChatId": "123456789",
                     },
                 )
 
