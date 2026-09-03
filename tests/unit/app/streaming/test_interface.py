@@ -9,7 +9,7 @@ from pydantic_ai import DeferredToolRequests
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.usage import UsageLimits
-from pydantic_graph.nodes import End
+from pydantic_graph import End
 
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.config import AssistantConfig
@@ -53,7 +53,7 @@ class _MockRun:
         self.result.new_messages.return_value = (
             new_messages if new_messages is not None else all_messages
         )
-        self.result.usage.return_value = MagicMock(
+        self.result.usage = MagicMock(
             input_tokens=5,
             output_tokens=7,
             total_tokens=12,

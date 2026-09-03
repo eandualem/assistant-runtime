@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic_graph.nodes import End
+from pydantic_graph import End
 
 from assistant_runtime.app.assistant.models import AssistantRequest
 

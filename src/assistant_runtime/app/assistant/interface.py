@@ -459,10 +459,10 @@ class AssistantService:
     def _safe_usage(result: Any) -> dict[str, int | None]:
         """Extract usage stats from a run result (best-effort)."""
         try:
-            usage = result.usage()
+            usage = result.usage
             return {
-                "input_tokens": usage.request_tokens,
-                "output_tokens": usage.response_tokens,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
                 "total_tokens": usage.total_tokens,
             }
         except Exception as e:
