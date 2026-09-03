@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from lovely_assistant.app.assistant._session_store import SessionStore
-from lovely_assistant.app.assistant.models import AssistantRequest
+from assistant_runtime.app.assistant._session_store import SessionStore
+from assistant_runtime.app.assistant.models import AssistantRequest
 
 
 def _request(

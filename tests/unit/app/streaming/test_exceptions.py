@@ -1,17 +1,17 @@
 """Tests for streaming exception hierarchy."""
 
-from lovely_assistant.app.streaming.exceptions import (
+from assistant_runtime.app.streaming.exceptions import (
     EventLimitError,
     StreamExecutionError,
     StreamingError,
     StreamSetupError,
 )
-from lovely_assistant.base.exceptions import LovelyAssistantError
+from assistant_runtime.base.exceptions import AssistantRuntimeError
 
 
 class TestStreamingError:
-    def test_is_lovely_assistant_error(self):
-        assert issubclass(StreamingError, LovelyAssistantError)
+    def test_is_assistant_runtime_error(self):
+        assert issubclass(StreamingError, AssistantRuntimeError)
 
     def test_default_category(self):
         err = StreamingError("test")

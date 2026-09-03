@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lovely_assistant.base.resilience import retry_with_backoff
+from assistant_runtime.base.resilience import retry_with_backoff
 
 
 class TestRetryWithBackoff:
@@ -93,7 +93,7 @@ class TestRetryWithBackoff:
                 raise ValueError("transient")
             return "ok"
 
-        with patch("lovely_assistant.base.resilience.logger") as mock_logger:
+        with patch("assistant_runtime.base.resilience.logger") as mock_logger:
             flaky()
 
         # 2 retries = 2 before_sleep calls = 2 warning logs
@@ -117,7 +117,7 @@ class TestRetryWithBackoff:
                 raise ValueError("oops")
             return "ok"
 
-        with patch("lovely_assistant.base.resilience.logger") as mock_logger:
+        with patch("assistant_runtime.base.resilience.logger") as mock_logger:
             flaky()
 
         mock_logger.warning.assert_called_once()

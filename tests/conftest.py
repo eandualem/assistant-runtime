@@ -3,8 +3,8 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.base.lifecycle import LifecycleManager
-from lovely_assistant.main import create_app
+from assistant_runtime.base.lifecycle import LifecycleManager
+from assistant_runtime.main import create_app
 
 
 @pytest.fixture

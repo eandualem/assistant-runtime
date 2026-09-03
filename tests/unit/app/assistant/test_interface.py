@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 
-from lovely_assistant.app.assistant.config import AssistantConfig
-from lovely_assistant.app.assistant.exceptions import AgentRunError, AssistantError
-from lovely_assistant.app.assistant.interface import AssistantService
-from lovely_assistant.app.assistant.models import AssistantRequest
-from lovely_assistant.services.tools._request_context import record_current_telegram_chat_binding
-from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from assistant_runtime.app.assistant.config import AssistantConfig
+from assistant_runtime.app.assistant.exceptions import AgentRunError, AssistantError
+from assistant_runtime.app.assistant.interface import AssistantService
+from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.services.tools._request_context import record_current_telegram_chat_binding
+from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 
 def _request(
@@ -66,9 +66,9 @@ def _mock_artifacts() -> Any:
         "_load_active_artifacts",
         new=AsyncMock(
             return_value={
-                "persona": "You are Jarvis.",
+                "persona": "You are the assistant.",
                 "communication_protocol": "Envelope tags may be present.",
-                "ecosystem": "Lovely agents are available.",
+                "ecosystem": "Agents are available.",
                 "soul": "Increase the operator's leverage.",
             }
         ),

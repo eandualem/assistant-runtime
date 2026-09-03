@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
-from lovely_assistant.services.database.models import MessageORM, SessionORM, SteeringORM
+from assistant_runtime.services.database.models import MessageORM, SessionORM, SteeringORM
 
 
 class TestSessionORM:

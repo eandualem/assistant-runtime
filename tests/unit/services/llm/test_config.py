@@ -3,7 +3,7 @@
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from lovely_assistant.services.llm.config import ALLOWED_PROVIDERS, LLMConfig, ProviderConfig
+from assistant_runtime.services.llm.config import ALLOWED_PROVIDERS, LLMConfig, ProviderConfig
 
 
 class TestProviderConfig:

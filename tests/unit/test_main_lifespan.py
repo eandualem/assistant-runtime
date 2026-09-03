@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.main import create_app, lifespan
+from assistant_runtime.main import create_app, lifespan
 
 
 @pytest.mark.asyncio
@@ -43,19 +43,19 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     async def _register_streaming(app_state, lifecycle):
         app_state.streaming_service = SimpleNamespace(set_runtime_settings=MagicMock())
 
-    monkeypatch.setattr("lovely_assistant.main.register_database", _register_database)
-    monkeypatch.setattr("lovely_assistant.main.register_llm", _register_llm)
-    monkeypatch.setattr("lovely_assistant.main.register_history", _register_history)
-    monkeypatch.setattr("lovely_assistant.main.register_media", _register_media)
-    monkeypatch.setattr("lovely_assistant.main.register_oauth", _register_oauth)
-    monkeypatch.setattr("lovely_assistant.main.register_tools", _register_tools)
-    monkeypatch.setattr("lovely_assistant.main.register_assistant", _register_assistant)
-    monkeypatch.setattr("lovely_assistant.main.register_heartbeat", _register_heartbeat)
-    monkeypatch.setattr("lovely_assistant.main.register_streaming", _register_streaming)
-    monkeypatch.setattr("lovely_assistant.main.load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setattr("lovely_assistant.main.setup_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr("assistant_runtime.main.register_database", _register_database)
+    monkeypatch.setattr("assistant_runtime.main.register_llm", _register_llm)
+    monkeypatch.setattr("assistant_runtime.main.register_history", _register_history)
+    monkeypatch.setattr("assistant_runtime.main.register_media", _register_media)
+    monkeypatch.setattr("assistant_runtime.main.register_oauth", _register_oauth)
+    monkeypatch.setattr("assistant_runtime.main.register_tools", _register_tools)
+    monkeypatch.setattr("assistant_runtime.main.register_assistant", _register_assistant)
+    monkeypatch.setattr("assistant_runtime.main.register_heartbeat", _register_heartbeat)
+    monkeypatch.setattr("assistant_runtime.main.register_streaming", _register_streaming)
+    monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr("assistant_runtime.main.setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        "lovely_assistant.main.RuntimeSettings.load_from_db",
+        "assistant_runtime.main.RuntimeSettings.load_from_db",
         AsyncMock(return_value=None),
     )
 

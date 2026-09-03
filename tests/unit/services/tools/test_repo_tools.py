@@ -4,21 +4,21 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools._repo_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._repo_tools import (
     _validate_org,
     check_repo_status,
     list_repos,
     onboard_repo,
     register_repo_tools,
 )
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE = "lovely_assistant.services.tools._repo_tools"
+MODULE = "assistant_runtime.services.tools._repo_tools"
 
 
 # ---------------------------------------------------------------------------

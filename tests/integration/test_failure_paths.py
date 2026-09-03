@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lovely_assistant.app.assistant._session_store import SessionStore
-from lovely_assistant.app.assistant.models import AssistantRequest
-from lovely_assistant.services.history.interface import HistoryService
+from assistant_runtime.app.assistant._session_store import SessionStore
+from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.services.history.interface import HistoryService
 
 
 class _FailingDatabaseService:
@@ -54,7 +54,7 @@ async def test_session_store_load_failure_propagates_error():
 @pytest.mark.asyncio
 async def test_history_service_runtime_settings_propagates_to_summarizer():
     """Runtime settings updates propagate to the active summarizer instance."""
-    from lovely_assistant.services.history.config import HistoryConfig
+    from assistant_runtime.services.history.config import HistoryConfig
 
     service = HistoryService(config=HistoryConfig(), llm_service=MagicMock())
     await service.start()

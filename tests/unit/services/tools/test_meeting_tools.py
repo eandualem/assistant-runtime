@@ -6,17 +6,17 @@ from unittest.mock import patch
 
 import pytest
 
-from lovely_assistant.services.tools._meeting_tools import (
+from assistant_runtime.services.tools._meeting_tools import (
     create_meeting_room,
     list_meeting_rooms,
     register_meeting_tools,
     send_meeting_message,
     update_meeting_state,
 )
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "lovely_assistant.services.tools._meeting_tools"
+MODULE = "assistant_runtime.services.tools._meeting_tools"
 
 
 # ---------------------------------------------------------------------------

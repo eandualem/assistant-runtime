@@ -3,10 +3,10 @@
 import pytest
 from pydantic_ai.toolsets import FunctionToolset
 
-from lovely_assistant.services.tools._registry import ToolRegistry, get_tool_invalidates
-from lovely_assistant.services.tools.config import ToolConfig
-from lovely_assistant.services.tools.exceptions import ToolValidationError
-from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from assistant_runtime.services.tools._registry import ToolRegistry, get_tool_invalidates
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.exceptions import ToolValidationError
+from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 
 @pytest.fixture

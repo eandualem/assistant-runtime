@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lovely_assistant.services.media._video_providers import VideoStatus
-from lovely_assistant.services.media.config import MediaConfig
-from lovely_assistant.services.media.exceptions import MediaError, ProviderError
-from lovely_assistant.services.media.interface import MediaService
-from lovely_assistant.services.media.models import VideoResult, VideoStatusResponse
+from assistant_runtime.services.media._video_providers import VideoStatus
+from assistant_runtime.services.media.config import MediaConfig
+from assistant_runtime.services.media.exceptions import MediaError, ProviderError
+from assistant_runtime.services.media.interface import MediaService
+from assistant_runtime.services.media.models import VideoResult, VideoStatusResponse
 
-MODULE = "lovely_assistant.services.media.interface"
+MODULE = "assistant_runtime.services.media.interface"
 
 
 @pytest.fixture

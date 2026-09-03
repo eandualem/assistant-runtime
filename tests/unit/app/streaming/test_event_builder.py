@@ -1,6 +1,6 @@
 """Tests for SSE event builder pure functions."""
 
-from lovely_assistant.app.streaming._event_builder import (
+from assistant_runtime.app.streaming._event_builder import (
     _truncate,
     make_agent_status_event,
     make_debug_agent_config_event,

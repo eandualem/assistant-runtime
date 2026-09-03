@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import socketio
 
-from lovely_assistant.app.socketio_server import _EVENT_TYPE_MAP, AssistantNamespace, create_sio
+from assistant_runtime.app.socketio_server import _EVENT_TYPE_MAP, AssistantNamespace, create_sio
 
 
 def _server_with_streaming_service(streaming_service: MagicMock) -> MagicMock:

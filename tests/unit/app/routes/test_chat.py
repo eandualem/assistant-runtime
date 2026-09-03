@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.assistant.models import AssistantResult
-from lovely_assistant.main import create_app
+from assistant_runtime.app.assistant.models import AssistantResult
+from assistant_runtime.main import create_app
 
 
 def _create_test_app(*, assistant_service: Any = None) -> Any:
-    from lovely_assistant.base.lifecycle import LifecycleManager
+    from assistant_runtime.base.lifecycle import LifecycleManager
 
     app = create_app()
     app.state.lifecycle = LifecycleManager()

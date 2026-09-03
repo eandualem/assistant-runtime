@@ -2,12 +2,12 @@
 
 import pytest
 
-from lovely_assistant.app.streaming._coordinator import EventCoordinator
-from lovely_assistant.app.streaming._event_builder import (
+from assistant_runtime.app.streaming._coordinator import EventCoordinator
+from assistant_runtime.app.streaming._event_builder import (
     make_text_delta_event,
     make_thinking_delta_event,
 )
-from lovely_assistant.app.streaming.exceptions import EventLimitError
+from assistant_runtime.app.streaming.exceptions import EventLimitError
 
 
 class TestEventCoordinatorInit:

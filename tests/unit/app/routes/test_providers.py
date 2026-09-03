@@ -11,7 +11,7 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.providers import router
+from assistant_runtime.app.routes.providers import router
 
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
@@ -227,7 +227,7 @@ class TestSetApiKey:
             mock_repo_inst.upsert = AsyncMock()
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.services.database.repositories.OAuthTokenRepository",
+                "assistant_runtime.services.database.repositories.OAuthTokenRepository",
                 mock_repo_cls,
             )
 
@@ -356,7 +356,7 @@ class TestDeleteApiKey:
             mock_repo_inst.delete = AsyncMock(return_value=True)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.services.database.repositories.OAuthTokenRepository",
+                "assistant_runtime.services.database.repositories.OAuthTokenRepository",
                 mock_repo_cls,
             )
 
@@ -401,7 +401,7 @@ class TestDeleteApiKey:
             mock_repo_inst.delete = AsyncMock(return_value=False)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.services.database.repositories.OAuthTokenRepository",
+                "assistant_runtime.services.database.repositories.OAuthTokenRepository",
                 mock_repo_cls,
             )
 

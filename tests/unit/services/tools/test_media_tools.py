@@ -6,11 +6,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.services.media.exceptions import ContentPolicyError, MediaError, ProviderError
-from lovely_assistant.services.media.models import MediaResult
-from lovely_assistant.services.tools._media_tools import register_media_tools
-from lovely_assistant.services.tools._registry import ToolRegistry
-from lovely_assistant.services.tools.config import ToolConfig
+from assistant_runtime.services.media.exceptions import (
+    ContentPolicyError,
+    MediaError,
+    ProviderError,
+)
+from assistant_runtime.services.media.models import MediaResult
+from assistant_runtime.services.tools._media_tools import register_media_tools
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures
