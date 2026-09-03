@@ -69,7 +69,7 @@ def _mock_artifacts() -> Any:
                 "persona": "You are Jarvis.",
                 "communication_protocol": "Envelope tags may be present.",
                 "ecosystem": "Lovely agents are available.",
-                "soul": "Increase Elias's leverage.",
+                "soul": "Increase the operator's leverage.",
             }
         ),
     ):
@@ -157,7 +157,9 @@ class TestProcessMessage:
             segments=[{"kind": "text", "text": "First answer"}],
             usage={"input_tokens": 1, "output_tokens": 2},
         )
-        history_service.prepare_history = AsyncMock(side_effect=lambda history, ctx: (history, False))
+        history_service.prepare_history = AsyncMock(
+            side_effect=lambda history, ctx: (history, False)
+        )
 
         await service.process_message(
             _request(
@@ -178,7 +180,7 @@ class TestProcessMessage:
         await service.start()
 
         async def _run(*_args: Any, **_kwargs: Any) -> MagicMock:
-            record_current_telegram_chat_binding("897573812")
+            record_current_telegram_chat_binding("123456789")
             return _run_result("Telegram sent")
 
         llm_service.build_agent.return_value.run = AsyncMock(side_effect=_run)
@@ -186,7 +188,7 @@ class TestProcessMessage:
         await service.process_message(_request(message_id="user-1"))
 
         ctx = service.get_session_store().get_context("sess-1")
-        assert ctx["telegram_chat_id"] == "897573812"
+        assert ctx["telegram_chat_id"] == "123456789"
         assert ctx["telegram_bound_at"] is not None
 
     async def test_agent_failures_raise_agent_run_error(

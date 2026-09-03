@@ -228,7 +228,7 @@ def create_request_trace(
             )
         obs.update_trace(
             session_id=str(session_id),
-            user_id="elias",
+            user_id=os.environ.get("LANGFUSE_USER_ID", "operator"),
             tags=trace_tags,
             input=input_message,
             metadata=trace_metadata,

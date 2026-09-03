@@ -8,23 +8,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from lovely_assistant.services.database.interface import DatabaseService
+from lovely_assistant.services.database.deps import get_database_service
 from lovely_assistant.services.database.repositories import InboxRepository
 
 router = APIRouter(prefix="/inbox", tags=["inbox"])
-
-
-# ---------------------------------------------------------------------------
-# Dependency
-# ---------------------------------------------------------------------------
-
-
-async def _get_db(request: Request) -> DatabaseService:
-    """Retrieve DatabaseService from app state (independent of assistant module)."""
-    db: DatabaseService | None = getattr(request.app.state, "database_service", None)
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return db
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +59,7 @@ def _row_to_response(row) -> dict:
 @router.post("", status_code=201)
 async def create_inbox_item(body: InboxItemCreate, request: Request) -> dict:
     """Create a new inbox item from an agent."""
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -101,7 +88,7 @@ async def list_inbox_items(
     offset: int = Query(0, ge=0),
 ) -> list[dict]:
     """List inbox items. Filter by surfaced status if provided."""
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -121,7 +108,7 @@ async def list_inbox_items(
 @router.patch("/{item_id}/surfaced")
 async def mark_item_surfaced(item_id: str, request: Request) -> dict:
     """Mark an inbox item as surfaced."""
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:

@@ -1,6 +1,6 @@
 # Lovely Assistant
 
-AI assistant backend for the **Lovely Console** — Elias's agent operations dashboard. Receives chat messages, streams responses via Socket.IO, and routes tool calls to backend systems (tmux sessions, agent state, GitHub issues, backbone API, etc.).
+AI assistant backend for the **Lovely Console** — an agent operations dashboard. Receives chat messages, streams responses via Socket.IO, and routes tool calls to backend systems (tmux sessions, agent state, GitHub issues, backbone API, etc.).
 
 Built with **FastAPI** + **Pydantic AI** + **Socket.IO**. Follows the backend module pattern — every capability is a module with the same 5-file skeleton (`config.py`, `deps.py`, `factory.py`, `interface.py`, `exceptions.py`).
 
@@ -173,7 +173,7 @@ LUMAAI_API_KEY=...
 
 # Telegram (optional — for cross-channel messaging)
 TELEGRAM_TOKEN=...
-TELEGRAM_CHAT_ID=897573812
+TELEGRAM_CHAT_ID=...
 
 # Langfuse tracing (optional)
 LANGFUSE_SECRET_KEY=sk-lf-...
@@ -265,7 +265,7 @@ Jarvis's system prompt is assembled from five first-class artifacts with distinc
 
 ## Port
 
-Default: **7100** (WF org range: 7100–7199). Override with `PORT` env var:
+Default: **7100**. Override with `PORT` env var:
 
 ```bash
 PORT=7101 make dev

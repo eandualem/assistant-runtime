@@ -247,7 +247,9 @@ async def _create_note(
     return {"filename": filename, "path": rel_path, "title": title, "success": True}
 
 
-async def _list_notes(tag: str = "", limit: int = 20, folder: str = "", **_kwargs: Any) -> dict[str, Any]:
+async def _list_notes(
+    tag: str = "", limit: int = 20, folder: str = "", **_kwargs: Any
+) -> dict[str, Any]:
     notes_dir = _ensure_notes_dir()
 
     # Search scope
@@ -307,7 +309,9 @@ async def _read_note(filename: str = "", **_kwargs: Any) -> dict[str, Any]:
     return {**parsed, "success": True}
 
 
-async def _search_notes(query: str = "", limit: int = 20, folder: str = "", **_kwargs: Any) -> dict[str, Any]:
+async def _search_notes(
+    query: str = "", limit: int = 20, folder: str = "", **_kwargs: Any
+) -> dict[str, Any]:
     if not query:
         return {"error": "Query is required for search", "success": False}
 
@@ -399,7 +403,13 @@ async def _update_note(
     await asyncio.to_thread(path.write_text, note_content, "utf-8")
 
     logger.info("Updated note", filename=filename)
-    return {"filename": parsed["filename"], "path": _relative_path(path), "title": parsed["title"], "updated": True, "success": True}
+    return {
+        "filename": parsed["filename"],
+        "path": _relative_path(path),
+        "title": parsed["title"],
+        "updated": True,
+        "success": True,
+    }
 
 
 async def _delete_note(filename: str = "", **_kwargs: Any) -> dict[str, Any]:
@@ -436,7 +446,12 @@ async def _create_folder(folder: str = "", **_kwargs: Any) -> dict[str, Any]:
     target = notes_dir / folder
 
     if target.exists():
-        return {"folder": folder, "created": False, "message": "Folder already exists", "success": True}
+        return {
+            "folder": folder,
+            "created": False,
+            "message": "Folder already exists",
+            "success": True,
+        }
 
     await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
 
@@ -476,7 +491,10 @@ async def _move_note(filename: str = "", folder: str = "", **_kwargs: Any) -> di
 
     dest = dest_dir / src.name
     if dest.exists():
-        return {"error": f"A note named '{src.name}' already exists in '{folder}'", "success": False}
+        return {
+            "error": f"A note named '{src.name}' already exists in '{folder}'",
+            "success": False,
+        }
 
     await asyncio.to_thread(shutil.move, str(src), str(dest))
 
@@ -501,7 +519,7 @@ def register_notes_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="manage_notes",
             description=(
-                "Manage Elias's personal notes. Supports create, list, read, search, "
+                "Manage the user's personal notes. Supports create, list, read, search, "
                 "update, delete, create_folder, and move_note operations on markdown notes "
                 "with YAML frontmatter. Notes are stored as files in ~/notes/ and can be "
                 "organized into subdirectories (folders)."

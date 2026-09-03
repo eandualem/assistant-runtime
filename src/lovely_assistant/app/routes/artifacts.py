@@ -8,23 +8,10 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from lovely_assistant.services.database.interface import DatabaseService
+from lovely_assistant.services.database.deps import get_database_service
 from lovely_assistant.services.database.repositories import ArtifactRepository
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
-
-
-# ---------------------------------------------------------------------------
-# Dependency
-# ---------------------------------------------------------------------------
-
-
-async def _get_db(request: Request) -> DatabaseService:
-    """Retrieve DatabaseService from app state."""
-    db: DatabaseService | None = getattr(request.app.state, "database_service", None)
-    if db is None:
-        raise HTTPException(status_code=503, detail="Database not available")
-    return db
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +95,7 @@ def _build_mutation_response(
 @router.get("")
 async def list_artifacts(request: Request) -> list[dict]:
     """List all active artifacts."""
-    db = await _get_db(request)
+    db = get_database_service(request)
     from lovely_assistant.app.assistant._prompt_builder import artifact_sort_key
 
     try:
@@ -128,7 +115,7 @@ async def list_artifacts(request: Request) -> list[dict]:
 async def get_artifact(name: str, request: Request) -> dict:
     """Get the active version of an artifact by name."""
     _ensure_known_artifact_name(name)
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -152,7 +139,7 @@ async def get_artifact_history(
 ) -> list[dict]:
     """Get version history for an artifact."""
     _ensure_known_artifact_name(name)
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -170,7 +157,7 @@ async def get_artifact_history(
 async def propose_artifact(name: str, body: ProposeRequest, request: Request) -> dict:
     """Propose a new version of an artifact (inactive until approved)."""
     _ensure_known_artifact_name(name)
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -195,7 +182,7 @@ async def propose_artifact(name: str, body: ProposeRequest, request: Request) ->
 async def approve_artifact(name: str, version: int, request: Request) -> dict:
     """Approve (activate) a specific version of an artifact."""
     _ensure_known_artifact_name(name)
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -222,7 +209,7 @@ async def approve_artifact(name: str, version: int, request: Request) -> dict:
 async def rollback_artifact(name: str, version: int, request: Request) -> dict:
     """Rollback to a previous version of an artifact."""
     _ensure_known_artifact_name(name)
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -252,7 +239,7 @@ async def artifact_action(name: str, body: ArtifactActionRequest, request: Reque
     Dispatches approve, rollback, and propose actions for a named artifact.
     """
     _ensure_known_artifact_name(name)
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -313,7 +300,7 @@ async def artifact_action(name: str, body: ArtifactActionRequest, request: Reque
 async def delete_artifact(name: str, request: Request) -> dict:
     """Delete all versions of an artifact by name."""
     _ensure_known_artifact_name(name)
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:
@@ -332,7 +319,7 @@ async def delete_artifact(name: str, request: Request) -> dict:
 @router.patch("/scratchpad")
 async def update_scratchpad(body: ScratchpadUpdateRequest, request: Request) -> dict:
     """Direct scratchpad update (auto-approved)."""
-    db = await _get_db(request)
+    db = get_database_service(request)
 
     try:
         async with db.session_context() as session:

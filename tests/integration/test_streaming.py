@@ -12,7 +12,9 @@ from lovely_assistant.app.assistant.models import AssistantRequest
 from .conftest import _make_mock_agent_result, _make_mock_agent_run
 
 
-def _request(*, message_id: str, session_id: str, parent_id: str | None, content: str) -> AssistantRequest:
+def _request(
+    *, message_id: str, session_id: str, parent_id: str | None, content: str
+) -> AssistantRequest:
     return AssistantRequest(
         id=message_id,
         session_id=session_id,

@@ -231,12 +231,14 @@ class LlmService:
                         raw = p.api_key.get_secret_value()
                         api_key_preview = f"...{raw[-4:]}" if len(raw) >= 4 else "***"
                         break
-            result.append({
-                "provider": provider_name,
-                "configured": has_key,
-                "source": source,
-                "api_key_preview": api_key_preview,
-            })
+            result.append(
+                {
+                    "provider": provider_name,
+                    "configured": has_key,
+                    "source": source,
+                    "api_key_preview": api_key_preview,
+                }
+            )
         return result
 
     async def _load_db_provider_keys(self) -> list[ProviderConfig]:

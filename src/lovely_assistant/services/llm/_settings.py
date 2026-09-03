@@ -1,6 +1,6 @@
 """Internal model settings construction for Pydantic AI agents.
 
-Translated from arclio-assistant's agent_factory.py (build_model_settings)
+Translated from an earlier assistant implementation's agent_factory.py (build_model_settings)
 and agent_config.py (validation, constants).
 
 Not part of the public module API — imported only by interface.py.

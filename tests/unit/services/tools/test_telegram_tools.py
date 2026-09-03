@@ -30,7 +30,7 @@ class TestRespondTelegram:
 
     async def test_missing_token_returns_auth_error(self):
         with patch.dict("os.environ", {}, clear=True):
-            result = await respond_telegram("Hello Elias")
+            result = await respond_telegram("Hello there")
         assert result["success"] is False
         assert result["error_code"] == "TELEGRAM_AUTH_MISSING"
         assert "TELEGRAM_TOKEN" in result["error"]
@@ -44,7 +44,11 @@ class TestRespondTelegram:
         }
 
         with (
-            patch.dict("os.environ", {"TELEGRAM_TOKEN": "test-token"}, clear=True),
+            patch.dict(
+                "os.environ",
+                {"TELEGRAM_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "123456789"},
+                clear=True,
+            ),
             patch(
                 "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
@@ -55,7 +59,7 @@ class TestRespondTelegram:
             mock_client.post = AsyncMock(return_value=mock_response)
             mock_client_cls.return_value = mock_client
 
-            result = await respond_telegram("Hello Elias")
+            result = await respond_telegram("Hello there")
 
         assert result["success"] is True
         assert result["message_id"] == 42
@@ -69,7 +73,11 @@ class TestRespondTelegram:
         }
 
         with (
-            patch.dict("os.environ", {"TELEGRAM_TOKEN": "test-token"}, clear=True),
+            patch.dict(
+                "os.environ",
+                {"TELEGRAM_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "123456789"},
+                clear=True,
+            ),
             patch(
                 "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
@@ -81,34 +89,18 @@ class TestRespondTelegram:
             mock_client_cls.return_value = mock_client
 
             with assistant_request_context("sess-jarvis"):
-                result = await respond_telegram("Hello Elias")
+                result = await respond_telegram("Hello there")
 
         assert result["success"] is True
         assert result["reply_session_id"] == "sess-jarvis"
-        assert result["chat_id"] == "897573812"
+        assert result["chat_id"] == "123456789"
 
-    async def test_success_uses_default_chat_id(self):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"ok": True, "result": {"message_id": 1}}
+    async def test_missing_chat_id_returns_error(self):
+        with patch.dict("os.environ", {"TELEGRAM_TOKEN": "test-token"}, clear=True):
+            result = await respond_telegram("Hello")
 
-        with (
-            patch.dict("os.environ", {"TELEGRAM_TOKEN": "test-token"}, clear=True),
-            patch(
-                "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
-            ) as mock_client_cls,
-        ):
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_client_cls.return_value = mock_client
-
-            await respond_telegram("Hello")
-
-            # Verify the call used the default chat ID
-            call_kwargs = mock_client.post.call_args
-            assert call_kwargs[1]["json"]["chat_id"] == "897573812"
+        assert result["success"] is False
+        assert result["error_code"] == "TELEGRAM_CHAT_MISSING"
 
     async def test_success_uses_custom_chat_id(self):
         mock_response = MagicMock()
@@ -145,7 +137,11 @@ class TestRespondTelegram:
         }
 
         with (
-            patch.dict("os.environ", {"TELEGRAM_TOKEN": "test-token"}, clear=True),
+            patch.dict(
+                "os.environ",
+                {"TELEGRAM_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "123456789"},
+                clear=True,
+            ),
             patch(
                 "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
@@ -165,7 +161,11 @@ class TestRespondTelegram:
 
     async def test_timeout_returns_timeout_error(self):
         with (
-            patch.dict("os.environ", {"TELEGRAM_TOKEN": "test-token"}, clear=True),
+            patch.dict(
+                "os.environ",
+                {"TELEGRAM_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "123456789"},
+                clear=True,
+            ),
             patch(
                 "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
@@ -187,7 +187,11 @@ class TestRespondTelegram:
         mock_response.json.return_value = {"ok": True, "result": {"message_id": 1}}
 
         with (
-            patch.dict("os.environ", {"TELEGRAM_TOKEN": "test-token"}, clear=True),
+            patch.dict(
+                "os.environ",
+                {"TELEGRAM_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "123456789"},
+                clear=True,
+            ),
             patch(
                 "lovely_assistant.services.tools._telegram_tools.httpx.AsyncClient"
             ) as mock_client_cls,
@@ -198,10 +202,10 @@ class TestRespondTelegram:
             mock_client.post = AsyncMock(return_value=mock_response)
             mock_client_cls.return_value = mock_client
 
-            await respond_telegram("  Hello Elias  ")
+            await respond_telegram("  Hello there  ")
 
             call_kwargs = mock_client.post.call_args
-            assert call_kwargs[1]["json"]["text"] == "Hello Elias"
+            assert call_kwargs[1]["json"]["text"] == "Hello there"
 
 
 class TestRegisterTelegramTools:

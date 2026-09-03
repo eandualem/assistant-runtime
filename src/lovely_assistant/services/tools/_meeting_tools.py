@@ -22,7 +22,7 @@ async def create_meeting_room(
     title: str,
     participants: list[str],
     description: str = "",
-    moderator: str = "elias",
+    moderator: str = "operator",
 ) -> dict[str, Any]:
     """Create a new meeting room for structured multi-agent discussions."""
     if not title or not title.strip():
@@ -173,7 +173,7 @@ def register_meeting_tools(registry: ToolRegistry) -> None:
             description=(
                 "Create a new meeting room for structured multi-agent discussions. "
                 "Specify a title, list of participant session names, optional description, "
-                "and moderator (defaults to 'elias')."
+                "and moderator (defaults to 'operator')."
             ),
             parameters_schema={
                 "type": "object",
@@ -194,8 +194,8 @@ def register_meeting_tools(registry: ToolRegistry) -> None:
                     },
                     "moderator": {
                         "type": "string",
-                        "description": "Moderator name (defaults to 'elias')",
-                        "default": "elias",
+                        "description": "Moderator name (defaults to 'operator')",
+                        "default": "operator",
                     },
                 },
                 "required": ["title", "participants"],

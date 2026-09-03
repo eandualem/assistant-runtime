@@ -248,7 +248,9 @@ class MessageRepository:
             fields["usage"] = usage
         if not fields:
             return
-        await self._session.execute(update(MessageORM).where(MessageORM.id == message_id).values(**fields))
+        await self._session.execute(
+            update(MessageORM).where(MessageORM.id == message_id).values(**fields)
+        )
         await self._session.flush()
 
 
