@@ -61,6 +61,13 @@ class TestStripScreenshotFromToolResult:
         assert result["success"] is True
         assert "look_at_screen" in result["data"]["screenshot"]
 
+    def test_strips_screenshots_inside_lists(self):
+        result = strip_screenshot_from_tool_result(
+            {"steps": [{"screenshot": VALID_DATA_URI}, {"status": "ok"}]}
+        )
+        assert "look_at_screen" in result["steps"][0]["screenshot"]
+        assert result["steps"][1] == {"status": "ok"}
+
     def test_preserves_non_screenshot_keys(self):
         result = strip_screenshot_from_tool_result(
             {

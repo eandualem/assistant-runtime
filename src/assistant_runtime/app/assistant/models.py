@@ -163,16 +163,16 @@ def strip_screenshot_from_tool_result(tool_result: Any) -> Any:
     The screenshot goes to the request context for ``look_at_screen``; the
     base64 blob must not be sent to the model as tool output.
     """
+    if isinstance(tool_result, list):
+        return [strip_screenshot_from_tool_result(item) for item in tool_result]
     if not isinstance(tool_result, dict):
         return tool_result
     cleaned = {}
     for key, value in tool_result.items():
         if key in SCREENSHOT_KEYS and isinstance(value, str) and value.startswith("data:image/"):
             cleaned[key] = "[screenshot captured — use look_at_screen to inspect]"
-        elif isinstance(value, dict):
-            cleaned[key] = strip_screenshot_from_tool_result(value)
         else:
-            cleaned[key] = value
+            cleaned[key] = strip_screenshot_from_tool_result(value)
     return cleaned
 
 
