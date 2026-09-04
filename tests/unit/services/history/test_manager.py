@@ -360,7 +360,7 @@ class TestPrepareHistory:
         """Continuation resolves all dangling EXCEPT the excluded pending tool."""
         history = [
             _make_user_msg("start"),
-            _make_tool_call_msg("ui_navigate"),  # Dangling — will be resolved by frontend
+            _make_tool_call_msg("ui_navigate"),  # Dangling — will be resolved by host
         ]
         result, _ = await manager.prepare_history(
             history,

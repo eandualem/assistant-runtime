@@ -73,7 +73,7 @@ class ToolService:
         return {
             "healthy": True,
             "backend_tools": self._registry.backend_tool_count(),
-            "frontend_tools": self._registry.frontend_tool_count(),
+            "host_tools": self._registry.host_tool_count(),
         }
 
     def build_toolset(self, host_context: dict[str, Any] | None = None) -> list:

@@ -27,8 +27,8 @@ class ToolRegistry:
         self._config = config
         self._backend_handlers: dict[str, Callable] = {}
         self._backend_definitions: dict[str, ToolDefinition] = {}
-        self._frontend_definitions: list[ToolDefinition] = []
-        self._frontend_toolset: Any | None = None
+        self._host_definitions: list[ToolDefinition] = []
+        self._host_toolset: Any | None = None
         self._host_tool_names: frozenset[str] = frozenset()
         self._available_tools_cache: dict[str | None, ToolSet] = {}
         self._toolset_cache: dict[str | None, list[Any]] = {}
@@ -58,8 +58,8 @@ class ToolRegistry:
         for name in schemas:
             if name in self._backend_definitions:
                 raise ToolValidationError(f"Host tool '{name}' clashes with a backend tool")
-        self._frontend_definitions = get_host_definitions(schemas)
-        self._frontend_toolset = build_host_toolset(schemas)
+        self._host_definitions = get_host_definitions(schemas)
+        self._host_toolset = build_host_toolset(schemas)
         self._host_tool_names = frozenset(schemas)
         self._available_tools_cache.clear()
         self._toolset_cache.clear()
@@ -116,7 +116,7 @@ class ToolRegistry:
 
         Returns list of AbstractToolset instances:
         - FunctionToolset for backend tools (with real handlers, wrapped with safety net)
-        - ExternalToolset for frontend tools (deferred execution via DeferredToolRequests)
+        - ExternalToolset for host tools (deferred execution via DeferredToolRequests)
         """
         cache_key = self._cache_key(host_context)
         cached = self._toolset_cache.get(cache_key)
@@ -139,13 +139,13 @@ class ToolRegistry:
             toolsets.append(func_toolset)
 
         # Host tools — always appended, bypass page scoping
-        if self._frontend_toolset is not None:
-            toolsets.append(self._frontend_toolset)
+        if self._host_toolset is not None:
+            toolsets.append(self._host_toolset)
 
         logger.debug(
             "[TOOLS] Built toolsets",
             backend=len(available.backend_tools),
-            frontend=len(self._frontend_definitions),
+            host=len(self._host_definitions),
             toolsets=len(toolsets),
         )
         self._toolset_cache[cache_key] = list(toolsets)
@@ -155,7 +155,7 @@ class ToolRegistry:
         """Build toolsets for subagent execution — backend tools only, excluding run_subagent.
 
         Returns a list with a single FunctionToolset containing all backend tools
-        except run_subagent (prevents recursion). No frontend tools — subagents
+        except run_subagent (prevents recursion). No host tools — subagents
         don't interact with the UI.
         """
         toolsets: list = []
@@ -199,9 +199,9 @@ class ToolRegistry:
         """Number of registered backend tools."""
         return len(self._backend_definitions)
 
-    def frontend_tool_count(self) -> int:
-        """Number of registered frontend tools."""
-        return len(self._frontend_definitions)
+    def host_tool_count(self) -> int:
+        """Number of registered host tools."""
+        return len(self._host_definitions)
 
     def _resolve_available_tools(self, host_context: dict[str, Any] | None = None) -> ToolSet:
         """Determine which backend tools are available for the host's current page.
@@ -235,7 +235,7 @@ class ToolRegistry:
 
         toolset = ToolSet(
             backend_tools=backend,
-            frontend_tools=self._frontend_definitions,
+            host_tools=self._host_definitions,
             page=page_name,
             filtered_out_count=total_before - total,
         )

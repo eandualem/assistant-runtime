@@ -184,7 +184,7 @@ class TestStreamingService:
         assert path[-1]["content"] == "Hello!"
 
     @pytest.mark.asyncio
-    async def test_deferred_frontend_tool_uses_same_assistant_message_id(self) -> None:
+    async def test_deferred_host_tool_uses_same_assistant_message_id(self) -> None:
         deferred = DeferredToolRequests(
             calls=[
                 ToolCallPart(
@@ -220,7 +220,7 @@ class TestStreamingService:
         assert final["pending_tool_call"]["call_id"] == "call-nav-1"
 
     @pytest.mark.asyncio
-    async def test_deferred_frontend_tool_prefers_history_call_id_when_output_drifts(self) -> None:
+    async def test_deferred_host_tool_prefers_history_call_id_when_output_drifts(self) -> None:
         deferred = DeferredToolRequests(
             calls=[
                 ToolCallPart(
@@ -343,7 +343,7 @@ class TestStreamingService:
         assert sessions.get_context("sess-1").get("pending_tool_call_id") is None
 
     @pytest.mark.asyncio
-    async def test_new_message_resolves_stale_pending_frontend_tool_before_new_turn(self) -> None:
+    async def test_new_message_resolves_stale_pending_host_tool_before_new_turn(self) -> None:
         sessions = SessionStore()
         await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
         await sessions.register_assistant_message(
@@ -614,7 +614,7 @@ class TestStreamingService:
 
 class TestMultiToolContinuation:
     """Integration tests for continuations when the assistant calls both
-    backend and frontend tools in the same turn.
+    backend and host tools in the same turn.
 
     These tests verify that the flat message reconstruction
     (assistant_record_to_flat_messages) produces a single ModelResponse
@@ -624,14 +624,14 @@ class TestMultiToolContinuation:
     """
 
     @pytest.mark.asyncio
-    async def test_backend_plus_frontend_continuation_succeeds(self) -> None:
-        """1 backend tool (resolved) + 1 frontend tool (pending) → continuation succeeds."""
+    async def test_backend_plus_host_continuation_succeeds(self) -> None:
+        """1 backend tool (resolved) + 1 host tool (pending) → continuation succeeds."""
         sessions = SessionStore()
         await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
 
         # Assistant message with TWO tool groups:
         # 1. Backend tool (get_agent_status) — resolved, has output
-        # 2. Frontend tool (ui_send_event) — pending, no output
+        # 2. Host tool (ui_send_event) — pending, no output
         await sessions.register_assistant_message(
             "sess-1",
             message_id="assistant-1",
@@ -655,10 +655,10 @@ class TestMultiToolContinuation:
                     "kind": "tool_group",
                     "tools": [
                         {
-                            "id": "call-frontend-1",
+                            "id": "call-host-1",
                             "name": "ui_send_event",
                             "input": {"event": "REFRESH", "data": {}},
-                            # no "output" — pending frontend tool
+                            # no "output" — pending host tool
                         }
                     ],
                 },
@@ -667,12 +667,12 @@ class TestMultiToolContinuation:
         )
 
         ctx = sessions.get_context("sess-1")
-        ctx["pending_tool_call_id"] = "call-frontend-1"
+        ctx["pending_tool_call_id"] = "call-host-1"
         ctx["pending_tool_name"] = "ui_send_event"
         ctx["pending_assistant_message_id"] = "assistant-1"
 
         # Build what agent.iter would return after a successful continuation:
-        # The flat history + tool return for the frontend tool + LLM's final response
+        # The flat history + tool return for the host tool + LLM's final response
         from assistant_runtime.app.assistant._serialization import assistant_record_to_flat_messages
 
         flat_msgs = assistant_record_to_flat_messages(ctx["message_index"]["assistant-1"])
@@ -681,7 +681,7 @@ class TestMultiToolContinuation:
                 ToolReturnPart(
                     tool_name="ui_send_event",
                     content={"ok": True},
-                    tool_call_id="call-frontend-1",
+                    tool_call_id="call-host-1",
                     timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
                 )
             ],
@@ -710,7 +710,7 @@ class TestMultiToolContinuation:
                     message_id="cont-1",
                     parent_id="assistant-1",
                     content="",
-                    tool_call_id="call-frontend-1",
+                    tool_call_id="call-host-1",
                     tool_result={"ok": True},
                 )
             )
@@ -726,7 +726,7 @@ class TestMultiToolContinuation:
         iter_call = agent.iter.call_args
         message_history = iter_call.kwargs.get("message_history") or iter_call.args[1]
 
-        # The LAST ModelResponse should contain ONLY the pending frontend tool.
+        # The LAST ModelResponse should contain ONLY the pending host tool.
         # Completed backend tools go in an earlier ModelResponse + ModelRequest.
         last_model_response = None
         for msg in reversed(message_history):
@@ -740,25 +740,25 @@ class TestMultiToolContinuation:
             for part in last_model_response.parts
             if isinstance(part, ToolCallPart)
         }
-        assert tool_call_ids == {"call-frontend-1"}, (
-            f"Expected only the pending frontend tool in last ModelResponse, got: {tool_call_ids}"
+        assert tool_call_ids == {"call-host-1"}, (
+            f"Expected only the pending host tool in last ModelResponse, got: {tool_call_ids}"
         )
 
         # Verify deferred_tool_results was passed correctly
         deferred = iter_call.kwargs.get("deferred_tool_results")
         assert deferred is not None
-        assert "call-frontend-1" in deferred.calls
+        assert "call-host-1" in deferred.calls
 
         # Verify pending state was cleared
         assert sessions.get_context("sess-1").get("pending_tool_call_id") is None
 
     @pytest.mark.asyncio
-    async def test_two_backend_plus_frontend_continuation_succeeds(self) -> None:
-        """2 backend tools (resolved) + 1 frontend tool (pending) → continuation succeeds."""
+    async def test_two_backend_plus_host_continuation_succeeds(self) -> None:
+        """2 backend tools (resolved) + 1 host tool (pending) → continuation succeeds."""
         sessions = SessionStore()
         await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
 
-        # Three tool calls: 2 backend (resolved) + 1 frontend (pending)
+        # Three tool calls: 2 backend (resolved) + 1 host (pending)
         await sessions.register_assistant_message(
             "sess-1",
             message_id="assistant-1",
@@ -791,7 +791,7 @@ class TestMultiToolContinuation:
                     "kind": "tool_group",
                     "tools": [
                         {
-                            "id": "call-frontend-1",
+                            "id": "call-host-1",
                             "name": "navigate",
                             "input": {"page": "agents"},
                         }
@@ -802,7 +802,7 @@ class TestMultiToolContinuation:
         )
 
         ctx = sessions.get_context("sess-1")
-        ctx["pending_tool_call_id"] = "call-frontend-1"
+        ctx["pending_tool_call_id"] = "call-host-1"
         ctx["pending_tool_name"] = "navigate"
         ctx["pending_assistant_message_id"] = "assistant-1"
 
@@ -814,7 +814,7 @@ class TestMultiToolContinuation:
                 ToolReturnPart(
                     tool_name="navigate",
                     content={"page": "agents", "ok": True},
-                    tool_call_id="call-frontend-1",
+                    tool_call_id="call-host-1",
                     timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
                 )
             ],
@@ -843,7 +843,7 @@ class TestMultiToolContinuation:
                     message_id="cont-1",
                     parent_id="assistant-1",
                     content="",
-                    tool_call_id="call-frontend-1",
+                    tool_call_id="call-host-1",
                     tool_result={"page": "agents", "ok": True},
                 )
             )
@@ -853,7 +853,7 @@ class TestMultiToolContinuation:
         assert final["message_id"] == "assistant-1"
         assert not final.get("error")
 
-        # The LAST ModelResponse should contain ONLY the pending frontend tool
+        # The LAST ModelResponse should contain ONLY the pending host tool
         agent = service._assistant_service.prepare_agent_context.return_value.agent
         iter_call = agent.iter.call_args
         message_history = iter_call.kwargs.get("message_history") or iter_call.args[1]
@@ -870,8 +870,8 @@ class TestMultiToolContinuation:
             for part in last_model_response.parts
             if isinstance(part, ToolCallPart)
         }
-        assert tool_call_ids == {"call-frontend-1"}, (
-            f"Expected only the pending frontend tool in last ModelResponse, got: {tool_call_ids}"
+        assert tool_call_ids == {"call-host-1"}, (
+            f"Expected only the pending host tool in last ModelResponse, got: {tool_call_ids}"
         )
 
         # Verify the ModelRequest before it has ToolReturnParts for ONLY the resolved tools
@@ -915,7 +915,7 @@ class TestMultiToolContinuation:
                 {
                     "kind": "tool_group",
                     "tools": [
-                        {"id": "call-B", "name": "frontend_tool", "input": {}},
+                        {"id": "call-B", "name": "host_tool", "input": {}},
                     ],
                 },
             ],
@@ -969,7 +969,7 @@ class TestNewMessagesMergeResilience:
         """
         sessions = SessionStore()
         await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
-        # First assistant turn has a frontend tool call (no output = pending)
+        # First assistant turn has a host tool call (no output = pending)
         await sessions.register_assistant_message(
             "sess-1",
             message_id="assistant-1",
@@ -984,7 +984,7 @@ class TestNewMessagesMergeResilience:
             ],
             usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
         )
-        # Mark the frontend tool as abandoned (user sends new message instead)
+        # Mark the host tool as abandoned (user sends new message instead)
         ctx = sessions.get_context("sess-1")
         ctx.pop("pending_tool_call_id", None)
         ctx.pop("pending_tool_name", None)
