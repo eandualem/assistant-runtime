@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from assistant_runtime.services.tools.providers.backbone._client import backbone_request
 
 MODULE = "assistant_runtime.services.tools.providers.backbone._client"
@@ -222,6 +224,38 @@ class TestCredentialsOverCleartext:
         assert _credentials_allowed("http://127.0.0.1:7120") is True
         assert _credentials_allowed("http://localhost:7120") is True
         assert _credentials_allowed("http://backbone.internal:7120") is False
+
+    @pytest.mark.parametrize("url", ["https://backbone.example.com", "http://127.0.0.1:7120"])
+    async def test_key_is_sent_over_tls_or_to_localhost(self, monkeypatch, url):
+        monkeypatch.setenv("BACKBONE_URL", url)
+        monkeypatch.setenv("BACKBONE_API_KEY", "secret")
+        captured = {}
+
+        class _Response:
+            status_code = 200
+
+            def json(self):
+                return {"ok": True}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def request(self, method, url, headers=None, json=None, params=None):
+                captured["headers"] = headers
+                return _Response()
+
+        monkeypatch.setattr(
+            "assistant_runtime.services.tools.providers.backbone._client.httpx.AsyncClient", _Client
+        )
+        await backbone_request("GET", "/api/agents")
+        assert captured["headers"]["Authorization"] == "Bearer secret"
 
     async def test_key_is_withheld_from_a_remote_cleartext_url(self, monkeypatch):
         monkeypatch.setenv("BACKBONE_URL", "http://backbone.internal:7120")
