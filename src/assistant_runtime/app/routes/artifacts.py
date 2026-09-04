@@ -40,7 +40,7 @@ class ArtifactActionRequest(BaseModel):
 
 def _ensure_known_artifact_name(name: str) -> None:
     """Reject unknown artifact names at the route boundary."""
-    from assistant_runtime.app.assistant._prompt_builder import (
+    from assistant_runtime.artifacts import (
         artifact_role_boundaries_text,
         is_known_artifact_name,
         known_artifact_names_text,
@@ -96,7 +96,7 @@ def _build_mutation_response(
 async def list_artifacts(request: Request) -> list[dict]:
     """List all active artifacts."""
     db = get_database_service(request)
-    from assistant_runtime.app.assistant._prompt_builder import artifact_sort_key
+    from assistant_runtime.artifacts import artifact_sort_key
 
     try:
         async with db.session_context() as session:

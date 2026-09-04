@@ -12,7 +12,7 @@ from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
 
 def _unknown_artifact_error(name: str) -> dict[str, Any]:
     """Build a consistent unknown-artifact error payload."""
-    from assistant_runtime.app.assistant._prompt_builder import (
+    from assistant_runtime.artifacts import (
         artifact_role_boundaries_text,
         known_artifact_names_text,
     )
@@ -73,7 +73,7 @@ async def _list_artifacts(
     **_kwargs: Any,
 ) -> dict[str, Any]:
     """List all active artifacts with versions and sizes."""
-    from assistant_runtime.app.assistant._prompt_builder import artifact_sort_key
+    from assistant_runtime.artifacts import artifact_sort_key
     from assistant_runtime.services.database.repositories import ArtifactRepository
 
     async with database_service.session_context() as session:
@@ -105,7 +105,7 @@ async def _view_artifact(
     """View the active content of an artifact."""
     if not name:
         return {"error": "Name is required for view", "success": False}
-    from assistant_runtime.app.assistant._prompt_builder import is_known_artifact_name
+    from assistant_runtime.artifacts import is_known_artifact_name
 
     if not is_known_artifact_name(name):
         return _unknown_artifact_error(name)
@@ -138,7 +138,7 @@ async def _propose_edit(
     """Propose a new version of an artifact (requires approval to activate)."""
     if not name:
         return {"error": "Name is required for propose_edit", "success": False}
-    from assistant_runtime.app.assistant._prompt_builder import is_known_artifact_name
+    from assistant_runtime.artifacts import is_known_artifact_name
 
     if not is_known_artifact_name(name):
         return _unknown_artifact_error(name)
@@ -195,7 +195,7 @@ async def _approve_artifact(
     """Activate a specific version of an artifact."""
     if not name:
         return {"error": "Name is required for approve", "success": False}
-    from assistant_runtime.app.assistant._prompt_builder import is_known_artifact_name
+    from assistant_runtime.artifacts import is_known_artifact_name
 
     if not is_known_artifact_name(name):
         return _unknown_artifact_error(name)
@@ -232,7 +232,7 @@ async def _artifact_history(
     """Return version history for an artifact."""
     if not name:
         return {"error": "Name is required for history", "success": False}
-    from assistant_runtime.app.assistant._prompt_builder import is_known_artifact_name
+    from assistant_runtime.artifacts import is_known_artifact_name
 
     if not is_known_artifact_name(name):
         return _unknown_artifact_error(name)
@@ -262,7 +262,7 @@ async def _artifact_history(
 
 def register_artifact_tools(registry: ToolRegistry) -> None:
     """Register the artifact management tool."""
-    from assistant_runtime.app.assistant._prompt_builder import (
+    from assistant_runtime.artifacts import (
         artifact_role_boundaries_text,
         known_artifact_names_text,
     )
