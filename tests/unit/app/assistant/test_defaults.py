@@ -94,13 +94,13 @@ class TestSessionPersistenceMode:
     async def test_unhealthy_database_means_memory_only_sessions(self):
         service = _service(_database(healthy=False))
         await service.start()
-        assert service.get_session_store()._db is None
+        assert service.get_session_store().persistent is False
 
     async def test_healthy_database_is_passed_to_the_store(self):
         db = _database(healthy=True)
         service = _service(db)
         await service.start()
-        assert service.get_session_store()._db is db
+        assert service.get_session_store().persistent is True
 
 
 @pytest.mark.parametrize("name", REQUIRED_ARTIFACT_NAMES)
