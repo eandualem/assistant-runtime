@@ -76,26 +76,36 @@ class ToolService:
             "frontend_tools": self._registry.frontend_tool_count(),
         }
 
-    def build_toolset(self, machine_state: dict[str, Any] | None = None) -> list:
+    def build_toolset(self, host_context: dict[str, Any] | None = None) -> list:
         """Build Pydantic AI toolsets for a request.
 
-        Includes MCP server toolsets (always available, not page-filtered).
+        Includes MCP server toolsets (always available, not page-scoped).
         """
         self._ensure_started()
-        toolsets = self._registry.build_toolset(machine_state)
+        toolsets = self._registry.build_toolset(host_context)
         if self._mcp_service is not None:
             toolsets.extend(self._mcp_service.get_toolsets())
         return toolsets
 
-    def get_available_tools(self, machine_state: dict[str, Any] | None = None) -> ToolSet:
-        """List tools available for a given machine state."""
+    def get_available_tools(self, host_context: dict[str, Any] | None = None) -> ToolSet:
+        """List tools available for a given host context."""
         self._ensure_started()
-        return self._registry.get_available_tools(machine_state)
+        return self._registry.get_available_tools(host_context)
 
-    def warm_machine_state(self, machine_state: dict[str, Any] | None = None) -> None:
+    def warm_host_context(self, host_context: dict[str, Any] | None = None) -> None:
         """Precompute page-scoped tool availability and toolsets."""
         self._ensure_started()
-        self._registry.warm_machine_state(machine_state)
+        self._registry.warm_host_context(host_context)
+
+    def is_host_tool(self, tool_name: str) -> bool:
+        """Whether the host application executes this tool (deferred call)."""
+        self._ensure_started()
+        return self._registry.is_host_tool(tool_name)
+
+    def get_tool_invalidates(self, tool_name: str) -> list[str] | None:
+        """Host data domains a tool invalidates, from configuration."""
+        self._ensure_started()
+        return self._registry.invalidates_for(tool_name)
 
     def validate_tool_call(self, tool_name: str, args: dict[str, Any]) -> bool:
         """Check if a tool name is registered."""
@@ -151,8 +161,8 @@ class ToolService:
             get_time,
         )
 
-        # Frontend tools (always available, bypass page filtering)
-        self._registry.register_frontend_tools()
+        # Host tools from configuration (always available, bypass page scoping)
+        self._registry.register_host_tools()
 
         # Agent management tools
         register_agent_tools(self._registry)

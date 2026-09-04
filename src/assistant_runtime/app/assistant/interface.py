@@ -123,12 +123,12 @@ class AssistantService:
     async def warm_session(
         self,
         session_id: str,
-        machine_state: dict[str, Any] | None = None,
+        host_context: dict[str, Any] | None = None,
     ) -> None:
         """Warm session-local and shared request-path caches.
 
         This keeps the first user message from paying cold session hydration and
-        shared prompt-input discovery when the dashboard has already joined the
+        shared prompt-input discovery when the host has already joined the
         session.
         """
         self._ensure_started()
@@ -137,10 +137,10 @@ class AssistantService:
 
         started_at = time.monotonic()
         await sessions.get_context_async(session_id)
-        if machine_state is not None:
-            sessions.get_context(session_id)["last_machine_state"] = machine_state
+        if host_context is not None:
+            sessions.get_context(session_id)["last_host_context"] = host_context
         try:
-            self._tools.warm_machine_state(machine_state)
+            self._tools.warm_host_context(host_context)
         except Exception as e:
             logger.warning(
                 "Session warmup step failed",
@@ -171,8 +171,8 @@ class AssistantService:
         logger.debug(
             "Session warmup completed",
             session_id=session_id,
-            page=machine_state.get("active_page", {}).get("name")
-            if isinstance(machine_state, dict)
+            page=host_context.get("page", {}).get("name")
+            if isinstance(host_context, dict)
             else None,
             duration_ms=(time.monotonic() - started_at) * 1000,
         )
@@ -187,20 +187,20 @@ class AssistantService:
         Shared by both AssistantService and StreamingService to prevent drift.
         """
         with create_span("agent-setup"):
-            machine_state = (
-                request.machine_state
-                if request.machine_state is not None
-                else session_context.get("last_machine_state")
+            host_context = (
+                request.host_context
+                if request.host_context is not None
+                else session_context.get("last_host_context")
             )
             request_config = request.config or session_context.get("last_request_config")
-            if request.machine_state is not None:
-                session_context["last_machine_state"] = request.machine_state
+            if request.host_context is not None:
+                session_context["last_host_context"] = request.host_context
             if request.config is not None:
                 session_context["last_request_config"] = request.config
 
             # 1. Tools
-            available_tools = self._tools.get_available_tools(machine_state)
-            toolsets = self._tools.build_toolset(machine_state)
+            available_tools = self._tools.get_available_tools(host_context)
+            toolsets = self._tools.build_toolset(host_context)
 
             mcp_summary_task = asyncio.create_task(self._tools.get_mcp_summary())
             artifacts_task = asyncio.create_task(self._load_active_artifacts())
@@ -218,7 +218,7 @@ class AssistantService:
             prompt_result = build_system_prompt(
                 available_tools=available_tools,
                 session_context=session_context,
-                machine_state=machine_state,
+                host_context=host_context,
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
             )

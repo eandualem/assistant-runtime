@@ -211,23 +211,23 @@ class TestDebugRequestEvent:
         assert event["session_id"] == "sess-1"
         assert event["message"] == "Hello"
         assert event["is_continuation"] is False
-        assert event["has_machine_state"] is True
-        assert event["machine_state"] is None
+        assert event["has_host_context"] is True
+        assert event["host_context"] is None
 
     def test_long_message_not_truncated(self):
         long_msg = "x" * 3000
         event = make_debug_request_event("sess-1", long_msg, False, False)
         assert event["message"] == long_msg
 
-    def test_with_machine_state(self):
-        state = {"active_page": {"name": "agents"}}
-        event = make_debug_request_event("sess-1", "Hi", False, True, machine_state=state)
-        assert event["machine_state"] == state
+    def test_with_host_context(self):
+        context = {"page": {"name": "agents"}}
+        event = make_debug_request_event("sess-1", "Hi", False, True, host_context=context)
+        assert event["host_context"] == context
 
     def test_continuation_flag(self):
         event = make_debug_request_event("sess-2", "cont", True, False)
         assert event["is_continuation"] is True
-        assert event["has_machine_state"] is False
+        assert event["has_host_context"] is False
 
     def test_image_count_defaults_to_zero(self):
         event = make_debug_request_event("sess-1", "Hello", False, True)

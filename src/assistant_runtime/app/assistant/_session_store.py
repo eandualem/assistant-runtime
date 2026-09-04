@@ -636,7 +636,7 @@ class SessionStore:
             "title": None,
             "telegram_chat_id": None,
             "telegram_bound_at": None,
-            "last_machine_state": None,
+            "last_host_context": None,
             "last_request_config": None,
             "pending_tool_call_id": None,
             "pending_tool_name": None,

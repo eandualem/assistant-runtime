@@ -70,7 +70,7 @@ _ARTIFACT_ORDER = {item.name: idx for idx, item in enumerate(ARTIFACT_CATALOG)}
 
 
 def artifact_sort_key(name: str) -> tuple[int, str]:
-    """Sort first-class artifacts in canonical prompt/dashboard order."""
+    """Sort first-class artifacts in canonical prompt order."""
     return (_ARTIFACT_ORDER.get(name, len(ARTIFACT_CATALOG)), name)
 
 
@@ -160,7 +160,7 @@ def _format_value(value: Any, indent: int = 2) -> str:
 
 
 def _render_generic_data(data: dict[str, Any]) -> list[str]:
-    """Render page data as readable key-value pairs. No truncation — trust the dashboard."""
+    """Render page data as readable key-value pairs. No truncation; the host curates it."""
     lines: list[str] = []
     for key, value in data.items():
         formatted = _format_value(value)
@@ -203,174 +203,109 @@ def _render_background(background: dict[str, Any]) -> str:
     return f"Background: {' | '.join(parts)}"
 
 
-def _render_machines(machines: dict[str, Any]) -> str:
-    """Serialize page machines as-is for the LLM prompt.
+def _render_state(state: dict[str, Any]) -> str:
+    """Serialize the host's page state as JSON, untouched.
 
-    The dashboard already curates what it sends — event types, guards,
-    transition targets, definitions, and context are all needed by the
-    assistant to call ``ui_send_event`` correctly. No transformation,
-    no field extraction — just faithful JSON serialization.
+    The host curates what it sends (selection, filters, workflow state, the
+    events its actions accept). No transformation, no field extraction.
     """
-    if not machines:
+    if not state:
+        return ""
+    return "Page state:\n```json\n" + json.dumps(state, indent=2, default=str) + "\n```"
+
+
+def _render_actions(actions: list[Any]) -> str:
+    """List the host actions the model may trigger, with their parameter shapes."""
+    lines = ["Available host actions:"]
+    for action in actions:
+        if not isinstance(action, dict):
+            lines.append(f"- {action}")
+            continue
+        event_type = action.get("event_type", "")
+        label = action.get("label", "")
+        line = f"- {event_type} ({label})" if label else f"- {event_type}"
+        param_strs = []
+        for p in action.get("params", []) or []:
+            if not isinstance(p, dict):
+                continue
+            p_name = p.get("name", "?")
+            p_type = p.get("type", "")
+            p_req = p.get("required", False)
+            desc = f"{p_name} ({p_type}" if p_type else p_name
+            if p_type:
+                desc += ", required)" if p_req else ")"
+            elif p_req:
+                desc += " (required)"
+            param_strs.append(desc)
+        if param_strs:
+            line += f" — params: {', '.join(param_strs)}"
+        lines.append(line)
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _render_navigation(navigation: list[Any]) -> str:
+    """List the places the host can navigate to."""
+    lines = ["Navigation:"]
+    for target in navigation:
+        if isinstance(target, dict):
+            name = target.get("name", "unknown")
+            desc = target.get("description", "")
+            lines.append(f"- {name} — {desc}" if desc else f"- {name}")
+        else:
+            lines.append(f"- {target}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _host_context_fragment(host_context: dict[str, Any] | None) -> str:
+    """What the host application is showing right now.
+
+    Shape (every key optional except ``page.name``):
+    ``page``: ``{"name", "description", "data", "state", "actions"}``;
+    ``navigation``: places the host can navigate to;
+    ``background``: summaries of things not on screen.
+    """
+    if not host_context:
         return ""
 
-    return "Page machines:\n```json\n" + json.dumps(machines, indent=2, default=str) + "\n```"
-
-
-def _dashboard_context_fragment(machine_state: dict[str, Any] | None) -> str:
-    """Dashboard context from frontend machine state."""
-    if not machine_state:
-        return ""
-
-    active_page = machine_state.get("active_page")
-    if not active_page:
-        logger.warning("machine_state present but missing active_page — possible dashboard bug")
+    page = host_context.get("page")
+    if not isinstance(page, dict) or not page.get("name"):
+        logger.warning("host_context present but has no page name")
         return ""
 
     sections: list[str] = []
+    header = f"The host application is showing: {page['name']}."
+    description = page.get("description")
+    if description:
+        header += f" {description}"
+    sections.append(header)
 
-    # Page header
-    page_name = active_page.get("name", "unknown")
-    sections.append(f"You are on the {page_name} page.")
+    page_data = page.get("data", {})
+    if isinstance(page_data, dict) and page_data:
+        sections.extend(_render_generic_data(page_data))
 
-    # Page data (generic structure-aware rendering for all pages)
-    page_data = active_page.get("data", {})
-    if page_data:
-        page_lines = _render_generic_data(page_data)
-        if page_lines:
-            sections.extend(page_lines)
+    state = page.get("state", {})
+    if isinstance(state, dict) and state:
+        sections.append(_render_state(state))
 
-    # Page machines (XState machine states, context, transitions)
-    machines = active_page.get("machines", {})
-    if machines:
-        machines_text = _render_machines(machines)
-        if machines_text:
-            sections.append(machines_text)
+    navigation = host_context.get("navigation", [])
+    if isinstance(navigation, list) and navigation:
+        nav_text = _render_navigation(navigation)
+        if nav_text:
+            sections.append(nav_text)
 
-    # Navigation targets
-    navigation = machine_state.get("navigation", [])
-    if navigation:
-        nav_lines = ["Navigation:"]
-        for target in navigation:
-            if isinstance(target, dict):
-                name = target.get("name", "unknown")
-                desc = target.get("description", "")
-                nav_lines.append(f"- {name} — {desc}" if desc else f"- {name}")
-            else:
-                nav_lines.append(f"- {target}")
-        if len(nav_lines) > 1:
-            sections.append("\n".join(nav_lines))
+    actions = page.get("actions", [])
+    if isinstance(actions, list) and actions:
+        actions_text = _render_actions(actions)
+        if actions_text:
+            sections.append(actions_text)
 
-    # Available actions (nested inside active_page per PageAwareContext)
-    available_actions = active_page.get("available_actions", [])
-    if available_actions:
-        action_lines = ["Available UI actions:"]
-        for action in available_actions:
-            if isinstance(action, dict):
-                event_type = action.get("event_type", "")
-                label = action.get("label", "")
-                line = f"- {event_type} ({label})" if label else f"- {event_type}"
-                # Include parameter definitions so the agent knows the payload shape
-                params = action.get("params", [])
-                if params:
-                    param_strs = []
-                    for p in params:
-                        if isinstance(p, dict):
-                            p_name = p.get("name", "?")
-                            p_type = p.get("type", "")
-                            p_req = p.get("required", False)
-                            desc = f"{p_name} ({p_type}" if p_type else p_name
-                            if p_type:
-                                desc += ", required)" if p_req else ")"
-                            elif p_req:
-                                desc += " (required)"
-                            param_strs.append(desc)
-                    if param_strs:
-                        line += f" — params: {', '.join(param_strs)}"
-                action_lines.append(line)
-            else:
-                action_lines.append(f"- {action}")
-        if len(action_lines) > 1:
-            sections.append("\n".join(action_lines))
-
-    # Background summaries
-    background = machine_state.get("background", {})
-    bg_line = _render_background(background)
-    if bg_line:
-        sections.append(bg_line)
+    background = host_context.get("background", {})
+    if isinstance(background, dict):
+        bg_line = _render_background(background)
+        if bg_line:
+            sections.append(bg_line)
 
     return "\n".join(sections)
-
-
-# --- Smart hints ---
-
-
-def _smart_hints(machine_state: dict[str, Any] | None) -> str:
-    """Generate conditional hints based on what the context data reveals.
-
-    Lightweight suggestions appended to the prompt — not forced behaviors.
-    """
-    if not machine_state:
-        return ""
-
-    active_page = machine_state.get("active_page")
-    if not active_page:
-        return ""
-
-    hints: list[str] = []
-    page_name = active_page.get("name", "")
-    page_data = active_page.get("data", {})
-
-    # Agents page: idle agents that could be given work
-    if page_name == "agents" and page_data.get("sessions"):
-        idle_agents = [
-            s.get("name", "unknown") for s in page_data["sessions"] if s.get("state") == "idle"
-        ]
-        plan_waiting = [
-            s.get("name", "unknown")
-            for s in page_data["sessions"]
-            if s.get("state") == "plan_waiting"
-        ]
-        if idle_agents:
-            hints.append(
-                f"Idle agents ({', '.join(idle_agents)}) — "
-                "consider checking for pending issues to assign."
-            )
-        if plan_waiting:
-            hints.append(
-                f"Agents waiting for plan approval ({', '.join(plan_waiting)}) — "
-                "you can approve or reject their plans."
-            )
-
-    # Tasks page: no filters applied
-    if page_name == "tasks" and page_data.get("issues"):
-        filters = page_data.get("active_filters")
-        if not filters:
-            issue_count = len(page_data["issues"])
-            if issue_count > 5:
-                hints.append(
-                    f"{issue_count} issues shown with no filters — "
-                    "consider filtering by entity or priority for focus."
-                )
-
-    # Any page: machines in error states
-    machines = active_page.get("machines", {})
-    if machines:
-        error_machines = [
-            name
-            for name, m in machines.items()
-            if isinstance(m, dict) and "error" in str(m.get("current_state", "")).lower()
-        ]
-        if error_machines:
-            hints.append(
-                f"Machines in error state ({', '.join(error_machines)}) — "
-                "investigate or suggest recovery actions."
-            )
-
-    if not hints:
-        return ""
-
-    return "Hints:\n" + "\n".join(f"- {h}" for h in hints)
 
 
 # --- Public API ---
@@ -380,7 +315,7 @@ def build_system_prompt(
     *,
     available_tools: ToolSet,
     session_context: dict[str, Any],
-    machine_state: dict[str, Any] | None = None,
+    host_context: dict[str, Any] | None = None,
     mcp_summary: list[dict[str, Any]] | None = None,
     artifacts: dict[str, str],
 ) -> PromptResult:
@@ -397,7 +332,7 @@ def build_system_prompt(
     Args:
         available_tools: Tools available for this request.
         session_context: Session context dict (may contain working memory).
-        machine_state: Frontend XState machine state snapshot.
+        host_context: What the host application is showing (see _host_context_fragment).
         mcp_summary: MCP server connection summary for prompt context.
         artifacts: DB-loaded artifact name→content map. Must contain soul,
             persona, communication_protocol, and ecosystem.
@@ -433,13 +368,9 @@ def build_system_prompt(
     # Dynamic fragments (change per request)
     named_fragments.append(("datetime", _datetime_fragment()))
 
-    machine_frag = _dashboard_context_fragment(machine_state)
-    if machine_frag:
-        named_fragments.append(("dashboard_context", machine_frag))
-
-    hints_frag = _smart_hints(machine_state)
-    if hints_frag:
-        named_fragments.append(("smart_hints", hints_frag))
+    host_frag = _host_context_fragment(host_context)
+    if host_frag:
+        named_fragments.append(("host_context", host_frag))
 
     memory_frag = _working_memory_fragment(session_context)
     if memory_frag:
