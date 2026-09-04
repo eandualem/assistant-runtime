@@ -8,6 +8,7 @@ from assistant_runtime.services.mcp.interface import MCPService
 
 class TestRegisterMcp:
     async def test_stores_service_on_app_state(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MCP_CONFIG_PATH", raising=False)
         monkeypatch.chdir(tmp_path)  # no mcp_servers.json here
         app_state = MagicMock()
         lifecycle = AsyncMock()
@@ -18,6 +19,7 @@ class TestRegisterMcp:
         assert isinstance(app_state.mcp_service, MCPService)
 
     async def test_registers_with_lifecycle(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MCP_CONFIG_PATH", raising=False)
         monkeypatch.chdir(tmp_path)
         app_state = MagicMock()
         lifecycle = AsyncMock()
@@ -42,6 +44,7 @@ class TestRegisterMcp:
         assert service._config_path == config_file
 
     async def test_no_config_file_sets_none(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MCP_CONFIG_PATH", raising=False)
         monkeypatch.chdir(tmp_path)
         app_state = MagicMock()
         lifecycle = AsyncMock()
