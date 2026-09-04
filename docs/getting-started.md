@@ -33,6 +33,12 @@ the model ids in use, whether Postgres is reachable, which extras are
 installed. It exits non-zero when no provider key is set. A `.env` file in
 the working directory is read too; `.env.example` lists every variable.
 
+Any one provider key is enough. The default chat model is
+`anthropic:claude-opus-5`; with only an OpenAI, Google or OpenRouter key
+the runtime uses that provider's default instead (`openai:gpt-5.6-terra`,
+`google:gemini-3.1-pro-preview`, `openrouter:x-ai/grok-4.1-fast`). Set
+`LLM__PRIMARY_MODEL=provider:name` to choose.
+
 ## 3. Talk to it
 
 ```bash
