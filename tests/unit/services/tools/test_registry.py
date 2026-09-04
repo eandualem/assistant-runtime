@@ -336,6 +336,12 @@ class TestHostToolRegistration:
         with pytest.raises(ToolValidationError):
             registry.register_host_tools({"get_time": NAVIGATE["navigate"]})
 
+    def test_backend_tool_clashing_with_host_tool_rejected(self, backend_definition, dummy_handler):
+        registry = ToolRegistry(ToolConfig(host_tools={"get_time": NAVIGATE["navigate"]}))
+        registry.register_host_tools()
+        with pytest.raises(ToolValidationError):
+            registry.register_backend_tool(backend_definition, dummy_handler)
+
     def test_toolset_includes_external_toolset(self):
         from pydantic_ai.toolsets import ExternalToolset
 

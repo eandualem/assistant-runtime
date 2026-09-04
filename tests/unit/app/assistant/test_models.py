@@ -10,6 +10,8 @@ from assistant_runtime.app.assistant.models import (
     _build_user_prompt,
     _camel_to_snake,
     _normalize_keys,
+    host_context_from_payload,
+    normalize_host_context,
 )
 
 
@@ -87,6 +89,23 @@ class TestAssistantRequest:
             },
             "navigation": [],
         }
+
+    def test_normalize_host_context_rejects_non_mappings(self) -> None:
+        assert normalize_host_context(None) is None
+        assert normalize_host_context("x") is None
+        assert normalize_host_context([1]) is None
+
+    def test_host_context_from_payload_prefers_current_key(self) -> None:
+        payload = {
+            "hostContext": {"page": {"name": "a"}},
+            "machineState": {"activePage": {"name": "b"}},
+        }
+        assert host_context_from_payload(payload) == {"page": {"name": "a"}}
+        assert host_context_from_payload({"machine_state": {"active_page": {"name": "b"}}}) == {
+            "page": {"name": "b"}
+        }
+        assert host_context_from_payload({"session_id": "s"}) is None
+        assert host_context_from_payload("nope") is None
 
     def test_host_context_none_by_default(self) -> None:
         request = AssistantRequest(id="u", session_id="s", content="hi")
