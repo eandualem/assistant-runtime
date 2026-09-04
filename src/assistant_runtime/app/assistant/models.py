@@ -33,32 +33,24 @@ def _normalize_keys(obj: Any) -> Any:
     return obj
 
 
-# Page-scoped semantic field aliases.  Only applied inside ``active_page.data``
-# for the matching page name — prevents collisions on other pages.
-_PAGE_FIELD_ALIASES: dict[str, dict[str, str]] = {
-    "agents": {"entities": "sessions", "coding_agents": "sessions"},
-    "tasks": {"filters": "active_filters"},
-}
+# Older clients sent the host context under other names. They are accepted and
+# mapped onto the documented shape so a host can migrate at its own pace.
+_LEGACY_TOP_LEVEL_KEYS: dict[str, str] = {"machine_state": "host_context"}
+_LEGACY_CONTEXT_KEYS: dict[str, str] = {"active_page": "page"}
+_LEGACY_PAGE_KEYS: dict[str, str] = {"machines": "state", "available_actions": "actions"}
 
 
-def _apply_field_aliases(machine_state: dict[str, Any]) -> dict[str, Any]:
-    """Rename semantic fields inside ``active_page.data`` based on page name."""
-    active_page = machine_state.get("active_page")
-    if not isinstance(active_page, dict):
-        return machine_state
-    page_name = active_page.get("name", "")
-    aliases = _PAGE_FIELD_ALIASES.get(page_name)
-    if not aliases:
-        return machine_state
-    data = active_page.get("data")
-    if not isinstance(data, dict):
-        return machine_state
-    new_data = {}
-    for k, v in data.items():
-        new_data[aliases.get(k, k)] = v
-    # Shallow copy to avoid mutating the original
-    new_active_page = {**active_page, "data": new_data}
-    return {**machine_state, "active_page": new_active_page}
+def _rename_keys(obj: dict[str, Any], aliases: dict[str, str]) -> dict[str, Any]:
+    return {aliases.get(k, k): v for k, v in obj.items()}
+
+
+def _apply_context_aliases(host_context: dict[str, Any]) -> dict[str, Any]:
+    """Map legacy key names inside a host context onto the documented shape."""
+    context = _rename_keys(host_context, _LEGACY_CONTEXT_KEYS)
+    page = context.get("page")
+    if isinstance(page, dict):
+        context = {**context, "page": _rename_keys(page, _LEGACY_PAGE_KEYS)}
+    return context
 
 
 @dataclass(frozen=True)
@@ -88,7 +80,7 @@ class AgentSetupContext:
 
 
 class RequestConfigOverride(BaseModel):
-    """Per-request config overrides sent from the dashboard."""
+    """Per-request config overrides sent by the client."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -128,7 +120,7 @@ class AssistantRequest(BaseModel):
     message_type: Literal["standard", "steering"] = Field(default="standard")
     content: str
     images: list[str] = Field(default_factory=list)
-    machine_state: dict[str, Any] | None = None
+    host_context: dict[str, Any] | None = None
     config: RequestConfigOverride | None = None
     tool_call_id: str | None = None
     tool_result: Any | None = None
@@ -166,22 +158,23 @@ class AssistantRequest(BaseModel):
         """Normalize camelCase keys from the frontend to snake_case.
 
         Covers three scopes:
-        1. Top-level keys (sessionId → session_id, machineState → machine_state)
-        2. machine_state contents (deep recursive conversion + field aliases)
+        1. Top-level keys (sessionId → session_id, hostContext → host_context),
+           plus the legacy ``machine_state`` name for the host context
+        2. host_context contents (deep recursive conversion + legacy key aliases)
         3. config keys (defaultModel → default_model, thinkingBudget → thinking_budget)
         """
         if not isinstance(data, dict):
             return data
 
         # 1. Normalize top-level keys
-        data = {_camel_to_snake(k): v for k, v in data.items()}
+        data = _rename_keys(
+            {_camel_to_snake(k): v for k, v in data.items()}, _LEGACY_TOP_LEVEL_KEYS
+        )
 
-        # 2. Deep-normalize machine_state contents + field aliases
-        ms = data.get("machine_state")
-        if ms is not None:
-            normalized = _normalize_keys(ms)
-            normalized = _apply_field_aliases(normalized)
-            data = {**data, "machine_state": normalized}
+        # 2. Deep-normalize host_context contents + legacy aliases
+        ctx = data.get("host_context")
+        if isinstance(ctx, dict):
+            data = {**data, "host_context": _apply_context_aliases(_normalize_keys(ctx))}
 
         # 3. Normalize config keys (shallow — flat model)
         cfg = data.get("config")

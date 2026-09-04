@@ -1,1 +1,1 @@
-"""Assistant Runtime — AI backend for the host dashboard operations dashboard."""
+"""Assistant Runtime: an assistant backend that plugs into any work environment."""

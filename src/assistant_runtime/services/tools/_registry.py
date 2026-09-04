@@ -10,114 +10,14 @@ from loguru import logger
 from pydantic_ai.toolsets import FunctionToolset
 
 from assistant_runtime.base.resilience import retry_with_backoff
-from assistant_runtime.services.tools._frontend_tools import (
-    build_frontend_toolset,
-    get_frontend_definitions,
+from assistant_runtime.services.tools._host_tools import (
+    build_host_toolset,
+    get_host_definitions,
+    load_host_tool_schemas,
 )
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.exceptions import ToolValidationError
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
-
-_CORE_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "get_time",
-        "manage_notes",
-        "manage_artifacts",
-        "add_schedule_item",
-        "remove_schedule_item",
-        "toggle_schedule_item",
-        "get_delivery_status",
-        "get_recent_deliveries",
-        "get_failed_deliveries",
-        "get_agent_activity",
-        "get_activity_timeline",
-        "create_swarm",
-        "list_swarms",
-        "get_swarm_detail",
-        "update_worker_status",
-        "broadcast_to_swarm",
-        "complete_swarm",
-        "generate_image",
-        "generate_video",
-        "run_subagent",
-        "respond_telegram",
-        "look_at_screen",
-        # Skill tools are cross-cutting — inspect skills from any page
-        "list_skills",
-        "read_skill",
-        # Agent tools are cross-cutting — check/manage agents from any page
-        "list_agents",
-        "get_active_agents",
-        "check_agent_state",
-        "start_agent",
-        "stop_agent",
-        "send_agent_message",
-    }
-)
-_GITHUB_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "create_issue",
-        "search_issues",
-        "get_issue_details",
-        "comment_on_issue",
-        "close_issue",
-    }
-)
-_MEETING_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "create_meeting_room",
-        "list_meeting_rooms",
-        "send_meeting_message",
-        "update_meeting_state",
-    }
-)
-_PLAN_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "list_agent_plans",
-        "approve_plan",
-        "reject_plan",
-    }
-)
-_REPO_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "onboard_repo",
-        "check_repo_status",
-        "list_repos",
-    }
-)
-_AGENT_PAGES: frozenset[str] = frozenset({"agents", "sessions"})
-_GITHUB_PAGES: frozenset[str] = frozenset({"tasks"})
-_MEETING_PAGES: frozenset[str] = frozenset({"meetings"})
-_REPO_PAGES: frozenset[str] = frozenset({"repos"})
-_CORE_ONLY_PAGES: frozenset[str] = frozenset({"flows"})
-
-# Tools that invalidate frontend data domains when executed.
-# The dashboard uses this to know which cached data to refresh.
-TOOL_INVALIDATES: dict[str, list[str]] = {
-    "create_meeting_room": ["meetings"],
-    "update_meeting_state": ["meetings"],
-    "send_meeting_message": ["meetings"],
-    "create_issue": ["tasks"],
-    "comment_on_issue": ["tasks"],
-    "close_issue": ["tasks"],
-    "start_agent": ["agents"],
-    "stop_agent": ["agents"],
-    "send_agent_message": ["agents"],
-    "approve_plan": ["agents"],
-    "reject_plan": ["agents"],
-    "manage_notes": ["notes"],
-    "manage_artifacts": ["artifacts"],
-    "add_schedule_item": ["schedule"],
-    "remove_schedule_item": ["schedule"],
-    "toggle_schedule_item": ["schedule"],
-    "onboard_repo": ["repos"],
-}
-
-
-def get_tool_invalidates(tool_name: str) -> list[str] | None:
-    """Return the list of data domains invalidated by a tool, or None."""
-    result = TOOL_INVALIDATES.get(tool_name)
-    return result if result else None
 
 
 class ToolRegistry:
@@ -129,6 +29,7 @@ class ToolRegistry:
         self._backend_definitions: dict[str, ToolDefinition] = {}
         self._frontend_definitions: list[ToolDefinition] = []
         self._frontend_toolset: Any | None = None
+        self._host_tool_names: frozenset[str] = frozenset()
         self._available_tools_cache: dict[str | None, ToolSet] = {}
         self._toolset_cache: dict[str | None, list[Any]] = {}
 
@@ -146,17 +47,28 @@ class ToolRegistry:
         self._toolset_cache.clear()
         logger.debug("Registered backend tool", tool=definition.name)
 
-    def register_frontend_tools(self) -> None:
-        """Register frontend tools from the built-in schema definitions."""
-        self._frontend_definitions = get_frontend_definitions()
-        self._frontend_toolset = build_frontend_toolset()
+    def register_host_tools(self, schemas: dict[str, dict[str, Any]] | None = None) -> None:
+        """Register the tools the host executes (from config unless given explicitly)."""
+        if schemas is None:
+            schemas = load_host_tool_schemas(self._config)
+        for name in schemas:
+            if name in self._backend_definitions:
+                raise ToolValidationError(f"Host tool '{name}' clashes with a backend tool")
+        self._frontend_definitions = get_host_definitions(schemas)
+        self._frontend_toolset = build_host_toolset(schemas)
+        self._host_tool_names = frozenset(schemas)
         self._available_tools_cache.clear()
         self._toolset_cache.clear()
-        logger.debug(
-            "Registered frontend tools",
-            count=len(self._frontend_definitions),
-            names=[d.name for d in self._frontend_definitions],
-        )
+        logger.debug("Registered host tools", count=len(schemas), names=sorted(schemas))
+
+    def is_host_tool(self, tool_name: str) -> bool:
+        """Whether the host, not the runtime, executes this tool."""
+        return tool_name in self._host_tool_names
+
+    def invalidates_for(self, tool_name: str) -> list[str] | None:
+        """Host data domains a backend tool invalidates, or None."""
+        domains = self._config.invalidations.get(tool_name)
+        return list(domains) if domains else None
 
     @staticmethod
     def _wrap_handler(handler: Callable, tool_name: str) -> Callable:
@@ -195,19 +107,19 @@ class ToolRegistry:
 
         return _safe_handler
 
-    def build_toolset(self, machine_state: dict[str, Any] | None = None) -> list:
+    def build_toolset(self, host_context: dict[str, Any] | None = None) -> list:
         """Build Pydantic AI toolsets for a request.
 
         Returns list of AbstractToolset instances:
         - FunctionToolset for backend tools (with real handlers, wrapped with safety net)
         - ExternalToolset for frontend tools (deferred execution via DeferredToolRequests)
         """
-        cache_key = self._cache_key(machine_state)
+        cache_key = self._cache_key(host_context)
         cached = self._toolset_cache.get(cache_key)
         if cached is not None:
             return list(cached)
 
-        available = self._resolve_available_tools(machine_state)
+        available = self._resolve_available_tools(host_context)
         toolsets: list = []
 
         if available.backend_tools:
@@ -222,7 +134,7 @@ class ToolRegistry:
                 )
             toolsets.append(func_toolset)
 
-        # Frontend tools — always appended, bypass page filtering
+        # Host tools — always appended, bypass page scoping
         if self._frontend_toolset is not None:
             toolsets.append(self._frontend_toolset)
 
@@ -266,14 +178,14 @@ class ToolRegistry:
         )
         return toolsets
 
-    def get_available_tools(self, machine_state: dict[str, Any] | None = None) -> ToolSet:
-        """List tools available for a given machine state."""
-        return self._resolve_available_tools(machine_state)
+    def get_available_tools(self, host_context: dict[str, Any] | None = None) -> ToolSet:
+        """List tools available for a given host context."""
+        return self._resolve_available_tools(host_context)
 
-    def warm_machine_state(self, machine_state: dict[str, Any] | None = None) -> None:
+    def warm_host_context(self, host_context: dict[str, Any] | None = None) -> None:
         """Precompute page-scoped availability and toolset caches."""
-        self._resolve_available_tools(machine_state)
-        self.build_toolset(machine_state)
+        self._resolve_available_tools(host_context)
+        self.build_toolset(host_context)
 
     def validate_tool_call(self, tool_name: str, args: dict[str, Any]) -> bool:
         """Check if a tool name is registered."""
@@ -297,22 +209,15 @@ class ToolRegistry:
         if handler is not None:
             handler._handler_deps = deps
 
-    def _resolve_available_tools(self, machine_state: dict[str, Any] | None = None) -> ToolSet:
-        """Determine which tools are available based on the active page.
+    def _resolve_available_tools(self, host_context: dict[str, Any] | None = None) -> ToolSet:
+        """Determine which backend tools are available for the host's current page.
 
-        Filtering logic:
-        - No machine_state or no active_page → all tools
-        - home page or unknown page → all tools
-        - agents/sessions pages → core + plan tools
-        - tasks page → core + github tools
-        - meetings page → core + meeting tools
-        - repos page → core + repo tools
-        - flows page → core only
-
-        Agent tools (list_agents, get_active_agents, check_agent_state,
-        start/stop/send) are in core — available on every page.
+        ``ToolConfig.page_scopes`` maps a page name to the backend tool names
+        allowed while the host reports that page. No host context, no page, or
+        a page that is not listed means every backend tool. Host tools are
+        never scoped.
         """
-        page_name = self._page_name(machine_state)
+        page_name = self._page_name(host_context)
         cache_key = page_name or None
         cached = self._available_tools_cache.get(cache_key)
         if cached is not None:
@@ -321,23 +226,10 @@ class ToolRegistry:
         backend = list(self._backend_definitions.values())
         total_before = len(backend)
 
-        # Determine if we should filter
-        if page_name and page_name != "home":
-            if page_name in _AGENT_PAGES:
-                allowed = _CORE_TOOL_NAMES | _PLAN_TOOL_NAMES
-                backend = [t for t in backend if t.name in allowed]
-            elif page_name in _GITHUB_PAGES:
-                allowed = _CORE_TOOL_NAMES | _GITHUB_TOOL_NAMES
-                backend = [t for t in backend if t.name in allowed]
-            elif page_name in _MEETING_PAGES:
-                allowed = _CORE_TOOL_NAMES | _MEETING_TOOL_NAMES
-                backend = [t for t in backend if t.name in allowed]
-            elif page_name in _REPO_PAGES:
-                allowed = _CORE_TOOL_NAMES | _REPO_TOOL_NAMES
-                backend = [t for t in backend if t.name in allowed]
-            elif page_name in _CORE_ONLY_PAGES:
-                backend = [t for t in backend if t.name in _CORE_TOOL_NAMES]
-            # else: unknown page → all tools (no filtering)
+        scope = self._config.page_scopes.get(page_name) if page_name else None
+        if scope is not None:
+            allowed = set(scope)
+            backend = [t for t in backend if t.name in allowed]
 
         total = len(backend)
         if total > self._config.max_tools_per_request:
@@ -357,12 +249,13 @@ class ToolRegistry:
         return toolset
 
     @staticmethod
-    def _page_name(machine_state: dict[str, Any] | None = None) -> str | None:
-        """Extract the active page name from machine state."""
-        if machine_state and isinstance(machine_state.get("active_page"), dict):
-            return machine_state["active_page"].get("name")
+    def _page_name(host_context: dict[str, Any] | None = None) -> str | None:
+        """Extract the page name from a host context."""
+        if host_context and isinstance(host_context.get("page"), dict):
+            name = host_context["page"].get("name")
+            return str(name) if name else None
         return None
 
-    def _cache_key(self, machine_state: dict[str, Any] | None = None) -> str | None:
-        """Cache by active page since tool availability is page-scoped."""
-        return self._page_name(machine_state) or None
+    def _cache_key(self, host_context: dict[str, Any] | None = None) -> str | None:
+        """Cache by page since tool availability is page-scoped."""
+        return self._page_name(host_context) or None

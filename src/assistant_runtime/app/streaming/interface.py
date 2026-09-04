@@ -65,8 +65,6 @@ from assistant_runtime.app.streaming.exceptions import (
     StreamSetupError,
 )
 from assistant_runtime.services.llm.exceptions import LLMCallError, classify_llm_error
-from assistant_runtime.services.tools._frontend_tools import FRONTEND_TOOL_SCHEMAS
-from assistant_runtime.services.tools._registry import get_tool_invalidates
 from assistant_runtime.services.tools._request_context import assistant_request_context
 from assistant_runtime.services.tools._screen_tools import (
     clear_current_screenshot,
@@ -144,12 +142,12 @@ class StreamingService:
     async def warm_session(
         self,
         session_id: str,
-        machine_state: dict[str, Any] | None = None,
+        host_context: dict[str, Any] | None = None,
     ) -> None:
         """Warm shared request-path state for a joined session."""
         if not self._started:
             return
-        await self._assistant_service.warm_session(session_id, machine_state)
+        await self._assistant_service.warm_session(session_id, host_context)
 
     async def accept_steering(
         self,
@@ -341,8 +339,8 @@ class StreamingService:
                         session_id=session_id,
                         message=request.message or "(continuation)",
                         is_continuation=True,
-                        has_machine_state=request.machine_state is not None,
-                        machine_state=request.machine_state,
+                        has_host_context=request.host_context is not None,
+                        host_context=request.host_context,
                     )
                 )
 
@@ -747,8 +745,8 @@ class StreamingService:
                         session_id=session_id,
                         message=request.message,
                         is_continuation=False,
-                        has_machine_state=request.machine_state is not None,
-                        machine_state=request.machine_state,
+                        has_host_context=request.host_context is not None,
+                        host_context=request.host_context,
                         image_count=len(request.images),
                     )
                 )
@@ -1292,7 +1290,7 @@ class StreamingService:
             )
 
         first = calls[0]
-        if first.tool_name not in FRONTEND_TOOL_SCHEMAS:
+        if not self._tools.is_host_tool(first.tool_name):
             raise ValueError(
                 "Frontend tool protocol violation: "
                 f"unknown deferred frontend tool '{first.tool_name}'"
@@ -1330,8 +1328,8 @@ class StreamingService:
             "arguments": args,
         }
 
-    @staticmethod
     def _extract_pending_frontend_tool_from_segments(
+        self,
         assistant_segments: list[dict[str, Any]] | None,
     ) -> dict[str, Any] | None:
         """Resolve the canonical deferred frontend tool from persisted assistant segments."""
@@ -1345,7 +1343,7 @@ class StreamingService:
             for tool in segment.get("tools", []):
                 if not isinstance(tool, dict):
                     continue
-                if tool.get("name") not in FRONTEND_TOOL_SCHEMAS:
+                if not self._tools.is_host_tool(str(tool.get("name", ""))):
                     continue
                 if "output" in tool:
                     continue
@@ -1732,8 +1730,8 @@ class StreamingService:
                         session_id=session_id,
                         message=request.message,
                         is_continuation=False,
-                        has_machine_state=request.machine_state is not None,
-                        machine_state=request.machine_state,
+                        has_host_context=request.host_context is not None,
+                        host_context=request.host_context,
                     )
                 )
 
@@ -2022,7 +2020,7 @@ class StreamingService:
                         args = tc.args_as_dict()
                     except Exception:
                         args = {}
-                    category = "frontend" if tc.tool_name in FRONTEND_TOOL_SCHEMAS else "backend"
+                    category = "frontend" if self._tools.is_host_tool(tc.tool_name) else "backend"
                     evt = make_tool_call_event(
                         tc.tool_name, args, tc.tool_call_id, category=category
                     )
@@ -2059,7 +2057,7 @@ class StreamingService:
                             result_str,
                             tc.tool_call_id,
                             duration_ms=tool_duration_ms,
-                            invalidates=get_tool_invalidates(tc.tool_name),
+                            invalidates=self._tools.get_tool_invalidates(tc.tool_name),
                         )
                         coordinator.track_debug(res_evt)
                         yield coordinator.track(res_evt)

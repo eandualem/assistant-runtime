@@ -114,8 +114,8 @@ class TestAssistantPipeline:
         assert "The assistant" in call_kwargs["system_prompt"]
 
     @pytest.mark.asyncio
-    async def test_machine_state_in_prompt(self, wired_services):
-        """Machine state is included in the system prompt."""
+    async def test_host_context_in_prompt(self, wired_services):
+        """The host context is included in the system prompt."""
         assistant = wired_services["assistant_service"]
         mock_agent = _make_mock_agent("OK")
 
@@ -128,8 +128,8 @@ class TestAssistantPipeline:
                     session_id="integ-state",
                     parent_id=None,
                     content="test",
-                    machine_state={
-                        "active_page": {
+                    host_context={
+                        "page": {
                             "name": "agents",
                             "data": {"sessions": [{"name": "leo", "state": "idle"}]},
                         },
@@ -142,4 +142,4 @@ class TestAssistantPipeline:
             for _, kwargs in build_mock.call_args_list
             if "toolsets" in kwargs and "system_prompt" in kwargs
         )
-        assert "agents page" in prompt
+        assert "showing: agents" in prompt

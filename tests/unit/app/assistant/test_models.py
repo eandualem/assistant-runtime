@@ -42,25 +42,55 @@ class TestAssistantRequest:
         assert request.is_continuation is False
         assert request.is_steering is False
 
-    def test_normalizes_camel_case_and_machine_state_aliases(self) -> None:
+    def test_normalizes_camel_case_host_context(self) -> None:
         request = AssistantRequest.model_validate(
             {
                 "id": "user-1",
                 "sessionId": "sess-1",
                 "parentId": None,
                 "content": "Check agents",
-                "machineState": {
-                    "activePage": {"name": "agents", "data": {"entities": [{"name": "leo"}]}}
+                "hostContext": {
+                    "page": {"name": "agents", "data": {"entities": [{"name": "leo"}]}}
                 },
                 "config": {"defaultModel": "openai/gpt-5.4"},
             }
         )
 
         assert request.session_id == "sess-1"
-        assert request.machine_state == {
-            "active_page": {"name": "agents", "data": {"sessions": [{"name": "leo"}]}}
+        assert request.host_context == {
+            "page": {"name": "agents", "data": {"entities": [{"name": "leo"}]}}
         }
         assert request.config == RequestConfigOverride(default_model="openai/gpt-5.4")
+
+    def test_legacy_machine_state_maps_to_host_context(self) -> None:
+        request = AssistantRequest.model_validate(
+            {
+                "id": "user-1",
+                "sessionId": "sess-1",
+                "content": "hi",
+                "machineState": {
+                    "activePage": {
+                        "name": "agents",
+                        "machines": {"m": {"currentState": "idle"}},
+                        "availableActions": [{"eventType": "REFRESH"}],
+                    },
+                    "navigation": [],
+                },
+            }
+        )
+
+        assert request.host_context == {
+            "page": {
+                "name": "agents",
+                "state": {"m": {"current_state": "idle"}},
+                "actions": [{"event_type": "REFRESH"}],
+            },
+            "navigation": [],
+        }
+
+    def test_host_context_none_by_default(self) -> None:
+        request = AssistantRequest(id="u", session_id="s", content="hi")
+        assert request.host_context is None
 
     def test_steering_has_distinct_shape(self) -> None:
         request = AssistantRequest(

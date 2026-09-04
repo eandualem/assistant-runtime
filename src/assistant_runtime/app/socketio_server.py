@@ -73,13 +73,15 @@ class AssistantNamespace(socketio.AsyncNamespace):
             return
         room = f"session:{session_id}"
         await self.enter_room(sid, room)
-        machine_state = data.get("machine_state") if isinstance(data, dict) else None
+        host_context = None
+        if isinstance(data, dict):
+            host_context = data.get("host_context", data.get("machine_state"))
         streaming_service = self._try_get_streaming_service()
         if streaming_service is not None:
             warm = getattr(streaming_service, "warm_session", None)
             if callable(warm):
                 try:
-                    maybe_awaitable = warm(session_id, machine_state)
+                    maybe_awaitable = warm(session_id, host_context)
                     if inspect.isawaitable(maybe_awaitable):
                         await maybe_awaitable
                 except Exception as e:
