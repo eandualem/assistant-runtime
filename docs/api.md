@@ -126,7 +126,7 @@ Names are `soul`, `persona`, `communication_protocol`, `ecosystem`,
 
 | Route | Purpose |
 |---|---|
-| `POST /api/assistant/inject` `{"from", "via", "message", "sessionId"?, "telegramChatId"?}` | deliver a message with a `[via:<via> from:<from>]` envelope into a session; `{"status": "delivered", "session_id", "delivery": "queued"|"promoted"}` or `{"status": "queued", "inbox_id"}` when no session exists |
+| `POST /api/assistant/inject` `{"from", "via", "message", "sessionId"?, "telegramChatId"?}` | deliver a message with a `[via:<via> from:<from>]` envelope into a session; `{"status": "delivered", "session_id", "delivery"}` (`delivery` is `queued` into a live turn or `promoted` to a turn of its own) or `{"status": "queued", "inbox_id"}` when no session exists |
 | `POST /api/inbox` `{"from", "message", "severity"?, "context"?}` | leave a note (`context.session_id` and `context.via` are honoured); same delivery and response as above |
 | `GET /api/inbox?surfaced=` | list the queued notes (Postgres) |
 | `PATCH /api/inbox/{id}/surfaced` | mark a note as surfaced (Postgres) |

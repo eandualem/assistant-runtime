@@ -65,10 +65,12 @@ class HeartbeatService:
         """Deliver one heartbeat into the most recently active session."""
         if not self._started:
             raise HeartbeatError("Heartbeat service not started")
+        # A heartbeat is only meaningful now: never queue one for later.
         result = await self._ingress.deliver(
             from_agent=self._config.from_agent,
             via="heartbeat",
             message=self._config.message,
+            queue_when_unrouted=False,
         )
         if result.get("status") == "delivered":
             self._last_heartbeat_at = datetime.now(UTC)

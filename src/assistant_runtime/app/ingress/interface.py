@@ -83,16 +83,21 @@ class IngressService:
         session_id: str | None = None,
         telegram_chat_id: str | None = None,
         severity: str = "info",
+        queue_when_unrouted: bool = True,
     ) -> dict[str, Any]:
         """Deliver ``message`` into a session, or queue it when there is none.
 
         The session is the one named, else the newest one bound to the
         Telegram chat, else the most recently active one. Returns
-        ``{"status": "delivered", "session_id", "delivery": "queued"|"promoted"}``
-        or ``{"status": "queued", "inbox_id"?}``.
+        ``{"status": "delivered", "session_id", "delivery"}`` with ``delivery``
+        ``queued`` (into a live turn) or ``promoted`` (a turn of its own),
+        ``{"status": "queued", "inbox_id"}`` when no session exists, or
+        ``{"status": "skipped"}`` when ``queue_when_unrouted`` is False.
         """
         target = await self._resolve_session(session_id, telegram_chat_id)
         if target is None:
+            if not queue_when_unrouted:
+                return {"status": "skipped", "reason": "no_active_session"}
             inbox_id = await self._queue(from_agent, via, message, severity, session_id)
             return {"status": "queued", "inbox_id": inbox_id}
 
@@ -115,12 +120,16 @@ class IngressService:
         return {"status": "delivered", "session_id": target, "delivery": action}
 
     async def drain(self, session_id: str) -> int:
-        """Queue the waiting inbox messages as steering on ``session_id``; returns how many."""
-        items = await self._take_queued(session_id)
+        """Queue the waiting inbox messages as steering on ``session_id``; returns how many.
+
+        A message leaves the inbox only once it is queued, so nothing is lost
+        when the session is not there yet.
+        """
         sessions = self._assistant.get_session_store()
-        if not items or sessions is None:
+        if sessions is None:
             return 0
-        for item in items:
+        delivered = 0
+        for item in await self._waiting(session_id):
             request = AssistantRequest(
                 id=f"inbox-{item['id']}",
                 session_id=session_id,
@@ -130,9 +139,14 @@ class IngressService:
             try:
                 await sessions.queue_steering(session_id, request)
             except ValueError:
-                continue  # already queued on a previous attempt
-        logger.info("Inbox drained into session", session_id=session_id, count=len(items))
-        return len(items)
+                pass  # already queued on a previous attempt: consume it
+            except LookupError:
+                break  # no such session yet; leave everything waiting
+            await self._consume(item)
+            delivered += 1
+        if delivered:
+            logger.info("Inbox drained into session", session_id=session_id, count=delivered)
+        return delivered
 
     # --- pieces -----------------------------------------------------------------
 
@@ -204,35 +218,45 @@ class IngressService:
         )
         return item_id
 
-    async def _take_queued(self, session_id: str) -> list[dict[str, Any]]:
-        """Waiting messages for ``session_id`` or for no session in particular, removed from the queue."""
+    async def _waiting(self, session_id: str) -> list[dict[str, Any]]:
+        """Messages waiting for ``session_id`` or for no session in particular (not removed)."""
 
         def _fits(context: dict[str, Any] | None) -> bool:
             wanted = (context or {}).get("session_id")
             return wanted in (None, session_id)
 
-        taken = [item for item in self._queued if _fits(item["context"])]
-        self._queued = [item for item in self._queued if not _fits(item["context"])]
+        waiting = [dict(item, source="memory") for item in self._queued if _fits(item["context"])]
         if self._db is None or not getattr(self._db, "healthy", False):
-            return taken
+            return waiting
         try:
             from assistant_runtime.services.database.repositories import InboxRepository
 
             async with self._db.session_context() as db_session:
-                repo = InboxRepository(db_session)
-                for row in await repo.list_unsurfaced(limit=50):
-                    if not _fits(row.context):
-                        continue
-                    await repo.mark_surfaced(row.id)
-                    taken.append(
-                        {
-                            "id": row.id,
-                            "from_agent": row.from_agent,
-                            "via": (row.context or {}).get("via", "inbox"),
-                            "message": row.message,
-                            "context": row.context,
-                        }
-                    )
+                for row in await InboxRepository(db_session).list_unsurfaced(limit=50):
+                    if _fits(row.context):
+                        waiting.append(
+                            {
+                                "id": row.id,
+                                "from_agent": row.from_agent,
+                                "via": (row.context or {}).get("via", "inbox"),
+                                "message": row.message,
+                                "context": row.context,
+                                "source": "db",
+                            }
+                        )
         except Exception as e:
             logger.warning("Inbox read failed", error=str(e))
-        return taken
+        return waiting
+
+    async def _consume(self, item: dict[str, Any]) -> None:
+        """Take a delivered message out of the inbox."""
+        if item["source"] == "memory":
+            self._queued = [q for q in self._queued if q["id"] != item["id"]]
+            return
+        try:
+            from assistant_runtime.services.database.repositories import InboxRepository
+
+            async with self._db.session_context() as db_session:
+                await InboxRepository(db_session).mark_surfaced(item["id"])
+        except Exception as e:
+            logger.warning("Inbox mark-surfaced failed", inbox_id=item["id"], error=str(e))

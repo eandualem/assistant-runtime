@@ -133,11 +133,6 @@ class StreamingService:
         """
         if not self._started:
             raise StreamingError("Streaming service not started")
-        if self._ingress is not None and not request.is_steering and not request.is_continuation:
-            try:
-                await self._ingress.drain(request.session_id)
-            except Exception as e:
-                logger.warning("Inbox drain failed", session_id=request.session_id, error=str(e))
         try:
             plan = await TurnPlanner(self._sessions).plan(request)
         except (StreamSetupError, SessionError) as e:
@@ -146,6 +141,12 @@ class StreamingService:
             async for event in self._setup_failure_envelope(request, e):
                 yield event
             return
+        if self._ingress is not None and plan.kind == "message":
+            # The session exists now; waiting messages ride along as steering.
+            try:
+                await self._ingress.drain(request.session_id)
+            except Exception as e:
+                logger.warning("Inbox drain failed", session_id=request.session_id, error=str(e))
         async for event in self._runner.run(plan):
             yield event
 
