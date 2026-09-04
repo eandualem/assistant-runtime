@@ -1,8 +1,8 @@
-"""Integration tests for the assistant pipeline — request → response with real wiring."""
+"""Integration tests for the turn pipeline — request → result with real wiring."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -26,11 +26,11 @@ class TestAssistantPipeline:
     @pytest.mark.asyncio
     async def test_request_flows_to_result(self, wired_services):
         """A request flows through the full pipeline and returns a result."""
-        assistant = wired_services["assistant_service"]
+        streaming = wired_services["streaming_service"]
         mock_agent = _make_mock_agent("Hello from the assistant!")
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
-            result = await assistant.process_message(
+            result = await streaming.run_message(
                 _request(
                     message_id="user-1",
                     session_id="integ-1",
@@ -47,17 +47,13 @@ class TestAssistantPipeline:
     async def test_session_persists_across_turns(self, wired_services):
         """Session context persists — turn counter increments, history accumulates."""
         assistant = wired_services["assistant_service"]
+        streaming = wired_services["streaming_service"]
 
         mock_agent1 = _make_mock_agent("Turn 1")
-        mock_agent1.run.return_value.all_messages.return_value = [MagicMock()]
         mock_agent2 = _make_mock_agent("Turn 2")
-        mock_agent2.run.return_value.all_messages.return_value = [
-            MagicMock(),
-            MagicMock(),
-        ]
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent1):
-            result1 = await assistant.process_message(
+            result1 = await streaming.run_message(
                 _request(
                     message_id="user-1",
                     session_id="integ-persist",
@@ -70,7 +66,7 @@ class TestAssistantPipeline:
         parent_id = (await assistant._sessions.get_message_path("integ-persist"))[-1]["id"]
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent2):
-            result2 = await assistant.process_message(
+            result2 = await streaming.run_message(
                 _request(
                     message_id="user-2",
                     session_id="integ-persist",
@@ -89,13 +85,13 @@ class TestAssistantPipeline:
     @pytest.mark.asyncio
     async def test_tools_passed_to_agent(self, wired_services):
         """Real ToolService provides toolsets to build_agent."""
-        assistant = wired_services["assistant_service"]
+        streaming = wired_services["streaming_service"]
         mock_agent = _make_mock_agent("OK")
 
         with patch.object(
             wired_services["llm_service"], "build_agent", return_value=mock_agent
         ) as build_mock:
-            await assistant.process_message(
+            await streaming.run_message(
                 _request(
                     message_id="user-1",
                     session_id="integ-tools",
@@ -116,13 +112,13 @@ class TestAssistantPipeline:
     @pytest.mark.asyncio
     async def test_host_context_in_prompt(self, wired_services):
         """The host context is included in the system prompt."""
-        assistant = wired_services["assistant_service"]
+        streaming = wired_services["streaming_service"]
         mock_agent = _make_mock_agent("OK")
 
         with patch.object(
             wired_services["llm_service"], "build_agent", return_value=mock_agent
         ) as build_mock:
-            await assistant.process_message(
+            await streaming.run_message(
                 AssistantRequest(
                     id="user-1",
                     session_id="integ-state",

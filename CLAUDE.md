@@ -42,8 +42,8 @@ that way: database code is exercised through fakes, the LLM boundary
 - **Layering, bottom up.** `base` (lifecycle, protocols, resilience,
   exceptions) and `artifacts` (the prompt artifact catalog) are leaves. `services/*` import `base`, `config` and the
   `services/tracing` helpers; `services/tools` may import `services/media`;
-  no service imports `app`. `app/assistant` (prompt, sessions, the
-  non-streaming run) imports services; `app/streaming` imports
+  no service imports `app`. `app/assistant` (prompt, sessions, per-request
+  agent setup) imports services; `app/streaming` (the turn pipeline) imports
   `app/assistant`; `app/routes` and `app/socketio_server` are the HTTP and
   Socket.IO edges; `main`, `cli` and `config` (which composes every module's config model)
   are the top. `tests/unit/test_imports.py` asserts that nothing below the
@@ -140,9 +140,14 @@ names, ids or private hostnames).
   are imported lazily; the core install must not need them.
 - No personal identifiers anywhere: names, chat ids, org names and local
   paths are configuration or neutral fixtures.
-- Known hotspot: `app/streaming/interface.py` (about 2200 lines) carries
-  the streaming run, continuation and steering logic. Change it
-  surgically with a test per behaviour; do not refactor it in passing.
+- **One turn pipeline.** Every request kind (new message, host-tool
+  continuation, promoted steering) is described by `TurnPlanner`
+  (`app/streaming/_turn.py`) and executed by `TurnRunner`
+  (`app/streaming/_runner.py`); `_agent_run.py` walks the pydantic-ai graph
+  and `_host_tool.py` keeps the pending host-tool state. The non-streaming
+  `POST /api/chat` collects the same stream through
+  `StreamingService.run_message()`. A behaviour that differs by request
+  kind belongs in the planner, not in the runner.
 
 ## Live testing
 

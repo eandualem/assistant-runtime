@@ -41,7 +41,7 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
         app_state.heartbeat_service = SimpleNamespace()
 
     async def _register_streaming(app_state, lifecycle):
-        app_state.streaming_service = SimpleNamespace(set_runtime_settings=MagicMock())
+        app_state.streaming_service = SimpleNamespace()
 
     monkeypatch.setattr("assistant_runtime.main.register_database", _register_database)
     monkeypatch.setattr("assistant_runtime.main.register_llm", _register_llm)
@@ -62,8 +62,5 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     app = create_app()
     async with lifespan(app):
         app.state.assistant_service.set_runtime_settings.assert_called_once_with(
-            app.state.runtime_settings
-        )
-        app.state.streaming_service.set_runtime_settings.assert_called_once_with(
             app.state.runtime_settings
         )

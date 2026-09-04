@@ -221,19 +221,15 @@ class AssistantRequest(BaseModel):
         return data
 
 
-def _build_user_prompt(message: str) -> str:
-    """Build the user prompt string for the LLM.
-
-    Images are NOT auto-attached — the agent uses the ``look_at_screen``
-    tool for on-demand visual inspection instead.
-    """
-    return message
-
-
 class AssistantResult(BaseModel):
-    """Output from a single assistant interaction."""
+    """The final answer of one turn (the non-streaming form of ``final_response``)."""
 
     content: str = Field(description="Text response")
     model: str = Field(description="Model used for this turn")
     session_id: str
     turn_number: int
+    message_id: str | None = Field(default=None, description="Id of the assistant message row")
+    pending_tool_call: dict[str, Any] | None = Field(
+        default=None,
+        description="Set when the turn ended on a host tool call the client must answer",
+    )

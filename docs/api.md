@@ -12,9 +12,13 @@ OpenAPI docs are served at `/docs`.
 
 ## Chat (non-streaming)
 
-`POST /api/chat` with a message body (below) returns
-`{"content", "model", "session_id", "turn_number"}` when the turn ends.
-Steering messages are rejected here (422); use the socket.
+`POST /api/chat` with a message body (below) runs the same turn pipeline
+as the socket and returns `{"content", "model", "session_id",
+"turn_number", "message_id", "pending_tool_call"}` when the turn ends.
+`pending_tool_call` is set when the turn stopped on a host tool call; answer
+it with a continuation body (`tool_call_id`, `tool_result`). A failed run
+is a 500 with `{"error", "type"}`. Steering messages are rejected here
+(422); use the socket.
 
 ## The message body
 
