@@ -7,24 +7,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from assistant_runtime.services.tools._github_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.capabilities.issues import register_issues_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.github import (
+    GitHubIssues,
     _github_request,
     _has_label_prefix,
     close_issue,
     comment_on_issue,
     create_issue,
     get_issue_details,
-    register_github_tools,
     search_issues,
 )
-from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE = "assistant_runtime.services.tools._github_tools"
+MODULE = "assistant_runtime.services.tools.providers.github"
 
 
 @pytest.fixture(autouse=True)
@@ -486,7 +487,7 @@ class TestCloseIssue:
 class TestRegisterGithubTools:
     def test_all_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_github_tools(registry)
+        register_issues_tools(registry, GitHubIssues())
 
         names = registry.get_tool_names()
         assert "create_issue" in names
@@ -497,18 +498,18 @@ class TestRegisterGithubTools:
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_github_tools(registry)
+        register_issues_tools(registry, GitHubIssues())
         assert len(registry._backend_definitions) == 5
 
     def test_all_backend(self):
         registry = ToolRegistry(ToolConfig())
-        register_github_tools(registry)
+        register_issues_tools(registry, GitHubIssues())
         for defn in registry._backend_definitions.values():
             assert defn.category == "backend"
 
     def test_schemas_have_required(self):
         registry = ToolRegistry(ToolConfig())
-        register_github_tools(registry)
+        register_issues_tools(registry, GitHubIssues())
 
         # Tools that must have required fields
         must_require = {
@@ -526,7 +527,7 @@ class TestRegisterGithubTools:
 
     def test_handlers_callable(self):
         registry = ToolRegistry(ToolConfig())
-        register_github_tools(registry)
+        register_issues_tools(registry, GitHubIssues())
         for name in [
             "create_issue",
             "search_issues",

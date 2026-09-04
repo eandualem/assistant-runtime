@@ -54,9 +54,7 @@ are part of the runtime and present whenever their own service is
 (artifacts need Postgres, media a provider key). Capabilities (what the
 assistant can do) are offered only when a provider (who does it) is
 configured, so the model is never given a tool that cannot work;
-configuration lists the providers. The GitHub and Telegram integrations
-are still registered unconditionally and return a structured error when
-unconfigured, until they move to the same model.
+configuration lists the providers.
 
 | Group | Tools | Needs |
 |---|---|---|
@@ -66,12 +64,12 @@ unconfigured, until they move to the same model.
 | artifacts | `manage_artifacts` | Postgres |
 | peers, rooms, reminders, activity, workgroups, repositories | `list_agents`, `start_agent`, `send_agent_message`, `create_meeting_room`, `add_schedule_item`, `get_delivery_status`, `create_swarm`, `onboard_repo`, ... | `BACKBONE_URL` |
 | approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR` |
-| github | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
-| telegram | `telegram_send`, `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
+| issues | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
+| messaging | `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
 | media | `generate_image`, `generate_video` | an image provider key; the `[video]` extra and a Runway or Luma key |
 | subagent | `run_subagent` | nothing (uses the configured model) |
 
-A tool whose integration is not configured returns a structured error
+A tool whose call fails returns a structured error
 (`{"success": false, "error": ..., "error_code": ...}`) instead of
 failing the turn.
 

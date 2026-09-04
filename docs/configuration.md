@@ -139,15 +139,15 @@ variables:
 | `LIBRARY_PATHS` (`name=path,name=path`, or one path) | library (`list_documents`, `read_document`) | directories of documents, each a subdirectory with a `SKILL.md`, `README.md` or `index.md` |
 | `BACKBONE_URL` (+ `BACKBONE_API_KEY`) | peers, rooms, reminders, activity, workgroups, repositories | [agent-backbone](https://github.com/eandualem/agent-backbone) |
 | `BACKBONE_INFRASTRUCTURE_SESSIONS` (comma-separated) | peers | session names to leave out of the active-agent list |
+| `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` | issues (`create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue`) | GitHub, one repository |
+| `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | messaging (`respond_telegram`) | a Telegram bot and the chat it answers in |
 | `AGENT_STATE_DIR` | approvals (`list_agent_plans`, `approve_plan`, `reject_plan`); also enriches peers | a directory of agent state files (the Claude Code layout, `~/.claude/state`) |
 
 ## Integrations
 
 | Variable | Used by |
 |---|---|
-| `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` | GitHub issue tools |
 | `REPO_ORGS` | optional comma-separated allowlist for repository onboarding |
-| `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram tools |
 | `ASSISTANT_OPERATOR_NAME` | the name in envelopes on messages the assistant sends to agents |
 | `MCP_CONFIG_PATH` | MCP servers file; default `mcp_servers.json` in the working directory |
 | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`, `LANGFUSE_USER_ID` | tracing (`[tracing]` extra) |

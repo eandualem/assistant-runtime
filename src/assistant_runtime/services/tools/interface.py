@@ -7,9 +7,7 @@ from typing import Any
 
 from loguru import logger
 
-from assistant_runtime.services.tools._github_tools import register_github_tools
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._telegram_tools import register_telegram_tools
 from assistant_runtime.services.tools.builtin import register_builtin_tools
 from assistant_runtime.services.tools.capabilities import register_capabilities
 from assistant_runtime.services.tools.config import ToolConfig
@@ -139,10 +137,4 @@ class ToolService:
         )
         # Host tools from configuration (always available, bypass page scoping)
         self._registry.register_host_tools()
-        capabilities = register_capabilities(self._registry, self._providers)
-
-        # Integrations not yet expressed as capabilities; each fails soft when
-        # its service is unreachable.
-        register_github_tools(self._registry)
-        register_telegram_tools(self._registry)
-        return capabilities
+        return register_capabilities(self._registry, self._providers)

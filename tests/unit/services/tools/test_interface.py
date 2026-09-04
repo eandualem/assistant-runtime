@@ -54,9 +54,8 @@ class TestLifecycle:
         # Capabilities need a configured provider
         for name in ("manage_notes", "list_documents", "list_agents", "create_meeting_room"):
             assert name not in tool_names
-        # Integrations still on the old model (fail soft when unconfigured)
-        assert "create_issue" in tool_names
-        assert "respond_telegram" in tool_names
+        assert "create_issue" not in tool_names
+        assert "respond_telegram" not in tool_names
 
     def test_build_toolset_before_start(self, service):
         with pytest.raises(ToolError, match="not started"):
@@ -135,10 +134,10 @@ class TestHostContextToolScoping:
         assert result.total_count == service._registry.backend_tool_count()
 
     async def test_configured_scope_limits_backend_tools(self):
-        svc = ToolService(config=ToolConfig(page_scopes={"tasks": ["create_issue", "get_time"]}))
+        svc = ToolService(config=ToolConfig(page_scopes={"tasks": ["look_at_screen", "get_time"]}))
         await svc.start()
         result = svc.get_available_tools(host_context={"page": {"name": "tasks"}})
-        assert {t.name for t in result.backend_tools} == {"create_issue", "get_time"}
+        assert {t.name for t in result.backend_tools} == {"look_at_screen", "get_time"}
         assert result.filtered_out_count == svc._registry.backend_tool_count() - 2
 
     async def test_scope_names_not_registered_are_ignored(self):

@@ -49,6 +49,21 @@ class TestProvidersConfig:
         assert config.agent_state_dir == Path("~/.claude/state").expanduser()
         assert config.configured() == ["backbone", "claude_code"]
 
+    def test_github_and_telegram(self):
+        config = ProvidersConfig.from_env(
+            {
+                "GITHUB_TOKEN": "t",
+                "GITHUB_REPO_OWNER": "org",
+                "GITHUB_REPO_NAME": "repo",
+                "TELEGRAM_TOKEN": "bot",
+                "TELEGRAM_CHAT_ID": "1",
+            }
+        )
+        assert config.github_repo == "org/repo"
+        assert config.configured() == ["github", "telegram"]
+        assert ProvidersConfig.from_env({"GITHUB_TOKEN": "t"}).configured() == []
+        assert set(build_providers(config)) == {"issues", "messaging"}
+
     def test_bare_library_path_is_the_default_collection(self):
         config = ProvidersConfig.from_env({"LIBRARY_PATHS": "/srv/docs"})
         assert config.library_paths == {"default": Path("/srv/docs")}
