@@ -17,8 +17,11 @@ as the socket and returns `{"content", "model", "session_id",
 "turn_number", "message_id", "pending_tool_call"}` when the turn ends.
 `pending_tool_call` is set when the turn stopped on a host tool call; answer
 it with a continuation body (`tool_call_id`, `tool_result`). A request
-that does not fit the session (unknown session or parent, duplicate id) is
-a 409; a failed run is a 500; both carry `{"error", "type"}`. Steering messages are rejected here
+that does not fit the session is a 409 and is not worth retrying: unknown
+session or parent, duplicate message id, a continuation whose
+`tool_call_id` is not the pending one (or nothing is pending), steering
+when the session has no conversation yet. A failed run is a 500. Both
+carry `{"error", "type"}`. Steering messages are rejected here
 (422); use the socket.
 
 ## The message body
