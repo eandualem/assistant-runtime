@@ -22,7 +22,6 @@ from assistant_runtime.config import AppSettings
 from assistant_runtime.logging_config import setup_logging
 from assistant_runtime.services.database.factory import register_database
 from assistant_runtime.services.history.factory import register_history
-from assistant_runtime.services.llm._cache_control_patch import apply_patch as _apply_cache_patch
 from assistant_runtime.services.llm.factory import register_llm
 from assistant_runtime.services.mcp.factory import register_mcp
 from assistant_runtime.services.media.factory import register_media
@@ -34,9 +33,6 @@ from assistant_runtime.services.tracing import initialize_tracing, shutdown_trac
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifecycle — startup and shutdown."""
-    # Patch pydantic-ai cache control bug before any agent creation
-    _apply_cache_patch()
-
     # Load .env into os.environ before AppSettings or os.getenv() calls.
     # Pydantic Settings' env_file only populates model fields, not os.environ.
     # LLM providers use os.getenv() for API keys, so they need this.

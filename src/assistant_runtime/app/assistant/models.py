@@ -6,7 +6,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
+
+from assistant_runtime.app.assistant.config import TunableOverrides
 
 # --- camelCase → snake_case normalization ---
 
@@ -105,24 +107,6 @@ class AgentSetupContext:
     mcp_summary: list[dict[str, Any]] | None
 
 
-class RequestConfigOverride(BaseModel):
-    """Per-request config overrides sent by the client."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    default_model: str | None = None
-    thinking_budget: int | None = Field(default=None, ge=1, le=100_000)
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    max_turns: int | None = Field(default=None, ge=1, le=50)
-    enable_working_memory: bool | None = None
-    summarization_model: str | None = None
-    working_memory_model: str | None = None
-    default_image_model: str | None = None
-    default_video_model: str | None = None
-    subagent_model: str | None = None
-    subagent_thinking_budget: int | None = Field(default=None, ge=1, le=100_000)
-
-
 # Top-level keys that may carry screenshot data from the frontend.
 # Includes both camelCase and snake_case variants since Pydantic v2 runs
 # mode="before" validators in reverse definition order (this validator
@@ -147,7 +131,7 @@ class AssistantRequest(BaseModel):
     content: str
     images: list[str] = Field(default_factory=list)
     host_context: dict[str, Any] | None = None
-    config: RequestConfigOverride | None = None
+    config: TunableOverrides | None = None
     tool_call_id: str | None = None
     tool_result: Any | None = None
 
