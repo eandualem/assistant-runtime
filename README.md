@@ -6,30 +6,39 @@ Built with **FastAPI** + **Pydantic AI** + **Socket.IO**. Follows the backend mo
 
 ## Quick Start
 
+The runtime needs one LLM provider key. Everything else is optional.
+
 ```bash
-# 1. Install dependencies (add --extra video / --extra tracing for optional features)
+# 1. Install (add --extra video / --extra tracing for optional features)
 make install
 
-# 2. Start Postgres
-make db-up
+# 2. Provide a provider key (or copy .env.example to .env and edit it)
+export ANTHROPIC_API_KEY=sk-ant-...
 
-# 3. Configure environment
-cp .env.example .env
-# Edit .env — at minimum set one LLM provider API key
+# 3. Talk to the assistant in the terminal (no server, no database)
+uv run assistant-runtime chat
 
-# 4. Run migrations
-make db-upgrade
-
-# 5. Start dev server
-make dev
-# Server runs on http://localhost:7100
+# 4. Or run the HTTP + Socket.IO server on http://127.0.0.1:7100
+uv run assistant-runtime serve
 ```
+
+`assistant-runtime doctor` reports what is configured, which provider keys are present, and whether Postgres is reachable. `assistant-runtime chat -m "..."` sends one message and exits; `--show-thinking` prints the model's thinking stream; `--model provider:name` overrides the model for that chat.
+
+### With Postgres (persistent sessions, editable prompt artifacts)
+
+```bash
+make db-up          # start Postgres in Docker
+make db-upgrade     # run migrations
+make dev            # start the server with auto-reload
+```
+
+Without a reachable database the runtime runs in memory-only mode: sessions do not survive a restart, runtime settings are not persisted, and the bundled default prompt artifacts are used.
 
 ## Prerequisites
 
 - **Python 3.12+**
 - **uv** (package manager)
-- **Docker** (for Postgres)
+- **Docker** (only for Postgres)
 
 ## Configuration
 
@@ -262,6 +271,8 @@ The assistant's system prompt is assembled from five first-class artifacts with 
 - `scratchpad`: short-lived operational memory
 
 `Soul`, `persona`, `communication_protocol`, and `ecosystem` are durable versioned artifacts. `Scratchpad` remains the operational special case: mutable, auto-approved, and intentionally short-lived.
+
+Default texts for the four durable artifacts ship with the package (`src/assistant_runtime/app/assistant/defaults/`). With a database, the active row for each name overrides the default and can be edited and versioned through the artifacts API; without one, the defaults are used as they are.
 
 ## Port
 

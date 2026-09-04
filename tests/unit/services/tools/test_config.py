@@ -9,7 +9,7 @@ from assistant_runtime.services.tools.config import ToolConfig
 class TestToolConfigDefaults:
     def test_defaults(self):
         config = ToolConfig()
-        assert config.max_tools_per_request == 40
+        assert config.max_tools_per_request == 64
         assert config.tool_timeout_seconds == 30.0
 
     def test_custom_values(self):

@@ -141,7 +141,7 @@ class RuntimeSettings:
 
         Non-NULL DB fields become runtime overrides. Proceeds silently if DB is unavailable.
         """
-        if self._db is None:
+        if self._db is None or not getattr(self._db, "healthy", True):
             return
 
         try:
@@ -172,7 +172,7 @@ class RuntimeSettings:
 
     async def _persist_to_db(self) -> bool:
         """Persist current overlay state to DB. Best-effort — failures are logged, not raised."""
-        if self._db is None:
+        if self._db is None or not getattr(self._db, "healthy", True):
             return False
 
         # Build full state dict: overridden fields get values, others get None (clears old values)
