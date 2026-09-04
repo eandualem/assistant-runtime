@@ -61,10 +61,9 @@ def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
 
 
 def _make_mock_agent(output: Any = "Test response") -> MagicMock:
-    """Create a mock Agent with .run() returning a canned result."""
+    """Create a mock Agent whose ``iter()`` yields a run that ends immediately."""
     agent = MagicMock()
-    mock_result = _make_mock_agent_result(output)
-    agent.run = AsyncMock(return_value=mock_result)
+    agent.iter = MagicMock(side_effect=lambda *_a, **_k: _make_mock_agent_run(output))
     return agent
 
 
@@ -143,12 +142,9 @@ async def wired_services(monkeypatch):
     # Create streaming service (accesses sessions via assistant_service)
     streaming_service = StreamingService(
         config=settings.streaming,
-        llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=assistant_service,
-        runtime_settings=runtime_settings,
-        assistant_config=settings.assistant,
     )
     await lm.register("streaming_service", streaming_service)
     await streaming_service.start()

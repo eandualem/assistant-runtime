@@ -140,7 +140,7 @@ CodeRabbit reviews every one.
 src/assistant_runtime/
   base/          lifecycle manager, protocols, resilience, exceptions
   services/      database, llm, history, tools, media, mcp, oauth, tracing
-  app/           assistant (prompt, sessions), streaming, routes, socketio_server
+  app/           assistant (prompt, sessions), streaming (the turn pipeline), routes
   cli/           chat, serve, doctor, docs
   help/          the documentation, when installed from a wheel
   artifacts.py   the prompt artifact catalog

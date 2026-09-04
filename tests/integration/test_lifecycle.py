@@ -97,7 +97,7 @@ class TestConfigComposition:
         assert settings.history.token_budget > 0
         assert settings.tools.max_tools_per_request > 0
         assert settings.assistant.max_turns > 0
-        assert settings.streaming.debounce_seconds >= 0
+        assert settings.streaming.stream_timeout_seconds > 0
 
 
 class TestPartialFailure:

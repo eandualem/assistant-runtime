@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai import DeferredToolRequests
@@ -12,13 +12,18 @@ from pydantic_ai.usage import UsageLimits
 from pydantic_graph import End
 
 from assistant_runtime.app.assistant._session_store import SessionStore
-from assistant_runtime.app.assistant.config import AssistantConfig
+from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
 from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
-from assistant_runtime.app.settings import EffectiveConfig, RuntimeSettings
+from assistant_runtime.app.settings import EffectiveConfig
+from assistant_runtime.app.streaming._agent_run import deliver_steering_into_request
+from assistant_runtime.app.streaming._host_tool import STALE_HOST_TOOL_OUTPUT
+from assistant_runtime.app.streaming._runner import TurnRunner
+from assistant_runtime.app.streaming._usage import cache_counts
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.exceptions import StreamingError
 from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.services.history.models import HistoryPreparationResult
+from assistant_runtime.services.tools._request_context import record_current_telegram_chat_binding
 from assistant_runtime.services.tools.models import ToolSet
 
 
@@ -133,16 +138,13 @@ def _make_service(
     assistant_service = MagicMock()
     assistant_service.get_session_store.return_value = sessions
     assistant_service.prepare_agent_context = AsyncMock(return_value=_agent_context(agent))
-    assistant_service._update_working_memory = AsyncMock()
+    assistant_service.update_working_memory = AsyncMock()
 
     return StreamingService(
         config=StreamingConfig(emit_debug_events=False),
-        llm_service=MagicMock(),
         history_service=history_service,
         tool_service=MagicMock(),
         assistant_service=assistant_service,
-        runtime_settings=RuntimeSettings(frozen_config=AssistantConfig()),
-        assistant_config=AssistantConfig(),
         database_service=None,
     )
 
@@ -405,7 +407,7 @@ class TestStreamingService:
         stale_record = ctx["message_index"]["assistant-1"]
         stale_tool = stale_record["segments"][0]["tools"][0]
 
-        assert stale_tool["output"] == service._STALE_FRONTEND_TOOL_OUTPUT
+        assert stale_tool["output"] == STALE_HOST_TOOL_OUTPUT
         assert final["pending_tool_call"]["call_id"] == "call-new"
         assert ctx["pending_tool_call_id"] == "call-new"
         assert ctx["pending_assistant_message_id"] == final["message_id"]
@@ -476,10 +478,8 @@ class TestStreamingService:
         node = MagicMock()
         node.request = ModelRequest(parts=[])
 
-        delivered = await service._deliver_steering_into_request(
-            session_id="sess-1",
-            session_context=sessions.get_context("sess-1"),
-            next_node=node,
+        delivered = await deliver_steering_into_request(
+            sessions, "sess-1", sessions.get_context("sess-1"), next_node=node
         )
 
         assert [record["id"] for record in delivered] == ["steering-1", "steering-2"]
@@ -530,7 +530,6 @@ class TestStreamingService:
                 return None
 
         service = _make_service()
-        service._save_trace = AsyncMock()
         failing_agent = MagicMock()
         failing_agent.iter = MagicMock(return_value=_FailingRun())
         service._assistant_service.prepare_agent_context = AsyncMock(
@@ -538,7 +537,10 @@ class TestStreamingService:
         )
         await service.start()
 
-        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+        with patch.object(TurnRunner, "save_trace", new=AsyncMock()) as save_trace:
+            events = [
+                event async for event in service.stream_message(_request(message_id="user-1"))
+            ]
 
         final = next(event for event in events if event["type"] == "final_response")
         error = next(event for event in events if event["type"] == "error")
@@ -552,7 +554,7 @@ class TestStreamingService:
         assert error["trace_id"] == final["trace_id"]
         assert final["trace_id"] in error["message"]
 
-        trace_args = service._save_trace.await_args
+        trace_args = save_trace.await_args
         assert trace_args is not None
         assert trace_args.kwargs["trace_id"] == final["trace_id"]
         assert any(event["type"] == "debug_error" for event in trace_args.args[1])
@@ -576,7 +578,6 @@ class TestStreamingService:
                 return None
 
         service = _make_service()
-        service._save_trace = AsyncMock()
         failing_agent = MagicMock()
         failing_agent.iter = MagicMock(return_value=_FailingRun())
         service._assistant_service.prepare_agent_context = AsyncMock(
@@ -584,7 +585,10 @@ class TestStreamingService:
         )
         await service.start()
 
-        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+        with patch.object(TurnRunner, "save_trace", new=AsyncMock()) as save_trace:
+            events = [
+                event async for event in service.stream_message(_request(message_id="user-1"))
+            ]
 
         final = next(event for event in events if event["type"] == "final_response")
         error = next(event for event in events if event["type"] == "error")
@@ -597,7 +601,7 @@ class TestStreamingService:
         assert "No tool output found" in error["message"]
         assert final["trace_id"] in error["message"]
 
-        trace_args = service._save_trace.await_args
+        trace_args = save_trace.await_args
         assert trace_args is not None
         assert trace_args.kwargs["trace_id"] == final["trace_id"]
         assert any(
@@ -1149,7 +1153,79 @@ class TestUsageCacheCounts:
         usage = RunUsage(
             input_tokens=10, output_tokens=5, cache_read_tokens=7, cache_write_tokens=3
         )
-        assert StreamingService._usage_cache_counts(usage) == (7, 3)
+        assert cache_counts(usage) == (7, 3)
 
     def test_missing_fields_default_to_zero(self):
-        assert StreamingService._usage_cache_counts(object()) == (0, 0)
+        assert cache_counts(object()) == (0, 0)
+
+
+class TestRunMessage:
+    """``run_message`` is the same pipeline collected into one ``AssistantResult``."""
+
+    @pytest.mark.asyncio
+    async def test_returns_final_answer_and_persists_the_turn(self) -> None:
+        service = _make_service()
+        await service.start()
+
+        result = await service.run_message(_request(message_id="user-1"))
+
+        assert result.content == "Hello!"
+        assert result.model == "openai:gpt-5.4"
+        assert result.turn_number == 1
+        path = await service._assistant_service.get_session_store().get_message_path("sess-1")
+        assert [message["id"] for message in path] == ["user-1", result.message_id]
+        assert path[-1]["content"] == "Hello!"
+        service._assistant_service.update_working_memory.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_persists_telegram_binding_recorded_by_a_tool(self) -> None:
+        class _BindingRun(_MockRun):
+            async def __aenter__(self) -> _BindingRun:
+                record_current_telegram_chat_binding("123456789")
+                return self
+
+        run = _BindingRun(
+            output="Sent",
+            all_messages=[
+                ModelResponse(
+                    parts=[TextPart(content="Sent")],
+                    timestamp=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                )
+            ],
+        )
+        service = _make_service(run=run)
+        await service.start()
+
+        await service.run_message(_request(message_id="user-1"))
+
+        ctx = service._assistant_service.get_session_store().get_context("sess-1")
+        assert ctx["telegram_chat_id"] == "123456789"
+        assert ctx["telegram_bound_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_run_failure_raises_agent_run_error(self) -> None:
+        class _FailingRun:
+            async def __aenter__(self) -> _FailingRun:
+                raise RuntimeError("boom")
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
+        service = _make_service()
+        agent = MagicMock()
+        agent.iter = MagicMock(return_value=_FailingRun())
+        service._assistant_service.prepare_agent_context = AsyncMock(
+            return_value=_agent_context(agent)
+        )
+        await service.start()
+
+        with pytest.raises(AgentRunError, match="boom"):
+            await service.run_message(_request(message_id="user-1"))
+
+    @pytest.mark.asyncio
+    async def test_unknown_parent_raises_session_error(self) -> None:
+        service = _make_service()
+        await service.start()
+
+        with pytest.raises(SessionError, match="not found"):
+            await service.run_message(_request(message_id="user-2", parent_id="missing"))

@@ -7,7 +7,6 @@ from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.app.assistant.models import (
     AssistantRequest,
     AssistantResult,
-    _build_user_prompt,
     _camel_to_snake,
     _normalize_keys,
     host_context_from_payload,
@@ -24,9 +23,6 @@ class TestHelpers:
         assert _normalize_keys({"activePage": {"pageName": "agents"}}) == {
             "active_page": {"page_name": "agents"}
         }
-
-    def test_build_user_prompt_is_passthrough(self) -> None:
-        assert _build_user_prompt("hello") == "hello"
 
 
 class TestAssistantRequest:
@@ -191,4 +187,6 @@ class TestAssistantResult:
             "model": "openai:gpt-5.4",
             "session_id": "sess-1",
             "turn_number": 1,
+            "message_id": None,
+            "pending_tool_call": None,
         }

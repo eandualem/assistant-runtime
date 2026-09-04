@@ -8,12 +8,6 @@ class StreamingConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    debounce_seconds: float = Field(
-        default=0.05,
-        ge=0.0,
-        le=1.0,
-        description="Debounce interval for text delta streaming.",
-    )
     max_events_per_stream: int = Field(
         default=10000,
         ge=100,
