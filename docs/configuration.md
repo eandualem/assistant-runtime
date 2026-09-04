@@ -40,9 +40,11 @@ another provider does, that provider's default is used instead and a
 warning is logged: `openai:gpt-5.6-terra` / `openai:gpt-5.6-luna`,
 `google:gemini-3.1-pro-preview` / `google:gemini-3.8-flash`,
 `openrouter:x-ai/grok-4.1-fast`. Set `LLM__PRIMARY_MODEL` to choose
-explicitly. The summarization model is used for history compaction and
-working memory unless `HISTORY__SUMMARIZATION_MODEL` or the runtime
-setting overrides it.
+explicitly. The summarization model is used for history compaction unless
+`HISTORY__SUMMARIZATION_MODEL` or the runtime `summarization_model`
+override is set. Working-memory extraction uses
+`HISTORY__WORKING_MEMORY_MODEL` or the runtime `working_memory_model`
+override when set, and otherwise the summarization model.
 
 Model ids are `provider:name`, lowercase. Providers: `anthropic`,
 `openai`, `google` (Gemini through the Google AI API), `google-cloud`
