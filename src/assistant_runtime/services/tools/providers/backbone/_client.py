@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from loguru import logger
@@ -31,7 +32,13 @@ async def backbone_request(
 
     headers: dict[str, str] = {"Accept": "application/json"}
     if backbone_api_key:
-        headers["Authorization"] = f"Bearer {backbone_api_key}"
+        if _credentials_allowed(backbone_url):
+            headers["Authorization"] = f"Bearer {backbone_api_key}"
+        else:
+            logger.warning(
+                "BACKBONE_API_KEY not sent: BACKBONE_URL is cleartext and not local",
+                url=backbone_url,
+            )
 
     url = f"{backbone_url}{path}"
 
@@ -79,6 +86,23 @@ async def backbone_request(
         )
 
 
-def backbone_error(payload: dict[str, Any]) -> str:
-    """Extract normalized error text from a backbone transport payload."""
-    return payload.get("error", payload.get("message", "Request failed"))
+def _credentials_allowed(url: str) -> bool:
+    """A bearer token goes over TLS or to this machine, never in cleartext elsewhere."""
+    parsed = urlsplit(url)
+    if parsed.scheme == "https":
+        return True
+    return parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def backbone_error(payload: Any) -> str:
+    """Normalized error text from a backbone transport payload of any shape."""
+    if isinstance(payload, dict):
+        return str(payload.get("error", payload.get("message", "Request failed")))
+    return "Request failed"
+
+
+def backbone_detail(payload: Any) -> str:
+    """The ``detail`` field of an error payload, when the payload is an object."""
+    if isinstance(payload, dict):
+        return str(payload.get("detail", "Unknown error"))
+    return "Unknown error"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from assistant_runtime.services.tools.providers.backbone._client import (
+    backbone_detail,
     backbone_error,
     backbone_request,
 )
@@ -33,7 +34,7 @@ async def add_schedule_item(time: str, title: str) -> dict[str, Any]:
 
     if status not in (200, 201):
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 
@@ -60,7 +61,7 @@ async def remove_schedule_item(item_id: str) -> dict[str, Any]:
 
     if status not in (200, 204):
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 
@@ -77,7 +78,7 @@ async def toggle_schedule_item(item_id: str) -> dict[str, Any]:
 
     if get_status != 200:
         return {
-            "error": f"Backbone API error ({get_status}): {get_data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({get_status}): {backbone_detail(get_data)}",
             "success": False,
         }
 
@@ -108,7 +109,7 @@ async def toggle_schedule_item(item_id: str) -> dict[str, Any]:
 
     if status != 200:
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 

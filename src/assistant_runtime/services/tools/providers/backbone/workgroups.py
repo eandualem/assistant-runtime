@@ -11,6 +11,7 @@ from assistant_runtime.services.tools.capabilities.workgroups import (
     _WORKER_REQUIRED_FIELDS,
 )
 from assistant_runtime.services.tools.providers.backbone._client import (
+    backbone_detail,
     backbone_error,
     backbone_request,
 )
@@ -117,7 +118,7 @@ async def create_swarm(
     if status == -1:
         return {"error": backbone_error(data), "success": False}
     if status != 201:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
     if not isinstance(data, dict) or not isinstance(data.get("swarm_id"), str):
         return {"error": "Unexpected backbone response format", "success": False}
@@ -153,7 +154,7 @@ async def list_swarms(repo: str | None = None, status: str | None = None) -> dic
     if status_code == -1:
         return {"error": backbone_error(data), "success": False}
     if status_code != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status_code}): {detail}", "success": False}
 
     items, total = _extract_items(data)
@@ -181,7 +182,7 @@ async def get_swarm_detail(swarm_id: str) -> dict[str, Any]:
     if status == 404:
         return {"error": f"Swarm '{normalized_swarm_id}' not found", "success": False}
     if status != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
     if not isinstance(data, dict):
         return {"error": "Unexpected backbone response format", "success": False}
@@ -233,7 +234,7 @@ async def update_worker_status(
     if response_status == 404:
         return {"error": f"Swarm worker '{normalized_worker_name}' not found", "success": False}
     if response_status != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({response_status}): {detail}", "success": False}
     if not isinstance(data, dict):
         return {"error": "Unexpected backbone response format", "success": False}
@@ -271,7 +272,7 @@ async def broadcast_to_swarm(swarm_id: str, from_entity: str, message: str) -> d
     if status == 404:
         return {"error": f"Swarm '{normalized_swarm_id}' not found", "success": False}
     if status != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
     if not isinstance(data, dict):
         return {"error": "Unexpected backbone response format", "success": False}
@@ -300,7 +301,7 @@ async def complete_swarm(swarm_id: str) -> dict[str, Any]:
     if status == 404:
         return {"error": f"Swarm '{normalized_swarm_id}' not found", "success": False}
     if status != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
     if not isinstance(data, dict):
         return {"error": "Unexpected backbone response format", "success": False}
