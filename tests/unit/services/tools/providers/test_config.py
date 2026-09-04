@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from assistant_runtime.services.tools.providers import build_providers
 from assistant_runtime.services.tools.providers.config import ProvidersConfig
 from assistant_runtime.services.tools.providers.filesystem import (
@@ -29,6 +31,10 @@ class TestProvidersConfig:
             "team": Path("/srv/docs"),
         }
         assert config.configured() == ["notes", "library"]
+
+    def test_blank_library_path_is_rejected(self):
+        with pytest.raises(ValueError, match="needs both a name and a path"):
+            ProvidersConfig.from_env({"LIBRARY_PATHS": "docs="})
 
     def test_bare_library_path_is_the_default_collection(self):
         config = ProvidersConfig.from_env({"LIBRARY_PATHS": "/srv/docs"})

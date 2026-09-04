@@ -26,7 +26,10 @@ def _parse_named_paths(value: str) -> dict[str, Path]:
         name, sep, path = item.partition("=")
         if not sep:
             name, path = "default", name
-        roots[name.strip()] = Path(path.strip()).expanduser()
+        name, path = name.strip(), path.strip()
+        if not name or not path:
+            raise ValueError(f"LIBRARY_PATHS entry '{item}' needs both a name and a path")
+        roots[name] = Path(path).expanduser()
     return roots
 
 

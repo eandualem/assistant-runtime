@@ -77,8 +77,10 @@ that way: database code is exercised through fakes, the LLM boundary
   contextvars (`_request_context.py`); other dependencies are closed over
   at registration.
 - **Capabilities are separate from providers.** `services/tools/builtin/`
-  holds what needs no external system (time, screen, artifacts, subagents,
-  media) and is always registered. Everything else is a *capability*
+  holds the tools that are part of the runtime itself (time, screen,
+  artifacts, subagents, media); they are registered when their own
+  service exists (artifacts need Postgres, media a provider key) and
+  report a structured error otherwise. Everything else is a *capability*
   (`services/tools/capabilities/<name>.py`: the tool schemas plus a
   Protocol) served by a *provider* (`services/tools/providers/`: one
   package per integration, enabled by its own environment variables in
