@@ -55,8 +55,8 @@ class TestLifecycle:
         assert "check_agent_state" in tool_names
         assert "start_agent" in tool_names
         assert "send_agent_message" in tool_names
-        # Notes management tool
-        assert "manage_notes" in tool_names
+        # Capabilities need a configured provider
+        assert "manage_notes" not in tool_names
         # GitHub issue management tools
         assert "create_issue" in tool_names
         assert "search_issues" in tool_names
@@ -94,8 +94,7 @@ class TestLifecycle:
         # Artifact management tool
         assert "manage_artifacts" in tool_names
         # Skill management tools
-        assert "list_skills" in tool_names
-        assert "read_skill" in tool_names
+        assert "list_documents" not in tool_names
 
 
 class TestNotStartedGuard:
@@ -275,7 +274,7 @@ class TestSubagentIntegration:
 
         handler = svc._registry._backend_handlers["run_subagent"]
         with patch(
-            "assistant_runtime.services.tools._subagent_executor.execute_subagent",
+            "assistant_runtime.services.tools.builtin._subagent_executor.execute_subagent",
             new_callable=AsyncMock,
             return_value={"result": "done"},
         ) as execute:

@@ -70,14 +70,25 @@ that way: database code is exercised through fakes, the LLM boundary
   503. Guard new database use the same way; never let it fail a chat.
 - **Tools are registered, never hardcoded into the agent.** A backend tool
   is a `ToolDefinition` plus an async handler registered through
-  `register_backend_tool` from a `services/tools/_<domain>_tools.py`
-  module. Handlers return dicts (`{"success": False, "error": ...,
-  "error_code": ...}` on failure) and do not raise; the registry wraps
-  them with one retry on connection errors and a catch-all. Request scope
-  (session id, Telegram binding) travels in contextvars
-  (`_request_context.py`); service dependencies reach handlers through
-  `configure_handler_deps`. External integrations (backbone, GitHub,
-  Telegram) fail soft with an `error_code` when unconfigured.
+  `register_backend_tool`. Handlers return dicts (`{"success": False,
+  "error": ..., "error_code": ...}` on failure) and do not raise; the
+  registry wraps them with one retry on connection errors and a catch-all.
+  Request scope (session id, screenshot, Telegram binding) travels in
+  contextvars (`_request_context.py`); other dependencies are closed over
+  at registration.
+- **Capabilities are separate from providers.** `services/tools/builtin/`
+  holds what needs no external system (time, screen, artifacts, subagents,
+  media) and is always registered. Everything else is a *capability*
+  (`services/tools/capabilities/<name>.py`: the tool schemas plus a
+  Protocol) served by a *provider* (`services/tools/providers/`: one
+  package per integration, enabled by its own environment variables in
+  `ProvidersConfig`). `build_providers()` maps capability names to provider
+  objects; a capability's tools are registered only when it has one, so
+  the model is never offered a tool that cannot work. A new capability is
+  a module with a Protocol and a registrar, an entry in `CAPABILITIES`, and
+  a provider that implements the Protocol; no capability names a specific
+  integration. (The backbone, GitHub and Telegram tools are still on the
+  old shape and fail soft when unconfigured; they are being moved.)
 - **Nothing about a particular host lives in code.** What the host shows
   arrives as `host_context` on the request (shape in the README). Tools
   the host executes, page-scoped tool lists and invalidation domains are

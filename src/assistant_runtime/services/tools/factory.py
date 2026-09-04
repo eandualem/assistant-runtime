@@ -7,6 +7,7 @@ from loguru import logger
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.config import AppSettings
 from assistant_runtime.services.tools.interface import ToolService
+from assistant_runtime.services.tools.providers import build_providers
 
 
 async def register_tools(app_state: Any, lifecycle: LifecycleManager) -> None:
@@ -22,6 +23,7 @@ async def register_tools(app_state: Any, lifecycle: LifecycleManager) -> None:
         llm_service=llm_service,
         mcp_service=mcp_service,
         database_service=database_service,
+        providers=build_providers(settings.providers),
     )
     app_state.tool_service = service
     await lifecycle.register("tool_service", service)

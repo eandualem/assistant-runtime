@@ -1,5 +1,6 @@
 """Root application settings. Composes all module configs."""
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from assistant_runtime.app.assistant.config import AssistantConfig
@@ -11,6 +12,7 @@ from assistant_runtime.services.llm.config import LLMConfig
 from assistant_runtime.services.media.config import MediaConfig
 from assistant_runtime.services.oauth.config import OAuthConfig
 from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.config import ProvidersConfig
 
 
 class AppSettings(BaseSettings):
@@ -27,6 +29,7 @@ class AppSettings(BaseSettings):
     media: MediaConfig = MediaConfig()
     oauth: OAuthConfig = OAuthConfig()
     tools: ToolConfig = ToolConfig()
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig.from_env)
     assistant: AssistantConfig = AssistantConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     streaming: StreamingConfig = StreamingConfig()
