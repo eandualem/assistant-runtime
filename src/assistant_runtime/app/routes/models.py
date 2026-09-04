@@ -60,6 +60,7 @@ def _effective_defaults(request: Request) -> dict[str, Any]:
         summarization = llm.effective_summarization_model()
     return {
         "primary_model": _tunable("default_model", None) or primary,
+        "thinking_budget": _tunable("thinking_budget", settings.assistant.thinking_budget),
         "summarization_model": _tunable("summarization_model", None) or summarization,
         "working_memory_model": _tunable(
             "working_memory_model", settings.history.working_memory_model
