@@ -41,3 +41,11 @@ class LLMConfig(BaseModel):
         default=None,
         description="JSON string with provider configurations (alternative to individual env vars)",
     )
+    codex_models: list[str] = Field(
+        default_factory=list,
+        description=(
+            "OpenAI model names routed through the ChatGPT/Codex subscription when it is "
+            "connected. Empty (the default) routes every openai: model that way; the backend "
+            "decides what the subscription allows."
+        ),
+    )

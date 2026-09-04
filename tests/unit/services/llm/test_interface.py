@@ -188,6 +188,27 @@ class TestBuildAgent:
         assert settings_arg["openai_send_reasoning_ids"] is False
         assert "openai_previous_response_id" not in settings_arg
 
+    def test_codex_models_setting_narrows_what_goes_through_the_subscription(self):
+        service = LlmService(config=LLMConfig(codex_models=["gpt-5.4"]))
+        service.set_oauth_service(
+            SimpleNamespace(
+                get_codex_session=lambda: SimpleNamespace(access_token="t", account_id="a")
+            )
+        )
+        assert service._should_use_codex_provider("openai:gpt-5.4") is True
+        assert service._should_use_codex_provider("openai:gpt-5.6-terra") is False
+        assert service._should_use_codex_provider("anthropic:claude-opus-5") is False
+
+    def test_every_openai_model_uses_the_subscription_by_default(self, service):
+        service.set_oauth_service(
+            SimpleNamespace(
+                get_codex_session=lambda: SimpleNamespace(access_token="t", account_id="a")
+            )
+        )
+        assert service._should_use_codex_provider("openai:gpt-5.6-terra") is True
+        service.set_oauth_service(SimpleNamespace(get_codex_session=lambda: None))
+        assert service._should_use_codex_provider("openai:gpt-5.6-terra") is False
+
     def test_build_agent_preserves_openai_reasoning_settings_for_codex(self, service):
         service.set_oauth_service(
             SimpleNamespace(
