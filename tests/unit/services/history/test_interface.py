@@ -77,46 +77,6 @@ class TestLifecycle:
         assert service._manager._summarizer._runtime_settings is runtime
 
 
-class TestPrepareHistory:
-    async def test_raises_if_not_started(self, service):
-        with pytest.raises(CompactionError, match="not started"):
-            await service.prepare_history([], {})
-
-    async def test_delegates_to_manager(self, service):
-        await service.start()
-
-        # Mock the manager's prepare_history
-        service._manager.prepare_history = AsyncMock(return_value=([], False))
-
-        result, modified = await service.prepare_history([], {})
-        assert result == []
-        assert modified is False
-        service._manager.prepare_history.assert_called_once()
-
-    async def test_passes_is_continuation(self, service):
-        await service.start()
-        service._manager.prepare_history = AsyncMock(return_value=([], False))
-
-        await service.prepare_history([], {}, is_continuation=True)
-
-        call_kwargs = service._manager.prepare_history.call_args.kwargs
-        assert call_kwargs["is_continuation"] is True
-
-    async def test_wraps_unexpected_errors(self, service):
-        await service.start()
-        service._manager.prepare_history = AsyncMock(side_effect=RuntimeError("unexpected"))
-
-        with pytest.raises(CompactionError, match="History preparation failed"):
-            await service.prepare_history([], {})
-
-    async def test_reraises_compaction_errors(self, service):
-        await service.start()
-        service._manager.prepare_history = AsyncMock(side_effect=CompactionError("specific issue"))
-
-        with pytest.raises(CompactionError, match="specific issue"):
-            await service.prepare_history([], {})
-
-
 class TestExtractMemoryDelta:
     async def test_raises_if_not_started(self, service):
         with pytest.raises(CompactionError, match="not started"):

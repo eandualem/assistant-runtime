@@ -135,11 +135,6 @@ def make_tool_error_event(
     }
 
 
-def make_tool_status_event(tool_name: str, status: str) -> dict[str, Any]:
-    """Create a tool_status event (started | completed | error)."""
-    return {"type": "tool_status", "tool_name": tool_name, "status": status}
-
-
 def make_final_response_event(
     content: str | None,
     model: str,

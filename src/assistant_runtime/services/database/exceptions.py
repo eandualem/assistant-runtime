@@ -10,11 +10,3 @@ class DatabaseError(AssistantRuntimeError):
         kwargs.setdefault("category", "database")
         kwargs.setdefault("severity", "high")
         super().__init__(message, **kwargs)
-
-
-class DatabaseConnectionError(DatabaseError):
-    """Failed to connect to database."""
-
-    def __init__(self, message: str, **kwargs) -> None:
-        kwargs.setdefault("severity", "critical")
-        super().__init__(message, **kwargs)

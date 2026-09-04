@@ -87,7 +87,6 @@ def llm_service() -> MagicMock:
 @pytest.fixture
 def history_service() -> AsyncMock:
     service = AsyncMock()
-    service.prepare_history = AsyncMock(return_value=([], False))
     service.extract_memory_delta = AsyncMock(return_value={"goal": "ship tree model"})
     return service
 

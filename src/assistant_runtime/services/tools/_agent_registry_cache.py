@@ -61,12 +61,6 @@ class AgentRegistryCache:
         logger.debug("Agent registry cache refreshed", agent_count=len(items))
         return True
 
-    def get_available_sessions(self) -> list[str]:
-        """Session names from cache. Empty list if not populated."""
-        if self._agents is None:
-            return []
-        return [a["session"] for a in self._agents if a.get("session")]
-
     def get_agent_info(self, session: str) -> dict[str, Any] | None:
         """Look up a single agent by session name."""
         if self._agents is None:
