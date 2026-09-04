@@ -1,8 +1,9 @@
 """Layering guard: services never import the app layer.
 
 `base` and `artifacts` are leaves, `services/*` may import `base`, `config`,
-`artifacts` and each other as documented in CLAUDE.md, and only `app`, `main`
-and `cli` may import `app/*`. A service that reaches into `app` would create
+`artifacts` and each other as documented in CLAUDE.md, and only the top
+layer (`app`, `main`, `cli`, and `config`, which composes every module's
+config model) may import `app/*`. A service that reaches into `app` would create
 an import cycle through `config` (which composes every module's config) and
 break the in-process CLI, so the rule is enforced here.
 
@@ -62,6 +63,31 @@ def _offenders(subpackage: str, forbidden: tuple[str, ...]) -> list[str]:
         if hits:
             result.append(f"{path.relative_to(SRC)}: {', '.join(hits)}")
     return result
+
+
+# Modules allowed to import assistant_runtime.app: the app package itself, the
+# entry points, and config (it composes the module config models).
+APP_IMPORTERS = ("app", "main", "cli", "config")
+
+
+def _all_offenders(forbidden: tuple[str, ...], allowed_top_level: tuple[str, ...]) -> list[str]:
+    result: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        top = path.relative_to(SRC).parts[0].removesuffix(".py")
+        if top in allowed_top_level:
+            continue
+        hits = sorted(
+            imported
+            for imported in _imported_modules(path)
+            if any(imported == f or imported.startswith(f + ".") for f in forbidden)
+        )
+        if hits:
+            result.append(f"{path.relative_to(SRC)}: {', '.join(hits)}")
+    return result
+
+
+def test_only_the_top_layer_imports_app() -> None:
+    assert _all_offenders((f"{PACKAGE}.app",), APP_IMPORTERS) == []
 
 
 def test_services_do_not_import_app() -> None:
