@@ -1,4 +1,4 @@
-"""HeartbeatService — periodic assistant check-ins via the inbox injection path."""
+"""HeartbeatService — the runtime's periodic check-in, delivered through the ingress."""
 
 from __future__ import annotations
 
@@ -9,27 +9,19 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from assistant_runtime.app._injector import inject_inbox_message
 from assistant_runtime.app.heartbeat.config import HeartbeatConfig
 from assistant_runtime.app.heartbeat.exceptions import HeartbeatError
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant.interface import AssistantService
-    from assistant_runtime.services.database.interface import DatabaseService
+    from assistant_runtime.app.ingress.interface import IngressService
 
 
 class HeartbeatService:
-    """Periodic heartbeat injector for the most recently active assistant session."""
+    """Every ``interval_seconds``, hand the assistant its check-in message."""
 
-    def __init__(
-        self,
-        config: HeartbeatConfig,
-        assistant_service: AssistantService,
-        database_service: DatabaseService | None = None,
-    ) -> None:
+    def __init__(self, config: HeartbeatConfig, ingress_service: IngressService) -> None:
         self._config = config
-        self._assistant = assistant_service
-        self._db = database_service
+        self._ingress = ingress_service
         self._task: asyncio.Task[None] | None = None
         self._started = False
         self._last_heartbeat_at: datetime | None = None
@@ -48,7 +40,6 @@ class HeartbeatService:
         )
 
     async def stop(self) -> None:
-        """Stop the heartbeat loop."""
         task = self._task
         self._task = None
         if task is not None:
@@ -59,7 +50,6 @@ class HeartbeatService:
         logger.info("Heartbeat service stopped")
 
     async def health_check(self) -> dict[str, Any]:
-        """Report heartbeat loop state."""
         task_running = self._task is not None and not self._task.done()
         return {
             "healthy": self._started and (not self._config.enabled or task_running),
@@ -72,42 +62,20 @@ class HeartbeatService:
         }
 
     async def enqueue_once(self) -> dict[str, Any]:
-        """Inject one heartbeat into the active assistant session."""
+        """Deliver one heartbeat into the most recently active session."""
         if not self._started:
             raise HeartbeatError("Heartbeat service not started")
-        if self._db is None:
-            return {"status": "skipped", "reason": "database_unavailable"}
-
-        session_id = await self._resolve_active_session_id()
-        if session_id is None:
-            return {"status": "skipped", "reason": "no_active_session"}
-
-        result = await inject_inbox_message(
-            db=self._db,
-            assistant_service=self._assistant,
+        result = await self._ingress.deliver(
             from_agent=self._config.from_agent,
             via="heartbeat",
             message=self._config.message,
-            session_id=session_id,
         )
         if result.get("status") == "delivered":
             self._last_heartbeat_at = datetime.now(UTC)
             self._last_error = None
         return result
 
-    async def _resolve_active_session_id(self) -> str | None:
-        """Pick the most recently active assistant session, if one exists."""
-        sessions = self._assistant.get_session_store()
-        if sessions is None:
-            return None
-        listed = await sessions.list_sessions(limit=1)
-        if not listed:
-            return None
-        session_id = listed[0].get("session_id")
-        return session_id if isinstance(session_id, str) and session_id else None
-
     async def _run_loop(self) -> None:
-        """Background task that injects heartbeats on a fixed interval."""
         try:
             if self._config.startup_delay_seconds:
                 await asyncio.sleep(self._config.startup_delay_seconds)

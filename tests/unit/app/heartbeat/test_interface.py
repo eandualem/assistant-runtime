@@ -13,156 +13,74 @@ from assistant_runtime.app.heartbeat.interface import HeartbeatService
 
 
 @pytest.fixture
-def assistant_service():
+def ingress():
     service = MagicMock()
-    session_store = MagicMock()
-    session_store.list_sessions = AsyncMock(return_value=[])
-    service.get_session_store.return_value = session_store
+    service.deliver = AsyncMock(return_value={"status": "delivered", "session_id": "s1"})
     return service
 
 
 @pytest.fixture
-def database_service():
-    return MagicMock()
-
-
-@pytest.fixture
-def service(assistant_service, database_service):
+def service(ingress):
     return HeartbeatService(
         config=HeartbeatConfig(enabled=False, interval_seconds=60, startup_delay_seconds=0),
-        assistant_service=assistant_service,
-        database_service=database_service,
+        ingress_service=ingress,
     )
 
 
 class TestLifecycle:
+    async def test_disabled_by_default(self):
+        assert HeartbeatConfig().enabled is False
+
     async def test_start_disabled_does_not_spawn_task(self, service):
         await service.start()
-        assert service._started is True
         assert service._task is None
+        assert (await service.health_check())["healthy"] is True
 
-    async def test_start_enabled_spawns_task(self, assistant_service, database_service):
-        svc = HeartbeatService(
-            config=HeartbeatConfig(enabled=True, interval_seconds=60, startup_delay_seconds=60),
-            assistant_service=assistant_service,
-            database_service=database_service,
+    async def test_start_enabled_spawns_task_and_stop_cancels_it(self, ingress):
+        service = HeartbeatService(
+            config=HeartbeatConfig(enabled=True, interval_seconds=60, startup_delay_seconds=0),
+            ingress_service=ingress,
         )
-
-        await svc.start()
-
-        assert svc._task is not None
-        await svc.stop()
-
-    async def test_stop_cancels_running_task(self, assistant_service, database_service):
-        svc = HeartbeatService(
-            config=HeartbeatConfig(enabled=True, interval_seconds=60, startup_delay_seconds=60),
-            assistant_service=assistant_service,
-            database_service=database_service,
-        )
-        await svc.start()
-
-        task = svc._task
-        assert task is not None
-
-        await svc.stop()
-
-        assert task.cancelled() or task.done()
+        await service.start()
+        await asyncio.sleep(0.01)
+        assert service._task is not None
+        assert not service._task.done()
+        assert (await service.health_check())["task_running"] is True
+        await service.stop()
+        assert service._task is None
 
 
 class TestEnqueueOnce:
     async def test_raises_when_not_started(self, service):
-        with pytest.raises(HeartbeatError, match="not started"):
+        with pytest.raises(HeartbeatError):
             await service.enqueue_once()
 
-    async def test_skips_when_no_database(self, assistant_service):
-        svc = HeartbeatService(
-            config=HeartbeatConfig(enabled=False),
-            assistant_service=assistant_service,
-            database_service=None,
-        )
-        await svc.start()
-
-        result = await svc.enqueue_once()
-
-        assert result == {"status": "skipped", "reason": "database_unavailable"}
-
-    async def test_skips_when_no_active_session(self, service):
+    async def test_delivers_the_check_in_through_the_ingress(self, service, ingress):
         await service.start()
-
         result = await service.enqueue_once()
-
-        assert result == {"status": "skipped", "reason": "no_active_session"}
-
-    async def test_injects_heartbeat_into_latest_session(
-        self, monkeypatch, assistant_service, database_service
-    ):
-        assistant_service.get_session_store.return_value.list_sessions = AsyncMock(
-            return_value=[{"session_id": "sess-1"}]
-        )
-        svc = HeartbeatService(
-            config=HeartbeatConfig(
-                enabled=False,
-                interval_seconds=60,
-                startup_delay_seconds=0,
-                message="[via:heartbeat]",
-                from_agent="heartbeat",
-            ),
-            assistant_service=assistant_service,
-            database_service=database_service,
-        )
-        await svc.start()
-
-        inject = AsyncMock(return_value={"status": "delivered", "session_id": "sess-1"})
-        monkeypatch.setattr(
-            "assistant_runtime.app.heartbeat.interface.inject_inbox_message",
-            inject,
-        )
-
-        result = await svc.enqueue_once()
-
         assert result["status"] == "delivered"
-        inject.assert_awaited_once_with(
-            db=database_service,
-            assistant_service=assistant_service,
-            from_agent="heartbeat",
-            via="heartbeat",
-            message="[via:heartbeat]",
-            session_id="sess-1",
-        )
-        assert svc._last_heartbeat_at is not None
+        assert ingress.deliver.await_args.kwargs == {
+            "from_agent": "heartbeat",
+            "via": "heartbeat",
+            "message": "[via:heartbeat]",
+        }
+        assert (await service.health_check())["last_heartbeat_at"] is not None
 
-
-class TestHealthCheck:
-    async def test_health_check_reports_disabled_service(self, service):
+    async def test_queued_result_is_not_a_heartbeat(self, service, ingress):
+        ingress.deliver = AsyncMock(return_value={"status": "queued", "inbox_id": "x"})
         await service.start()
-
-        result = await service.health_check()
-
-        assert result["healthy"] is True
-        assert result["enabled"] is False
-        assert result["task_running"] is False
+        await service.enqueue_once()
+        assert (await service.health_check())["last_heartbeat_at"] is None
 
 
 class TestRunLoop:
-    async def test_run_loop_records_errors(self, assistant_service, database_service):
-        svc = HeartbeatService(
+    async def test_run_loop_records_errors(self, ingress):
+        ingress.deliver = AsyncMock(side_effect=RuntimeError("boom"))
+        service = HeartbeatService(
             config=HeartbeatConfig(enabled=True, interval_seconds=60, startup_delay_seconds=0),
-            assistant_service=assistant_service,
-            database_service=database_service,
+            ingress_service=ingress,
         )
-
-        calls = 0
-
-        async def _enqueue():
-            nonlocal calls
-            calls += 1
-            raise RuntimeError("boom")
-
-        svc.enqueue_once = AsyncMock(side_effect=_enqueue)
-        await svc.start()
-
-        await asyncio.sleep(0)
-        await svc.stop()
-
-        assert calls >= 1
-        assert svc._last_error == "boom"
+        await service.start()
+        await asyncio.sleep(0.02)
+        assert (await service.health_check())["last_error"] == "boom"
+        await service.stop()

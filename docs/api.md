@@ -122,14 +122,14 @@ action produced (any JSON), and `content` empty. The model resumes.
 Names are `soul`, `persona`, `communication_protocol`, `ecosystem`,
 `scratchpad`.
 
-## Inbox and injection (Postgres)
+## Messages from other systems
 
 | Route | Purpose |
 |---|---|
-| `POST /api/inbox` `{"from", "message", "severity"?, "context"?}` | leave a note; severity `info`, `action_needed` or `urgent` |
-| `GET /api/inbox?surfaced=` | list notes |
-| `PATCH /api/inbox/{id}/surfaced` | mark a note as surfaced |
-| `POST /api/assistant/inject` `{"from", "via", "message", "sessionId"?, "telegramChatId"?}` | deliver a message into a session with a `[via:<via> from:<from>]` envelope |
+| `POST /api/assistant/inject` `{"from", "via", "message", "sessionId"?, "telegramChatId"?}` | deliver a message with a `[via:<via> from:<from>]` envelope into a session; `{"status": "delivered", "session_id", "delivery": "queued"|"promoted"}` or `{"status": "queued", "inbox_id"}` when no session exists |
+| `POST /api/inbox` `{"from", "message", "severity"?, "context"?}` | leave a note (`context.session_id` and `context.via` are honoured); same delivery and response as above |
+| `GET /api/inbox?surfaced=` | list the queued notes (Postgres) |
+| `PATCH /api/inbox/{id}/surfaced` | mark a note as surfaced (Postgres) |
 | `GET /api/assistant/sessions` | sessions in the shape agent-backbone expects |
 
 ## Media and debugging

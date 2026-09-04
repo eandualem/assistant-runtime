@@ -110,9 +110,11 @@ JSON values are given as JSON strings in the environment:
 
 ### Heartbeat (`HEARTBEAT__*`)
 
-`enabled` (`true`), `interval_seconds` (`300`), `startup_delay_seconds`
+`enabled` (`false`), `interval_seconds` (`300`), `startup_delay_seconds`
 (`300`), `message` (`[via:heartbeat]`), `from_agent` (`heartbeat`). The
-heartbeat injects a message through the inbox, so it needs Postgres.
+heartbeat is delivered like any message from another system, into the
+most recently active session; each tick is a model call, so it is off by
+default.
 
 ### Database (`DATABASE__*`)
 

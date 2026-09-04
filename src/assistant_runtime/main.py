@@ -13,6 +13,7 @@ from loguru import logger
 from assistant_runtime.app.assistant.exceptions import AssistantError, SessionError
 from assistant_runtime.app.assistant.factory import register_assistant
 from assistant_runtime.app.heartbeat.factory import register_heartbeat
+from assistant_runtime.app.ingress.factory import register_ingress
 from assistant_runtime.app.routes import router
 from assistant_runtime.app.settings import RuntimeSettings
 from assistant_runtime.app.streaming.exceptions import StreamingError
@@ -56,8 +57,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await register_mcp(app.state, lifecycle)
     await register_tools(app.state, lifecycle)
     await register_assistant(app.state, lifecycle)
-    await register_heartbeat(app.state, lifecycle)
     await register_streaming(app.state, lifecycle)
+    await register_ingress(app.state, lifecycle)
+    await register_heartbeat(app.state, lifecycle)
 
     await lifecycle.start_all()
 

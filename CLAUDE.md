@@ -24,7 +24,7 @@ that way: database code is exercised through fakes, the LLM boundary
 ## Invariants — do not route around these
 
 - **Every service and app module has the same skeleton** (`services/<name>/`,
-  `app/assistant`, `app/streaming`, `app/heartbeat`; the leaf modules
+  `app/assistant`, `app/streaming`, `app/ingress`, `app/heartbeat`; the leaf modules
   `base`, `artifacts`, `config` and the `app/routes` package are exempt).
   `config.py` (a frozen pydantic
   model nested into `AppSettings`), `deps.py` (FastAPI `Depends` accessors
@@ -35,7 +35,8 @@ that way: database code is exercised through fakes, the LLM boundary
   `exceptions.py`, and optionally `models.py`. Files starting with `_` are
   private to their module; other modules use the interface class only.
 - **Startup order is registration order** (`main.py:lifespan`): database,
-  oauth, llm, history, media, mcp, tools, assistant, heartbeat, streaming.
+  oauth, llm, history, media, mcp, tools, assistant, streaming, ingress,
+  heartbeat.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
@@ -46,7 +47,9 @@ that way: database code is exercised through fakes, the LLM boundary
   `services/tracing` helpers; `services/tools` may import `services/media`;
   no service imports `app`. `app/assistant` (prompt, sessions, per-request
   agent setup) imports services; `app/streaming` (the turn pipeline) imports
-  `app/assistant`; `app/routes` and `app/socketio_server` are the HTTP and
+  `app/assistant`; `app/ingress` (messages from other systems delivered
+  into sessions) imports `app/streaming`, and `app/heartbeat` imports
+  `app/ingress`; `app/routes` and `app/socketio_server` are the HTTP and
   Socket.IO edges; `main`, `cli` and `config` (which composes every module's config model)
   are the top. `tests/unit/test_imports.py` asserts that nothing below the
   top layer imports `app`; a new cross-package import must keep it green.

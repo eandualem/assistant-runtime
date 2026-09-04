@@ -1,4 +1,4 @@
-"""Assistant inject & sessions endpoints — backbone/agent message delivery."""
+"""Message ingress endpoints — other systems reach the assistant here."""
 
 from __future__ import annotations
 
@@ -8,15 +8,9 @@ from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from assistant_runtime.app._injector import inject_inbox_message
-from assistant_runtime.services.database.deps import get_database_service
+from assistant_runtime.app.ingress.deps import IngressServiceDep
 
-router = APIRouter(prefix="/assistant", tags=["assistant-inject"])
-
-
-# ---------------------------------------------------------------------------
-# Request / Response models
-# ---------------------------------------------------------------------------
+router = APIRouter(prefix="/assistant", tags=["assistant-ingress"])
 
 
 class InjectRequest(BaseModel):
@@ -29,80 +23,42 @@ class InjectRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-# ---------------------------------------------------------------------------
-# Dependencies
-# ---------------------------------------------------------------------------
-
-
-def _get_assistant_service(request: Request):
-    """Retrieve AssistantService from app state (may be None during startup)."""
-    return getattr(request.app.state, "assistant_service", None)
-
-
-# ---------------------------------------------------------------------------
-# POST /assistant/inject
-# ---------------------------------------------------------------------------
-
-
 @router.post("/inject", status_code=201)
-async def inject_message(body: InjectRequest, request: Request) -> dict[str, Any]:
-    """Inject a message into a assistant session via the inbox.
-
-    If session_id is provided and the session exists, tags the inbox item
-    with that session and returns status "delivered". Otherwise stores
-    the message without session tagging and returns "deferred".
-    """
-    db = get_database_service(request)
-    service = _get_assistant_service(request)
-
+async def inject_message(body: InjectRequest, ingress: IngressServiceDep) -> dict[str, Any]:
+    """Deliver a message into a session (the named one, the one bound to the
+    Telegram chat, or the most recent), or queue it until a session exists."""
     try:
-        return await inject_inbox_message(
-            db=db,
-            assistant_service=service,
+        return await ingress.deliver(
             from_agent=body.from_agent,
             via=body.via,
             message=body.message,
             session_id=body.session_id,
             telegram_chat_id=body.telegram_chat_id,
         )
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error("Failed to create inject inbox item", error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to store injected message") from e
-
-
-# ---------------------------------------------------------------------------
-# GET /assistant/sessions
-# ---------------------------------------------------------------------------
+        logger.error("Ingress delivery failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to deliver the message") from e
 
 
 @router.get("/sessions")
-async def list_sessions_backbone(request: Request) -> dict[str, Any]:
-    """List active sessions in backbone-expected format.
+async def list_sessions_for_peers(request: Request) -> dict[str, Any]:
+    """List active sessions as ``{"sessions": [{"id", "active", "title", "turn_number"}]}``.
 
-    Returns {"sessions": [{"id": "...", "active": true, ...}]} — distinct
-    from the host's GET /sessions which returns a flat list.
+    The shape other systems expect; the host-facing list is ``GET /sessions``.
     """
-    service = _get_assistant_service(request)
-    if service is None:
+    service = getattr(request.app.state, "assistant_service", None)
+    store = service.get_session_store() if service is not None else None
+    if store is None:
         return {"sessions": []}
-
-    sessions_store = service.get_session_store()
-    if sessions_store is None:
-        return {"sessions": []}
-
-    raw = await sessions_store.list_sessions()
-
-    backbone_sessions = []
-    for s in raw:
-        backbone_sessions.append(
+    raw = await store.list_sessions()
+    return {
+        "sessions": [
             {
                 "id": s.get("session_id", s.get("id")),
                 "active": True,
                 "title": s.get("title"),
                 "turn_number": s.get("turn_number", 0),
             }
-        )
-
-    return {"sessions": backbone_sessions}
+            for s in raw
+        ]
+    }

@@ -14,8 +14,7 @@ async def register_heartbeat(app_state: Any, lifecycle: LifecycleManager) -> Non
     settings = AppSettings()
     service = HeartbeatService(
         config=settings.heartbeat,
-        assistant_service=app_state.assistant_service,
-        database_service=getattr(app_state, "database_service", None),
+        ingress_service=app_state.ingress_service,
     )
     app_state.heartbeat_service = service
     await lifecycle.register("heartbeat_service", service)

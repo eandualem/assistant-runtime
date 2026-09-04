@@ -1,4 +1,9 @@
-"""Inbox endpoints — agents push messages for the assistant to surface contextually."""
+"""Inbox endpoints — a note for the assistant, delivered like any other message.
+
+``POST /inbox`` goes through the ingress (delivered into the most recent
+session, queued when there is none); the other endpoints inspect the
+queue, which lives in Postgres.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from assistant_runtime.app.ingress.deps import IngressServiceDep
 from assistant_runtime.services.database.deps import get_database_service
 from assistant_runtime.services.database.repositories import InboxRepository
 
@@ -57,27 +63,20 @@ def _row_to_response(row) -> dict:
 
 
 @router.post("", status_code=201)
-async def create_inbox_item(body: InboxItemCreate, request: Request) -> dict:
-    """Create a new inbox item from an agent."""
-    db = get_database_service(request)
-
+async def create_inbox_item(body: InboxItemCreate, ingress: IngressServiceDep) -> dict:
+    """Leave a note for the assistant; delivered into the most recent session or queued."""
+    session_id = (body.context or {}).get("session_id")
     try:
-        async with db.session_context() as session:
-            repo = InboxRepository(session)
-            row = await repo.create(
-                from_agent=body.from_agent,
-                message=body.message,
-                severity=body.severity,
-                context=body.context,
-            )
-            result = _row_to_response(row)
-    except HTTPException:
-        raise
+        return await ingress.deliver(
+            from_agent=body.from_agent,
+            via=(body.context or {}).get("via", "inbox"),
+            message=body.message,
+            session_id=session_id if isinstance(session_id, str) else None,
+            severity=body.severity,
+        )
     except Exception as e:
-        logger.error("Failed to create inbox item", error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to create inbox item") from e
-
-    return result
+        logger.error("Failed to deliver inbox item", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to deliver the note") from e
 
 
 @router.get("")
