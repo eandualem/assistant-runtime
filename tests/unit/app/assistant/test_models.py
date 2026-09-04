@@ -59,44 +59,15 @@ class TestAssistantRequest:
         }
         assert request.config == TunableOverrides(default_model="openai/gpt-5.4")
 
-    def test_legacy_machine_state_maps_to_host_context(self) -> None:
-        request = AssistantRequest.model_validate(
-            {
-                "id": "user-1",
-                "sessionId": "sess-1",
-                "content": "hi",
-                "machineState": {
-                    "activePage": {
-                        "name": "agents",
-                        "machines": {"m": {"currentState": "idle"}},
-                        "availableActions": [{"eventType": "REFRESH"}],
-                    },
-                    "navigation": [],
-                },
-            }
-        )
-
-        assert request.host_context == {
-            "page": {
-                "name": "agents",
-                "state": {"m": {"current_state": "idle"}},
-                "actions": [{"event_type": "REFRESH"}],
-            },
-            "navigation": [],
-        }
-
     def test_normalize_host_context_rejects_non_mappings(self) -> None:
         assert normalize_host_context(None) is None
         assert normalize_host_context("x") is None
         assert normalize_host_context([1]) is None
 
-    def test_host_context_from_payload_prefers_current_key(self) -> None:
-        payload = {
-            "hostContext": {"page": {"name": "a"}},
-            "machineState": {"activePage": {"name": "b"}},
-        }
+    def test_host_context_from_payload_accepts_both_spellings(self) -> None:
+        payload = {"hostContext": {"page": {"name": "a"}}}
         assert host_context_from_payload(payload) == {"page": {"name": "a"}}
-        assert host_context_from_payload({"machine_state": {"active_page": {"name": "b"}}}) == {
+        assert host_context_from_payload({"host_context": {"page": {"name": "b"}}}) == {
             "page": {"name": "b"}
         }
         assert host_context_from_payload({"session_id": "s"}) is None
