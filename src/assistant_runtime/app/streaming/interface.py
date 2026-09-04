@@ -52,6 +52,7 @@ class StreamingService:
         self._tools = tool_service
         self._assistant_service = assistant_service
         self._db = database_service
+        self._ingress: Any | None = None
         self._started = False
 
     @property
@@ -71,6 +72,10 @@ class StreamingService:
             assistant_service=self._assistant_service,
             database_service=self._db,
         )
+
+    def attach_ingress(self, ingress: Any | None) -> None:
+        """Attach the ingress service; its queue is drained into each new message turn."""
+        self._ingress = ingress
 
     async def start(self) -> None:
         self._started = True
@@ -128,6 +133,11 @@ class StreamingService:
         """
         if not self._started:
             raise StreamingError("Streaming service not started")
+        if self._ingress is not None and not request.is_steering and not request.is_continuation:
+            try:
+                await self._ingress.drain(request.session_id)
+            except Exception as e:
+                logger.warning("Inbox drain failed", session_id=request.session_id, error=str(e))
         try:
             plan = await TurnPlanner(self._sessions).plan(request)
         except (StreamSetupError, SessionError) as e:
