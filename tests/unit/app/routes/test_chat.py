@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
 from assistant_runtime.app.assistant.models import AssistantResult
 from assistant_runtime.main import create_app
 
@@ -74,6 +75,40 @@ class TestChatEndpoint:
         assert response.status_code == 200
         request = service.run_message.await_args.args[0]
         assert request.host_context == {"page": {"name": "agents", "data": {"entities": []}}}
+
+    @pytest.mark.asyncio
+    async def test_chat_session_rejection_is_a_409(self) -> None:
+        service = AsyncMock()
+        service.run_message.side_effect = SessionError("Parent message 'missing' not found")
+        app = _create_test_app(streaming_service=service)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/chat",
+                json={
+                    "id": "user-2",
+                    "session_id": "sess-1",
+                    "parent_id": "missing",
+                    "content": "Hi",
+                },
+            )
+
+        assert response.status_code == 409
+        assert response.json()["type"] == "SessionError"
+
+    @pytest.mark.asyncio
+    async def test_chat_run_failure_is_a_500(self) -> None:
+        service = AsyncMock()
+        service.run_message.side_effect = AgentRunError("boom")
+        app = _create_test_app(streaming_service=service)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/chat", json={"id": "user-1", "session_id": "sess-1", "content": "Hi"}
+            )
+
+        assert response.status_code == 500
+        assert response.json()["type"] == "AgentRunError"
 
     @pytest.mark.asyncio
     async def test_chat_invalid_body_returns_422(self) -> None:

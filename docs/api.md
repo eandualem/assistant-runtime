@@ -16,8 +16,9 @@ OpenAPI docs are served at `/docs`.
 as the socket and returns `{"content", "model", "session_id",
 "turn_number", "message_id", "pending_tool_call"}` when the turn ends.
 `pending_tool_call` is set when the turn stopped on a host tool call; answer
-it with a continuation body (`tool_call_id`, `tool_result`). A failed run
-is a 500 with `{"error", "type"}`. Steering messages are rejected here
+it with a continuation body (`tool_call_id`, `tool_result`). A request
+that does not fit the session (unknown session or parent, duplicate id) is
+a 409; a failed run is a 500; both carry `{"error", "type"}`. Steering messages are rejected here
 (422); use the socket.
 
 ## The message body

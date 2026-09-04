@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from assistant_runtime.app.assistant.exceptions import AssistantError
+from assistant_runtime.app.assistant.exceptions import AssistantError, SessionError
 from assistant_runtime.app.assistant.factory import register_assistant
 from assistant_runtime.app.heartbeat.factory import register_heartbeat
 from assistant_runtime.app.routes import router
@@ -115,6 +115,15 @@ def create_app() -> FastAPI:
     )
 
     # Exception handlers
+    @app.exception_handler(SessionError)
+    async def session_error_handler(request, exc: SessionError):
+        # The request does not fit the session (unknown session or parent,
+        # duplicate id, wrong tool call): the client's mistake, not ours.
+        return JSONResponse(
+            status_code=409,
+            content={"error": str(exc), "type": exc.__class__.__name__},
+        )
+
     @app.exception_handler(AssistantError)
     async def assistant_error_handler(request, exc: AssistantError):
         return JSONResponse(
