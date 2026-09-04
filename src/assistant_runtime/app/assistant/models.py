@@ -53,6 +53,32 @@ def _apply_context_aliases(host_context: dict[str, Any]) -> dict[str, Any]:
     return context
 
 
+def normalize_host_context(raw: Any) -> dict[str, Any] | None:
+    """A host context as the runtime expects it: snake_case keys, documented shape.
+
+    Accepts what a client sent (camelCase or snake_case, current or legacy key
+    names) and returns None for anything that is not a mapping. Every entry
+    point that takes a host context (the request model, the Socket.IO join)
+    goes through here so the stored ``last_host_context`` is always canonical.
+    """
+    if not isinstance(raw, dict):
+        return None
+    return _apply_context_aliases(_normalize_keys(raw))
+
+
+_HOST_CONTEXT_PAYLOAD_KEYS = ("host_context", "hostContext", "machine_state", "machineState")
+
+
+def host_context_from_payload(data: Any) -> dict[str, Any] | None:
+    """Pull and normalise the host context out of a raw client payload, if any."""
+    if not isinstance(data, dict):
+        return None
+    for key in _HOST_CONTEXT_PAYLOAD_KEYS:
+        if key in data:
+            return normalize_host_context(data[key])
+    return None
+
+
 @dataclass(frozen=True)
 class PromptResult:
     """Result of building a system prompt — content plus fragment metadata."""
@@ -174,7 +200,7 @@ class AssistantRequest(BaseModel):
         # 2. Deep-normalize host_context contents + legacy aliases
         ctx = data.get("host_context")
         if isinstance(ctx, dict):
-            data = {**data, "host_context": _apply_context_aliases(_normalize_keys(ctx))}
+            data = {**data, "host_context": normalize_host_context(ctx)}
 
         # 3. Normalize config keys (shallow — flat model)
         cfg = data.get("config")

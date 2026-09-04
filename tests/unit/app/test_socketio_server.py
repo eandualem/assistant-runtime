@@ -46,6 +46,63 @@ class TestAssistantNamespaceJoin:
             to="sid-1",
         )
 
+    @pytest.mark.asyncio
+    async def test_join_session_normalises_camel_case_host_context(self) -> None:
+        streaming = MagicMock()
+        streaming.warm_session = AsyncMock()
+        namespace = AssistantNamespace("/assistant")
+        namespace.server = _server_with_streaming_service(streaming)
+        namespace.emit = AsyncMock()
+        namespace.enter_room = AsyncMock()
+
+        await namespace.on_assistant_join_session(
+            "sid-1",
+            {
+                "session_id": "sess-1",
+                "hostContext": {"page": {"name": "tasks", "data": {"activeFilters": []}}},
+            },
+        )
+
+        streaming.warm_session.assert_awaited_once_with(
+            "sess-1", {"page": {"name": "tasks", "data": {"active_filters": []}}}
+        )
+
+    @pytest.mark.asyncio
+    async def test_join_session_maps_legacy_machine_state(self) -> None:
+        streaming = MagicMock()
+        streaming.warm_session = AsyncMock()
+        namespace = AssistantNamespace("/assistant")
+        namespace.server = _server_with_streaming_service(streaming)
+        namespace.emit = AsyncMock()
+        namespace.enter_room = AsyncMock()
+
+        await namespace.on_assistant_join_session(
+            "sid-1",
+            {
+                "session_id": "sess-1",
+                "machineState": {
+                    "activePage": {"name": "agents", "machines": {"m": {}}, "availableActions": []}
+                },
+            },
+        )
+
+        streaming.warm_session.assert_awaited_once_with(
+            "sess-1", {"page": {"name": "agents", "state": {"m": {}}, "actions": []}}
+        )
+
+    @pytest.mark.asyncio
+    async def test_join_session_without_context_warms_with_none(self) -> None:
+        streaming = MagicMock()
+        streaming.warm_session = AsyncMock()
+        namespace = AssistantNamespace("/assistant")
+        namespace.server = _server_with_streaming_service(streaming)
+        namespace.emit = AsyncMock()
+        namespace.enter_room = AsyncMock()
+
+        await namespace.on_assistant_join_session("sid-1", {"session_id": "sess-1"})
+
+        streaming.warm_session.assert_awaited_once_with("sess-1", None)
+
 
 class TestAssistantNamespaceMessages:
     @pytest.mark.asyncio
