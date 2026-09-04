@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from assistant_runtime.app.assistant._defaults import DEFAULTS_DIR, load_default_artifacts
-from assistant_runtime.app.assistant._prompt_builder import REQUIRED_ARTIFACT_NAMES
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.assistant.interface import AssistantService
+from assistant_runtime.artifacts import REQUIRED_ARTIFACT_NAMES
 
 
 class TestLoadDefaultArtifacts:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from assistant_runtime.app.assistant._prompt_builder import REQUIRED_ARTIFACT_NAMES
+from assistant_runtime.artifacts import REQUIRED_ARTIFACT_NAMES
 
 DEFAULTS_DIR = Path(__file__).with_name("defaults")
 

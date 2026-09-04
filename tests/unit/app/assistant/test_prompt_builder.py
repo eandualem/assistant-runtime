@@ -3,7 +3,6 @@
 import pytest
 
 from assistant_runtime.app.assistant._prompt_builder import (
-    REQUIRED_ARTIFACT_NAMES,
     _datetime_fragment,
     _host_context_fragment,
     _mcp_connections_fragment,
@@ -12,6 +11,7 @@ from assistant_runtime.app.assistant._prompt_builder import (
     build_system_prompt,
 )
 from assistant_runtime.app.assistant.models import PromptResult
+from assistant_runtime.artifacts import REQUIRED_ARTIFACT_NAMES
 from assistant_runtime.services.history.models import WorkingMemory
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
