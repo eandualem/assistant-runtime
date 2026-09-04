@@ -25,15 +25,6 @@ class ProviderNotConfiguredError(MediaError):
         super().__init__(message, **kwargs)
 
 
-class ImageNotFoundError(MediaError):
-    """Requested image not found in cache (expired or never existed)."""
-
-    def __init__(self, message: str, **kwargs) -> None:
-        kwargs.setdefault("severity", "low")
-        kwargs.setdefault("retry_allowed", False)
-        super().__init__(message, **kwargs)
-
-
 class ContentPolicyError(MediaError):
     """Image generation rejected due to content policy violation."""
 

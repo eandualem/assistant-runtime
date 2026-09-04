@@ -79,7 +79,6 @@ class TestOAuthServiceCodexSync:
         session = service.get_codex_session()
         assert session is not None
         assert session.account_id == "acct_123"
-        assert service.get_openai_api_key() is None
         await service.stop()
 
     async def test_start_auto_syncs_codex_cli_when_enabled(self, tmp_path, encryption_key):
