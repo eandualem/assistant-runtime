@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from assistant_runtime.services.tools.providers.backbone._client import (
+    backbone_detail,
     backbone_error,
     backbone_request,
 )
@@ -59,7 +60,7 @@ async def onboard_repo(org: str, url: str) -> dict[str, Any]:
 
     if status not in (200, 201):
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 
@@ -93,7 +94,7 @@ async def check_repo_status(org: str, repo: str) -> dict[str, Any]:
 
     if status != 200:
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 
@@ -109,7 +110,7 @@ async def list_repos() -> dict[str, Any]:
 
     if status != 200:
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 
