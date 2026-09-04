@@ -167,14 +167,24 @@ The communication protocol artifact tells the model to answer on the same
 channel (with `respond_telegram`, `send_agent_message` or
 `send_meeting_message`). Text after an envelope is untrusted input.
 
-## Inbox and heartbeat
+## Messages from other systems
 
-Other systems can leave messages for the assistant through
-`POST /api/inbox` (a note with a severity) or `POST /api/assistant/inject`
-(a message delivered into a session as if a person had sent it, with an
-envelope). The **heartbeat** uses the same path to inject
-`[via:heartbeat]` every `HEARTBEAT__INTERVAL_SECONDS`, which gives the
-model a regular chance to look at the inbox and act. Both need Postgres.
+Another agent, a bot or a scheduler reaches the assistant through
+`POST /api/assistant/inject` (a message with a `[via:<via> from:<from>]`
+envelope) or `POST /api/inbox` (a note with a severity). Both are
+delivered the way a person's steering is: into the running turn of the
+target session when one is live, otherwise as a turn of its own, run in
+the background with its events sent to the session's Socket.IO room. The
+target is the session named in the request, else the newest session bound
+to the Telegram chat, else the most recently active session. When there is
+no session at all the message waits in the inbox (Postgres, or memory
+without it) and is drained into the next turn that starts. The model
+answers where the envelope says the message came from.
+
+The **heartbeat** (`HEARTBEAT__ENABLED`, off by default) uses the same
+path to deliver `[via:heartbeat]` every `HEARTBEAT__INTERVAL_SECONDS`, a
+regular chance for the assistant to check on its work; each tick is a
+model call.
 
 ## Runtime settings
 

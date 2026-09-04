@@ -33,6 +33,15 @@ _EVENT_TYPE_MAP: dict[str, str] = {
 }
 
 
+def socket_event_name(event: dict[str, Any]) -> str:
+    """The Socket.IO event name for a stream event dict."""
+    event_type = event.get("type", "")
+    name = _EVENT_TYPE_MAP.get(event_type)
+    if name is not None:
+        return name
+    return "assistant:debug" if event_type.startswith("debug_") else "assistant:unknown"
+
+
 def create_sio() -> socketio.AsyncServer:
     """Create and configure the Socket.IO async server."""
     sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -200,13 +209,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
             async for event in self._streaming_service.stream_message(request):
                 event_type = event.get("type", "")
                 last_event_type = event_type
-                socket_event = _EVENT_TYPE_MAP.get(event_type)
-                if socket_event is None:
-                    # debug_* events → assistant:debug
-                    if event_type.startswith("debug_"):
-                        socket_event = "assistant:debug"
-                    else:
-                        socket_event = "assistant:unknown"
+                socket_event = socket_event_name(event)
                 last_socket_event = socket_event
                 is_terminal_completed = (
                     event_type == "agent_status" and event.get("status") == "completed"

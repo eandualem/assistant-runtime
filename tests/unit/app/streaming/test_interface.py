@@ -1229,3 +1229,31 @@ class TestRunMessage:
 
         with pytest.raises(SessionError, match="not found"):
             await service.run_message(_request(message_id="user-2", parent_id="missing"))
+
+
+class TestIngressHook:
+    @pytest.mark.asyncio
+    async def test_message_turns_drain_the_ingress_first(self) -> None:
+        service = _make_service()
+        await service.start()
+        ingress = MagicMock()
+        ingress.drain = AsyncMock(return_value=0)
+        service.attach_ingress(ingress)
+
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+
+        ingress.drain.assert_awaited_once_with("sess-1")
+        assert events[-1]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_a_failing_drain_does_not_stop_the_turn(self) -> None:
+        service = _make_service()
+        await service.start()
+        ingress = MagicMock()
+        ingress.drain = AsyncMock(side_effect=RuntimeError("inbox down"))
+        service.attach_ingress(ingress)
+
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+
+        final = next(e for e in events if e["type"] == "final_response")
+        assert final["content"] == "Hello!"

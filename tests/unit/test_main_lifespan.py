@@ -41,7 +41,10 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
         app_state.heartbeat_service = SimpleNamespace()
 
     async def _register_streaming(app_state, lifecycle):
-        app_state.streaming_service = SimpleNamespace()
+        app_state.streaming_service = SimpleNamespace(attach_ingress=MagicMock())
+
+    async def _register_ingress(app_state, lifecycle):
+        app_state.ingress_service = SimpleNamespace()
 
     monkeypatch.setattr("assistant_runtime.main.register_database", _register_database)
     monkeypatch.setattr("assistant_runtime.main.register_llm", _register_llm)
@@ -52,6 +55,7 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     monkeypatch.setattr("assistant_runtime.main.register_assistant", _register_assistant)
     monkeypatch.setattr("assistant_runtime.main.register_heartbeat", _register_heartbeat)
     monkeypatch.setattr("assistant_runtime.main.register_streaming", _register_streaming)
+    monkeypatch.setattr("assistant_runtime.main.register_ingress", _register_ingress)
     monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr("assistant_runtime.main.setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(
