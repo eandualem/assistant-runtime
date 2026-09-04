@@ -1246,6 +1246,25 @@ class TestIngressHook:
         assert events[-1]["status"] == "completed"
 
     @pytest.mark.asyncio
+    async def test_drain_runs_once_the_session_exists(self) -> None:
+        service = _make_service()
+        await service.start()
+        seen: list[bool] = []
+        sessions = service._assistant_service.get_session_store()
+
+        async def _drain(session_id: str) -> int:
+            seen.append(sessions.has_session(session_id))
+            return 0
+
+        ingress = MagicMock()
+        ingress.drain = AsyncMock(side_effect=_drain)
+        service.attach_ingress(ingress)
+
+        async for _ in service.stream_message(_request(message_id="user-1")):
+            pass
+
+        assert seen == [True]
+
     async def test_a_failing_drain_does_not_stop_the_turn(self) -> None:
         service = _make_service()
         await service.start()
