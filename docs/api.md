@@ -58,7 +58,7 @@ requesting socket.
 | `assistant:tool_error` | `tool_name`, `error`, `call_id` |
 | `assistant:final_response` | `content`, `model`, `streamed`, `session_id`?, `message_id`?, `trace_id`?, `usage`?, `error`?, `pending_tool_call`? (`{tool_name, call_id, arguments}`) |
 | `assistant:error` | `type` (`validation`, `session`, `cancelled`, `internal`), `message`, `terminal`, `retry_allowed` |
-| `assistant:debug` | `type` is one of `debug_request`, `debug_system_prompt`, `debug_history`, `debug_tool_selection`, `debug_agent_config`, `debug_thinking`, `debug_final_response`, `debug_usage`, `debug_error`, `debug_completed`; off with `STREAMING__EMIT_DEBUG_EVENTS=false` |
+| `assistant:debug` | `type` is one of `debug_request`, `debug_system_prompt`, `debug_history`, `debug_tool_selection`, `debug_agent_config`, `debug_thinking`, `debug_final_response`, `debug_usage`, `debug_error`, `debug_completed`; off by default, on with `STREAMING__EMIT_DEBUG_EVENTS=true` |
 
 Segment metadata on deltas: `segment_id`, `segment_index`, `delta_index`,
 `segment_started`, `segment_kind` (`text` or `thinking`), so a client can

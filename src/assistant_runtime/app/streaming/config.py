@@ -27,8 +27,11 @@ class StreamingConfig(BaseModel):
         description="Maximum time for a single streaming request.",
     )
     emit_debug_events: bool = Field(
-        default=True,
-        description="Emit debug events exposing pipeline internals.",
+        default=False,
+        description=(
+            "Emit assistant:debug events exposing the system prompt, history and tool "
+            "selection. Off by default: any client of the unauthenticated socket could read them."
+        ),
     )
     part_start_chunk_size: int = Field(
         default=100,

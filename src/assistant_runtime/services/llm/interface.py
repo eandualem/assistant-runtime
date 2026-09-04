@@ -20,7 +20,13 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.services.llm._codex_model import OpenAICodexResponsesModel
 from assistant_runtime.services.llm._settings import build_model_settings, validate_model_id
-from assistant_runtime.services.llm.config import _PROVIDER_ENV_VAR_MAP, LLMConfig, ProviderConfig
+from assistant_runtime.services.llm.config import (
+    _PROVIDER_ENV_VAR_MAP,
+    PROVIDER_DEFAULT_MODELS,
+    PROVIDER_DEFAULT_SUMMARIZATION_MODELS,
+    LLMConfig,
+    ProviderConfig,
+)
 from assistant_runtime.services.llm.exceptions import ProviderConfigError, classify_llm_error
 from assistant_runtime.services.tracing import create_span
 
@@ -158,7 +164,7 @@ class LlmService:
         logger.info(
             "LLM service started",
             providers=configured_providers,
-            primary_model=self._config.primary_model,
+            primary_model=self.effective_primary_model(),
         )
 
     async def stop(self) -> None:
@@ -177,7 +183,7 @@ class LlmService:
         return {
             "healthy": self._started and len(providers) > 0,
             "providers": providers,
-            "primary_model": self._config.primary_model,
+            "primary_model": self.effective_primary_model(),
         }
 
     async def reload_provider_key(self, provider: str, api_key: str) -> None:
@@ -266,7 +272,44 @@ class LlmService:
 
     def resolve_model(self, model: str | None = None) -> str:
         """Resolve, normalize, and validate a model identifier."""
-        return validate_model_id(model or self._config.primary_model)
+        return validate_model_id(model or self.effective_primary_model())
+
+    def resolve_summarization_model(self, model: str | None = None) -> str:
+        """The model for summaries and other lightweight tasks, validated."""
+        return validate_model_id(model or self.effective_summarization_model())
+
+    def effective_primary_model(self) -> str:
+        """The configured primary model, or a configured provider's default.
+
+        With only an OpenAI key set, the default ``anthropic:claude-opus-5``
+        cannot be used; the first configured provider's default is used
+        instead (and logged) so a one-key setup works out of the box.
+        """
+        return self._effective_model(self._config.primary_model, PROVIDER_DEFAULT_MODELS)
+
+    def effective_summarization_model(self) -> str:
+        """The configured summarization model, or a configured provider's default."""
+        return self._effective_model(
+            self._config.summarization_model, PROVIDER_DEFAULT_SUMMARIZATION_MODELS
+        )
+
+    def _effective_model(self, configured: str, defaults: dict[str, str]) -> str:
+        provider = configured.split(":", 1)[0]
+        available = self._configured_provider_names() if self._started else []
+        if not available:
+            return configured
+        if provider in available or (provider == "google-cloud" and "google" in available):
+            return configured
+        fallback = next((defaults[p] for p in defaults if p in available), None)
+        if fallback is None:
+            return configured
+        logger.warning(
+            "Configured model's provider has no credentials; using a configured provider's default",
+            configured=configured,
+            fallback=fallback,
+            providers=available,
+        )
+        return fallback
 
     def _configured_provider_names(self) -> list[str]:
         """Return provider names including active Codex-backed OpenAI auth."""
@@ -364,7 +407,7 @@ class LlmService:
         based on frontend machine state.
 
         Args:
-            model: Model identifier override. Defaults to config.primary_model.
+            model: Model identifier override. Defaults to the effective primary model.
             system_prompt: System prompt instructions.
             deps_type: Agent dependencies type.
             toolsets: Optional list of toolsets to register.
