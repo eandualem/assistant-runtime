@@ -122,8 +122,6 @@ class SessionStore:
         if request.parent_id is None:
             if ctx is None:
                 ctx = self.get_context(session_id)
-                if self._db is not None:
-                    await self._db.ensure_session(session_id, ctx.get("title"))
             elif ctx["message_count"] > 0:
                 raise ValueError("Only the first message in a session may have parent_id = null")
         else:
