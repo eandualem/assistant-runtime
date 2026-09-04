@@ -5,17 +5,18 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._telemetry_tools import (
+from assistant_runtime.services.tools.capabilities.activity import register_activity_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.backbone.activity import (
+    BackboneActivity,
     get_activity_timeline,
     get_agent_activity,
     get_delivery_status,
     get_failed_deliveries,
     get_recent_deliveries,
-    register_telemetry_tools,
 )
-from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "assistant_runtime.services.tools._telemetry_tools"
+MODULE = "assistant_runtime.services.tools.providers.backbone.activity"
 
 
 class TestGetDeliveryStatus:
@@ -219,7 +220,7 @@ class TestGetActivityTimeline:
 class TestRegisterTelemetryTools:
     def test_all_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_telemetry_tools(registry)
+        register_activity_tools(registry, BackboneActivity())
 
         names = registry.get_tool_names()
         assert "get_delivery_status" in names
@@ -230,18 +231,18 @@ class TestRegisterTelemetryTools:
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_telemetry_tools(registry)
+        register_activity_tools(registry, BackboneActivity())
         assert len(registry._backend_definitions) == 5
 
     def test_all_backend(self):
         registry = ToolRegistry(ToolConfig())
-        register_telemetry_tools(registry)
+        register_activity_tools(registry, BackboneActivity())
         for defn in registry._backend_definitions.values():
             assert defn.category == "backend"
 
     def test_handlers_callable(self):
         registry = ToolRegistry(ToolConfig())
-        register_telemetry_tools(registry)
+        register_activity_tools(registry, BackboneActivity())
         for name in [
             "get_delivery_status",
             "get_recent_deliveries",

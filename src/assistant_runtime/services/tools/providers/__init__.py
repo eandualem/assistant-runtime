@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from assistant_runtime.services.tools.providers.backbone import build_backbone_providers
+from assistant_runtime.services.tools.providers.claude_code import StateFileApprovals
 from assistant_runtime.services.tools.providers.config import ProvidersConfig
 from assistant_runtime.services.tools.providers.filesystem import (
     FilesystemLibrary,
@@ -23,6 +25,10 @@ def build_providers(config: ProvidersConfig) -> dict[str, Any]:
         providers["notes"] = MarkdownNotes(config.notes_path)
     if config.library_paths:
         providers["library"] = FilesystemLibrary(config.library_paths)
+    if config.backbone_url:
+        providers.update(build_backbone_providers(config))
+    if config.agent_state_dir is not None:
+        providers["approvals"] = StateFileApprovals(config.agent_state_dir)
     return providers
 
 

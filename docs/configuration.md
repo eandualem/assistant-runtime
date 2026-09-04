@@ -137,12 +137,14 @@ variables:
 |---|---|---|
 | `NOTES_PATH` | notes (`manage_notes`) | a folder of markdown notes with frontmatter |
 | `LIBRARY_PATHS` (`name=path,name=path`, or one path) | library (`list_documents`, `read_document`) | directories of documents, each a subdirectory with a `SKILL.md`, `README.md` or `index.md` |
+| `BACKBONE_URL` (+ `BACKBONE_API_KEY`) | peers, rooms, reminders, activity, workgroups, repositories | [agent-backbone](https://github.com/eandualem/agent-backbone) |
+| `BACKBONE_INFRASTRUCTURE_SESSIONS` (comma-separated) | peers | session names to leave out of the active-agent list |
+| `AGENT_STATE_DIR` | approvals (`list_agent_plans`, `approve_plan`, `reject_plan`); also enriches peers | a directory of agent state files (the Claude Code layout, `~/.claude/state`) |
 
 ## Integrations
 
 | Variable | Used by |
 |---|---|
-| `BACKBONE_URL`, `BACKBONE_API_KEY` | agent, plan, meeting, schedule, swarm, telemetry and repo tools |
 | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` | GitHub issue tools |
 | `REPO_ORGS` | optional comma-separated allowlist for repository onboarding |
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram tools |

@@ -47,57 +47,17 @@ class TestLifecycle:
     async def test_start_registers_default_tools(self, service):
         await service.start()
         tool_names = service._registry.get_tool_names()
-        # Placeholders
+        # Built in
         assert "get_time" in tool_names
-        # Agent management tools
-        assert "list_agents" in tool_names
-        assert "get_active_agents" in tool_names
-        assert "check_agent_state" in tool_names
-        assert "start_agent" in tool_names
-        assert "send_agent_message" in tool_names
-        # Capabilities need a configured provider
-        assert "manage_notes" not in tool_names
-        # GitHub issue management tools
-        assert "create_issue" in tool_names
-        assert "search_issues" in tool_names
-        assert "get_issue_details" in tool_names
-        assert "comment_on_issue" in tool_names
-        assert "close_issue" in tool_names
-        # Meeting management tools
-        assert "create_meeting_room" in tool_names
-        assert "list_meeting_rooms" in tool_names
-        assert "send_meeting_message" in tool_names
-        assert "update_meeting_state" in tool_names
-        # Schedule management tools
-        assert "add_schedule_item" in tool_names
-        assert "remove_schedule_item" in tool_names
-        assert "toggle_schedule_item" in tool_names
-        # Backbone telemetry tools
-        assert "get_delivery_status" in tool_names
-        assert "get_recent_deliveries" in tool_names
-        assert "get_failed_deliveries" in tool_names
-        assert "get_agent_activity" in tool_names
-        assert "get_activity_timeline" in tool_names
-        # Backbone swarm tools
-        assert "create_swarm" in tool_names
-        assert "list_swarms" in tool_names
-        assert "get_swarm_detail" in tool_names
-        assert "update_worker_status" in tool_names
-        assert "broadcast_to_swarm" in tool_names
-        assert "complete_swarm" in tool_names
-        # Telegram messaging tools
-        assert "respond_telegram" in tool_names
-        # Plan management tools
-        assert "list_agent_plans" in tool_names
-        assert "approve_plan" in tool_names
-        assert "reject_plan" in tool_names
-        # Artifact management tool
+        assert "look_at_screen" in tool_names
         assert "manage_artifacts" in tool_names
-        # Skill management tools
-        assert "list_documents" not in tool_names
+        # Capabilities need a configured provider
+        for name in ("manage_notes", "list_documents", "list_agents", "create_meeting_room"):
+            assert name not in tool_names
+        # Integrations still on the old model (fail soft when unconfigured)
+        assert "create_issue" in tool_names
+        assert "respond_telegram" in tool_names
 
-
-class TestNotStartedGuard:
     def test_build_toolset_before_start(self, service):
         with pytest.raises(ToolError, match="not started"):
             service.build_toolset()
@@ -133,7 +93,7 @@ class TestDelegation:
         await service.start()
         result = service.get_available_tools()
         assert isinstance(result, ToolSet)
-        assert result.total_count >= 37
+        assert result.total_count >= 3
 
     async def test_register_additional_backend(self, service):
         await service.start()

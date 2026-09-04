@@ -5,20 +5,21 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._repo_tools import (
+from assistant_runtime.services.tools.capabilities.repositories import register_repositories_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.backbone.repositories import (
+    BackboneRepositories,
     _validate_org,
     check_repo_status,
     list_repos,
     onboard_repo,
-    register_repo_tools,
 )
-from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-MODULE = "assistant_runtime.services.tools._repo_tools"
+MODULE = "assistant_runtime.services.tools.providers.backbone.repositories"
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +265,7 @@ class TestListRepos:
 class TestRegisterRepoTools:
     def test_all_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_repo_tools(registry)
+        register_repositories_tools(registry, BackboneRepositories())
 
         names = registry.get_tool_names()
         assert "onboard_repo" in names
@@ -273,18 +274,18 @@ class TestRegisterRepoTools:
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_repo_tools(registry)
+        register_repositories_tools(registry, BackboneRepositories())
         assert len(registry._backend_definitions) == 3
 
     def test_all_backend(self):
         registry = ToolRegistry(ToolConfig())
-        register_repo_tools(registry)
+        register_repositories_tools(registry, BackboneRepositories())
         for defn in registry._backend_definitions.values():
             assert defn.category == "backend"
 
     def test_schemas_have_required(self):
         registry = ToolRegistry(ToolConfig())
-        register_repo_tools(registry)
+        register_repositories_tools(registry, BackboneRepositories())
 
         must_require = {
             "onboard_repo": ["org", "url"],
@@ -299,13 +300,13 @@ class TestRegisterRepoTools:
 
     def test_list_repos_no_required(self):
         registry = ToolRegistry(ToolConfig())
-        register_repo_tools(registry)
+        register_repositories_tools(registry, BackboneRepositories())
         defn = registry._backend_definitions["list_repos"]
         assert "required" not in defn.parameters_schema
 
     def test_handlers_callable(self):
         registry = ToolRegistry(ToolConfig())
-        register_repo_tools(registry)
+        register_repositories_tools(registry, BackboneRepositories())
         for name in ["onboard_repo", "check_repo_status", "list_repos"]:
             assert name in registry._backend_handlers
             assert callable(registry._backend_handlers[name])

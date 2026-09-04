@@ -8,18 +8,19 @@ from unittest.mock import patch
 
 import pytest
 
-from assistant_runtime.services.tools._plan_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.capabilities.approvals import register_approvals_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.claude_code import (
+    StateFileApprovals,
     _get_agent_state,
     _read_all_state_files,
     approve_plan,
     list_agent_plans,
-    register_plan_tools,
     reject_plan,
 )
-from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "assistant_runtime.services.tools._plan_tools"
+MODULE = "assistant_runtime.services.tools.providers.claude_code"
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +311,7 @@ class TestRejectPlan:
 class TestRegisterPlanTools:
     def test_all_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_plan_tools(registry)
+        register_approvals_tools(registry, StateFileApprovals())
 
         names = registry.get_tool_names()
         assert "list_agent_plans" in names
@@ -319,18 +320,18 @@ class TestRegisterPlanTools:
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_plan_tools(registry)
+        register_approvals_tools(registry, StateFileApprovals())
         assert len(registry._backend_definitions) == 3
 
     def test_all_backend(self):
         registry = ToolRegistry(ToolConfig())
-        register_plan_tools(registry)
+        register_approvals_tools(registry, StateFileApprovals())
         for defn in registry._backend_definitions.values():
             assert defn.category == "backend"
 
     def test_handlers_callable(self):
         registry = ToolRegistry(ToolConfig())
-        register_plan_tools(registry)
+        register_approvals_tools(registry, StateFileApprovals())
         for name in ["list_agent_plans", "approve_plan", "reject_plan"]:
             assert name in registry._backend_handlers
             assert callable(registry._backend_handlers[name])

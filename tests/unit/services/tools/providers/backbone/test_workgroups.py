@@ -5,18 +5,19 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._swarm_tools import (
+from assistant_runtime.services.tools.capabilities.workgroups import register_workgroups_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.backbone.workgroups import (
+    BackboneWorkgroups,
     broadcast_to_swarm,
     complete_swarm,
     create_swarm,
     get_swarm_detail,
     list_swarms,
-    register_swarm_tools,
     update_worker_status,
 )
-from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "assistant_runtime.services.tools._swarm_tools"
+MODULE = "assistant_runtime.services.tools.providers.backbone.workgroups"
 
 SAMPLE_WORKER = {
     "name": "coder-1",
@@ -266,7 +267,7 @@ class TestCompleteSwarm:
 class TestRegisterSwarmTools:
     def test_all_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_swarm_tools(registry)
+        register_workgroups_tools(registry, BackboneWorkgroups())
 
         names = registry.get_tool_names()
         assert "create_swarm" in names
@@ -278,18 +279,18 @@ class TestRegisterSwarmTools:
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_swarm_tools(registry)
+        register_workgroups_tools(registry, BackboneWorkgroups())
         assert len(registry._backend_definitions) == 6
 
     def test_all_backend(self):
         registry = ToolRegistry(ToolConfig())
-        register_swarm_tools(registry)
+        register_workgroups_tools(registry, BackboneWorkgroups())
         for definition in registry._backend_definitions.values():
             assert definition.category == "backend"
 
     def test_handlers_callable(self):
         registry = ToolRegistry(ToolConfig())
-        register_swarm_tools(registry)
+        register_workgroups_tools(registry, BackboneWorkgroups())
         for name in [
             "create_swarm",
             "list_swarms",

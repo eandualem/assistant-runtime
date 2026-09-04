@@ -1,4 +1,4 @@
-"""Plan management tools -- list, approve, and reject pending agent plans."""
+"""The Claude Code state-file provider: approvals of plans that agents wrote to their state files."""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ from typing import Any
 
 from loguru import logger
 
-from assistant_runtime.services.tools._agent_tools import _run_command, _validate_session_name
-from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
+from assistant_runtime.services.tools.providers._local_sessions import (
+    _run_command,
+    _validate_session_name,
+)
 
 STATE_DIR = Path.home() / ".claude" / "state"
 
@@ -21,13 +22,14 @@ STATE_DIR = Path.home() / ".claude" / "state"
 # ---------------------------------------------------------------------------
 
 
-def _read_all_state_files() -> list[tuple[str, dict[str, Any]]]:
+def _read_all_state_files(state_dir: Path | None = None) -> list[tuple[str, dict[str, Any]]]:
     """Read all state files and return list of (session_name, state_data)."""
     results = []
-    if not STATE_DIR.is_dir():
+    state_dir = state_dir or STATE_DIR
+    if not state_dir.is_dir():
         return results
 
-    for state_file in STATE_DIR.glob("*.json"):
+    for state_file in state_dir.glob("*.json"):
         try:
             data = json.loads(state_file.read_text())
             if isinstance(data, dict):
@@ -39,9 +41,9 @@ def _read_all_state_files() -> list[tuple[str, dict[str, Any]]]:
     return results
 
 
-def _get_agent_state(session_name: str) -> dict[str, Any] | None:
+def _get_agent_state(session_name: str, state_dir: Path | None = None) -> dict[str, Any] | None:
     """Read a specific agent's state file."""
-    state_path = STATE_DIR / f"{session_name}.json"
+    state_path = (state_dir or STATE_DIR) / f"{session_name}.json"
     try:
         data = json.loads(state_path.read_text())
         if isinstance(data, dict):
@@ -59,9 +61,9 @@ def _get_agent_state(session_name: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-async def list_agent_plans() -> dict[str, Any]:
+async def list_agent_plans(state_dir: Path | None = None) -> dict[str, Any]:
     """List all agents with plans awaiting approval."""
-    all_states = _read_all_state_files()
+    all_states = _read_all_state_files(state_dir)
 
     plans = []
     for session_name, state in all_states:
@@ -91,13 +93,13 @@ async def list_agent_plans() -> dict[str, Any]:
     return {"plans": plans, "count": len(plans), "success": True}
 
 
-async def approve_plan(session_name: str) -> dict[str, Any]:
+async def approve_plan(session_name: str, state_dir: Path | None = None) -> dict[str, Any]:
     """Approve a pending plan by sending Shift+Tab to the agent's session."""
     error = _validate_session_name(session_name)
     if error:
         return {"error": error, "success": False}
 
-    state = _get_agent_state(session_name)
+    state = _get_agent_state(session_name, state_dir)
     if not state or state.get("state") != "plan_waiting":
         return {
             "error": f"Agent '{session_name}' is not in plan_waiting state",
@@ -122,7 +124,9 @@ async def approve_plan(session_name: str) -> dict[str, Any]:
     }
 
 
-async def reject_plan(session_name: str, reason: str) -> dict[str, Any]:
+async def reject_plan(
+    session_name: str, reason: str, state_dir: Path | None = None
+) -> dict[str, Any]:
     """Reject a pending plan by sending the rejection reason to the agent's session."""
     error = _validate_session_name(session_name)
     if error:
@@ -131,7 +135,7 @@ async def reject_plan(session_name: str, reason: str) -> dict[str, Any]:
     if not reason or not reason.strip():
         return {"error": "Rejection reason cannot be empty", "success": False}
 
-    state = _get_agent_state(session_name)
+    state = _get_agent_state(session_name, state_dir)
     if not state or state.get("state") != "plan_waiting":
         return {
             "error": f"Agent '{session_name}' is not in plan_waiting state",
@@ -169,68 +173,17 @@ async def reject_plan(session_name: str, reason: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def register_plan_tools(registry: ToolRegistry) -> None:
-    """Register all plan management tools."""
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="list_agent_plans",
-            description=(
-                "List all agents that have plans awaiting approval. "
-                "Shows session name, plan title, plan file path, and how long "
-                "the plan has been waiting."
-            ),
-            parameters_schema={"type": "object", "properties": {}},
-            category=ToolCategory.BACKEND,
-        ),
-        list_agent_plans,
-    )
+class StateFileApprovals:
+    """The approvals capability over a directory of agent state files."""
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="approve_plan",
-            description=(
-                "Approve a pending plan for an agent. Sends the Shift+Tab key "
-                "sequence to the agent's tmux session to trigger plan approval."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "session_name": {
-                        "type": "string",
-                        "description": "Name of the tmux session with a pending plan",
-                    },
-                },
-                "required": ["session_name"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        approve_plan,
-    )
+    def __init__(self, state_dir: Path | None = None) -> None:
+        self._state_dir = state_dir
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="reject_plan",
-            description=(
-                "Reject a pending plan for an agent. Sends the rejection reason "
-                "as text to the agent's tmux session."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "session_name": {
-                        "type": "string",
-                        "description": "Name of the tmux session with a pending plan",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "Reason for rejecting the plan",
-                    },
-                },
-                "required": ["session_name", "reason"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        reject_plan,
-    )
+    async def list_agent_plans(self) -> dict[str, Any]:
+        return await list_agent_plans(state_dir=self._state_dir)
 
-    logger.info("Registered plan management tools", count=3)
+    async def approve_plan(self, session_name: str) -> dict[str, Any]:
+        return await approve_plan(session_name, state_dir=self._state_dir)
+
+    async def reject_plan(self, session_name: str, reason: str) -> dict[str, Any]:
+        return await reject_plan(session_name, reason, state_dir=self._state_dir)

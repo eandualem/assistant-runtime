@@ -10,8 +10,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from assistant_runtime.services.tools.capabilities.activity import register_activity_tools
+from assistant_runtime.services.tools.capabilities.approvals import register_approvals_tools
 from assistant_runtime.services.tools.capabilities.library import register_library_tools
 from assistant_runtime.services.tools.capabilities.notes import register_notes_tools
+from assistant_runtime.services.tools.capabilities.peers import register_peers_tools
+from assistant_runtime.services.tools.capabilities.reminders import register_reminders_tools
+from assistant_runtime.services.tools.capabilities.repositories import (
+    register_repositories_tools,
+)
+from assistant_runtime.services.tools.capabilities.rooms import register_rooms_tools
+from assistant_runtime.services.tools.capabilities.workgroups import register_workgroups_tools
 
 if TYPE_CHECKING:
     from assistant_runtime.services.tools._registry import ToolRegistry
@@ -19,6 +28,13 @@ if TYPE_CHECKING:
 CAPABILITIES: dict[str, Callable[[ToolRegistry, Any], None]] = {
     "notes": register_notes_tools,
     "library": register_library_tools,
+    "peers": register_peers_tools,
+    "rooms": register_rooms_tools,
+    "reminders": register_reminders_tools,
+    "activity": register_activity_tools,
+    "workgroups": register_workgroups_tools,
+    "repositories": register_repositories_tools,
+    "approvals": register_approvals_tools,
 }
 
 
