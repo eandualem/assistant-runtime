@@ -6,19 +6,9 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-from assistant_runtime.services.tools._artifact_tools import manage_artifacts
+from assistant_runtime.services.tools._artifact_tools import build_manage_artifacts
 
 MODULE = "assistant_runtime.services.database.repositories"
-
-
-@pytest.fixture(autouse=True)
-def _cleanup_deps():
-    """Remove _handler_deps after each test to avoid cross-test pollution."""
-    yield
-    if hasattr(manage_artifacts, "_handler_deps"):
-        del manage_artifacts._handler_deps
 
 
 def _make_mock_db():
@@ -57,18 +47,14 @@ class TestManageArtifactsDispatch:
     """Tests for action dispatch and dependency validation."""
 
     async def test_unknown_action_returns_error(self):
+        manage_artifacts = build_manage_artifacts(_make_mock_db())
         result = await manage_artifacts(action="invalid")
         assert result["success"] is False
         assert "Unknown action" in result["error"]
         assert "invalid" in result["error"]
 
-    async def test_no_deps_returns_error(self):
-        result = await manage_artifacts(action="list")
-        assert result["success"] is False
-        assert "not available" in result["error"]
-
     async def test_no_database_service_returns_error(self):
-        manage_artifacts._handler_deps = {"database_service": None}
+        manage_artifacts = build_manage_artifacts(None)
         result = await manage_artifacts(action="list")
         assert result["success"] is False
         assert "not available" in result["error"]
@@ -80,7 +66,7 @@ class TestListAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_list_action_returns_artifacts(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         rows = [
             _make_artifact_row(name="soul", content="Deeper alignment", version=1),
@@ -119,7 +105,7 @@ class TestViewAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_view_action_returns_content(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         row = _make_artifact_row(name="persona", content="You are the assistant.", version=2)
         mock_repo_instance = MagicMock()
@@ -137,7 +123,7 @@ class TestViewAction:
 
     async def test_view_action_no_name_returns_error(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="view", name="")
 
@@ -146,7 +132,7 @@ class TestViewAction:
 
     async def test_view_action_unknown_artifact_returns_error(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="view", name="not-real")
 
@@ -156,7 +142,7 @@ class TestViewAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_view_action_not_found_returns_error(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         mock_repo_instance = MagicMock()
         mock_repo_instance.get_active = AsyncMock(return_value=None)
@@ -175,7 +161,7 @@ class TestProposeEditAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_propose_edit_creates_inactive_version(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         new_row = _make_artifact_row(
             name="persona",
@@ -205,7 +191,7 @@ class TestProposeEditAction:
 
     async def test_propose_edit_no_name_returns_error(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="propose_edit", name="", content="some content")
 
@@ -214,7 +200,7 @@ class TestProposeEditAction:
 
     async def test_propose_edit_no_content_returns_error(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="propose_edit", name="persona", content="")
 
@@ -223,7 +209,7 @@ class TestProposeEditAction:
 
     async def test_propose_edit_unknown_artifact_returns_error(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="propose_edit", name="not-real", content="x")
 
@@ -237,7 +223,7 @@ class TestUpdateScratchpadAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_update_scratchpad_auto_approves(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         row = _make_artifact_row(
             name="scratchpad",
@@ -265,7 +251,7 @@ class TestUpdateScratchpadAction:
 
     async def test_update_scratchpad_no_content_returns_error(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="update_scratchpad", content="")
 
@@ -279,7 +265,7 @@ class TestApproveAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_approve_success(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         row = _make_artifact_row(
             name="persona",
@@ -305,7 +291,7 @@ class TestApproveAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_approve_version_not_found(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         mock_repo_instance = MagicMock()
         mock_repo_instance.approve = AsyncMock(return_value=None)
@@ -319,7 +305,7 @@ class TestApproveAction:
 
     async def test_approve_missing_name(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="approve", name="", version=2)
 
@@ -328,7 +314,7 @@ class TestApproveAction:
 
     async def test_approve_unknown_artifact(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="approve", name="not-real", version=2)
 
@@ -337,7 +323,7 @@ class TestApproveAction:
 
     async def test_approve_missing_version(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="approve", name="persona", version=0)
 
@@ -351,7 +337,7 @@ class TestHistoryAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_history_returns_versions(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         rows = [
             _make_artifact_row(name="persona", content="V1 content", version=1, is_active=False),
@@ -383,7 +369,7 @@ class TestHistoryAction:
 
     async def test_history_missing_name(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="history", name="")
 
@@ -392,7 +378,7 @@ class TestHistoryAction:
 
     async def test_history_unknown_artifact(self):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         result = await manage_artifacts(action="history", name="not-real")
 
@@ -402,7 +388,7 @@ class TestHistoryAction:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_history_empty(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         mock_repo_instance = MagicMock()
         mock_repo_instance.get_history = AsyncMock(return_value=[])
@@ -421,7 +407,7 @@ class TestDispatchApproveAndHistory:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_action_approve_dispatches_correctly(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         row = _make_artifact_row(name="ecosystem", version=5, is_active=True)
         mock_repo_instance = MagicMock()
@@ -437,7 +423,7 @@ class TestDispatchApproveAndHistory:
     @patch(f"{MODULE}.ArtifactRepository")
     async def test_action_history_dispatches_correctly(self, mock_repo_cls):
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         mock_repo_instance = MagicMock()
         mock_repo_instance.get_history = AsyncMock(return_value=[])
@@ -452,7 +438,7 @@ class TestDispatchApproveAndHistory:
     async def test_version_param_passes_through_to_approve(self, mock_repo_cls):
         """Verify the version parameter from manage_artifacts reaches _approve_artifact."""
         mock_db = _make_mock_db()
-        manage_artifacts._handler_deps = {"database_service": mock_db}
+        manage_artifacts = build_manage_artifacts(mock_db)
 
         row = _make_artifact_row(name="persona", version=7, is_active=True)
         mock_repo_instance = MagicMock()

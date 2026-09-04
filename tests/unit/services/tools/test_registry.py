@@ -77,15 +77,6 @@ class TestGetAvailableTools:
         assert isinstance(result, ToolSet)
 
 
-class TestValidateToolCall:
-    def test_registered_tool(self, registry, backend_definition, dummy_handler):
-        registry.register_backend_tool(backend_definition, dummy_handler)
-        assert registry.validate_tool_call("get_time", {}) is True
-
-    def test_unknown_tool(self, registry):
-        assert registry.validate_tool_call("nonexistent", {}) is False
-
-
 class TestMaxToolsWarning:
     def test_exceeds_max(self):
         """When tool count exceeds max_tools_per_request, build_toolset still works (warning only)."""

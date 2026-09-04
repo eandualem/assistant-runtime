@@ -191,10 +191,6 @@ class ToolRegistry:
         self._resolve_available_tools(host_context)
         self.build_toolset(host_context)
 
-    def validate_tool_call(self, tool_name: str, args: dict[str, Any]) -> bool:
-        """Check if a tool name is registered."""
-        return tool_name in self._backend_definitions
-
     def get_tool_names(self) -> list[str]:
         """All registered tool names."""
         return list(self._backend_definitions.keys())
@@ -206,12 +202,6 @@ class ToolRegistry:
     def frontend_tool_count(self) -> int:
         """Number of registered frontend tools."""
         return len(self._frontend_definitions)
-
-    def configure_handler_deps(self, handler_name: str, deps: dict) -> None:
-        """Set runtime dependency dict on a registered backend handler."""
-        handler = self._backend_handlers.get(handler_name)
-        if handler is not None:
-            handler._handler_deps = deps
 
     def _resolve_available_tools(self, host_context: dict[str, Any] | None = None) -> ToolSet:
         """Determine which backend tools are available for the host's current page.

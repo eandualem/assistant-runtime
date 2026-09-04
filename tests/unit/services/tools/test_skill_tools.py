@@ -27,11 +27,10 @@ MODULE = "assistant_runtime.services.tools._skill_tools"
 
 @pytest.fixture
 def global_skills_dir(tmp_path, monkeypatch):
-    """Redirect GLOBAL_SKILLS_PATH (and SKILLS_BASE_PATH alias) to a temp directory."""
+    """Redirect GLOBAL_SKILLS_PATH to a temp directory."""
     global_dir = tmp_path / "global_skills"
     global_dir.mkdir()
     monkeypatch.setattr(f"{MODULE}.GLOBAL_SKILLS_PATH", global_dir)
-    monkeypatch.setattr(f"{MODULE}.SKILLS_BASE_PATH", global_dir)
     return global_dir
 
 
