@@ -1,18 +1,50 @@
-"""Static model registry — single source of truth for available AI models.
+"""What the runtime knows about providers and models. A leaf module.
 
-Provides model catalog with capability metadata, provider availability detection,
-and current defaults. No lifecycle management — pure data + env var reads.
+The providers pydantic-ai can talk to and the environment variable that
+carries each one's key; the media providers; the model each provider is
+used with when the configured one has no credentials; and the catalog
+``GET /api/models`` exposes. Provider-specific request settings are derived
+from a model id in ``services/llm/_settings.py``; the two must stay in step
+when a model is added.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from assistant_runtime.config import AppSettings
-from assistant_runtime.services.llm.config import PROVIDER_ENV_VARS
+# The environment variable pydantic-ai reads for each LLM provider's key. Keys
+# loaded from LLM__PROVIDERS_JSON or the database are exported to these names
+# at startup, so a set variable means a usable provider.
+PROVIDER_ENV_VARS: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+ALLOWED_PROVIDERS: list[str] = list(PROVIDER_ENV_VARS)
+
+# Video providers; image generation reuses the OpenAI and Google keys.
+MEDIA_PROVIDER_ENV_VARS: dict[str, str] = {
+    "runway": "RUNWAYML_API_SECRET",
+    "luma": "LUMAAI_API_KEY",
+}
+
+# The model used when the configured primary/summarization model's provider has
+# no credentials but another provider does. Order = preference.
+PROVIDER_DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "anthropic:claude-opus-5",
+    "openai": "openai:gpt-5.6-terra",
+    "google": "google:gemini-3.1-pro-preview",
+    "openrouter": "openrouter:x-ai/grok-4.1-fast",
+}
+PROVIDER_DEFAULT_SUMMARIZATION_MODELS: dict[str, str] = {
+    "anthropic": "anthropic:claude-haiku-4-5",
+    "openai": "openai:gpt-5.6-luna",
+    "google": "google:gemini-3.8-flash",
+    "openrouter": "openrouter:x-ai/grok-4.1-fast",
+}
 
 
 class ModelEntry(BaseModel):
@@ -40,13 +72,6 @@ class ProviderInfo(BaseModel):
     env_var: str
     configured: bool
 
-
-# The LLM providers plus the media providers, which are not pydantic-ai providers.
-_REGISTRY_PROVIDER_ENV_MAP: dict[str, str] = {
-    **PROVIDER_ENV_VARS,
-    "runway": "RUNWAYML_API_SECRET",
-    "luma": "LUMAAI_API_KEY",
-}
 
 _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "anthropic": "Anthropic",
@@ -369,33 +394,12 @@ def get_models(
 
 
 def get_provider_info() -> dict[str, ProviderInfo]:
-    """Check provider availability by testing env var presence.
-
-    Returns:
-        Dict mapping provider name → ProviderInfo with configured status.
-    """
+    """Every provider with whether its key is set in the environment."""
     return {
         provider: ProviderInfo(
             name=_PROVIDER_DISPLAY_NAMES[provider],
             env_var=env_var,
             configured=bool(os.getenv(env_var)),
         )
-        for provider, env_var in _REGISTRY_PROVIDER_ENV_MAP.items()
-    }
-
-
-def get_defaults() -> dict[str, Any]:
-    """Return current default model settings from AppSettings.
-
-    Constructs AppSettings at request time to reflect live env var state.
-    """
-    settings = AppSettings()
-    return {
-        "primary_model": settings.llm.primary_model,
-        "summarization_model": settings.llm.summarization_model,
-        "working_memory_model": settings.history.working_memory_model,
-        "default_image_model": settings.media.default_image_model,
-        "default_video_model": settings.media.default_video_model,
-        "subagent_model": None,
-        "subagent_thinking_budget": None,
+        for provider, env_var in {**PROVIDER_ENV_VARS, **MEDIA_PROVIDER_ENV_VARS}.items()
     }

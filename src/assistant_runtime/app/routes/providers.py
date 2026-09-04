@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from assistant_runtime.services.llm.config import ALLOWED_PROVIDERS
+from assistant_runtime.model_catalog import ALLOWED_PROVIDERS
 from assistant_runtime.services.llm.interface import LlmService
 
 router = APIRouter(prefix="/providers", tags=["providers"])

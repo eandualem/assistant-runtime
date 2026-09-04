@@ -13,7 +13,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from assistant_runtime.services.llm.config import PROVIDER_ENV_VARS
+from assistant_runtime.model_catalog import PROVIDER_ENV_VARS
 
 OK, WARN, FAIL = "ok  ", "warn", "FAIL"
 

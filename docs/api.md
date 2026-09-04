@@ -96,7 +96,7 @@ action produced (any JSON), and `content` empty. The model resumes.
 |---|---|
 | `GET /api/settings` | every tunable with its value and source tier |
 | `PATCH /api/settings` | change the runtime overlay; omitted fields unchanged, `null` clears an override |
-| `GET /api/models` | the model catalog, provider status, current defaults |
+| `GET /api/models` | the model catalog, provider status, and the defaults a request gets now (runtime overrides applied) |
 | `GET /api/providers` | providers with auth status and key source |
 | `PUT /api/providers/{provider}/api-key` `{"api_key"}` | store a key encrypted (needs `OAUTH__ENCRYPTION_KEY`, Postgres) and activate it |
 | `DELETE /api/providers/{provider}/api-key` | remove a stored key |

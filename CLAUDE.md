@@ -40,7 +40,9 @@ that way: database code is exercised through fakes, the LLM boundary
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
 - **Layering, bottom up.** `base` (lifecycle, protocols, resilience,
-  exceptions) and `artifacts` (the prompt artifact catalog) are leaves. `services/*` import `base`, `config` and the
+  exceptions), `artifacts` (the prompt artifact catalog) and
+  `model_catalog` (providers, their key variables, fallback defaults and
+  the model list) are leaves. `services/*` import `base`, `config` and the
   `services/tracing` helpers; `services/tools` may import `services/media`;
   no service imports `app`. `app/assistant` (prompt, sessions, per-request
   agent setup) imports services; `app/streaming` (the turn pipeline) imports
@@ -102,9 +104,10 @@ that way: database code is exercised through fakes, the LLM boundary
 - **Model ids are `provider:name`** and are validated in
   `services/llm/_settings.py`, which also derives provider-specific
   settings (adaptive thinking and effort for current Claude models, no
-  sampling parameters where the profile forbids them). The catalog the
-  API exposes is `app/models_registry.py`. Keep both in step when adding
-  a model.
+  sampling parameters where the profile forbids them). The providers, the
+  environment variable carrying each key, the per-provider fallback models
+  and the catalog `GET /api/models` exposes live in `model_catalog.py`.
+  Keep both in step when adding a model.
 - **Messages carry a provenance envelope** (`[via:telegram from:X]`,
   `[via:tmux from:agent]`, `[via:room ...]`, `[via:backbone]`); the
   communication protocol artifact tells the model to answer on the same

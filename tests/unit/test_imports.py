@@ -98,8 +98,9 @@ def test_base_does_not_import_app_or_services() -> None:
     assert _offenders("base", (f"{PACKAGE}.app", f"{PACKAGE}.services")) == []
 
 
-def test_artifacts_is_a_leaf() -> None:
-    project_imports = {m for m in _imported_modules(SRC / "artifacts.py") if m.startswith(PACKAGE)}
+@pytest.mark.parametrize("leaf", ["artifacts.py", "model_catalog.py"])
+def test_leaf_modules_import_nothing_from_the_package(leaf: str) -> None:
+    project_imports = {m for m in _imported_modules(SRC / leaf) if m.startswith(PACKAGE)}
     assert project_imports == set()
 
 
