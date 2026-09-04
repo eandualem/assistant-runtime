@@ -107,11 +107,6 @@ class ToolService:
         self._ensure_started()
         return self._registry.invalidates_for(tool_name)
 
-    def validate_tool_call(self, tool_name: str, args: dict[str, Any]) -> bool:
-        """Check if a tool name is registered."""
-        self._ensure_started()
-        return self._registry.validate_tool_call(tool_name, args)
-
     def register_backend_tool(self, definition: ToolDefinition, handler: Callable) -> None:
         """Register a backend tool with its handler."""
         self._ensure_started()
@@ -123,9 +118,8 @@ class ToolService:
         return self._registry.build_subagent_toolset()
 
     def set_runtime_settings(self, runtime_settings: object | None) -> None:
-        """Attach live runtime settings and propagate to subagent handler deps."""
+        """Attach live runtime settings; the subagent tool reads them on each call."""
         self._runtime_settings = runtime_settings
-        self._configure_subagent_handler_deps()
 
     async def get_mcp_summary(self) -> list[dict[str, Any]] | None:
         """Return MCP server summary for prompt builder, or None if no MCP service."""
@@ -201,37 +195,18 @@ class ToolService:
         register_skill_tools(self._registry)
 
         # Artifact management tools
-        register_artifact_tools(self._registry)
-        self._configure_artifact_handler_deps()
+        register_artifact_tools(self._registry, self._database_service)
 
         # Subagent tools (only if llm_service is available)
         if self._llm_service is not None:
-            register_subagent_tools(self._registry)
-            self._configure_subagent_handler_deps()
+            register_subagent_tools(
+                self._registry,
+                self._llm_service,
+                backend_toolsets=self._registry.build_subagent_toolset,
+                runtime_settings=lambda: self._runtime_settings,
+            )
 
         # Media generation tools (only if media service is available)
         if self._media_service is not None:
             register_media_tools(self._registry, self._media_service)
             register_video_tools(self._registry, self._media_service)
-
-    def _configure_artifact_handler_deps(self) -> None:
-        """Configure runtime dependencies consumed by manage_artifacts handler."""
-        if self._registry is None:
-            return
-        self._registry.configure_handler_deps(
-            "manage_artifacts",
-            {"database_service": self._database_service},
-        )
-
-    def _configure_subagent_handler_deps(self) -> None:
-        """Configure runtime dependencies consumed by run_subagent handler."""
-        if self._registry is None:
-            return
-        self._registry.configure_handler_deps(
-            "run_subagent",
-            {
-                "llm_service": self._llm_service,
-                "get_backend_toolsets": self._registry.build_subagent_toolset,
-                "runtime_settings": getattr(self, "_runtime_settings", None),
-            },
-        )
