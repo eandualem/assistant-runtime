@@ -12,8 +12,8 @@ from assistant_runtime.services.media.exceptions import (
     ProviderError,
 )
 from assistant_runtime.services.media.models import MediaResult
-from assistant_runtime.services.tools._media_tools import register_media_tools
 from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.builtin.media import register_media_tools
 from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------

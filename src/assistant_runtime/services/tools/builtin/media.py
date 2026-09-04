@@ -1,4 +1,4 @@
-"""Media generation tools — image generation via external providers."""
+"""``generate_image`` through the media service (``_video.py`` has ``generate_video``)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
 
 
 def register_media_tools(registry: ToolRegistry, media_service: MediaService) -> None:
-    """Register media generation tools with closures capturing the media service."""
+    """Register image generation, closing over the media service."""
 
     async def generate_image(
         prompt: str,

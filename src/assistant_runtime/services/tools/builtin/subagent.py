@@ -125,7 +125,7 @@ def register_subagent_tools(
             }
 
         # Import here to avoid circular imports at module level
-        from assistant_runtime.services.tools._subagent_executor import execute_subagent
+        from assistant_runtime.services.tools.builtin._subagent_executor import execute_subagent
 
         settings = runtime_settings()
         model_override = settings.get("subagent_model", None) if settings else None

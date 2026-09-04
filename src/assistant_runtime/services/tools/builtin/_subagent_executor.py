@@ -11,7 +11,7 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 
 if TYPE_CHECKING:
     from assistant_runtime.services.llm.interface import LlmService
-    from assistant_runtime.services.tools._subagent_tools import SubagentDefinition
+    from assistant_runtime.services.tools.builtin.subagent import SubagentDefinition
 
 
 async def execute_subagent(
