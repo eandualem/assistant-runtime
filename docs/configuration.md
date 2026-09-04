@@ -33,6 +33,7 @@ At least one provider must be usable.
 | `LLM__PRIMARY_MODEL` | Chat model, default `anthropic:claude-opus-5` |
 | `LLM__SUMMARIZATION_MODEL` | History summaries and lightweight tasks, default `anthropic:claude-haiku-4-5` |
 | `OAUTH__ENCRYPTION_KEY` | Fernet key; enables the ChatGPT/Codex OAuth path and the encrypted provider-key store (`PUT /api/providers/{provider}/api-key`) |
+| `LLM__CODEX_MODELS` | JSON list of OpenAI model names to route through the ChatGPT/Codex subscription when connected; empty routes every `openai:` model |
 
 If the primary or summarization model's provider has no credentials but
 another provider does, that provider's default is used instead and a
