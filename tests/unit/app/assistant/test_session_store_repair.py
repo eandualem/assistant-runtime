@@ -112,6 +112,12 @@ class TestRepairStaleToolSegments:
         assert repaired[0]["tools"][1]["output"] == STALE_HOST_TOOL_OUTPUT
         assert repaired[0]["tools"][2]["output"] == STALE_HOST_TOOL_OUTPUT
 
+    def test_non_dict_segment_is_skipped(self) -> None:
+        segments = ["garbage", {"kind": "tool_group", "tools": [{"id": "t1", "name": "x"}]}]
+        repaired, ids = repair_stale_tool_segments(segments)
+        assert ids == ["t1"]
+        assert repaired[0] == "garbage"
+
     def test_empty_segments_returns_empty(self) -> None:
         repaired, ids = repair_stale_tool_segments([])
 

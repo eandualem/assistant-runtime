@@ -28,7 +28,7 @@ def repair_stale_tool_segments(
     repaired_ids: list[str] = []
     updated = copy.deepcopy(segments)
     for segment in updated:
-        if segment.get("kind") != "tool_group":
+        if not isinstance(segment, dict) or segment.get("kind") != "tool_group":
             continue
         for tool in segment.get("tools", []):
             if not isinstance(tool, dict):
