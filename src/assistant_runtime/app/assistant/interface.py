@@ -204,9 +204,9 @@ class AssistantService:
                 artifacts=artifacts,
             )
 
-            # 4. Build agent — use union output type when frontend tools are registered
+            # 4. Build agent — use union output type when host tools are registered
             output_type: type | list[type] = str
-            if available_tools.frontend_tools:
+            if available_tools.host_tools:
                 output_type = [str, DeferredToolRequests]
 
             agent = self._llm.build_agent(

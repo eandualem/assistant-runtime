@@ -1,4 +1,4 @@
-"""Tests for stale frontend tool repair functionality in SessionStore."""
+"""Tests for stale host tool repair functionality in SessionStore."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from assistant_runtime.app.assistant._session_store import (
-    _STALE_FRONTEND_TOOL_OUTPUT,
+    _STALE_HOST_TOOL_OUTPUT,
     SessionStore,
     _repair_stale_tool_segments,
     _repair_stale_tools_in_context,
@@ -78,7 +78,7 @@ class TestRepairStaleToolSegments:
         repaired, ids = _repair_stale_tool_segments(segments)
 
         assert ids == ["tool-1"]
-        assert repaired[0]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
+        assert repaired[0]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
 
     def test_tool_with_output_is_unchanged(self) -> None:
         segments = [
@@ -109,8 +109,8 @@ class TestRepairStaleToolSegments:
 
         assert ids == ["tool-2", "tool-3"]
         assert repaired[0]["tools"][0]["output"] == "ok"
-        assert repaired[0]["tools"][1]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
-        assert repaired[0]["tools"][2]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
+        assert repaired[0]["tools"][1]["output"] == _STALE_HOST_TOOL_OUTPUT
+        assert repaired[0]["tools"][2]["output"] == _STALE_HOST_TOOL_OUTPUT
 
     def test_empty_segments_returns_empty(self) -> None:
         repaired, ids = _repair_stale_tool_segments([])
@@ -158,7 +158,7 @@ class TestRepairStaleToolSegments:
 
         assert ids == ["tool-2"]
         assert repaired[0]["tools"][0]["output"] == "ok"
-        assert repaired[2]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
+        assert repaired[2]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
 
     def test_tool_without_id_uses_empty_string(self) -> None:
         segments = [
@@ -201,11 +201,11 @@ class TestRepairStaleToolsInContext:
         assert len(repaired) == 1
         msg_id, segments = repaired[0]
         assert msg_id == "assistant-1"
-        assert segments[0]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
+        assert segments[0]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
         # In-place mutation on ctx
         assert (
             ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]["output"]
-            == _STALE_FRONTEND_TOOL_OUTPUT
+            == _STALE_HOST_TOOL_OUTPUT
         )
 
     def test_user_only_messages_no_repairs(self) -> None:
@@ -293,11 +293,11 @@ class TestRepairStaleToolsInContext:
 
 
 # ---------------------------------------------------------------------------
-# SessionStore.repair_stale_frontend_tools
+# SessionStore.repair_stale_host_tools
 # ---------------------------------------------------------------------------
 
 
-class TestRepairStaleFrontendTools:
+class TestRepairStaleHostTools:
     async def test_clears_pending_tool_call_state(self) -> None:
         store = SessionStore()
         await _seed_basic_turn(store)
@@ -306,7 +306,7 @@ class TestRepairStaleFrontendTools:
         ctx["pending_tool_name"] = "ui_navigate"
         ctx["pending_assistant_message_id"] = "assistant-1"
 
-        report = await store.repair_stale_frontend_tools("sess-1")
+        report = await store.repair_stale_host_tools("sess-1")
 
         assert report["cleared_pending"]["tool_call_id"] == "call-123"
         assert report["cleared_pending"]["tool_name"] == "ui_navigate"
@@ -331,12 +331,12 @@ class TestRepairStaleFrontendTools:
             usage={"input_tokens": 1, "output_tokens": 2},
         )
 
-        report = await store.repair_stale_frontend_tools("sess-1")
+        report = await store.repair_stale_host_tools("sess-1")
 
         assert "assistant-1" in report["repaired_tools"]
         ctx = store.get_context("sess-1")
         assistant_record = ctx["message_index"]["assistant-1"]
-        assert assistant_record["segments"][0]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
+        assert assistant_record["segments"][0]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
 
     async def test_repairs_both_pending_state_and_stale_segments(self) -> None:
         store = SessionStore()
@@ -359,7 +359,7 @@ class TestRepairStaleFrontendTools:
         ctx["pending_tool_name"] = "ui_navigate"
         ctx["pending_assistant_message_id"] = "assistant-1"
 
-        report = await store.repair_stale_frontend_tools("sess-1")
+        report = await store.repair_stale_host_tools("sess-1")
 
         assert report["cleared_pending"] is not None
         assert report["cleared_pending"]["tool_call_id"] == "call-456"
@@ -369,7 +369,7 @@ class TestRepairStaleFrontendTools:
         store = SessionStore()
         await _seed_basic_turn(store)
 
-        report = await store.repair_stale_frontend_tools("sess-1")
+        report = await store.repair_stale_host_tools("sess-1")
 
         assert report["session_id"] == "sess-1"
         assert report["cleared_pending"] is None
@@ -379,7 +379,7 @@ class TestRepairStaleFrontendTools:
         store = SessionStore()
 
         with pytest.raises(LookupError, match="not found"):
-            await store.repair_stale_frontend_tools("nonexistent")
+            await store.repair_stale_host_tools("nonexistent")
 
     async def test_cached_path_updated_after_segment_repair(self) -> None:
         store = SessionStore()
@@ -398,15 +398,13 @@ class TestRepairStaleFrontendTools:
             usage={"input_tokens": 1, "output_tokens": 2},
         )
 
-        await store.repair_stale_frontend_tools("sess-1")
+        await store.repair_stale_host_tools("sess-1")
 
         ctx = store.get_context("sess-1")
         # The cached_path should also reflect the repaired segments
         assistant_in_path = [m for m in ctx["cached_path"] if m["id"] == "assistant-1"]
         assert len(assistant_in_path) == 1
-        assert (
-            assistant_in_path[0]["segments"][0]["tools"][0]["output"] == _STALE_FRONTEND_TOOL_OUTPUT
-        )
+        assert assistant_in_path[0]["segments"][0]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
 
 
 # ---------------------------------------------------------------------------

@@ -78,7 +78,7 @@ def extract_screenshot_data_uri(
 def strip_screenshot_from_tool_result(tool_result: Any) -> Any:
     """Remove screenshot data URIs from a tool_result dict.
 
-    Frontend actions (navigate, click) may include a post-action screenshot
+    Host actions (navigate, click) may include a post-action screenshot
     in their response payload. We extract it into the ContextVar (via
     extract_screenshot_data_uri) but strip it before passing to the LLM
     so the base64 blob doesn't waste context tokens. The agent can still
@@ -117,7 +117,7 @@ async def _look_at_screen() -> BinaryContent | dict[str, str]:
         return {
             "error": (
                 "No screenshot available for this request. "
-                "The frontend must include the screenshot as a data URI in "
+                "The host must include the screenshot as a data URI in "
                 "images[], or as a top-level 'screenshot' field in the request. "
                 "After UI navigation, the next message must include a fresh capture."
             ),
@@ -142,7 +142,7 @@ def register_screen_tools(registry: ToolRegistry) -> None:
                 "Look at the user's current screen. Returns the latest dashboard "
                 "screenshot. Use this after navigation or UI actions to visually "
                 "confirm the result — layout, data displayed, error states, etc. "
-                "Frontend actions (navigate, ui_send_event) include a post-action "
+                "Host actions (navigate, ui_send_event) include a post-action "
                 "screenshot automatically. Call this tool to inspect it."
             ),
             parameters_schema={"type": "object", "properties": {}},

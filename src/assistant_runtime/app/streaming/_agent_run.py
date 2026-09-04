@@ -85,7 +85,7 @@ async def iterate_run(
                     args = tc.args_as_dict()
                 except Exception:
                     args = {}
-                category = "frontend" if tools.is_host_tool(tc.tool_name) else "backend"
+                category = "host" if tools.is_host_tool(tc.tool_name) else "backend"
                 yield _track(
                     coordinator,
                     make_tool_call_event(tc.tool_name, args, tc.tool_call_id, category=category),

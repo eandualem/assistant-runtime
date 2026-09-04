@@ -86,9 +86,9 @@ def make_tool_call_event(
     """Create a tool_call event.
 
     Args:
-        category: "backend" (executed by the runtime) or "frontend" (deferred to the host).
-            The frontend uses this to decide whether to show a spinner (backend)
-            or execute the tool and send a continuation (frontend).
+        category: "backend" (executed by the runtime) or "host" (deferred to the host).
+            The host uses this to decide whether to show a spinner (backend)
+            or execute the tool and send a continuation (host).
     """
     return {
         "type": "tool_call",
@@ -156,8 +156,8 @@ def make_final_response_event(
 ) -> dict[str, Any]:
     """Create a final_response event.
 
-    When ``pending_tool_call`` is provided (deferred frontend tool), the
-    frontend should execute the tool and send a continuation request with
+    When ``pending_tool_call`` is provided (deferred host tool), the
+    host should execute the tool and send a continuation request with
     the ``call_id`` and the tool result.
     """
     event: dict[str, Any] = {

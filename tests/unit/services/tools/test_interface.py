@@ -161,7 +161,7 @@ class TestHostContextToolScoping:
         await service.start()
         result = service.get_available_tools(host_context=None)
         assert result.total_count == service._registry.backend_tool_count()
-        assert result.frontend_tools == []
+        assert result.host_tools == []
 
     async def test_any_page_returns_all_without_scopes(self, service):
         await service.start()
@@ -197,9 +197,9 @@ class TestHostContextToolScoping:
         await svc.start()
         assert svc.is_host_tool("navigate")
         assert not svc.is_host_tool("get_time")
-        assert [t.name for t in svc.get_available_tools().frontend_tools] == ["navigate"]
+        assert [t.name for t in svc.get_available_tools().host_tools] == ["navigate"]
         health = await svc.health_check()
-        assert health["frontend_tools"] == 1
+        assert health["host_tools"] == 1
 
     async def test_invalidations_from_config(self):
         svc = ToolService(config=ToolConfig(invalidations={"create_issue": ["tasks"]}))

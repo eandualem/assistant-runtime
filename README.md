@@ -20,7 +20,7 @@ What you get:
   calls and results as ordered events, with a continuation protocol for
   tools the host executes.
 - A terminal chat, so you can try all of it with one API key and no
-  frontend.
+  user interface.
 
 ## Quick start
 

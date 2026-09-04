@@ -302,25 +302,25 @@ class TestToolInvalidates:
 class TestHostToolRegistration:
     def test_none_by_default(self, registry):
         registry.register_host_tools()
-        assert registry.frontend_tool_count() == 0
+        assert registry.host_tool_count() == 0
         assert registry.build_toolset() == []
 
     def test_from_config(self):
         registry = ToolRegistry(ToolConfig(host_tools=NAVIGATE))
         registry.register_host_tools()
-        assert registry.frontend_tool_count() == 1
+        assert registry.host_tool_count() == 1
         assert registry.is_host_tool("navigate")
         assert not registry.is_host_tool("get_time")
 
     def test_explicit_schemas(self, registry):
         registry.register_host_tools(NAVIGATE)
-        assert [d.name for d in registry.get_available_tools().frontend_tools] == ["navigate"]
+        assert [d.name for d in registry.get_available_tools().host_tools] == ["navigate"]
 
     def test_host_tools_bypass_page_scope(self):
         registry = ToolRegistry(ToolConfig(host_tools=NAVIGATE, page_scopes={"flows": []}))
         registry.register_host_tools()
         result = registry.get_available_tools({"page": {"name": "flows"}})
-        assert len(result.frontend_tools) == 1
+        assert len(result.host_tools) == 1
 
     def test_clash_with_backend_tool_rejected(self, registry, backend_definition, dummy_handler):
         registry.register_backend_tool(backend_definition, dummy_handler)

@@ -164,7 +164,7 @@ class HistoryManager:
 
         Args:
             exclude_ids: Tool call IDs to skip resolution for (e.g., the pending
-                frontend tool that DeferredToolResults will handle).
+                host tool that DeferredToolResults will handle).
         """
         if not history:
             return history

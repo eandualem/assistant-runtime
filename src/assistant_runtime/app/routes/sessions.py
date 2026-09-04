@@ -110,17 +110,17 @@ async def delete_session(session_id: str, service: AssistantServiceDep) -> dict:
 
 @router.post("/sessions/{session_id}/repair")
 async def repair_session(session_id: str, service: AssistantServiceDep) -> dict:
-    """Repair stale frontend tools stuck in a session.
+    """Repair stale host tools stuck in a session.
 
     Clears any in-memory pending tool call state and marks unresolved
-    frontend tools in message segments as stale (both in-memory and DB).
+    host tools in message segments as stale (both in-memory and DB).
     """
     sessions = service.get_session_store()
     if sessions is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
     try:
-        report = await sessions.repair_stale_frontend_tools(session_id)
+        report = await sessions.repair_stale_host_tools(session_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 

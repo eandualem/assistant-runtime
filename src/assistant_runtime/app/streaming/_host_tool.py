@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from assistant_runtime.services.tools.interface import ToolService
 
 STALE_HOST_TOOL_OUTPUT = (
-    "[Deferred frontend tool was superseded by a later user turn before its "
+    "[Deferred host tool was superseded by a later user turn before its "
     "continuation arrived. The action did not complete.]"
 )
 

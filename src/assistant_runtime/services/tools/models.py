@@ -10,7 +10,7 @@ class ToolCategory(StrEnum):
     """Classification of tool execution location."""
 
     BACKEND = "backend"
-    FRONTEND = "frontend"
+    HOST = "host"
 
 
 class ToolDefinition(BaseModel):
@@ -29,16 +29,16 @@ class ToolSet(BaseModel):
     """Collection of tools available for a request."""
 
     backend_tools: list[ToolDefinition] = []
-    frontend_tools: list[ToolDefinition] = []
+    host_tools: list[ToolDefinition] = []
     page: str | None = None
     filtered_out_count: int = 0
 
     @property
     def total_count(self) -> int:
         """Total number of tools in this set."""
-        return len(self.backend_tools) + len(self.frontend_tools)
+        return len(self.backend_tools) + len(self.host_tools)
 
     @property
     def tool_names(self) -> list[str]:
         """All tool names in this set."""
-        return [t.name for t in self.backend_tools] + [t.name for t in self.frontend_tools]
+        return [t.name for t in self.backend_tools] + [t.name for t in self.host_tools]

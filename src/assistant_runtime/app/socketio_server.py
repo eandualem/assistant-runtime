@@ -216,7 +216,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
                 )
                 if not released_session and (is_terminal_completed or is_deferred_final):
                     # Release the session before notifying the client so an immediate
-                    # frontend-tool continuation can start on the same socket/session.
+                    # host-tool continuation can start on the same socket/session.
                     # Only pop once — a continuation may have already registered a new
                     # task after the deferred final_response early-release.
                     self._active_streams.pop(session_id, None)

@@ -61,7 +61,7 @@ requesting socket.
 | `assistant:status` | `status`: `started` or `completed` (terminal) |
 | `assistant:thinking_delta` | `content`, plus segment metadata |
 | `assistant:text_delta` | `content`, plus segment metadata |
-| `assistant:tool_call` | `tool_name`, `arguments`, `call_id`, `category` (`backend` or `frontend`) |
+| `assistant:tool_call` | `tool_name`, `arguments`, `call_id`, `category` (`backend` or `host`) |
 | `assistant:tool_result` | `tool_name`, `output`, `call_id`, `duration_ms`?, `invalidates`? |
 | `assistant:tool_error` | `tool_name`, `error`, `call_id` |
 | `assistant:final_response` | `content`, `model`, `streamed`, `session_id`?, `message_id`?, `trace_id`?, `usage`?, `error`?, `pending_tool_call`? (`{tool_name, call_id, arguments}`) |
@@ -72,7 +72,7 @@ Segment metadata on deltas: `segment_id`, `segment_index`, `delta_index`,
 `segment_started`, `segment_kind` (`text` or `thinking`), so a client can
 rebuild the interleaving of thinking, text and tool groups.
 
-**Host tool flow.** `tool_call` with `category: "frontend"`, then
+**Host tool flow.** `tool_call` with `category: "host"`, then
 `final_response` with `pending_tool_call`, then `status: completed`. The
 client performs the action and sends `assistant:message` with
 `tool_call_id` = `pending_tool_call.call_id`, `tool_result` = whatever the
