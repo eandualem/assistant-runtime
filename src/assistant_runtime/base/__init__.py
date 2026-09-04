@@ -19,10 +19,9 @@ from assistant_runtime.base.exceptions import (
 from assistant_runtime.base.instrument import instrument
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.base.protocols import LifecycleAware
-from assistant_runtime.base.resilience import CircuitBreaker, retry_with_backoff
+from assistant_runtime.base.resilience import retry_with_backoff
 
 __all__ = [
-    "CircuitBreaker",
     "ConfigurationError",
     "ExternalServiceError",
     "LifecycleAware",

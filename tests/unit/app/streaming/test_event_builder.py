@@ -20,7 +20,6 @@ from assistant_runtime.app.streaming._event_builder import (
     make_tool_call_event,
     make_tool_error_event,
     make_tool_result_event,
-    make_tool_status_event,
 )
 
 
@@ -89,20 +88,6 @@ class TestToolCallEvent:
     def test_default_category_is_backend(self):
         event = make_tool_call_event("tool", {}, "c1")
         assert event["category"] == "backend"
-
-
-class TestToolStatusEvent:
-    def test_started(self):
-        event = make_tool_status_event("get_time", "started")
-        assert event == {"type": "tool_status", "tool_name": "get_time", "status": "started"}
-
-    def test_completed(self):
-        event = make_tool_status_event("get_time", "completed")
-        assert event["status"] == "completed"
-
-    def test_error(self):
-        event = make_tool_status_event("get_time", "error")
-        assert event["status"] == "error"
 
 
 class TestFinalResponseEvent:

@@ -195,11 +195,6 @@ class EventCoordinator:
         return self._debug_events
 
     @property
-    def accumulated_thinking(self) -> str:
-        """Full thinking content accumulated from all thinking_delta events."""
-        return "".join(self._thinking_buffer)
-
-    @property
     def accumulated_response(self) -> str:
         """Full response content accumulated from all text_delta events."""
         return "".join(self._response_buffer)

@@ -147,28 +147,6 @@ class TestAgentRegistryCache:
 
 
 # ---------------------------------------------------------------------------
-# TestGetAvailableSessions
-# ---------------------------------------------------------------------------
-
-
-class TestGetAvailableSessions:
-    async def test_returns_session_names(self):
-        cache = AgentRegistryCache()
-        cache._agents = SAMPLE_AGENTS
-
-        sessions = cache.get_available_sessions()
-
-        assert sessions == ["leo", "ike", "agent-backbone"]
-
-    async def test_empty_when_no_cache(self):
-        cache = AgentRegistryCache()
-
-        sessions = cache.get_available_sessions()
-
-        assert sessions == []
-
-
-# ---------------------------------------------------------------------------
 # TestGetAgentInfo
 # ---------------------------------------------------------------------------
 

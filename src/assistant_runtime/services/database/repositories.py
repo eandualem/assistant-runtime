@@ -215,12 +215,6 @@ class MessageRepository:
         )
         return list(result.scalars().all())
 
-    async def count_by_session(self, session_id: str) -> int:
-        result = await self._session.execute(
-            select(func.count(MessageORM.id)).where(MessageORM.session_id == session_id)
-        )
-        return int(result.scalar_one() or 0)
-
     async def count_by_sessions(self, session_ids: list[str]) -> dict[str, int]:
         if not session_ids:
             return {}
@@ -287,17 +281,6 @@ class SteeringRepository:
         result = await self._session.execute(
             select(SteeringORM)
             .where(SteeringORM.session_id == session_id)
-            .order_by(SteeringORM.created_at.asc(), SteeringORM.id.asc())
-        )
-        return list(result.scalars().all())
-
-    async def list_pending_by_session(self, session_id: str) -> list[SteeringORM]:
-        result = await self._session.execute(
-            select(SteeringORM)
-            .where(
-                SteeringORM.session_id == session_id,
-                SteeringORM.status == "pending",
-            )
             .order_by(SteeringORM.created_at.asc(), SteeringORM.id.asc())
         )
         return list(result.scalars().all())

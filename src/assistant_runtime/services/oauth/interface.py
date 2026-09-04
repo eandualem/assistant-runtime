@@ -241,13 +241,6 @@ class OAuthService:
             source=self._auth_source,
         )
 
-    def get_openai_api_key(self) -> str | None:
-        """Legacy API-key accessor.
-
-        ChatGPT/Codex subscription auth does not yield a reusable OpenAI API key.
-        """
-        return None
-
     def needs_refresh(self) -> bool:
         """Check if the access token expires within the refresh buffer."""
         if self._expires_at <= 0:

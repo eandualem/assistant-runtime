@@ -324,16 +324,6 @@ class TestCoordinatorDebugEventsCollection:
 
 
 class TestCoordinatorAccumulation:
-    def test_accumulated_thinking_empty_initially(self):
-        coord = EventCoordinator(max_events=100)
-        assert coord.accumulated_thinking == ""
-
-    def test_accumulated_thinking_accumulates(self):
-        coord = EventCoordinator(max_events=100)
-        coord.emit_thinking_delta("first ")
-        coord.emit_thinking_delta("second")
-        assert coord.accumulated_thinking == "first second"
-
     def test_accumulated_response_empty_initially(self):
         coord = EventCoordinator(max_events=100)
         assert coord.accumulated_response == ""
@@ -343,13 +333,6 @@ class TestCoordinatorAccumulation:
         coord.emit_text_delta("Hello ")
         coord.emit_text_delta("world")
         assert coord.accumulated_response == "Hello world"
-
-    def test_buffers_independent(self):
-        coord = EventCoordinator(max_events=100)
-        coord.emit_thinking_delta("thinking")
-        coord.emit_text_delta("response")
-        assert coord.accumulated_thinking == "thinking"
-        assert coord.accumulated_response == "response"
 
 
 class TestCoordinatorFlushThinking:

@@ -60,44 +60,6 @@ class HistoryService:
         if self._manager is not None:
             self._manager.set_runtime_settings(runtime_settings)
 
-    async def prepare_history(
-        self,
-        history: list[ModelMessage],
-        session_context: dict[str, Any],
-        *,
-        is_continuation: bool = False,
-        exclude_tool_call_ids: set[str] | None = None,
-    ) -> tuple[list[ModelMessage], bool]:
-        """Prepare history for the agent loop.
-
-        Args:
-            history: Current conversation history.
-            session_context: Session context dict (may be updated with working memory).
-            is_continuation: If True, passed through to manager.
-            exclude_tool_call_ids: Tool call IDs to exclude from dangling resolution
-                (the pending host tool that DeferredToolResults will handle).
-
-        Returns:
-            Tuple of (prepared_history, context_was_modified).
-
-        Raises:
-            CompactionError: If history preparation fails.
-        """
-        if self._manager is None:
-            raise CompactionError("History service not started")
-
-        try:
-            return await self._manager.prepare_history(
-                history,
-                session_context,
-                is_continuation=is_continuation,
-                exclude_tool_call_ids=exclude_tool_call_ids,
-            )
-        except Exception as e:
-            if isinstance(e, CompactionError):
-                raise
-            raise CompactionError(f"History preparation failed: {e}") from e
-
     async def prepare_history_with_metadata(
         self,
         history: list[ModelMessage],
@@ -107,8 +69,6 @@ class HistoryService:
         exclude_tool_call_ids: set[str] | None = None,
     ) -> HistoryPreparationResult:
         """Prepare history and return debug metadata.
-
-        Wraps prepare_history() with additional metadata for debug events.
 
         Args:
             history: Current conversation history.

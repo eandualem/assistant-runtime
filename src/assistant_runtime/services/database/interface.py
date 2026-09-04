@@ -89,18 +89,6 @@ class DatabaseService:
             self._healthy = False
         return {"healthy": self._healthy, "host": self._config.host}
 
-    async def get_session(self) -> AsyncIterator[AsyncSession]:
-        """FastAPI Depends() generator — yields session, commits on success, rolls back on error."""
-        if self._session_factory is None:
-            raise DatabaseError("Database service not started")
-        async with self._session_factory() as session:
-            try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
-
     @property
     def healthy(self) -> bool:
         """Whether the database is reachable."""
