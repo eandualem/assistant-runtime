@@ -117,15 +117,15 @@ class TestValidateNotePath:
     def test_deeply_nested(self, notes_dir):
         assert _store(notes_dir).validate_note_path("a/b/c/note.md") is None
 
-    def test_empty(self):
+    def test_empty(self, notes_dir):
         assert _store(notes_dir).validate_note_path("") is not None
 
-    def test_path_traversal_dotdot(self):
+    def test_path_traversal_dotdot(self, notes_dir):
         result = _store(notes_dir).validate_note_path("../outside/note.md")
         assert result is not None
         assert "traversal" in result.lower()
 
-    def test_backslash_rejected(self):
+    def test_backslash_rejected(self, notes_dir):
         result = _store(notes_dir).validate_note_path("folder\\note.md")
         assert result is not None
 
@@ -146,11 +146,11 @@ class TestValidateFolder:
     def test_valid_nested(self, notes_dir):
         assert _store(notes_dir).validate_folder("governance/tracks") is None
 
-    def test_empty(self):
+    def test_empty(self, notes_dir):
         result = _store(notes_dir).validate_folder("")
         assert result is not None
 
-    def test_dotdot(self):
+    def test_dotdot(self, notes_dir):
         result = _store(notes_dir).validate_folder("../outside")
         assert result is not None
         assert "traversal" in result.lower()
