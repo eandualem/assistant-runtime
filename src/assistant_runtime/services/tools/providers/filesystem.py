@@ -130,9 +130,10 @@ class MarkdownNotes:
             parts = content.split("---\n", 2)
             if len(parts) >= 3:
                 try:
-                    frontmatter = yaml.safe_load(parts[1]) or {}
+                    loaded = yaml.safe_load(parts[1])
                 except yaml.YAMLError:
-                    frontmatter = {}
+                    loaded = None
+                frontmatter = loaded if isinstance(loaded, dict) else {}
                 body = parts[2].strip()
         rel = self._relative(path)
         folder = str(Path(rel).parent)
@@ -176,14 +177,8 @@ class MarkdownNotes:
         slug = slugify(title)
         if not slug:
             return {"error": "Title produces empty slug", "success": False}
-        filename = f"{date.today()}-{slug}.md"
-        path = target_dir / filename
-        counter = 1
-        while path.exists():
-            filename = f"{date.today()}-{slug}-{counter}.md"
-            path = target_dir / filename
-            counter += 1
-        await asyncio.to_thread(path.write_text, build_note_content(title, content, tags), "utf-8")
+        note = build_note_content(title, content, tags)
+        filename, path = await asyncio.to_thread(_create_exclusive, target_dir, slug, note)
         rel = self._relative(path)
         logger.info("Created note", path=rel, title=title)
         return {"filename": filename, "path": rel, "title": title, "success": True}
@@ -194,6 +189,8 @@ class MarkdownNotes:
             return {"error": error, "success": False}
         notes: list[dict[str, Any]] = []
         for path in sorted(scope.rglob("*.md"), reverse=True) if scope else []:
+            if len(notes) >= limit:
+                break
             parsed = await asyncio.to_thread(self.parse_note, path)
             if parsed is None or (tag and tag not in parsed["tags"]):
                 continue
@@ -202,8 +199,6 @@ class MarkdownNotes:
                 {k: parsed[k] for k in ("filename", "path", "folder", "title", "date", "tags")}
                 | {"preview": preview}
             )
-            if len(notes) >= limit:
-                break
         return {"notes": notes, "count": len(notes), "success": True}
 
     async def read(self, *, filename: str) -> dict[str, Any]:
@@ -224,6 +219,8 @@ class MarkdownNotes:
         query_lower = query.lower()
         results: list[dict[str, Any]] = []
         for path in sorted(scope.rglob("*.md"), reverse=True) if scope else []:
+            if len(results) >= limit:
+                break
             parsed = await asyncio.to_thread(self.parse_note, path)
             if parsed is None:
                 continue
@@ -234,8 +231,6 @@ class MarkdownNotes:
                 {k: parsed[k] for k in ("filename", "path", "folder", "title", "date", "tags")}
                 | {"snippet": _snippet(parsed["content"], query)}
             )
-            if len(results) >= limit:
-                break
         return {"results": results, "count": len(results), "query": query, "success": True}
 
     async def update(
@@ -322,6 +317,22 @@ class MarkdownNotes:
         new_path = self._relative(dest)
         logger.info("Moved note", source=filename, destination=new_path)
         return {"filename": src.name, "from": source_rel, "to": new_path, "success": True}
+
+
+def _create_exclusive(target_dir: Path, slug: str, note: str) -> tuple[str, Path]:
+    """Write ``note`` under a dated slug filename that does not exist yet, atomically."""
+    counter = 0
+    while True:
+        suffix = f"-{counter}" if counter else ""
+        filename = f"{date.today()}-{slug}{suffix}.md"
+        path = target_dir / filename
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(note)
+        except FileExistsError:
+            counter += 1
+            continue
+        return filename, path
 
 
 def _snippet(content: str, query: str) -> str:

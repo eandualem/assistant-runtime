@@ -50,10 +50,13 @@ turn that asked for it.
 
 The model can call **backend tools**: functions the runtime executes.
 The full list with schemas is at `GET /api/debug/tools`. Built-in tools
-need no external system and are always present; every other tool belongs
-to a **capability** (what the assistant can do) that is offered only when
-a **provider** (who does it) is configured, so the model is never given a
-tool that cannot work. Configuration lists the providers.
+are part of the runtime and present whenever their own service is
+(artifacts need Postgres, media a provider key). Capabilities (what the
+assistant can do) are offered only when a provider (who does it) is
+configured, so the model is never given a tool that cannot work;
+configuration lists the providers. The backbone, GitHub and Telegram
+integrations are still registered unconditionally and return a structured
+error when unconfigured, until they move to the same model.
 
 | Group | Tools | Needs |
 |---|---|---|
