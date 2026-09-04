@@ -192,7 +192,7 @@ class AssistantRequest(BaseModel):
 
     @property
     def is_continuation(self) -> bool:
-        """Whether this is a continuation request (frontend returning a tool result)."""
+        """Whether this is a continuation request (host returning a tool result)."""
         return self.tool_call_id is not None
 
     @property
@@ -215,7 +215,7 @@ class AssistantRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def normalize_camel_case(cls, data: Any) -> Any:
-        """Normalize camelCase keys from the frontend to snake_case.
+        """Normalize camelCase keys from the host to snake_case.
 
         Covers three scopes:
         1. Top-level keys (sessionId → session_id, hostContext → host_context),
