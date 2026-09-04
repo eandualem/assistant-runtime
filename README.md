@@ -136,7 +136,7 @@ CodeRabbit reviews every one.
 
 ### Layout
 
-```
+```text
 src/assistant_runtime/
   base/          lifecycle manager, protocols, resilience, exceptions
   services/      database, llm, history, tools, media, mcp, oauth, tracing
