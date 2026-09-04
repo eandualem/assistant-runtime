@@ -13,7 +13,7 @@ from assistant_runtime.services.media.exceptions import (
 )
 from assistant_runtime.services.media.models import VideoResult
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._video_tools import register_video_tools
+from assistant_runtime.services.tools.builtin._video import register_video_tools
 from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------

@@ -49,19 +49,23 @@ turn that asked for it.
 ## Tools
 
 The model can call **backend tools**: functions the runtime executes.
-They are grouped by domain and registered at startup; the full list with
-schemas is at `GET /api/debug/tools`. The built-in groups:
+The full list with schemas is at `GET /api/debug/tools`. Built-in tools
+need no external system and are always present; every other tool belongs
+to a **capability** (what the assistant can do) that is offered only when
+a **provider** (who does it) is configured, so the model is never given a
+tool that cannot work. Configuration lists the providers.
 
 | Group | Tools | Needs |
 |---|---|---|
-| time, notes, skills | `get_time`, `manage_notes`, `list_skills`, `read_skill` | nothing |
+| time, screen | `get_time`, `look_at_screen` | nothing (a host that sends screenshots, for the screen) |
+| notes | `manage_notes` | `NOTES_PATH` |
+| library | `list_documents`, `read_document` | `LIBRARY_PATHS` |
 | artifacts | `manage_artifacts` | Postgres |
 | agents, plans, meetings, schedule, swarms, telemetry, repos | `list_agents`, `start_agent`, `send_agent_message`, `approve_plan`, `create_meeting_room`, `add_schedule_item`, `create_swarm`, `get_delivery_status`, `onboard_repo`, ... | agent-backbone at `BACKBONE_URL` |
 | github | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
 | telegram | `telegram_send`, `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
 | media | `generate_image`, `generate_video` | an image provider key; the `[video]` extra and a Runway or Luma key |
 | subagent | `run_subagent` | nothing (uses the configured model) |
-| screen | `look_at_screen` | a host that sends screenshots |
 
 A tool whose integration is not configured returns a structured error
 (`{"success": false, "error": ..., "error_code": ...}`) instead of

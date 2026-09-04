@@ -1,4 +1,4 @@
-"""Tests for notes management tool."""
+"""Tests for the markdown notes provider and the notes capability."""
 
 from __future__ import annotations
 
@@ -6,20 +6,28 @@ from unittest.mock import patch
 
 import pytest
 
-from assistant_runtime.services.tools._notes_tools import (
-    _build_note_content,
-    _parse_note,
-    _slugify,
-    _validate_filename,
-    _validate_folder,
-    _validate_note_path,
-    manage_notes,
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.capabilities.notes import (
+    build_manage_notes,
     register_notes_tools,
 )
-from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.filesystem import (
+    MarkdownNotes,
+    build_note_content,
+    slugify,
+    validate_filename,
+)
 
-MODULE = "assistant_runtime.services.tools._notes_tools"
+MODULE = "assistant_runtime.services.tools.providers.filesystem"
+
+
+def _store(root):
+    return MarkdownNotes(root)
+
+
+def _manage(root):
+    return build_manage_notes(MarkdownNotes(root))
 
 
 # ---------------------------------------------------------------------------
@@ -28,9 +36,8 @@ MODULE = "assistant_runtime.services.tools._notes_tools"
 
 
 @pytest.fixture
-def notes_dir(tmp_path, monkeypatch):
-    """Redirect NOTES_DIR to a temp directory."""
-    monkeypatch.setattr(f"{MODULE}.NOTES_DIR", tmp_path)
+def notes_dir(tmp_path):
+    """The root of a fresh notes store."""
     return tmp_path
 
 
@@ -41,23 +48,23 @@ def notes_dir(tmp_path, monkeypatch):
 
 class TestSlugify:
     def test_basic(self):
-        assert _slugify("Hello World") == "hello-world"
+        assert slugify("Hello World") == "hello-world"
 
     def test_special_chars(self):
-        assert _slugify("Auth flow: revisit!") == "auth-flow-revisit"
+        assert slugify("Auth flow: revisit!") == "auth-flow-revisit"
 
     def test_leading_trailing_stripped(self):
-        assert _slugify("  --hello--  ") == "hello"
+        assert slugify("  --hello--  ") == "hello"
 
     def test_max_length(self):
         long_title = "a" * 200
-        assert len(_slugify(long_title)) <= 80
+        assert len(slugify(long_title)) <= 80
 
     def test_empty(self):
-        assert _slugify("") == ""
+        assert slugify("") == ""
 
     def test_unicode(self):
-        result = _slugify("caf\u00e9 latt\u00e9")
+        result = slugify("caf\u00e9 latt\u00e9")
         assert isinstance(result, str)
         assert len(result) > 0
 
@@ -78,7 +85,7 @@ class TestValidateFilename:
         ],
     )
     def test_valid(self, name):
-        assert _validate_filename(name) is None
+        assert validate_filename(name) is None
 
     @pytest.mark.parametrize(
         ("name", "reason"),
@@ -91,7 +98,7 @@ class TestValidateFilename:
         ],
     )
     def test_invalid(self, name, reason):
-        result = _validate_filename(name)
+        result = validate_filename(name)
         assert result is not None, f"Expected invalid for: {reason}"
 
 
@@ -102,28 +109,28 @@ class TestValidateFilename:
 
 class TestValidateNotePath:
     def test_valid_path_with_folder(self, notes_dir):
-        assert _validate_note_path("governance/tracks/my-note.md") is None
+        assert _store(notes_dir).validate_note_path("governance/tracks/my-note.md") is None
 
     def test_valid_bare_filename(self, notes_dir):
-        assert _validate_note_path("my-note.md") is None
+        assert _store(notes_dir).validate_note_path("my-note.md") is None
 
     def test_deeply_nested(self, notes_dir):
-        assert _validate_note_path("a/b/c/note.md") is None
+        assert _store(notes_dir).validate_note_path("a/b/c/note.md") is None
 
     def test_empty(self):
-        assert _validate_note_path("") is not None
+        assert _store(notes_dir).validate_note_path("") is not None
 
     def test_path_traversal_dotdot(self):
-        result = _validate_note_path("../outside/note.md")
+        result = _store(notes_dir).validate_note_path("../outside/note.md")
         assert result is not None
         assert "traversal" in result.lower()
 
     def test_backslash_rejected(self):
-        result = _validate_note_path("folder\\note.md")
+        result = _store(notes_dir).validate_note_path("folder\\note.md")
         assert result is not None
 
     def test_invalid_filename_in_path(self, notes_dir):
-        result = _validate_note_path("folder/has spaces.md")
+        result = _store(notes_dir).validate_note_path("folder/has spaces.md")
         assert result is not None
 
 
@@ -134,22 +141,22 @@ class TestValidateNotePath:
 
 class TestValidateFolder:
     def test_valid_single(self, notes_dir):
-        assert _validate_folder("governance") is None
+        assert _store(notes_dir).validate_folder("governance") is None
 
     def test_valid_nested(self, notes_dir):
-        assert _validate_folder("governance/tracks") is None
+        assert _store(notes_dir).validate_folder("governance/tracks") is None
 
     def test_empty(self):
-        result = _validate_folder("")
+        result = _store(notes_dir).validate_folder("")
         assert result is not None
 
     def test_dotdot(self):
-        result = _validate_folder("../outside")
+        result = _store(notes_dir).validate_folder("../outside")
         assert result is not None
         assert "traversal" in result.lower()
 
     def test_backslash(self):
-        result = _validate_folder("a\\b")
+        result = _store(notes_dir).validate_folder("a\\b")
         assert result is not None
 
 
@@ -164,7 +171,7 @@ class TestParseNote:
         path.write_text(
             '---\ntitle: "My Note"\ndate: 2026-02-19\ntags: [auth, api]\n---\n\nNote body here.\n'
         )
-        result = _parse_note(path)
+        result = _store(notes_dir).parse_note(path)
         assert result is not None
         assert result["title"] == "My Note"
         assert result["date"] == "2026-02-19"
@@ -178,7 +185,7 @@ class TestParseNote:
         path = sub / "design.md"
         path.write_text('---\ntitle: "Design"\ndate: 2026-03-23\ntags: []\n---\n\nDesign doc.\n')
 
-        result = _parse_note(path)
+        result = _store(notes_dir).parse_note(path)
         assert result is not None
         assert result["folder"] == "governance/tracks"
         assert result["path"] == "governance/tracks/design.md"
@@ -186,20 +193,20 @@ class TestParseNote:
     def test_without_frontmatter(self, notes_dir):
         path = notes_dir / "plain.md"
         path.write_text("Just plain text.")
-        result = _parse_note(path)
+        result = _store(notes_dir).parse_note(path)
         assert result is not None
         assert result["title"] == "plain"  # stem as fallback
         assert result["content"] == "Just plain text."
 
     def test_missing_file(self, notes_dir):
         path = notes_dir / "nope.md"
-        result = _parse_note(path)
+        result = _store(notes_dir).parse_note(path)
         assert result is None
 
     def test_invalid_yaml(self, notes_dir):
         path = notes_dir / "bad.md"
         path.write_text("---\n: invalid: yaml: {{{\n---\n\nBody text.\n")
-        result = _parse_note(path)
+        result = _store(notes_dir).parse_note(path)
         assert result is not None
         # Should still parse with empty frontmatter
         assert result["content"] == "Body text."
@@ -215,7 +222,7 @@ class TestBuildNoteContent:
     def test_basic(self, mock_date):
         mock_date.today.return_value = mock_date
         mock_date.__str__ = lambda self: "2026-02-19"
-        content = _build_note_content("Test Title", "Body text", ["tag1", "tag2"])
+        content = build_note_content("Test Title", "Body text", ["tag1", "tag2"])
         assert "---" in content
         assert "title: Test Title" in content
         assert "Body text" in content
@@ -225,7 +232,7 @@ class TestBuildNoteContent:
     def test_no_tags(self, mock_date):
         mock_date.today.return_value = mock_date
         mock_date.__str__ = lambda self: "2026-02-19"
-        content = _build_note_content("Title", "Body")
+        content = build_note_content("Title", "Body")
         assert "tags: []" in content
 
 
@@ -241,7 +248,7 @@ class TestCreateNote:
         mock_date.__str__ = lambda self: "2026-02-19"
         mock_date.__format__ = lambda self, fmt: "2026-02-19"
 
-        result = await manage_notes(
+        result = await _manage(notes_dir)(
             action="create",
             title="Auth Flow Review",
             content="Need to revisit the auth flow next week.",
@@ -258,12 +265,12 @@ class TestCreateNote:
         assert "revisit the auth flow" in text
 
     async def test_create_no_title(self, notes_dir):
-        result = await manage_notes(action="create", content="Some content")
+        result = await _manage(notes_dir)(action="create", content="Some content")
         assert result["success"] is False
         assert "Title" in result["error"]
 
     async def test_create_no_content(self, notes_dir):
-        result = await manage_notes(action="create", title="Title")
+        result = await _manage(notes_dir)(action="create", title="Title")
         assert result["success"] is False
         assert "Content" in result["error"]
 
@@ -273,8 +280,8 @@ class TestCreateNote:
         mock_date.__str__ = lambda self: "2026-02-19"
         mock_date.__format__ = lambda self, fmt: "2026-02-19"
 
-        r1 = await manage_notes(action="create", title="Same Title", content="First")
-        r2 = await manage_notes(action="create", title="Same Title", content="Second")
+        r1 = await _manage(notes_dir)(action="create", title="Same Title", content="First")
+        r2 = await _manage(notes_dir)(action="create", title="Same Title", content="Second")
         assert r1["success"] is True
         assert r2["success"] is True
         assert r1["filename"] != r2["filename"]
@@ -285,7 +292,7 @@ class TestCreateNote:
         mock_date.__str__ = lambda self: "2026-03-23"
         mock_date.__format__ = lambda self, fmt: "2026-03-23"
 
-        result = await manage_notes(
+        result = await _manage(notes_dir)(
             action="create",
             title="Design Doc",
             content="Governance track design.",
@@ -305,7 +312,7 @@ class TestCreateNote:
         mock_date.__str__ = lambda self: "2026-03-23"
         mock_date.__format__ = lambda self, fmt: "2026-03-23"
 
-        result = await manage_notes(
+        result = await _manage(notes_dir)(
             action="create",
             title="Deep Note",
             content="Body.",
@@ -315,7 +322,7 @@ class TestCreateNote:
         assert (notes_dir / "a" / "b" / "c").is_dir()
 
     async def test_create_in_folder_traversal_rejected(self, notes_dir):
-        result = await manage_notes(
+        result = await _manage(notes_dir)(
             action="create",
             title="Bad",
             content="Body.",
@@ -330,7 +337,7 @@ class TestCreateNote:
         mock_date.__str__ = lambda self: "2026-03-23"
         mock_date.__format__ = lambda self, fmt: "2026-03-23"
 
-        result = await manage_notes(action="create", title="Root Note", content="Body.")
+        result = await _manage(notes_dir)(action="create", title="Root Note", content="Body.")
         assert result["success"] is True
         assert "path" in result
 
@@ -342,7 +349,7 @@ class TestCreateNote:
 
 class TestListNotes:
     async def test_empty(self, notes_dir):
-        result = await manage_notes(action="list")
+        result = await _manage(notes_dir)(action="list")
         assert result["success"] is True
         assert result["count"] == 0
 
@@ -354,7 +361,7 @@ class TestListNotes:
             '---\ntitle: "Second"\ndate: 2026-02-19\ntags: [b]\n---\n\nSecond body.\n'
         )
 
-        result = await manage_notes(action="list")
+        result = await _manage(notes_dir)(action="list")
         assert result["success"] is True
         assert result["count"] == 2
 
@@ -366,7 +373,7 @@ class TestListNotes:
             '---\ntitle: "B"\ndate: 2026-02-19\ntags: [other]\n---\n\nB body.\n'
         )
 
-        result = await manage_notes(action="list", tag="auth")
+        result = await _manage(notes_dir)(action="list", tag="auth")
         assert result["success"] is True
         assert result["count"] == 1
         assert result["notes"][0]["title"] == "A"
@@ -377,7 +384,7 @@ class TestListNotes:
                 f'---\ntitle: "Note {i}"\ndate: 2026-02-19\ntags: []\n---\n\nBody {i}.\n'
             )
 
-        result = await manage_notes(action="list", limit=3)
+        result = await _manage(notes_dir)(action="list", limit=3)
         assert result["success"] is True
         assert result["count"] == 3
 
@@ -392,7 +399,7 @@ class TestListNotes:
             '---\ntitle: "Root"\ndate: 2026-03-23\ntags: []\n---\n\nRoot body.\n'
         )
 
-        result = await manage_notes(action="list")
+        result = await _manage(notes_dir)(action="list")
         assert result["success"] is True
         assert result["count"] == 2
         titles = {n["title"] for n in result["notes"]}
@@ -405,7 +412,7 @@ class TestListNotes:
             '---\ntitle: "Note"\ndate: 2026-03-23\ntags: []\n---\n\nBody.\n'
         )
 
-        result = await manage_notes(action="list")
+        result = await _manage(notes_dir)(action="list")
         assert result["success"] is True
         note = result["notes"][0]
         assert note["folder"] == "docs"
@@ -422,13 +429,13 @@ class TestListNotes:
             '---\ntitle: "Root"\ndate: 2026-03-23\ntags: []\n---\n\nBody.\n'
         )
 
-        result = await manage_notes(action="list", folder="governance")
+        result = await _manage(notes_dir)(action="list", folder="governance")
         assert result["success"] is True
         assert result["count"] == 1
         assert result["notes"][0]["title"] == "Track"
 
     async def test_list_nonexistent_folder(self, notes_dir):
-        result = await manage_notes(action="list", folder="nonexistent")
+        result = await _manage(notes_dir)(action="list", folder="nonexistent")
         assert result["success"] is True
         assert result["count"] == 0
 
@@ -444,18 +451,18 @@ class TestReadNote:
             '---\ntitle: "Test"\ndate: 2026-02-19\ntags: [x]\n---\n\nFull content here.\n'
         )
 
-        result = await manage_notes(action="read", filename="test.md")
+        result = await _manage(notes_dir)(action="read", filename="test.md")
         assert result["success"] is True
         assert result["title"] == "Test"
         assert result["content"] == "Full content here."
 
     async def test_read_not_found(self, notes_dir):
-        result = await manage_notes(action="read", filename="nope.md")
+        result = await _manage(notes_dir)(action="read", filename="nope.md")
         assert result["success"] is False
         assert "not found" in result["error"].lower()
 
     async def test_read_invalid_filename(self, notes_dir):
-        result = await manage_notes(action="read", filename="../etc/passwd")
+        result = await _manage(notes_dir)(action="read", filename="../etc/passwd")
         assert result["success"] is False
 
     async def test_read_with_path(self, notes_dir):
@@ -466,7 +473,7 @@ class TestReadNote:
             '---\ntitle: "Track"\ndate: 2026-03-23\ntags: []\n---\n\nTrack content.\n'
         )
 
-        result = await manage_notes(action="read", filename="governance/track.md")
+        result = await _manage(notes_dir)(action="read", filename="governance/track.md")
         assert result["success"] is True
         assert result["title"] == "Track"
         assert result["content"] == "Track content."
@@ -474,7 +481,7 @@ class TestReadNote:
 
     async def test_read_with_path_not_found(self, notes_dir):
         (notes_dir / "governance").mkdir()
-        result = await manage_notes(action="read", filename="governance/nope.md")
+        result = await _manage(notes_dir)(action="read", filename="governance/nope.md")
         assert result["success"] is False
         assert "not found" in result["error"].lower()
 
@@ -493,7 +500,7 @@ class TestSearchNotes:
             '---\ntitle: "Other"\ndate: 2026-02-19\ntags: []\n---\n\nNothing relevant.\n'
         )
 
-        result = await manage_notes(action="search", query="auth flow")
+        result = await _manage(notes_dir)(action="search", query="auth flow")
         assert result["success"] is True
         assert result["count"] == 1
         assert result["results"][0]["filename"] == "note1.md"
@@ -503,7 +510,7 @@ class TestSearchNotes:
             '---\ntitle: "Database Migration"\ndate: 2026-02-19\ntags: []\n---\n\nSome body.\n'
         )
 
-        result = await manage_notes(action="search", query="database")
+        result = await _manage(notes_dir)(action="search", query="database")
         assert result["success"] is True
         assert result["count"] == 1
 
@@ -512,12 +519,12 @@ class TestSearchNotes:
             '---\ntitle: "Note"\ndate: 2026-02-19\ntags: [urgent]\n---\n\nSome body.\n'
         )
 
-        result = await manage_notes(action="search", query="urgent")
+        result = await _manage(notes_dir)(action="search", query="urgent")
         assert result["success"] is True
         assert result["count"] == 1
 
     async def test_search_no_query(self, notes_dir):
-        result = await manage_notes(action="search")
+        result = await _manage(notes_dir)(action="search")
         assert result["success"] is False
         assert "Query" in result["error"]
 
@@ -526,7 +533,7 @@ class TestSearchNotes:
             '---\ntitle: "Note"\ndate: 2026-02-19\ntags: []\n---\n\nBody.\n'
         )
 
-        result = await manage_notes(action="search", query="zzzznonexistent")
+        result = await _manage(notes_dir)(action="search", query="zzzznonexistent")
         assert result["success"] is True
         assert result["count"] == 0
 
@@ -536,7 +543,7 @@ class TestSearchNotes:
             f'---\ntitle: "Note"\ndate: 2026-02-19\ntags: []\n---\n\n{long_content}\n'
         )
 
-        result = await manage_notes(action="search", query="MATCH_HERE")
+        result = await _manage(notes_dir)(action="search", query="MATCH_HERE")
         assert result["success"] is True
         snippet = result["results"][0]["snippet"]
         assert "MATCH_HERE" in snippet
@@ -549,7 +556,7 @@ class TestSearchNotes:
             '---\ntitle: "Track"\ndate: 2026-03-23\ntags: []\n---\n\nGovernance track design.\n'
         )
 
-        result = await manage_notes(action="search", query="governance track")
+        result = await _manage(notes_dir)(action="search", query="governance track")
         assert result["success"] is True
         assert result["count"] == 1
         assert result["results"][0]["folder"] == "governance"
@@ -564,7 +571,7 @@ class TestSearchNotes:
             '---\ntitle: "Root"\ndate: 2026-03-23\ntags: []\n---\n\nDesign doc.\n'
         )
 
-        result = await manage_notes(action="search", query="design", folder="governance")
+        result = await _manage(notes_dir)(action="search", query="design", folder="governance")
         assert result["success"] is True
         assert result["count"] == 1
         assert result["results"][0]["title"] == "Track"
@@ -581,7 +588,9 @@ class TestUpdateNote:
             '---\ntitle: "Original"\ndate: 2026-02-19\ntags: [old]\n---\n\nOld content.\n'
         )
 
-        result = await manage_notes(action="update", filename="note.md", content="New content.")
+        result = await _manage(notes_dir)(
+            action="update", filename="note.md", content="New content."
+        )
         assert result["success"] is True
 
         text = (notes_dir / "note.md").read_text()
@@ -594,7 +603,9 @@ class TestUpdateNote:
             '---\ntitle: "Note"\ndate: 2026-02-19\ntags: [old]\n---\n\nBody.\n'
         )
 
-        result = await manage_notes(action="update", filename="note.md", tags=["new", "updated"])
+        result = await _manage(notes_dir)(
+            action="update", filename="note.md", tags=["new", "updated"]
+        )
         assert result["success"] is True
 
         text = (notes_dir / "note.md").read_text()
@@ -602,14 +613,14 @@ class TestUpdateNote:
         assert "Body." in text  # content preserved
 
     async def test_update_not_found(self, notes_dir):
-        result = await manage_notes(action="update", filename="nope.md", content="x")
+        result = await _manage(notes_dir)(action="update", filename="nope.md", content="x")
         assert result["success"] is False
 
     async def test_update_nothing_to_update(self, notes_dir):
         (notes_dir / "note.md").write_text(
             '---\ntitle: "Note"\ndate: 2026-02-19\ntags: []\n---\n\nBody.\n'
         )
-        result = await manage_notes(action="update", filename="note.md")
+        result = await _manage(notes_dir)(action="update", filename="note.md")
         assert result["success"] is False
         assert "Provide" in result["error"]
 
@@ -620,7 +631,9 @@ class TestUpdateNote:
             '---\ntitle: "Doc"\ndate: 2026-03-23\ntags: []\n---\n\nOld body.\n'
         )
 
-        result = await manage_notes(action="update", filename="docs/note.md", content="New body.")
+        result = await _manage(notes_dir)(
+            action="update", filename="docs/note.md", content="New body."
+        )
         assert result["success"] is True
 
         text = (sub / "note.md").read_text()
@@ -638,18 +651,18 @@ class TestDeleteNote:
         path = notes_dir / "doomed.md"
         path.write_text("content")
 
-        result = await manage_notes(action="delete", filename="doomed.md")
+        result = await _manage(notes_dir)(action="delete", filename="doomed.md")
         assert result["success"] is True
         assert result["deleted"] is True
         assert not path.exists()
 
     async def test_delete_not_found(self, notes_dir):
-        result = await manage_notes(action="delete", filename="nope.md")
+        result = await _manage(notes_dir)(action="delete", filename="nope.md")
         assert result["success"] is False
         assert "not found" in result["error"].lower()
 
     async def test_delete_invalid_filename(self, notes_dir):
-        result = await manage_notes(action="delete", filename="../bad.md")
+        result = await _manage(notes_dir)(action="delete", filename="../bad.md")
         assert result["success"] is False
 
     async def test_delete_note_in_subfolder(self, notes_dir):
@@ -658,7 +671,7 @@ class TestDeleteNote:
         path = sub / "doomed.md"
         path.write_text("content")
 
-        result = await manage_notes(action="delete", filename="docs/doomed.md")
+        result = await _manage(notes_dir)(action="delete", filename="docs/doomed.md")
         assert result["success"] is True
         assert result["deleted"] is True
         assert not path.exists()
@@ -671,30 +684,30 @@ class TestDeleteNote:
 
 class TestCreateFolder:
     async def test_create_folder(self, notes_dir):
-        result = await manage_notes(action="create_folder", folder="governance/tracks")
+        result = await _manage(notes_dir)(action="create_folder", folder="governance/tracks")
         assert result["success"] is True
         assert result["created"] is True
         assert (notes_dir / "governance" / "tracks").is_dir()
 
     async def test_create_folder_already_exists(self, notes_dir):
         (notes_dir / "existing").mkdir()
-        result = await manage_notes(action="create_folder", folder="existing")
+        result = await _manage(notes_dir)(action="create_folder", folder="existing")
         assert result["success"] is True
         assert result["created"] is False
         assert "already exists" in result["message"].lower()
 
     async def test_create_folder_no_folder(self, notes_dir):
-        result = await manage_notes(action="create_folder")
+        result = await _manage(notes_dir)(action="create_folder")
         assert result["success"] is False
         assert "required" in result["error"].lower()
 
     async def test_create_folder_traversal(self, notes_dir):
-        result = await manage_notes(action="create_folder", folder="../outside")
+        result = await _manage(notes_dir)(action="create_folder", folder="../outside")
         assert result["success"] is False
         assert "traversal" in result["error"].lower()
 
     async def test_create_nested_folder(self, notes_dir):
-        result = await manage_notes(action="create_folder", folder="a/b/c/d")
+        result = await _manage(notes_dir)(action="create_folder", folder="a/b/c/d")
         assert result["success"] is True
         assert (notes_dir / "a" / "b" / "c" / "d").is_dir()
 
@@ -709,7 +722,7 @@ class TestMoveNote:
         (notes_dir / "note.md").write_text("content")
         (notes_dir / "target").mkdir()
 
-        result = await manage_notes(action="move_note", filename="note.md", folder="target")
+        result = await _manage(notes_dir)(action="move_note", filename="note.md", folder="target")
         assert result["success"] is True
         assert not (notes_dir / "note.md").exists()
         assert (notes_dir / "target" / "note.md").exists()
@@ -718,22 +731,24 @@ class TestMoveNote:
     async def test_move_creates_destination(self, notes_dir):
         (notes_dir / "note.md").write_text("content")
 
-        result = await manage_notes(action="move_note", filename="note.md", folder="new/sub/dir")
+        result = await _manage(notes_dir)(
+            action="move_note", filename="note.md", folder="new/sub/dir"
+        )
         assert result["success"] is True
         assert (notes_dir / "new" / "sub" / "dir" / "note.md").exists()
 
     async def test_move_no_filename(self, notes_dir):
-        result = await manage_notes(action="move_note", folder="target")
+        result = await _manage(notes_dir)(action="move_note", folder="target")
         assert result["success"] is False
         assert "filename" in result["error"].lower()
 
     async def test_move_no_folder(self, notes_dir):
-        result = await manage_notes(action="move_note", filename="note.md")
+        result = await _manage(notes_dir)(action="move_note", filename="note.md")
         assert result["success"] is False
         assert "folder" in result["error"].lower()
 
     async def test_move_source_not_found(self, notes_dir):
-        result = await manage_notes(action="move_note", filename="nope.md", folder="target")
+        result = await _manage(notes_dir)(action="move_note", filename="nope.md", folder="target")
         assert result["success"] is False
         assert "not found" in result["error"].lower()
 
@@ -743,13 +758,15 @@ class TestMoveNote:
         target.mkdir()
         (target / "note.md").write_text("existing")
 
-        result = await manage_notes(action="move_note", filename="note.md", folder="target")
+        result = await _manage(notes_dir)(action="move_note", filename="note.md", folder="target")
         assert result["success"] is False
         assert "already exists" in result["error"].lower()
 
     async def test_move_traversal_on_folder(self, notes_dir):
         (notes_dir / "note.md").write_text("content")
-        result = await manage_notes(action="move_note", filename="note.md", folder="../outside")
+        result = await _manage(notes_dir)(
+            action="move_note", filename="note.md", folder="../outside"
+        )
         assert result["success"] is False
 
     async def test_move_from_subfolder(self, notes_dir):
@@ -758,7 +775,7 @@ class TestMoveNote:
         src.mkdir()
         (src / "note.md").write_text("content")
 
-        result = await manage_notes(action="move_note", filename="old/note.md", folder="new")
+        result = await _manage(notes_dir)(action="move_note", filename="old/note.md", folder="new")
         assert result["success"] is True
         assert not (src / "note.md").exists()
         assert (notes_dir / "new" / "note.md").exists()
@@ -771,7 +788,7 @@ class TestMoveNote:
 
 class TestInvalidAction:
     async def test_unknown_action(self, notes_dir):
-        result = await manage_notes(action="explode")
+        result = await _manage(notes_dir)(action="explode")
         assert result["success"] is False
         assert "Unknown action" in result["error"]
 
@@ -782,24 +799,24 @@ class TestInvalidAction:
 
 
 class TestRegisterNotesTools:
-    def test_tool_registered(self):
+    def test_tool_registered(self, tmp_path):
         registry = ToolRegistry(ToolConfig())
-        register_notes_tools(registry)
+        register_notes_tools(registry, MarkdownNotes(tmp_path))
         assert "manage_notes" in registry.get_tool_names()
 
-    def test_is_backend(self):
+    def test_is_backend(self, tmp_path):
         registry = ToolRegistry(ToolConfig())
-        register_notes_tools(registry)
+        register_notes_tools(registry, MarkdownNotes(tmp_path))
         assert registry._backend_definitions["manage_notes"].category == "backend"
 
-    def test_has_handler(self):
+    def test_has_handler(self, tmp_path):
         registry = ToolRegistry(ToolConfig())
-        register_notes_tools(registry)
+        register_notes_tools(registry, MarkdownNotes(tmp_path))
         assert callable(registry._backend_handlers["manage_notes"])
 
-    def test_schema_has_action_enum(self):
+    def test_schema_has_action_enum(self, tmp_path):
         registry = ToolRegistry(ToolConfig())
-        register_notes_tools(registry)
+        register_notes_tools(registry, MarkdownNotes(tmp_path))
         schema = registry._backend_definitions["manage_notes"].parameters_schema
         assert "action" in schema["properties"]
         assert "enum" in schema["properties"]["action"]
@@ -814,8 +831,8 @@ class TestRegisterNotesTools:
             "move_note",
         }
 
-    def test_schema_has_folder_property(self):
+    def test_schema_has_folder_property(self, tmp_path):
         registry = ToolRegistry(ToolConfig())
-        register_notes_tools(registry)
+        register_notes_tools(registry, MarkdownNotes(tmp_path))
         schema = registry._backend_definitions["manage_notes"].parameters_schema
         assert "folder" in schema["properties"]

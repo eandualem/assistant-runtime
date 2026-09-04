@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from assistant_runtime.services.tools._artifact_tools import build_manage_artifacts
+from assistant_runtime.services.tools.builtin.artifacts import build_manage_artifacts
 
 MODULE = "assistant_runtime.services.database.repositories"
 

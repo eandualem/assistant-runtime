@@ -127,6 +127,17 @@ database-backed endpoints return 503.
 `APP_NAME` (`assistant-runtime`), `DEBUG` (`false`), `LOG_LEVEL` (`INFO`),
 `LOG_JSON` (`false`).
 
+## Providers
+
+A capability (notes, a document library, ...) is offered to the model only
+when a provider for it is configured. Each provider is enabled by its own
+variables:
+
+| Variable | Capability | Provider |
+|---|---|---|
+| `NOTES_PATH` | notes (`manage_notes`) | a folder of markdown notes with frontmatter |
+| `LIBRARY_PATHS` (`name=path,name=path`, or one path) | library (`list_documents`, `read_document`) | directories of documents, each a subdirectory with a `SKILL.md`, `README.md` or `index.md` |
+
 ## Integrations
 
 | Variable | Used by |

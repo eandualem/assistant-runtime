@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic_ai.usage import RunUsage, UsageLimits
 
-from assistant_runtime.services.tools._subagent_executor import execute_subagent
-from assistant_runtime.services.tools._subagent_tools import SubagentDefinition
+from assistant_runtime.services.tools.builtin._subagent_executor import execute_subagent
+from assistant_runtime.services.tools.builtin.subagent import SubagentDefinition
 
 # ---------------------------------------------------------------------------
 # Fixtures

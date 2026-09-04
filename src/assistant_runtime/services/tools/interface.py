@@ -3,31 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
 
 from assistant_runtime.services.tools._agent_tools import register_agent_tools
-from assistant_runtime.services.tools._artifact_tools import register_artifact_tools
 from assistant_runtime.services.tools._github_tools import register_github_tools
-from assistant_runtime.services.tools._media_tools import register_media_tools
 from assistant_runtime.services.tools._meeting_tools import register_meeting_tools
-from assistant_runtime.services.tools._notes_tools import register_notes_tools
 from assistant_runtime.services.tools._plan_tools import register_plan_tools
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools._repo_tools import register_repo_tools
 from assistant_runtime.services.tools._schedule_tools import register_schedule_tools
-from assistant_runtime.services.tools._screen_tools import register_screen_tools
-from assistant_runtime.services.tools._skill_tools import register_skill_tools
-from assistant_runtime.services.tools._subagent_tools import register_subagent_tools
 from assistant_runtime.services.tools._swarm_tools import register_swarm_tools
 from assistant_runtime.services.tools._telegram_tools import register_telegram_tools
 from assistant_runtime.services.tools._telemetry_tools import register_telemetry_tools
-from assistant_runtime.services.tools._video_tools import register_video_tools
+from assistant_runtime.services.tools.builtin import register_builtin_tools
+from assistant_runtime.services.tools.capabilities import register_capabilities
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.exceptions import ToolError
-from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from assistant_runtime.services.tools.models import ToolDefinition, ToolSet
 
 
 class ToolService:
@@ -40,8 +34,10 @@ class ToolService:
         llm_service: Any | None = None,
         mcp_service: Any | None = None,
         database_service: Any | None = None,
+        providers: dict[str, Any] | None = None,
     ) -> None:
         self._config = config
+        self._providers = providers or {}
         self._media_service = media_service
         self._llm_service = llm_service
         self._mcp_service = mcp_service
@@ -53,11 +49,12 @@ class ToolService:
     async def start(self) -> None:
         """Initialize registry and register default tools."""
         self._registry = ToolRegistry(self._config)
-        self._register_default_tools()
+        capabilities = self._register_default_tools()
         self._started = True
         logger.info(
             "Tool service started",
             backend_tools=self._registry.backend_tool_count(),
+            capabilities=capabilities,
         )
 
     async def stop(self) -> None:
@@ -137,76 +134,29 @@ class ToolService:
         if not self._started or self._registry is None:
             raise ToolError("Tool service not started")
 
-    def _register_default_tools(self) -> None:
-        """Register built-in tools: placeholders and agent management tools."""
-
-        # Backend placeholder: get_time
-        async def get_time() -> str:
-            """Get the current UTC time in ISO format."""
-            return datetime.now(UTC).isoformat()
-
-        self._registry.register_backend_tool(
-            ToolDefinition(
-                name="get_time",
-                description="Get the current UTC time in ISO format.",
-                parameters_schema={"type": "object", "properties": {}},
-                category=ToolCategory.BACKEND,
-            ),
-            get_time,
+    def _register_default_tools(self) -> list[str]:
+        """Built-in tools, host tools, then one capability per configured provider."""
+        register_builtin_tools(
+            self._registry,
+            database_service=self._database_service,
+            llm_service=self._llm_service,
+            media_service=self._media_service,
+            backend_toolsets=self._registry.build_subagent_toolset,
+            runtime_settings=lambda: self._runtime_settings,
         )
-
         # Host tools from configuration (always available, bypass page scoping)
         self._registry.register_host_tools()
+        capabilities = register_capabilities(self._registry, self._providers)
 
-        # Agent management tools
+        # Integrations not yet expressed as capabilities; each fails soft when
+        # its service is unreachable.
         register_agent_tools(self._registry)
-
-        # Notes management tool
-        register_notes_tools(self._registry)
-
-        # GitHub issue management tools
         register_github_tools(self._registry)
-
-        # Meeting room management tools
         register_meeting_tools(self._registry)
-
-        # Schedule management tools
         register_schedule_tools(self._registry)
-
-        # Backbone telemetry and delivery status tools
         register_telemetry_tools(self._registry)
-
-        # Backbone swarm management tools
         register_swarm_tools(self._registry)
-
-        # Telegram messaging tools
         register_telegram_tools(self._registry)
-
-        # Plan management tools
         register_plan_tools(self._registry)
-
-        # Repo management tools
         register_repo_tools(self._registry)
-
-        # Screen inspection tools (look_at_screen)
-        register_screen_tools(self._registry)
-
-        # Skill management tools (read-only filesystem access)
-        register_skill_tools(self._registry)
-
-        # Artifact management tools
-        register_artifact_tools(self._registry, self._database_service)
-
-        # Subagent tools (only if llm_service is available)
-        if self._llm_service is not None:
-            register_subagent_tools(
-                self._registry,
-                self._llm_service,
-                backend_toolsets=self._registry.build_subagent_toolset,
-                runtime_settings=lambda: self._runtime_settings,
-            )
-
-        # Media generation tools (only if media service is available)
-        if self._media_service is not None:
-            register_media_tools(self._registry, self._media_service)
-            register_video_tools(self._registry, self._media_service)
+        return capabilities
