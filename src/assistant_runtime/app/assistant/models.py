@@ -158,22 +158,22 @@ def extract_screenshot_data_uri(
 
 
 def strip_screenshot_from_tool_result(tool_result: Any) -> Any:
-    """A copy of a host tool result with screenshot data URIs replaced by a placeholder.
+    """A copy of a host tool result with every image data URI replaced by a placeholder.
 
-    The screenshot goes to the request context for ``look_at_screen``; the
-    base64 blob must not be sent to the model as tool output.
+    Mirrors ``extract_screenshot_data_uri``, which finds a screenshot under any
+    key: whatever it can find, this removes, so the base64 blob never reaches
+    the model as tool output (it goes to the request context for
+    ``look_at_screen`` instead).
     """
+    if isinstance(tool_result, str):
+        if tool_result.startswith("data:image/"):
+            return "[screenshot captured — use look_at_screen to inspect]"
+        return tool_result
     if isinstance(tool_result, list):
         return [strip_screenshot_from_tool_result(item) for item in tool_result]
-    if not isinstance(tool_result, dict):
-        return tool_result
-    cleaned = {}
-    for key, value in tool_result.items():
-        if key in SCREENSHOT_KEYS and isinstance(value, str) and value.startswith("data:image/"):
-            cleaned[key] = "[screenshot captured — use look_at_screen to inspect]"
-        else:
-            cleaned[key] = strip_screenshot_from_tool_result(value)
-    return cleaned
+    if isinstance(tool_result, dict):
+        return {key: strip_screenshot_from_tool_result(value) for key, value in tool_result.items()}
+    return tool_result
 
 
 class AssistantRequest(BaseModel):

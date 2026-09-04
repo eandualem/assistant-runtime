@@ -68,6 +68,11 @@ class TestStripScreenshotFromToolResult:
         assert "look_at_screen" in result["steps"][0]["screenshot"]
         assert result["steps"][1] == {"status": "ok"}
 
+    def test_strips_data_uris_under_any_key(self):
+        result = strip_screenshot_from_tool_result({"result": VALID_DATA_URI, "ok": True})
+        assert "look_at_screen" in result["result"]
+        assert result["ok"] is True
+
     def test_preserves_non_screenshot_keys(self):
         result = strip_screenshot_from_tool_result(
             {
@@ -88,6 +93,7 @@ class TestStripScreenshotFromToolResult:
 
     def test_non_dict_passthrough(self):
         assert strip_screenshot_from_tool_result("hello") == "hello"
+        assert "look_at_screen" in strip_screenshot_from_tool_result(VALID_DATA_URI)
         assert strip_screenshot_from_tool_result(42) == 42
         assert strip_screenshot_from_tool_result(None) is None
 
