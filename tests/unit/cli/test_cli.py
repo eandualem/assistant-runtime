@@ -209,7 +209,8 @@ class TestDoctorCodex:
     def test_enabled_without_a_login_points_to_the_device_flow(self, monkeypatch, tmp_path):
         monkeypatch.setenv("OAUTH__ENCRYPTION_KEY", "k")
         monkeypatch.setenv("OAUTH__CODEX_AUTH_FILE", str(tmp_path / "missing.json"))
-        _status, message = _codex()
+        status, message = _codex()
+        assert status == WARN
         assert "device-code" in message
 
 

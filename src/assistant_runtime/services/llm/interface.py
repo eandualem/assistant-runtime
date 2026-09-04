@@ -351,9 +351,12 @@ class LlmService:
         if not self._should_use_codex_provider(resolved_model):
             return settings
 
+        # The subscription backend takes the Responses API settings but not the
+        # sampling ones (temperature, top_p) or previous_response_id chaining.
         codex_settings: dict[str, Any] = {"openai_store": False}
         if isinstance(settings, dict):
             for key in (
+                "max_tokens",
                 "timeout",
                 "extra_headers",
                 "extra_body",

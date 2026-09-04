@@ -108,9 +108,9 @@ def _codex() -> Line:
     if auth_file.is_file():
         return OK, f"chatgpt/codex subscription auth: enabled; codex cli login found at {auth_file}"
     return (
-        OK,
-        "chatgpt/codex subscription auth: enabled; no codex cli login found, use the device flow "
-        "(POST /api/oauth/openai/device-code) or a stored token",
+        WARN,
+        "chatgpt/codex subscription auth: enabled but no codex cli login found; run the device "
+        "flow (POST /api/oauth/openai/device-code) unless a token is already stored in Postgres",
     )
 
 
