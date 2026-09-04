@@ -8,11 +8,11 @@ from unittest.mock import MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from assistant_runtime.app.assistant._session_store import (
-    _STALE_HOST_TOOL_OUTPUT,
-    SessionStore,
-    _repair_stale_tool_segments,
-    _repair_stale_tools_in_context,
+from assistant_runtime.app.assistant._session_store import SessionStore
+from assistant_runtime.app.assistant._stale_tools import (
+    STALE_HOST_TOOL_OUTPUT,
+    repair_stale_tool_segments,
+    repair_stale_tools_in_context,
 )
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.main import create_app
@@ -62,7 +62,7 @@ def _create_test_app(*, sessions: SessionStore | None = None) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# _repair_stale_tool_segments
+# repair_stale_tool_segments
 # ---------------------------------------------------------------------------
 
 
@@ -75,10 +75,10 @@ class TestRepairStaleToolSegments:
             }
         ]
 
-        repaired, ids = _repair_stale_tool_segments(segments)
+        repaired, ids = repair_stale_tool_segments(segments)
 
         assert ids == ["tool-1"]
-        assert repaired[0]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
+        assert repaired[0]["tools"][0]["output"] == STALE_HOST_TOOL_OUTPUT
 
     def test_tool_with_output_is_unchanged(self) -> None:
         segments = [
@@ -88,7 +88,7 @@ class TestRepairStaleToolSegments:
             }
         ]
 
-        repaired, ids = _repair_stale_tool_segments(segments)
+        repaired, ids = repair_stale_tool_segments(segments)
 
         assert ids == []
         assert repaired[0]["tools"][0]["output"] == "done"
@@ -105,15 +105,15 @@ class TestRepairStaleToolSegments:
             }
         ]
 
-        repaired, ids = _repair_stale_tool_segments(segments)
+        repaired, ids = repair_stale_tool_segments(segments)
 
         assert ids == ["tool-2", "tool-3"]
         assert repaired[0]["tools"][0]["output"] == "ok"
-        assert repaired[0]["tools"][1]["output"] == _STALE_HOST_TOOL_OUTPUT
-        assert repaired[0]["tools"][2]["output"] == _STALE_HOST_TOOL_OUTPUT
+        assert repaired[0]["tools"][1]["output"] == STALE_HOST_TOOL_OUTPUT
+        assert repaired[0]["tools"][2]["output"] == STALE_HOST_TOOL_OUTPUT
 
     def test_empty_segments_returns_empty(self) -> None:
-        repaired, ids = _repair_stale_tool_segments([])
+        repaired, ids = repair_stale_tool_segments([])
 
         assert repaired == []
         assert ids == []
@@ -124,7 +124,7 @@ class TestRepairStaleToolSegments:
             {"kind": "thinking", "text": "Let me think..."},
         ]
 
-        repaired, ids = _repair_stale_tool_segments(segments)
+        repaired, ids = repair_stale_tool_segments(segments)
 
         assert ids == []
         assert repaired == segments
@@ -137,7 +137,7 @@ class TestRepairStaleToolSegments:
             }
         ]
 
-        _repair_stale_tool_segments(segments)
+        repair_stale_tool_segments(segments)
 
         assert "output" not in segments[0]["tools"][0]
 
@@ -154,11 +154,11 @@ class TestRepairStaleToolSegments:
             },
         ]
 
-        repaired, ids = _repair_stale_tool_segments(segments)
+        repaired, ids = repair_stale_tool_segments(segments)
 
         assert ids == ["tool-2"]
         assert repaired[0]["tools"][0]["output"] == "ok"
-        assert repaired[2]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
+        assert repaired[2]["tools"][0]["output"] == STALE_HOST_TOOL_OUTPUT
 
     def test_tool_without_id_uses_empty_string(self) -> None:
         segments = [
@@ -168,13 +168,13 @@ class TestRepairStaleToolSegments:
             }
         ]
 
-        repaired, ids = _repair_stale_tool_segments(segments)
+        repaired, ids = repair_stale_tool_segments(segments)
 
         assert ids == [""]
 
 
 # ---------------------------------------------------------------------------
-# _repair_stale_tools_in_context
+# repair_stale_tools_in_context
 # ---------------------------------------------------------------------------
 
 
@@ -196,16 +196,16 @@ class TestRepairStaleToolsInContext:
             }
         }
 
-        repaired = _repair_stale_tools_in_context(ctx)
+        repaired = repair_stale_tools_in_context(ctx)
 
         assert len(repaired) == 1
         msg_id, segments = repaired[0]
         assert msg_id == "assistant-1"
-        assert segments[0]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
+        assert segments[0]["tools"][0]["output"] == STALE_HOST_TOOL_OUTPUT
         # In-place mutation on ctx
         assert (
             ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]["output"]
-            == _STALE_HOST_TOOL_OUTPUT
+            == STALE_HOST_TOOL_OUTPUT
         )
 
     def test_user_only_messages_no_repairs(self) -> None:
@@ -216,7 +216,7 @@ class TestRepairStaleToolsInContext:
             }
         }
 
-        repaired = _repair_stale_tools_in_context(ctx)
+        repaired = repair_stale_tools_in_context(ctx)
 
         assert repaired == []
 
@@ -236,7 +236,7 @@ class TestRepairStaleToolsInContext:
             }
         }
 
-        repaired = _repair_stale_tools_in_context(ctx)
+        repaired = repair_stale_tools_in_context(ctx)
 
         assert repaired == []
 
@@ -266,7 +266,7 @@ class TestRepairStaleToolsInContext:
             }
         }
 
-        repaired = _repair_stale_tools_in_context(ctx)
+        repaired = repair_stale_tools_in_context(ctx)
 
         assert len(repaired) == 1
         assert repaired[0][0] == "assistant-2"
@@ -287,7 +287,7 @@ class TestRepairStaleToolsInContext:
             }
         }
 
-        repaired = _repair_stale_tools_in_context(ctx)
+        repaired = repair_stale_tools_in_context(ctx)
 
         assert repaired == []
 
@@ -336,7 +336,7 @@ class TestRepairStaleHostTools:
         assert "assistant-1" in report["repaired_tools"]
         ctx = store.get_context("sess-1")
         assistant_record = ctx["message_index"]["assistant-1"]
-        assert assistant_record["segments"][0]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
+        assert assistant_record["segments"][0]["tools"][0]["output"] == STALE_HOST_TOOL_OUTPUT
 
     async def test_repairs_both_pending_state_and_stale_segments(self) -> None:
         store = SessionStore()
@@ -404,7 +404,7 @@ class TestRepairStaleHostTools:
         # The cached_path should also reflect the repaired segments
         assistant_in_path = [m for m in ctx["cached_path"] if m["id"] == "assistant-1"]
         assert len(assistant_in_path) == 1
-        assert assistant_in_path[0]["segments"][0]["tools"][0]["output"] == _STALE_HOST_TOOL_OUTPUT
+        assert assistant_in_path[0]["segments"][0]["tools"][0]["output"] == STALE_HOST_TOOL_OUTPUT
 
 
 # ---------------------------------------------------------------------------
