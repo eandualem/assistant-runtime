@@ -6,7 +6,7 @@
     },
     "brave-search": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-brave-search@0.6.2"],
+      "args": ["-y", "@brave/brave-search-mcp-server@2.1.3"],
       "env": {
         "BRAVE_API_KEY": "${BRAVE_API_KEY:-}"
       }
