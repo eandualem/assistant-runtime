@@ -144,6 +144,7 @@ src/assistant_runtime/
   cli/           chat, serve, doctor, docs
   help/          the documentation, when installed from a wheel
   artifacts.py   the prompt artifact catalog
+  model_catalog.py  providers, key variables, fallback models, the model list
   config.py      AppSettings, composed from every module's config
   main.py        the FastAPI app, lifespan and Socket.IO wrapper
 docs/            the documentation pages

@@ -24,6 +24,40 @@ async def client():
         yield c
 
 
+class TestEffectiveDefaults:
+    @pytest.mark.asyncio
+    async def test_defaults_reflect_runtime_overrides_and_the_llm_service(self):
+        from unittest.mock import MagicMock
+
+        from assistant_runtime.app.assistant.config import AssistantConfig
+        from assistant_runtime.app.settings import RuntimeSettings
+
+        app = _make_app()
+        llm = MagicMock()
+        llm.effective_primary_model.return_value = "openai:gpt-5.6-terra"
+        llm.effective_summarization_model.return_value = "openai:gpt-5.6-luna"
+        app.state.llm_service = llm
+        app.state.runtime_settings = RuntimeSettings(frozen_config=AssistantConfig())
+        await app.state.runtime_settings.update(
+            summarization_model="anthropic:claude-haiku-4-5", subagent_thinking_budget=5000
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            defaults = (await c.get("/api/models")).json()["defaults"]
+
+        assert defaults["primary_model"] == "openai:gpt-5.6-terra"
+        assert defaults["summarization_model"] == "anthropic:claude-haiku-4-5"
+        assert defaults["subagent_thinking_budget"] == 5000
+        assert defaults["subagent_model"] is None
+
+    @pytest.mark.asyncio
+    async def test_defaults_fall_back_to_frozen_settings_without_services(self, client):
+        defaults = (await client.get("/api/models")).json()["defaults"]
+        assert isinstance(defaults["primary_model"], str)
+        assert isinstance(defaults["default_image_model"], str)
+        assert defaults["subagent_model"] is None
+
+
 class TestListModels:
     @pytest.mark.asyncio
     async def test_returns_200(self, client):

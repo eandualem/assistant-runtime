@@ -2,31 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-ALLOWED_PROVIDERS = ["anthropic", "openai", "google", "openrouter"]
-
-# The model used when the configured primary/summarization model's provider has
-# no credentials but another provider does. Order = preference.
-PROVIDER_DEFAULT_MODELS: dict[str, str] = {
-    "anthropic": "anthropic:claude-opus-5",
-    "openai": "openai:gpt-5.6-terra",
-    "google": "google:gemini-3.1-pro-preview",
-    "openrouter": "openrouter:x-ai/grok-4.1-fast",
-}
-PROVIDER_DEFAULT_SUMMARIZATION_MODELS: dict[str, str] = {
-    "anthropic": "anthropic:claude-haiku-4-5",
-    "openai": "openai:gpt-5.6-luna",
-    "google": "google:gemini-3.8-flash",
-    "openrouter": "openrouter:x-ai/grok-4.1-fast",
-}
-
-# The environment variable pydantic-ai reads for each provider's key. Keys
-# loaded from LLM__PROVIDERS_JSON or the database are exported to these names.
-PROVIDER_ENV_VARS: dict[str, str] = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "google": "GOOGLE_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-}
+from assistant_runtime.model_catalog import ALLOWED_PROVIDERS
 
 
 class ProviderConfig(BaseModel):

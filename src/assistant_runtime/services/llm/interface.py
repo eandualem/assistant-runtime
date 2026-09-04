@@ -18,15 +18,14 @@ from pydantic_ai import Agent
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from assistant_runtime.base.resilience import retry_with_backoff
-from assistant_runtime.services.llm._codex_model import OpenAICodexResponsesModel
-from assistant_runtime.services.llm._settings import build_model_settings, validate_model_id
-from assistant_runtime.services.llm.config import (
+from assistant_runtime.model_catalog import (
     PROVIDER_DEFAULT_MODELS,
     PROVIDER_DEFAULT_SUMMARIZATION_MODELS,
     PROVIDER_ENV_VARS,
-    LLMConfig,
-    ProviderConfig,
 )
+from assistant_runtime.services.llm._codex_model import OpenAICodexResponsesModel
+from assistant_runtime.services.llm._settings import build_model_settings, validate_model_id
+from assistant_runtime.services.llm.config import LLMConfig, ProviderConfig
 from assistant_runtime.services.llm.exceptions import ProviderConfigError, classify_llm_error
 from assistant_runtime.services.tracing import create_span
 
