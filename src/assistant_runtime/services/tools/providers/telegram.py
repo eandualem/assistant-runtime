@@ -6,15 +6,12 @@ import os
 from typing import Any
 
 import httpx
-from loguru import logger
 
 from assistant_runtime.base.resilience import retry_with_backoff
-from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools._request_context import (
     get_current_assistant_session_id,
     record_current_telegram_chat_binding,
 )
-from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 _TELEGRAM_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionError, TimeoutError)
@@ -113,30 +110,8 @@ async def respond_telegram(message: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def register_telegram_tools(registry: ToolRegistry) -> None:
-    """Register Telegram messaging tools."""
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="respond_telegram",
-            description=(
-                "Send a message to the operator via Telegram. "
-                "Use this when responding to messages that arrived via Telegram "
-                "(indicated by [via:telegram] envelope tag). "
-                "Compose your full response as the message text."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "The message text to send via Telegram",
-                    },
-                },
-                "required": ["message"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        respond_telegram,
-    )
+class TelegramMessaging:
+    """The messaging capability served by this provider (see ``capabilities.messaging``)."""
 
-    logger.info("Registered Telegram messaging tools", count=1)
+    async def respond_telegram(self, message: str) -> dict[str, Any]:
+        return await respond_telegram(message=message)

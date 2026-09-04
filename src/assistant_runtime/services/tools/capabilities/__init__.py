@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 from assistant_runtime.services.tools.capabilities.activity import register_activity_tools
 from assistant_runtime.services.tools.capabilities.approvals import register_approvals_tools
+from assistant_runtime.services.tools.capabilities.issues import register_issues_tools
 from assistant_runtime.services.tools.capabilities.library import register_library_tools
+from assistant_runtime.services.tools.capabilities.messaging import register_messaging_tools
 from assistant_runtime.services.tools.capabilities.notes import register_notes_tools
 from assistant_runtime.services.tools.capabilities.peers import register_peers_tools
 from assistant_runtime.services.tools.capabilities.reminders import register_reminders_tools
@@ -35,6 +37,8 @@ CAPABILITIES: dict[str, Callable[[ToolRegistry, Any], None]] = {
     "workgroups": register_workgroups_tools,
     "repositories": register_repositories_tools,
     "approvals": register_approvals_tools,
+    "issues": register_issues_tools,
+    "messaging": register_messaging_tools,
 }
 
 

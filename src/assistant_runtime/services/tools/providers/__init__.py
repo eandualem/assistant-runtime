@@ -16,6 +16,8 @@ from assistant_runtime.services.tools.providers.filesystem import (
     FilesystemLibrary,
     MarkdownNotes,
 )
+from assistant_runtime.services.tools.providers.github import GitHubIssues
+from assistant_runtime.services.tools.providers.telegram import TelegramMessaging
 
 
 def build_providers(config: ProvidersConfig) -> dict[str, Any]:
@@ -29,6 +31,10 @@ def build_providers(config: ProvidersConfig) -> dict[str, Any]:
         providers.update(build_backbone_providers(config))
     if config.agent_state_dir is not None:
         providers["approvals"] = StateFileApprovals(config.agent_state_dir)
+    if config.github_token and config.github_repo:
+        providers["issues"] = GitHubIssues()
+    if config.telegram_token and config.telegram_chat_id:
+        providers["messaging"] = TelegramMessaging()
     return providers
 
 

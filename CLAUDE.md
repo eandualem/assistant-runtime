@@ -89,8 +89,7 @@ that way: database code is exercised through fakes, the LLM boundary
   the model is never offered a tool that cannot work. A new capability is
   a module with a Protocol and a registrar, an entry in `CAPABILITIES`, and
   a provider that implements the Protocol; no capability names a specific
-  integration. (The GitHub and Telegram tools are still on the old shape
-  and fail soft when unconfigured; they are being moved.)
+  integration.
 - **Nothing about a particular host lives in code.** What the host shows
   arrives as `host_context` on the request (shape in the README). Tools
   the host executes, page-scoped tool lists and invalidation domains are

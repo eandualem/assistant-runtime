@@ -14,7 +14,7 @@ What you get:
   mid-turn steering, history compaction, working memory, and a versioned
   system prompt you edit at runtime.
 - A tool system: built-in tools, capabilities (notes, a document
-  library, and more as the remaining integrations move over) served by
+  library, peers, rooms, reminders, issues, messaging, ...) served by
   whichever providers you configure, MCP servers, and **host tools**:
   actions your own application performs when the model asks.
 - A streaming contract designed for user interfaces: thinking, text, tool
