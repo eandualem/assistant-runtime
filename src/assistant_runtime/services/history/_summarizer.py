@@ -108,6 +108,19 @@ class HistorySummarizer:
         """Attach live runtime settings after construction."""
         self._runtime_settings = runtime_settings
 
+    def _summarization_model(self) -> str | None:
+        """Runtime override, then HISTORY__SUMMARIZATION_MODEL, then the LLM service's default."""
+        model = (
+            self._runtime_settings.get("summarization_model", self.config.summarization_model)
+            if self._runtime_settings
+            else self.config.summarization_model
+        )
+        if model:
+            return model
+        resolver = getattr(self._llm, "resolve_summarization_model", None)
+        resolved = resolver() if callable(resolver) else None
+        return resolved if isinstance(resolved, str) else None
+
     def _format_messages_for_summarization(self, messages: list[dict[str, Any]]) -> str:
         """Format dict-format messages into a string for the summarization prompt."""
         truncation_limit = self.config.message_truncation_limit
@@ -147,11 +160,7 @@ class HistorySummarizer:
             messages=formatted_messages,
         )
 
-        model = (
-            self._runtime_settings.get("summarization_model", self.config.summarization_model)
-            if self._runtime_settings
-            else self.config.summarization_model
-        )
+        model = self._summarization_model()
 
         try:
             agent = self._llm.build_agent(
@@ -208,11 +217,7 @@ class HistorySummarizer:
             if self._runtime_settings
             else self.config.working_memory_model
         )
-        sm_model = (
-            self._runtime_settings.get("summarization_model", self.config.summarization_model)
-            if self._runtime_settings
-            else self.config.summarization_model
-        )
+        sm_model = self._summarization_model()
         model = wm_model or sm_model
 
         agent = self._llm.build_agent(

@@ -12,6 +12,7 @@ class TestStreamingConfigDefaults:
         assert config.debounce_seconds == 0.05
         assert config.max_events_per_stream == 10000
         assert config.stream_timeout_seconds == 300.0
+        assert config.emit_debug_events is False
 
     def test_custom_values(self):
         config = StreamingConfig(

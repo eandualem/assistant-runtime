@@ -108,6 +108,15 @@ class TestSummarizeStructured:
 
         assert "Old summary" in result.summary
 
+    async def test_no_override_uses_llm_summarization_default(self, mock_llm):
+        mock_llm.resolve_summarization_model.return_value = "anthropic:claude-haiku-4-5"
+        summarizer = HistorySummarizer(HistoryConfig(), mock_llm)
+        mock_llm.build_agent.return_value = _mock_agent_run(CompactionResult(summary="s"))
+
+        await summarizer.summarize_structured([{"role": "user", "content": "hello"}])
+
+        assert mock_llm.build_agent.call_args.kwargs["model"] == "anthropic:claude-haiku-4-5"
+
     async def test_model_override_passed_to_build_agent(self, mock_llm):
         config = HistoryConfig(summarization_model="openai:gpt-4o-mini")
         summarizer = HistorySummarizer(config, mock_llm)

@@ -19,8 +19,9 @@ most specific wins.
 The tunables that exist in all three tiers: `default_model`,
 `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`,
 `summarization_model`, `working_memory_model`, `default_image_model`,
-`default_video_model`, `subagent_model`, `subagent_thinking_budget`.
-`GET /api/settings` shows each value and which tier it came from.
+`default_video_model`, `subagent_model`. `subagent_thinking_budget` exists
+in the first two tiers only. `GET /api/settings` shows each value and
+which tier it came from.
 
 ## Providers and models
 
@@ -33,6 +34,15 @@ At least one provider must be usable.
 | `LLM__PRIMARY_MODEL` | Chat model, default `anthropic:claude-opus-5` |
 | `LLM__SUMMARIZATION_MODEL` | History summaries and lightweight tasks, default `anthropic:claude-haiku-4-5` |
 | `OAUTH__ENCRYPTION_KEY` | Fernet key; enables the ChatGPT/Codex OAuth path and the encrypted provider-key store (`PUT /api/providers/{provider}/api-key`) |
+
+If the primary or summarization model's provider has no credentials but
+another provider does, that provider's default is used instead and a
+warning is logged: `openai:gpt-5.6-terra` / `openai:gpt-5.6-luna`,
+`google:gemini-3.1-pro-preview` / `google:gemini-3.8-flash`,
+`openrouter:x-ai/grok-4.1-fast`. Set `LLM__PRIMARY_MODEL` to choose
+explicitly. The summarization model is used for history compaction and
+working memory unless `HISTORY__SUMMARIZATION_MODEL` or the runtime
+setting overrides it.
 
 Model ids are `provider:name`, lowercase. Providers: `anthropic`,
 `openai`, `google` (Gemini through the Google AI API), `google-cloud`
@@ -72,7 +82,7 @@ sampling parameters are not sent a temperature.
 | `debounce_seconds` | `0.05` | text delta coalescing |
 | `max_events_per_stream` | `10000` | safety limit |
 | `stream_timeout_seconds` | `300` | one turn |
-| `emit_debug_events` | `true` | `assistant:debug` events with prompt, history and tool selection |
+| `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for a trusted client, the socket has no authentication |
 
 ### Tools (`TOOLS__*`)
 

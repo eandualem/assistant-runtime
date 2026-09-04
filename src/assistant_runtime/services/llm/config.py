@@ -7,6 +7,21 @@ ALLOWED_PROVIDERS = ["anthropic", "openai", "google", "openrouter"]
 # Maps provider names to the environment variables Pydantic AI reads for auto-detection.
 # When keys are loaded from LLM_PROVIDERS_JSON, they must be exported to these env vars
 # so that Pydantic AI's provider constructors can find them.
+# The model used when the configured primary/summarization model's provider has
+# no credentials but another provider does. Order = preference.
+PROVIDER_DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "anthropic:claude-opus-5",
+    "openai": "openai:gpt-5.6-terra",
+    "google": "google:gemini-3.1-pro-preview",
+    "openrouter": "openrouter:x-ai/grok-4.1-fast",
+}
+PROVIDER_DEFAULT_SUMMARIZATION_MODELS: dict[str, str] = {
+    "anthropic": "anthropic:claude-haiku-4-5",
+    "openai": "openai:gpt-5.6-luna",
+    "google": "google:gemini-3.8-flash",
+    "openrouter": "openrouter:x-ai/grok-4.1-fast",
+}
+
 _PROVIDER_ENV_VAR_MAP: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",

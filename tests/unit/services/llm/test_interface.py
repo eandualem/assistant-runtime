@@ -86,6 +86,37 @@ class TestLlmServiceLifecycle:
         assert "anthropic" in health["providers"]
         assert health["primary_model"] == "anthropic:claude-opus-5"
 
+    async def test_primary_model_falls_back_to_a_configured_provider(self, service, monkeypatch):
+        for var in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        await service.start()
+        assert service.effective_primary_model() == "openai:gpt-5.6-terra"
+        assert service.resolve_model() == "openai:gpt-5.6-terra"
+        assert service.effective_summarization_model() == "openai:gpt-5.6-luna"
+        assert service.resolve_summarization_model() == "openai:gpt-5.6-luna"
+        health = await service.health_check()
+        assert health["primary_model"] == "openai:gpt-5.6-terra"
+
+    async def test_primary_model_kept_when_its_provider_is_configured(self, service, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        await service.start()
+        assert service.effective_primary_model() == "anthropic:claude-opus-5"
+        assert service.resolve_summarization_model() == "anthropic:claude-haiku-4-5"
+
+    async def test_explicit_model_wins_over_fallback(self, service, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        await service.start()
+        assert service.resolve_model("openai:gpt-5.4") == "openai:gpt-5.4"
+
+    async def test_no_providers_keeps_configured_model(self, service, monkeypatch):
+        for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        await service.start()
+        assert service.effective_primary_model() == "anthropic:claude-opus-5"
+
     async def test_health_check_counts_codex_oauth_as_openai_provider(self, service, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
