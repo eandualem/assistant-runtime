@@ -86,7 +86,7 @@ def make_tool_call_event(
     """Create a tool_call event.
 
     Args:
-        category: "backend" (executed server-side) or "frontend" (deferred to dashboard).
+        category: "backend" (executed by the runtime) or "frontend" (deferred to the host).
             The frontend uses this to decide whether to show a spinner (backend)
             or execute the tool and send a continuation (frontend).
     """
@@ -223,8 +223,8 @@ def make_debug_request_event(
     session_id: str,
     message: str,
     is_continuation: bool,
-    has_machine_state: bool,
-    machine_state: dict[str, Any] | None = None,
+    has_host_context: bool,
+    host_context: dict[str, Any] | None = None,
     image_count: int = 0,
 ) -> dict[str, Any]:
     """Create a debug_request event — emitted at pipeline entry."""
@@ -233,8 +233,8 @@ def make_debug_request_event(
         "session_id": session_id,
         "message": message,
         "is_continuation": is_continuation,
-        "has_machine_state": has_machine_state,
-        "machine_state": machine_state,
+        "has_host_context": has_host_context,
+        "host_context": host_context,
         "image_count": image_count,
     }
 

@@ -166,147 +166,69 @@ class TestDelegation:
         assert "custom_backend" in tool_names
 
 
-class TestStateDrivenToolFiltering:
-    """Tests for page-based tool filtering via machine_state."""
+class TestHostContextToolScoping:
+    """Page scoping comes from ToolConfig.page_scopes; nothing is scoped by default."""
 
-    async def test_no_machine_state_returns_all(self, service):
+    async def test_no_context_returns_all(self, service):
         await service.start()
-        result = service.get_available_tools(machine_state=None)
-        assert result.total_count == 44
+        result = service.get_available_tools(host_context=None)
+        assert result.total_count == service._registry.backend_tool_count()
+        assert result.frontend_tools == []
 
-    async def test_home_page_returns_all(self, service):
+    async def test_any_page_returns_all_without_scopes(self, service):
         await service.start()
-        state = {"active_page": {"name": "home"}}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 44
+        everything = service._registry.backend_tool_count()
+        for page in ("home", "tasks", "flows", "exotic"):
+            result = service.get_available_tools(host_context={"page": {"name": page}})
+            assert result.total_count == everything
 
-    async def test_agents_page_core_and_plan(self, service):
+    async def test_context_without_page_returns_all(self, service):
         await service.start()
-        state = {"active_page": {"name": "agents"}}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 32
-        names = {t.name for t in result.backend_tools}
-        assert "list_agents" in names
-        assert "get_active_agents" in names
-        assert "get_time" in names
-        assert "get_delivery_status" in names
-        assert "get_agent_activity" in names
-        assert "create_swarm" in names
-        assert "list_swarms" in names
-        assert "manage_notes" in names
-        assert "manage_artifacts" in names
-        assert "respond_telegram" in names
-        assert "approve_plan" in names
-        assert "list_agent_plans" in names
-        assert "reject_plan" in names
-        assert "add_schedule_item" in names
-        assert "list_skills" in names
-        assert "read_skill" in names
+        result = service.get_available_tools(host_context={"some_other_key": "value"})
+        assert result.total_count == service._registry.backend_tool_count()
 
-    async def test_sessions_page_core_and_plan(self, service):
-        await service.start()
-        state = {"active_page": {"name": "sessions"}}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 32
-        names = {t.name for t in result.backend_tools}
-        assert "get_active_agents" in names
-        assert "start_agent" in names
-        assert "get_activity_timeline" in names
-        assert "complete_swarm" in names
-        assert "approve_plan" in names
+    async def test_configured_scope_limits_backend_tools(self):
+        svc = ToolService(config=ToolConfig(page_scopes={"tasks": ["create_issue", "get_time"]}))
+        await svc.start()
+        result = svc.get_available_tools(host_context={"page": {"name": "tasks"}})
+        assert {t.name for t in result.backend_tools} == {"create_issue", "get_time"}
+        assert result.filtered_out_count == svc._registry.backend_tool_count() - 2
 
-    async def test_tasks_page_core_and_github(self, service):
-        await service.start()
-        state = {"active_page": {"name": "tasks"}}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 34
-        names = {t.name for t in result.backend_tools}
-        # Core tools present
-        assert "get_time" in names
-        assert "get_failed_deliveries" in names
-        assert "broadcast_to_swarm" in names
-        assert "manage_notes" in names
-        assert "add_schedule_item" in names
-        # GitHub tools present
-        assert "create_issue" in names
-        assert "search_issues" in names
-        assert "get_issue_details" in names
-        assert "comment_on_issue" in names
-        assert "close_issue" in names
-        # Agent tools now in core — available on all pages
-        assert "list_agents" in names
-        assert "get_active_agents" in names
+    async def test_scope_names_not_registered_are_ignored(self):
+        svc = ToolService(config=ToolConfig(page_scopes={"x": ["no_such_tool", "get_time"]}))
+        await svc.start()
+        result = svc.get_available_tools(host_context={"page": {"name": "x"}})
+        assert [t.name for t in result.backend_tools] == ["get_time"]
 
-    async def test_meetings_page_core_and_meeting(self, service):
-        await service.start()
-        state = {"active_page": {"name": "meetings"}}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 33
-        names = {t.name for t in result.backend_tools}
-        assert "create_meeting_room" in names
-        assert "list_meeting_rooms" in names
-        assert "send_meeting_message" in names
-        assert "update_meeting_state" in names
-        assert "get_delivery_status" in names
-        assert "list_swarms" in names
-        assert "get_time" in names
-        assert "add_schedule_item" in names
-        # Agent tools now in core — available on all pages
-        assert "list_agents" in names
-        assert "get_active_agents" in names
+    async def test_host_tools_from_config(self):
+        svc = ToolService(
+            config=ToolConfig(
+                host_tools={"navigate": {"description": "Go", "parameters": {"type": "object"}}}
+            )
+        )
+        await svc.start()
+        assert svc.is_host_tool("navigate")
+        assert not svc.is_host_tool("get_time")
+        assert [t.name for t in svc.get_available_tools().frontend_tools] == ["navigate"]
+        health = await svc.health_check()
+        assert health["frontend_tools"] == 1
 
-    async def test_flows_page_core_only(self, service):
-        await service.start()
-        state = {"active_page": {"name": "flows"}}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 29
-        names = {t.name for t in result.backend_tools}
-        assert "get_time" in names
-        assert "add_schedule_item" in names
-        assert "get_recent_deliveries" in names
-        assert "get_activity_timeline" in names
-        assert "get_swarm_detail" in names
-        assert "update_worker_status" in names
-        assert "list_agents" in names
-        assert "get_active_agents" in names
+    async def test_invalidations_from_config(self):
+        svc = ToolService(config=ToolConfig(invalidations={"create_issue": ["tasks"]}))
+        await svc.start()
+        assert svc.get_tool_invalidates("create_issue") == ["tasks"]
+        assert svc.get_tool_invalidates("get_time") is None
 
-    async def test_repos_page_core_and_repo(self, service):
-        await service.start()
-        state = {"active_page": {"name": "repos"}}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 32
-        names = {t.name for t in result.backend_tools}
-        assert "onboard_repo" in names
-        assert "check_repo_status" in names
-        assert "list_repos" in names
-        assert "get_agent_activity" in names
-        assert "complete_swarm" in names
-        assert "get_time" in names
-        assert "add_schedule_item" in names
-        # Agent tools now in core — available on all pages
-        assert "list_agents" in names
-        assert "get_active_agents" in names
-
-    async def test_unknown_page_returns_all(self, service):
-        await service.start()
-        state = {"active_page": {"name": "exotic_dashboard"}}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 44
-
-    async def test_missing_active_page_returns_all(self, service):
-        await service.start()
-        state = {"some_other_key": "value"}
-        result = service.get_available_tools(machine_state=state)
-        assert result.total_count == 44
+    async def test_warm_host_context_requires_started(self, service):
+        with pytest.raises(ToolError):
+            service.warm_host_context({"page": {"name": "tasks"}})
 
     async def test_tool_count_warning(self):
         low_max_config = ToolConfig(max_tools_per_request=2)
         svc = ToolService(config=low_max_config)
         await svc.start()
-        # meetings page gives tools which exceeds max=2
-        state = {"active_page": {"name": "meetings"}}
-        result = svc.get_available_tools(machine_state=state)
-        assert result.total_count == 33
+        result = svc.get_available_tools(host_context={"page": {"name": "meetings"}})
+        assert result.total_count == svc._registry.backend_tool_count()
 
 
 class TestSubagentIntegration:

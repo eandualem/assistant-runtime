@@ -260,6 +260,52 @@ Every module follows the **5-file skeleton**: `config.py` (settings), `deps.py` 
 
 Streaming responses are delivered via **Socket.IO** on the `/assistant` namespace with `assistant:` prefixed events (`text_delta`, `thinking_delta`, `tool_call`, `tool_result`, `final_response`, `status`, `error`, `debug`).
 
+## Host Integration
+
+The runtime is meant to sit behind a host application: a dashboard, an IDE, a chat client, a terminal. Nothing about a particular host is built in; a host describes itself through two channels.
+
+### Host context (per request)
+
+A request may carry `host_context`, a JSON object describing what the host is showing. It goes into the system prompt as a "The host application is showing: ..." section and selects page-scoped tools. Every key is optional except `page.name`:
+
+```json
+{
+  "page": {
+    "name": "tasks",
+    "description": "The issue list, filtered to open bugs.",
+    "data": {"issues": [{"number": 42, "title": "Fix login"}]},
+    "state": {"filters": {"label": "bug"}},
+    "actions": [{"event_type": "select_issue", "label": "Select an issue",
+                 "params": [{"name": "number", "type": "integer", "required": true}]}]
+  },
+  "navigation": [{"name": "agents", "description": "Running agents"}],
+  "background": {"agents": {"state": "idle", "summary": {"count": 3}}}
+}
+```
+
+`data` is rendered as readable key-value pairs, `state` is passed through as JSON, `actions` lists the events the host accepts (typically the payloads of a host tool), `navigation` lists places the host can go, `background` summarises things not on screen. Sending it with `assistant:join_session` warms the session; sending it with a message updates it for that turn and later turns reuse the last one. The legacy key `machine_state` (with `active_page`, `machines`, `available_actions`) is still accepted and mapped onto this shape.
+
+### Host tools, page scopes, invalidations (configuration)
+
+Three `TOOLS__*` settings describe the host. All are empty by default, which means: every backend tool on every request, no host-executed tools, no invalidation hints.
+
+```bash
+# Tools the host executes. The model calls them; the runtime emits a tool_call event
+# (category "frontend") and finishes the turn with final_response.pending_tool_call.
+# The host runs the tool and sends a continuation message carrying tool_call_id and tool_result.
+TOOLS__HOST_TOOLS='{"navigate": {"description": "Open a page in the host.", "parameters": {"type": "object", "properties": {"page": {"type": "string"}}, "required": ["page"]}}}'
+# Same shape from a file (merged over TOOLS__HOST_TOOLS)
+TOOLS__HOST_TOOLS_PATH=/path/to/host_tools.json
+
+# Backend tools allowed while the host reports a page; unlisted pages get every tool
+TOOLS__PAGE_SCOPES='{"tasks": ["create_issue", "search_issues", "get_time"]}'
+
+# Host data domains a backend tool invalidates; reported as tool_result.invalidates
+TOOLS__INVALIDATIONS='{"create_issue": ["tasks"], "start_agent": ["agents"]}'
+```
+
+`assistant-runtime chat` has no host, so it answers any host tool call with an error result and the model carries on.
+
 ## Prompt Artifacts
 
 The assistant's system prompt is assembled from five first-class artifacts with distinct roles:

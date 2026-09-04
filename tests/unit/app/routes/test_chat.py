@@ -67,15 +67,13 @@ class TestChatEndpoint:
                     "sessionId": "sess-1",
                     "parentId": None,
                     "content": "Check agents",
-                    "machineState": {"activePage": {"name": "agents", "data": {"entities": []}}},
+                    "hostContext": {"page": {"name": "agents", "data": {"entities": []}}},
                 },
             )
 
         assert response.status_code == 200
         request = service.process_message.await_args.args[0]
-        assert request.machine_state == {
-            "active_page": {"name": "agents", "data": {"sessions": []}}
-        }
+        assert request.host_context == {"page": {"name": "agents", "data": {"entities": []}}}
 
     @pytest.mark.asyncio
     async def test_chat_invalid_body_returns_422(self) -> None:
