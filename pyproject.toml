@@ -27,6 +27,9 @@ dependencies = [
     "asyncpg>=0.29",
 ]
 
+[project.scripts]
+assistant-runtime = "assistant_runtime.cli:main"
+
 [project.optional-dependencies]
 # Video generation providers (services/media/_video_providers.py imports them lazily)
 video = [

@@ -11,7 +11,8 @@ from loguru import logger
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.services.mcp.interface import MCPService
 
-# Default config file location: repo root / mcp_servers.json
+# Default config file location: repo root / mcp_servers.json (gitignored; copy from
+# mcp_servers.example.json). No servers are started when the file does not exist.
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[4] / "mcp_servers.json"
 
 
