@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.app.assistant.models import (
     AssistantRequest,
     AssistantResult,
-    RequestConfigOverride,
     _build_user_prompt,
     _camel_to_snake,
     _normalize_keys,
@@ -62,7 +62,7 @@ class TestAssistantRequest:
         assert request.host_context == {
             "page": {"name": "agents", "data": {"entities": [{"name": "leo"}]}}
         }
-        assert request.config == RequestConfigOverride(default_model="openai/gpt-5.4")
+        assert request.config == TunableOverrides(default_model="openai/gpt-5.4")
 
     def test_legacy_machine_state_maps_to_host_context(self) -> None:
         request = AssistantRequest.model_validate(

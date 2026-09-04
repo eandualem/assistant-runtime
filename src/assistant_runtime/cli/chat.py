@@ -21,7 +21,8 @@ import sys
 import uuid
 from typing import IO, Any
 
-from assistant_runtime.app.assistant.models import AssistantRequest, RequestConfigOverride
+from assistant_runtime.app.assistant.config import TunableOverrides
+from assistant_runtime.app.assistant.models import AssistantRequest
 
 EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit"})
 NO_HOST_RESULT = {
@@ -152,7 +153,7 @@ async def run_turn(
 
 def build_request(session_id: str, content: str, model: str | None) -> AssistantRequest:
     """A standard request for one user message."""
-    config = RequestConfigOverride(default_model=model) if model else None
+    config = TunableOverrides(default_model=model) if model else None
     return AssistantRequest(
         id=str(uuid.uuid4()), session_id=session_id, content=content, config=config
     )

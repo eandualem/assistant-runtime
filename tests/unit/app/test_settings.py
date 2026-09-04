@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import fields
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from assistant_runtime.app.assistant.config import AssistantConfig
-from assistant_runtime.app.assistant.models import RequestConfigOverride
+from assistant_runtime.app.assistant.config import TUNABLE_FIELDS, AssistantConfig, TunableOverrides
 from assistant_runtime.app.settings import (
     EffectiveConfig,
     RuntimeSettings,
@@ -63,31 +63,31 @@ class TestRuntimeSettings:
     @pytest.mark.asyncio
     async def test_reject_temperature_out_of_range(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
-        with pytest.raises(ValueError, match="temperature must be between"):
+        with pytest.raises(ValueError, match="temperature"):
             await rs.update(temperature=3.0)
 
     @pytest.mark.asyncio
     async def test_reject_temperature_negative(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
-        with pytest.raises(ValueError, match="temperature must be between"):
+        with pytest.raises(ValueError, match="temperature"):
             await rs.update(temperature=-0.1)
 
     @pytest.mark.asyncio
     async def test_reject_thinking_budget_out_of_range(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
-        with pytest.raises(ValueError, match="thinking_budget must be between"):
+        with pytest.raises(ValueError, match="thinking_budget"):
             await rs.update(thinking_budget=200_000)
 
     @pytest.mark.asyncio
     async def test_reject_thinking_budget_zero(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
-        with pytest.raises(ValueError, match="thinking_budget must be between"):
+        with pytest.raises(ValueError, match="thinking_budget"):
             await rs.update(thinking_budget=0)
 
     @pytest.mark.asyncio
     async def test_reject_max_turns_out_of_range(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
-        with pytest.raises(ValueError, match="max_turns must be between"):
+        with pytest.raises(ValueError, match="max_turns"):
             await rs.update(max_turns=100)
 
     def test_to_response_dict_defaults(self):
@@ -110,7 +110,7 @@ class TestRuntimeSettings:
         assert second_update is not None
         assert second_update >= first_update
 
-    def test_valid_fields_contains_all_11_fields(self):
+    def test_tunable_fields_are_the_eleven_documented_ones(self):
         expected = {
             "default_model",
             "thinking_budget",
@@ -124,8 +124,8 @@ class TestRuntimeSettings:
             "subagent_model",
             "subagent_thinking_budget",
         }
-        assert expected == RuntimeSettings._VALID_FIELDS
-        assert len(RuntimeSettings._VALID_FIELDS) == 11
+        assert expected == TUNABLE_FIELDS
+        assert len(TUNABLE_FIELDS) == 11
 
     @pytest.mark.asyncio
     async def test_update_summarization_model(self):
@@ -146,13 +146,13 @@ class TestRuntimeSettings:
     @pytest.mark.asyncio
     async def test_reject_subagent_thinking_budget_zero(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
-        with pytest.raises(ValueError, match="subagent_thinking_budget must be between"):
+        with pytest.raises(ValueError, match="subagent_thinking_budget"):
             await rs.update(subagent_thinking_budget=0)
 
     @pytest.mark.asyncio
     async def test_reject_subagent_thinking_budget_too_large(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
-        with pytest.raises(ValueError, match="subagent_thinking_budget must be between"):
+        with pytest.raises(ValueError, match="subagent_thinking_budget"):
             await rs.update(subagent_thinking_budget=200_000)
 
     @pytest.mark.asyncio
@@ -224,7 +224,7 @@ class TestRuntimeSettingsDB:
     async def test_load_from_db_skips_when_no_db(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
         await rs.load_from_db()  # Should not raise
-        assert len(rs._overridden) == 0
+        assert rs.overrides == {}
 
     @pytest.mark.asyncio
     async def test_load_from_db_loads_non_null_fields(self):
@@ -255,13 +255,13 @@ class TestRuntimeSettingsDB:
         ):
             await rs.load_from_db()
 
-        assert "default_model" in rs._overridden
-        assert "temperature" in rs._overridden
-        assert rs._default_model == "anthropic:claude-sonnet-4-6"
-        assert rs._temperature == 0.5
-        assert "thinking_budget" not in rs._overridden
-        assert "max_turns" not in rs._overridden
-        assert "enable_working_memory" not in rs._overridden
+        assert "default_model" in rs.overrides
+        assert "temperature" in rs.overrides
+        assert rs.overrides["default_model"] == "anthropic:claude-sonnet-4-6"
+        assert rs.overrides["temperature"] == 0.5
+        assert "thinking_budget" not in rs.overrides
+        assert "max_turns" not in rs.overrides
+        assert "enable_working_memory" not in rs.overrides
         assert rs._updated_at == datetime(2026, 2, 20, tzinfo=UTC)
 
     @pytest.mark.asyncio
@@ -279,7 +279,7 @@ class TestRuntimeSettingsDB:
         ):
             await rs.load_from_db()
 
-        assert len(rs._overridden) == 0
+        assert rs.overrides == {}
         assert rs._updated_at is None
 
     @pytest.mark.asyncio
@@ -296,7 +296,7 @@ class TestRuntimeSettingsDB:
 
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
         await rs.load_from_db()  # Should not raise
-        assert len(rs._overridden) == 0
+        assert rs.overrides == {}
 
     # -- _persist_to_db tests --
 
@@ -355,7 +355,7 @@ class TestRuntimeSettingsDB:
         assert state_dict["thinking_budget"] is None
         assert state_dict["enable_working_memory"] is None
         # All valid fields are present
-        assert set(state_dict.keys()) == RuntimeSettings._VALID_FIELDS
+        assert set(state_dict.keys()) == TUNABLE_FIELDS
 
     @pytest.mark.asyncio
     async def test_load_from_db_recovers_after_degraded_startup(self):
@@ -388,8 +388,8 @@ class TestRuntimeSettingsDB:
             await rs.load_from_db()
 
         # Still loaded because we no longer check _healthy
-        assert "default_model" in rs._overridden
-        assert rs._default_model == "anthropic:claude-sonnet-4-6"
+        assert "default_model" in rs.overrides
+        assert rs.overrides["default_model"] == "anthropic:claude-sonnet-4-6"
 
     @pytest.mark.asyncio
     async def test_persist_returns_false_on_failure(self):
@@ -460,14 +460,14 @@ class TestRuntimeSettingsDB:
         ):
             await rs.load_from_db()
 
-        assert "summarization_model" in rs._overridden
-        assert rs._summarization_model == "openai:gpt-4o-mini"
-        assert "subagent_thinking_budget" in rs._overridden
-        assert rs._subagent_thinking_budget == 5000
-        assert "working_memory_model" not in rs._overridden
-        assert "default_image_model" not in rs._overridden
-        assert "default_video_model" not in rs._overridden
-        assert "subagent_model" not in rs._overridden
+        assert "summarization_model" in rs.overrides
+        assert rs.overrides["summarization_model"] == "openai:gpt-4o-mini"
+        assert "subagent_thinking_budget" in rs.overrides
+        assert rs.overrides["subagent_thinking_budget"] == 5000
+        assert "working_memory_model" not in rs.overrides
+        assert "default_image_model" not in rs.overrides
+        assert "default_video_model" not in rs.overrides
+        assert "subagent_model" not in rs.overrides
         assert rs._updated_at == datetime(2026, 2, 21, tzinfo=UTC)
 
     @pytest.mark.asyncio
@@ -494,7 +494,7 @@ class TestRuntimeSettingsDB:
         assert state_dict["default_model"] is None
         assert state_dict["subagent_thinking_budget"] is None
         # All 11 valid fields are present
-        assert set(state_dict.keys()) == RuntimeSettings._VALID_FIELDS
+        assert set(state_dict.keys()) == TUNABLE_FIELDS
         assert len(state_dict) == 11
 
 
@@ -522,13 +522,13 @@ class TestResolveEffectiveConfig:
         frozen = AssistantConfig()
         rs = RuntimeSettings(frozen_config=frozen)
         await rs.update(temperature=0.8)
-        per_req = RequestConfigOverride(temperature=1.5)
+        per_req = TunableOverrides(temperature=1.5)
         effective = resolve_effective_config(frozen, rs, per_req)
         assert effective.temperature == 1.5
 
     def test_none_falls_through(self):
         frozen = AssistantConfig(default_model="anthropic:claude-sonnet-4-6")
-        per_req = RequestConfigOverride(default_model=None)
+        per_req = TunableOverrides(default_model=None)
         effective = resolve_effective_config(frozen, None, per_req)
         # None in per_request doesn't override — falls through to frozen
         assert effective.default_model == "anthropic:claude-sonnet-4-6"
@@ -559,3 +559,20 @@ class TestResolveEffectiveConfig:
         )
         with pytest.raises(AttributeError):
             effective.temperature = 0.5  # type: ignore[misc]
+
+
+class TestOneDefinition:
+    """The tunables are declared once; everything else must stay in step."""
+
+    def test_effective_config_has_one_attribute_per_tunable(self):
+        assert {f.name for f in fields(EffectiveConfig)} == TUNABLE_FIELDS
+
+    def test_settings_table_has_one_column_per_tunable(self):
+        from assistant_runtime.services.database.models import UserSettingsORM
+
+        assert set(UserSettingsORM.__table__.columns.keys()) >= TUNABLE_FIELDS
+
+    def test_frozen_config_provides_the_typed_defaults(self):
+        effective = resolve_effective_config(AssistantConfig())
+        assert isinstance(effective.max_turns, int)
+        assert isinstance(effective.enable_working_memory, bool)
