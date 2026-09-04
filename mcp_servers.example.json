@@ -2,11 +2,11 @@
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"]
+      "args": ["-y", "@modelcontextprotocol/server-memory@2026.8.31"]
     },
     "brave-search": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "args": ["-y", "@modelcontextprotocol/server-brave-search@0.6.2"],
       "env": {
         "BRAVE_API_KEY": "${BRAVE_API_KEY:-}"
       }

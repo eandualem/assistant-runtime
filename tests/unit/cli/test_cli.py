@@ -156,6 +156,14 @@ class TestRunTurn:
         assert continuation.session_id == "s1"
         assert "navigate" in out.getvalue()
 
+    async def test_continuation_keeps_the_model_override(self):
+        pending = {"call_id": "call-1", "tool_name": "navigate", "arguments": {}}
+        streaming = FakeStreaming([_completed(None, pending_tool_call=pending), _completed("ok")])
+        request = build_request("s1", "go", "anthropic:claude-sonnet-5")
+        await run_turn(streaming, request, TurnRenderer(io.StringIO()))
+        assert streaming.requests[1].config is not None
+        assert streaming.requests[1].config.default_model == "anthropic:claude-sonnet-5"
+
     async def test_host_tool_loop_is_bounded(self):
         pending = {"call_id": "c", "tool_name": "navigate", "arguments": {}}
         scripts = [

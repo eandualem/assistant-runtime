@@ -146,6 +146,7 @@ async def run_turn(
             content="",
             tool_call_id=str(pending.get("call_id", "")),
             tool_result=dict(NO_HOST_RESULT),
+            config=request.config,
         )
 
 
