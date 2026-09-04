@@ -68,8 +68,8 @@ def _collect_retryable_llm_exceptions() -> tuple[type[Exception], ...]:
 
 
 _LLM_RETRYABLE_EXCEPTIONS = _collect_retryable_llm_exceptions()
+# The Codex CLI's backend; the same client id and device-auth flow (services/oauth).
 _CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex/"
-_CODEX_MODEL_NAMES = frozenset({"gpt-5.4", "gpt-5.4-pro"})
 
 
 class LLMResult(BaseModel):
@@ -329,11 +329,18 @@ class LlmService:
         return getter()
 
     def _should_use_codex_provider(self, resolved_model: str) -> bool:
-        """Whether this model should use ChatGPT/Codex subscription auth."""
+        """Whether this model goes through the ChatGPT/Codex subscription.
+
+        Any ``openai:`` model does when a Codex session is connected, unless
+        ``LLMConfig.codex_models`` narrows the list.
+        """
         if not resolved_model.startswith("openai:"):
             return False
         model_name = resolved_model.split(":", 1)[1]
-        return model_name in _CODEX_MODEL_NAMES and self._get_codex_session() is not None
+        allowed = self._config.codex_models
+        if allowed and model_name not in allowed:
+            return False
+        return self._get_codex_session() is not None
 
     def _apply_model_transport_defaults(
         self,

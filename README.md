@@ -110,9 +110,12 @@ start the server, and either run the device flow
 enter the code) or import an existing Codex CLI login
 (`codex login`, then `POST /api/oauth/openai/codex-cli/sync`).
 `GET /api/oauth/openai/status` shows the connection;
-`DELETE /api/oauth/openai` disconnects. This path serves the OpenAI chat
-models the Codex backend supports; other OpenAI features still use an
-API key. It is not intended for multi-user hosted services.
+`DELETE /api/oauth/openai` disconnects. While connected, every `openai:`
+model goes through the subscription (set `LLM__CODEX_MODELS` to a JSON
+list to narrow that); the backend decides what the plan allows. Other
+OpenAI features, such as image generation, still use an API key.
+`assistant-runtime doctor` reports the state of this path. It is not
+intended for multi-user hosted services.
 
 ## Security
 

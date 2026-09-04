@@ -15,7 +15,7 @@ from assistant_runtime.cli.chat import (
     build_request,
     run_turn,
 )
-from assistant_runtime.cli.doctor import FAIL, OK, WARN, configured_providers, run_checks
+from assistant_runtime.cli.doctor import FAIL, OK, WARN, _codex, configured_providers, run_checks
 
 
 class TestParser:
@@ -188,6 +188,29 @@ class TestRunTurn:
             streaming, build_request("s1", "hi", None), TurnRenderer(io.StringIO())
         )
         assert result is None
+
+
+class TestDoctorCodex:
+    def test_off_without_encryption_key(self, monkeypatch):
+        monkeypatch.delenv("OAUTH__ENCRYPTION_KEY", raising=False)
+        status, message = _codex()
+        assert status == OK
+        assert "off" in message
+
+    def test_reports_a_codex_cli_login(self, monkeypatch, tmp_path):
+        auth = tmp_path / "auth.json"
+        auth.write_text("{}")
+        monkeypatch.setenv("OAUTH__ENCRYPTION_KEY", "k")
+        monkeypatch.setenv("OAUTH__CODEX_AUTH_FILE", str(auth))
+        status, message = _codex()
+        assert status == OK
+        assert "login found" in message
+
+    def test_enabled_without_a_login_points_to_the_device_flow(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OAUTH__ENCRYPTION_KEY", "k")
+        monkeypatch.setenv("OAUTH__CODEX_AUTH_FILE", str(tmp_path / "missing.json"))
+        _status, message = _codex()
+        assert "device-code" in message
 
 
 class TestDoctorHelpers:

@@ -50,10 +50,10 @@ def _providers() -> Line:
 
 
 def _models() -> list[Line]:
+    from assistant_runtime.config import AppSettings
     from assistant_runtime.services.llm._settings import validate_model_id
-    from assistant_runtime.services.llm.config import LLMConfig
 
-    config = LLMConfig()
+    config = AppSettings().llm
     providers = set(configured_providers())
     lines: list[Line] = []
     for label, model_id in (
@@ -97,6 +97,23 @@ def _database() -> Line:
     return asyncio.run(_database_async())
 
 
+def _codex() -> Line:
+    """The ChatGPT/Codex subscription path: enabled by the encryption key, fed by a login."""
+    from assistant_runtime.config import AppSettings
+
+    config = AppSettings().oauth
+    if not config.encryption_key:
+        return OK, "chatgpt/codex subscription auth: off (set OAUTH__ENCRYPTION_KEY to enable)"
+    auth_file = Path(config.codex_auth_file).expanduser()
+    if auth_file.is_file():
+        return OK, f"chatgpt/codex subscription auth: enabled; codex cli login found at {auth_file}"
+    return (
+        OK,
+        "chatgpt/codex subscription auth: enabled; no codex cli login found, use the device flow "
+        "(POST /api/oauth/openai/device-code) or a stored token",
+    )
+
+
 def _extras() -> list[Line]:
     lines: list[Line] = []
     for module, extra, purpose in (
@@ -128,7 +145,7 @@ def run_checks(checks: list[Callable[[], Line | list[Line]]]) -> list[Line]:
 def cmd_doctor(_args: argparse.Namespace) -> int:
     """Print one line per check. Exit 1 when any check FAILs."""
     load_dotenv()
-    lines = run_checks([_python, _env_file, _providers, _models, _database, _extras])
+    lines = run_checks([_python, _env_file, _providers, _models, _codex, _database, _extras])
     for status, message in lines:
         print(f"[{status}] {message}")
     return 1 if any(status == FAIL for status, _ in lines) else 0
