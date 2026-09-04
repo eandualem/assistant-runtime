@@ -765,3 +765,25 @@ class TestRegisterAgentTools:
         assert "model" in properties
         assert "resume" in properties
         assert "initial_prompt" in properties
+
+
+class TestBackbonePeersConfiguration:
+    async def test_configured_infrastructure_sessions_are_excluded(self):
+        cache = MagicMock()
+        cache.get_agents = AsyncMock(
+            return_value=[
+                {"session": "gateway", "online": True, "state": "idle", "runtime": "x"},
+                {"session": "leo", "online": True, "state": "idle", "runtime": "claude"},
+            ]
+        )
+        with patch(f"{MODULE}.get_registry_cache", return_value=cache):
+            result = await BackbonePeers(
+                infrastructure_sessions=frozenset({"gateway"})
+            ).get_active_agents()
+        assert [a["session_name"] for a in result["agents"]] == ["leo"]
+
+    async def test_state_dir_is_read_for_agent_state(self, tmp_path):
+        (tmp_path / "leo.json").write_text('{"state": "processing"}')
+        with patch(f"{MODULE}._run_command", new=AsyncMock(return_value=(0, "", ""))):
+            result = await BackbonePeers(state_dir=tmp_path).check_agent_state("leo")
+        assert result["state"] == {"state": "processing"}
