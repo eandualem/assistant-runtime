@@ -1,15 +1,19 @@
-"""Tests for the static model registry."""
+"""Tests for the model catalog leaf module."""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from assistant_runtime.app.models_registry import (
+from assistant_runtime.model_catalog import (
+    ALLOWED_PROVIDERS,
+    MEDIA_PROVIDER_ENV_VARS,
     MODEL_CATALOG,
+    PROVIDER_DEFAULT_MODELS,
+    PROVIDER_DEFAULT_SUMMARIZATION_MODELS,
+    PROVIDER_ENV_VARS,
     ModelEntry,
     ProviderInfo,
-    get_defaults,
     get_models,
     get_provider_info,
 )
@@ -168,32 +172,16 @@ class TestGetProviderInfo:
         assert info["luma"].configured is True
 
 
-class TestGetDefaults:
-    def test_returns_expected_keys(self):
-        defaults = get_defaults()
-        expected_keys = {
-            "primary_model",
-            "summarization_model",
-            "working_memory_model",
-            "default_image_model",
-            "default_video_model",
-            "subagent_model",
-            "subagent_thinking_budget",
-        }
-        assert set(defaults.keys()) == expected_keys
+class TestProviderKnowledge:
+    def test_allowed_providers_are_the_ones_with_env_vars(self):
+        assert list(PROVIDER_ENV_VARS) == ALLOWED_PROVIDERS
 
-    def test_values_have_correct_types(self):
-        defaults = get_defaults()
-        # String fields from LLM config
-        assert isinstance(defaults["primary_model"], str)
-        assert isinstance(defaults["summarization_model"], str)
-        # working_memory_model defaults to None (str | None in config)
-        assert defaults["working_memory_model"] is None or isinstance(
-            defaults["working_memory_model"], str
-        )
-        # Media model defaults are strings
-        assert isinstance(defaults["default_image_model"], str)
-        assert isinstance(defaults["default_video_model"], str)
-        # Subagent fields are always None (no config backing yet)
-        assert defaults["subagent_model"] is None
-        assert defaults["subagent_thinking_budget"] is None
+    def test_every_llm_provider_has_a_default_model_in_the_catalog(self):
+        ids = {m.id for m in MODEL_CATALOG}
+        for provider in PROVIDER_ENV_VARS:
+            assert PROVIDER_DEFAULT_MODELS[provider] in ids
+            assert PROVIDER_DEFAULT_SUMMARIZATION_MODELS[provider] in ids
+
+    def test_catalog_providers_are_known(self):
+        known = set(PROVIDER_ENV_VARS) | set(MEDIA_PROVIDER_ENV_VARS)
+        assert {m.provider for m in MODEL_CATALOG} <= known
