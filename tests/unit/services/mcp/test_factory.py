@@ -1,35 +1,28 @@
 """Tests for MCP service factory registration."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from assistant_runtime.services.mcp.factory import register_mcp
+from assistant_runtime.services.mcp.factory import DEFAULT_CONFIG_NAME, register_mcp
 from assistant_runtime.services.mcp.interface import MCPService
 
 
 class TestRegisterMcp:
-    async def test_stores_service_on_app_state(self, tmp_path):
+    async def test_stores_service_on_app_state(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # no mcp_servers.json here
         app_state = MagicMock()
         lifecycle = AsyncMock()
 
-        # Point to a non-existent config file so MCPService gets config_path=None
-        with patch(
-            "assistant_runtime.services.mcp.factory._DEFAULT_CONFIG_PATH",
-            tmp_path / "nonexistent.json",
-        ):
-            await register_mcp(app_state, lifecycle)
+        await register_mcp(app_state, lifecycle)
 
         assert hasattr(app_state, "mcp_service")
         assert isinstance(app_state.mcp_service, MCPService)
 
-    async def test_registers_with_lifecycle(self, tmp_path):
+    async def test_registers_with_lifecycle(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         app_state = MagicMock()
         lifecycle = AsyncMock()
 
-        with patch(
-            "assistant_runtime.services.mcp.factory._DEFAULT_CONFIG_PATH",
-            tmp_path / "nonexistent.json",
-        ):
-            await register_mcp(app_state, lifecycle)
+        await register_mcp(app_state, lifecycle)
 
         lifecycle.register.assert_awaited_once()
         call_args = lifecycle.register.call_args
@@ -48,15 +41,24 @@ class TestRegisterMcp:
         service = app_state.mcp_service
         assert service._config_path == config_file
 
-    async def test_no_config_file_sets_none(self, tmp_path):
+    async def test_no_config_file_sets_none(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         app_state = MagicMock()
         lifecycle = AsyncMock()
 
-        with patch(
-            "assistant_runtime.services.mcp.factory._DEFAULT_CONFIG_PATH",
-            tmp_path / "nonexistent.json",
-        ):
-            await register_mcp(app_state, lifecycle)
+        await register_mcp(app_state, lifecycle)
 
-        service = app_state.mcp_service
-        assert service._config_path is None
+        assert app_state.mcp_service._config_path is None
+
+    async def test_config_in_working_directory_is_used(self, tmp_path, monkeypatch):
+        """Installed-package layout: the file is found next to where the process runs."""
+        monkeypatch.delenv("MCP_CONFIG_PATH", raising=False)
+        monkeypatch.chdir(tmp_path)
+        config_file = tmp_path / DEFAULT_CONFIG_NAME
+        config_file.write_text('{"mcpServers": {}}')
+        app_state = MagicMock()
+        lifecycle = AsyncMock()
+
+        await register_mcp(app_state, lifecycle)
+
+        assert app_state.mcp_service._config_path == config_file
