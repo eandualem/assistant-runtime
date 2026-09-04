@@ -265,3 +265,42 @@ class TestListSessions:
                 "created_at": None,
             }
         ]
+
+
+class TestSingleflightHydration:
+    async def test_cancelled_waiter_does_not_cancel_the_shared_load(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from assistant_runtime.app.assistant._session_persistence import LoadedSession
+
+        store = SessionStore(database_service=MagicMock())
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_load(_session_id: str) -> LoadedSession:
+            started.set()
+            await release.wait()
+            return LoadedSession(
+                turn_number=3,
+                working_memory=None,
+                title="t",
+                telegram_chat_id=None,
+                telegram_bound_at=None,
+                messages=[],
+                steering=[],
+            )
+
+        store._db.load = AsyncMock(side_effect=slow_load)
+
+        first = asyncio.create_task(store.get_context_if_exists_async("sess-1"))
+        await started.wait()
+        second = asyncio.create_task(store.get_context_if_exists_async("sess-1"))
+        await asyncio.sleep(0)
+        first.cancel()
+        release.set()
+
+        ctx = await second
+        assert ctx is not None
+        assert ctx["turn_number"] == 3
+        assert store._db.load.await_count == 1

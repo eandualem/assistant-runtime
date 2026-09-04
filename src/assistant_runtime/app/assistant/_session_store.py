@@ -493,7 +493,9 @@ class SessionStore:
                 task = asyncio.create_task(self._load_session(session_id))
                 self._pending_db_loads[session_id] = task
         try:
-            return await task
+            # Shielded: a waiter that gets cancelled (client disconnect) must
+            # not cancel the load the other waiters share.
+            return await asyncio.shield(task)
         finally:
             async with self._pending_db_loads_lock:
                 if self._pending_db_loads.get(session_id) is task:
