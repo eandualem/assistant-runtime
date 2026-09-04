@@ -1,12 +1,12 @@
-"""Chat endpoint — /chat (non-streaming)."""
+"""Chat endpoint — ``POST /chat``, the non-streaming form of a turn."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
-from assistant_runtime.app.assistant.deps import AssistantServiceDep
 from assistant_runtime.app.assistant.models import AssistantRequest, AssistantResult
+from assistant_runtime.app.streaming.deps import StreamingServiceDep
 
 router = APIRouter()
 
@@ -15,13 +15,10 @@ router = APIRouter()
 async def chat(
     request: Request,
     assistant_request: AssistantRequest,
-    service: AssistantServiceDep,
+    service: StreamingServiceDep,
 ) -> AssistantResult:
-    """Process a chat message (non-streaming)."""
-    logger.info(
-        "Received chat request",
-        session_id=assistant_request.session_id,
-    )
+    """Run one turn and return the final answer."""
+    logger.info("Received chat request", session_id=assistant_request.session_id)
 
     if assistant_request.is_steering:
         raise HTTPException(
@@ -37,4 +34,4 @@ async def chat(
         except Exception as exc:
             logger.warning("OAuth refresh failed before chat", error=str(exc))
 
-    return await service.process_message(assistant_request)
+    return await service.run_message(assistant_request)

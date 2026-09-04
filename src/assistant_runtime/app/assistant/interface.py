@@ -1,14 +1,13 @@
-"""AssistantService — core request handler that orchestrates LLM + history + tools.
+"""AssistantService — sessions, prompt artifacts and per-request agent setup.
 
-Public facade for the assistant module. Implements LifecycleAware.
+The turn itself (running the agent, persisting the reply, streaming events)
+lives in ``app/streaming``; this service owns what a turn is built from.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-import uuid
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -17,30 +16,12 @@ from pydantic_ai.usage import UsageLimits
 
 from assistant_runtime.app.assistant._defaults import load_default_artifacts
 from assistant_runtime.app.assistant._prompt_builder import build_system_prompt
-from assistant_runtime.app.assistant._serialization import build_assistant_message_content
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.config import AssistantConfig
-from assistant_runtime.app.assistant.exceptions import (
-    AgentRunError,
-    AssistantError,
-)
-from assistant_runtime.app.assistant.models import (
-    AgentSetupContext,
-    AssistantRequest,
-    AssistantResult,
-    _build_user_prompt,
-)
+from assistant_runtime.app.assistant.exceptions import AssistantError
+from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest
 from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
-from assistant_runtime.services.tools._request_context import (
-    assistant_request_context,
-    get_current_telegram_chat_binding,
-)
-from assistant_runtime.services.tools._screen_tools import (
-    clear_current_screenshot,
-    extract_screenshot_data_uri,
-    set_current_screenshot,
-)
-from assistant_runtime.services.tracing import create_request_trace, create_span
+from assistant_runtime.services.tracing import create_span
 
 if TYPE_CHECKING:
     from assistant_runtime.services.database.interface import DatabaseService
@@ -249,150 +230,13 @@ class AssistantService:
             mcp_summary=mcp_summary,
         )
 
-    async def process_message(self, request: AssistantRequest) -> AssistantResult:
-        """Process a user message through the full assistant pipeline.
-
-        Orchestrates: tools → prompt → agent → history → result.
-
-        Args:
-            request: The assistant request containing message, session, and context.
-
-        Returns:
-            AssistantResult with text content.
-
-        Raises:
-            AssistantError: If the service is not started.
-            AgentRunError: If agent execution fails.
-        """
-        self._ensure_started()
-
-        started_at = time.monotonic()
-        session_id = request.session_id
-        sessions = self._sessions
-        assert sessions is not None
-
-        # 1. Persist the user message and cache the active leaf path
-        session_context, _user_record = await sessions.register_user_message(request)
-        turn_number = session_context.get("turn_number", 0)
-        assistant_message_id = str(uuid.uuid4())
-        session_context["current_assistant_message_id"] = assistant_message_id
-
-        # 2. Build agent setup context (tools → MCP → artifacts → prompt → config → agent)
-        ctx = await self.prepare_agent_context(request, session_context)
-
-        logger.info(
-            "Executing assistant request",
-            session_id=session_id,
-            turn_number=turn_number,
-            model=ctx.resolved_model,
-            has_images=bool(request.images),
-            max_turns=ctx.effective_config.max_turns,
-            thinking_budget=ctx.effective_config.thinking_budget,
-            temperature=ctx.effective_config.temperature,
-        )
-
-        with create_request_trace(
-            session_id=session_id,
-            model=ctx.resolved_model,
-            is_continuation=False,
-            input_message=request.content,
-        ) as trace:
-            # 3. Prepare history
-            history = sessions.get_history(session_id, exclude_leaf=True)
-            with create_span("history-preparation"):
-                prepared_history, _context_modified = await self._history.prepare_history(
-                    history, session_context
-                )
-
-            # 4. Run the agent
-            user_prompt = _build_user_prompt(request.content)
-            screenshot = extract_screenshot_data_uri(
-                images=request.images,
-                tool_result=request.tool_result,
-            )
-            if screenshot:
-                set_current_screenshot(screenshot)
-            telegram_chat_id: str | None = None
-            try:
-                with assistant_request_context(session_id):
-                    result = await ctx.agent.run(
-                        user_prompt,
-                        message_history=prepared_history if prepared_history else None,
-                        usage_limits=ctx.usage_limits,
-                    )
-                    telegram_chat_id = get_current_telegram_chat_binding()
-            except Exception as e:
-                logger.exception(
-                    "Assistant request failed",
-                    session_id=session_id,
-                    model=ctx.resolved_model,
-                    duration_ms=(time.monotonic() - started_at) * 1000,
-                    error=str(e),
-                )
-                raise AgentRunError(f"Agent execution failed: {e}") from e
-            finally:
-                clear_current_screenshot()
-
-            if telegram_chat_id:
-                session_context["telegram_chat_id"] = telegram_chat_id
-                session_context["telegram_bound_at"] = datetime.now(UTC)
-                await sessions.save_session_state_async(session_id)
-
-            # 5. Persist the assistant message row for this turn
-            # Use new_messages() — not index slicing — because Pydantic AI's
-            # _clean_message_history may merge consecutive ModelRequests (e.g.
-            # a SYNTHETIC ToolReturn + user prompt), shrinking the list and
-            # making len(prepared_history) overshoot.
-            turn_messages = list(result.new_messages())
-            assistant_content, assistant_segments, assistant_timestamp = (
-                build_assistant_message_content(turn_messages)
-            )
-            usage = self._safe_usage(result)
-            await sessions.register_assistant_message(
-                session_id,
-                message_id=assistant_message_id,
-                parent_id=request.id,
-                content=assistant_content,
-                segments=assistant_segments,
-                usage=usage,
-                created_at=assistant_timestamp,
-            )
-            session_context.pop("current_assistant_message_id", None)
-
-            # 6. Handle output
-            output = result.output
-            logger.info(
-                "Assistant request completed",
-                session_id=session_id,
-                model=ctx.resolved_model,
-                duration_ms=(time.monotonic() - started_at) * 1000,
-                output_type=type(output).__name__,
-                input_tokens=usage.get("input_tokens"),
-                output_tokens=usage.get("output_tokens"),
-                total_tokens=usage.get("total_tokens"),
-            )
-
-            trace.update_output(str(output))
-
-        # 7. Extract working memory delta (fire-and-forget style)
-        if ctx.effective_config.enable_working_memory:
-            await self._update_working_memory(session_id, session_context, turn_number)
-            await sessions.save_session_state_async(session_id)
-
-        return AssistantResult(
-            content=str(output),
-            model=ctx.resolved_model,
-            session_id=session_id,
-            turn_number=turn_number,
-        )
-
-    async def _update_working_memory(
+    async def update_working_memory(
         self,
         session_id: str,
         session_context: dict[str, Any],
         turn_number: int,
     ) -> None:
-        """Extract working memory delta from recent messages (best-effort)."""
+        """Extract the working-memory delta from the recent path and persist it (best-effort)."""
         try:
             from assistant_runtime.services.history.models import WorkingMemory
 
@@ -414,6 +258,7 @@ class AssistantService:
 
             updated_wm = await self._history.extract_memory_delta(current_wm, recent, turn_number)
             session_context["working_memory"] = updated_wm
+            await sessions.save_session_state_async(session_id)
         except Exception as e:
             # Working memory extraction is best-effort — don't fail the request
             logger.warning("Working memory extraction failed", error=str(e))
@@ -467,17 +312,3 @@ class AssistantService:
         """Guard: raise if service not started."""
         if not self._started or self._sessions is None:
             raise AssistantError("Assistant service not started")
-
-    @staticmethod
-    def _safe_usage(result: Any) -> dict[str, int | None]:
-        """Extract usage stats from a run result (best-effort)."""
-        try:
-            usage = result.usage
-            return {
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "total_tokens": usage.total_tokens,
-            }
-        except Exception as e:
-            logger.debug("Failed to extract usage stats", error=str(e))
-            return {"input_tokens": None, "output_tokens": None, "total_tokens": None}

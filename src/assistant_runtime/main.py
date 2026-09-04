@@ -72,8 +72,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     rs = app.state.runtime_settings
     if getattr(app.state, "assistant_service", None) is not None:
         app.state.assistant_service.set_runtime_settings(rs)
-    if getattr(app.state, "streaming_service", None) is not None:
-        app.state.streaming_service.set_runtime_settings(rs)
     if getattr(app.state, "history_service", None) is not None:
         app.state.history_service.set_runtime_settings(rs)
     if getattr(app.state, "media_service", None) is not None:

@@ -42,12 +42,3 @@ class ToolSet(BaseModel):
     def tool_names(self) -> list[str]:
         """All tool names in this set."""
         return [t.name for t in self.backend_tools] + [t.name for t in self.frontend_tools]
-
-
-class ToolResult(BaseModel):
-    """Result of a tool execution."""
-
-    tool_name: str
-    request_id: str
-    content: Any
-    is_error: bool = False

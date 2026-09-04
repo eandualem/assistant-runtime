@@ -72,12 +72,9 @@ async def integration_client(monkeypatch):
     # Streaming service accesses sessions via assistant_service
     streaming_service = StreamingService(
         config=settings.streaming,
-        llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=assistant_service,
-        runtime_settings=runtime_settings,
-        assistant_config=settings.assistant,
     )
     await streaming_service.start()
     app.state.streaming_service = streaming_service

@@ -64,12 +64,9 @@ async def full_app_client(monkeypatch):
 
     streaming_service = StreamingService(
         config=settings.streaming,
-        llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=assistant_service,
-        runtime_settings=runtime_settings,
-        assistant_config=settings.assistant,
     )
     await lifecycle.register("streaming_service", streaming_service)
     await streaming_service.start()
@@ -157,7 +154,7 @@ class TestConfigCompositionValidation:
         assert settings.history.token_budget > 0
         assert settings.tools.max_tools_per_request > 0
         assert settings.assistant.max_turns > 0
-        assert settings.streaming.debounce_seconds >= 0
+        assert settings.streaming.stream_timeout_seconds > 0
 
 
 class TestEdgeCases:

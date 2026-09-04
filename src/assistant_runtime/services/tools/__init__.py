@@ -11,7 +11,6 @@ from assistant_runtime.services.tools.interface import ToolService
 from assistant_runtime.services.tools.models import (
     ToolCategory,
     ToolDefinition,
-    ToolResult,
     ToolSet,
 )
 
@@ -21,7 +20,6 @@ __all__ = [
     "ToolDefinition",
     "ToolError",
     "ToolExecutionError",
-    "ToolResult",
     "ToolService",
     "ToolServiceDep",
     "ToolSet",
