@@ -45,9 +45,9 @@ that way: database code is exercised through fakes, the LLM boundary
   no service imports `app`. `app/assistant` (prompt, sessions, the
   non-streaming run) imports services; `app/streaming` imports
   `app/assistant`; `app/routes` and `app/socketio_server` are the HTTP and
-  Socket.IO edges; `main` and `cli` are the top. `tests/unit/test_imports.py`
-  asserts the services-never-import-app rule; a new cross-package import
-  must keep it green.
+  Socket.IO edges; `main`, `cli` and `config` (which composes every module's config model)
+  are the top. `tests/unit/test_imports.py` asserts that nothing below the
+  top layer imports `app`; a new cross-package import must keep it green.
 - **Configuration has three tiers**, resolved once per request by
   `resolve_effective_config()` (`app/settings.py`): frozen `AppSettings`
   from the environment and `.env` (`__` is the nesting delimiter) <
