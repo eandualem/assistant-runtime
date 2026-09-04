@@ -33,16 +33,16 @@ from assistant_runtime.app.assistant._serialization import (
     path_records_to_model_history,
 )
 from assistant_runtime.app.assistant.exceptions import SessionError
-from assistant_runtime.app.streaming._host_tool import clear_stale_pending_call
-from assistant_runtime.app.streaming.exceptions import StreamSetupError
-from assistant_runtime.services.tools._screen_tools import (
+from assistant_runtime.app.assistant.models import (
+    AssistantRequest,
     extract_screenshot_data_uri,
     strip_screenshot_from_tool_result,
 )
+from assistant_runtime.app.streaming._host_tool import clear_stale_pending_call
+from assistant_runtime.app.streaming.exceptions import StreamSetupError
 
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant._session_store import SessionStore
-    from assistant_runtime.app.assistant.models import AssistantRequest
 
 TurnKind = Literal["message", "continuation", "steering"]
 

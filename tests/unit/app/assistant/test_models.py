@@ -36,7 +36,6 @@ class TestAssistantRequest:
 
         assert request.id == "user-1"
         assert request.content == "Hello"
-        assert request.message == "Hello"
         assert request.is_continuation is False
         assert request.is_steering is False
 
@@ -118,19 +117,6 @@ class TestAssistantRequest:
         assert request.is_steering is True
         assert request.is_continuation is False
         assert request.parent_id is None
-
-    def test_guidance_alias_normalizes_to_steering(self) -> None:
-        request = AssistantRequest.model_validate(
-            {
-                "id": "steering-1",
-                "session_id": "sess-1",
-                "content": "Focus on Leo",
-                "message_type": "guidance",
-            }
-        )
-
-        assert request.message_type == "steering"
-        assert request.is_steering is True
 
     def test_steering_rejects_parent_id(self) -> None:
         with pytest.raises(ValueError, match="must not include parent_id"):

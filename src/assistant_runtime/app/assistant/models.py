@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -107,11 +108,10 @@ class AgentSetupContext:
     mcp_summary: list[dict[str, Any]] | None
 
 
-# Top-level keys that may carry screenshot data from the host.
-# Includes both camelCase and snake_case variants since Pydantic v2 runs
-# mode="before" validators in reverse definition order (this validator
-# may execute before normalize_camel_case).
-_SCREENSHOT_TOP_LEVEL_KEYS = (
+# Keys under which a host may carry a screenshot data URI, at the top level
+# of the request or inside a host tool's result. Both camelCase and
+# snake_case: the screenshot validator may run before key normalisation.
+SCREENSHOT_KEYS = (
     "screenshot",
     "image",
     "image_data_uri",
@@ -119,6 +119,61 @@ _SCREENSHOT_TOP_LEVEL_KEYS = (
     "data_uri",
     "dataUri",
 )
+
+
+def _find_screenshot_data_uri(value: Any) -> str | None:
+    """Recursively search common payload shapes for an image data URI."""
+    if isinstance(value, str):
+        return value if value.startswith("data:image/") else None
+    if isinstance(value, dict):
+        for key in SCREENSHOT_KEYS:
+            if key in value:
+                found = _find_screenshot_data_uri(value[key])
+                if found is not None:
+                    return found
+        for child in value.values():
+            found = _find_screenshot_data_uri(child)
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for item in value:
+            found = _find_screenshot_data_uri(item)
+            if found is not None:
+                return found
+    return None
+
+
+def extract_screenshot_data_uri(
+    *,
+    images: Sequence[str] | None = None,
+    tool_result: Any | None = None,
+) -> str | None:
+    """The freshest screenshot: the request's images first, then the tool result."""
+    if images:
+        for image in images:
+            if isinstance(image, str) and image:
+                return image
+    return _find_screenshot_data_uri(tool_result)
+
+
+def strip_screenshot_from_tool_result(tool_result: Any) -> Any:
+    """A copy of a host tool result with screenshot data URIs replaced by a placeholder.
+
+    The screenshot goes to the request context for ``look_at_screen``; the
+    base64 blob must not be sent to the model as tool output.
+    """
+    if not isinstance(tool_result, dict):
+        return tool_result
+    cleaned = {}
+    for key, value in tool_result.items():
+        if key in SCREENSHOT_KEYS and isinstance(value, str) and value.startswith("data:image/"):
+            cleaned[key] = "[screenshot captured — use look_at_screen to inspect]"
+        elif isinstance(value, dict):
+            cleaned[key] = strip_screenshot_from_tool_result(value)
+        else:
+            cleaned[key] = value
+    return cleaned
 
 
 class AssistantRequest(BaseModel):
@@ -137,18 +192,13 @@ class AssistantRequest(BaseModel):
 
     @property
     def is_continuation(self) -> bool:
-        """Whether this is a continuation request (host returning a tool result)."""
+        """Whether this is a continuation request (frontend returning a tool result)."""
         return self.tool_call_id is not None
 
     @property
     def is_steering(self) -> bool:
         """Whether this is a mid-stream steering message."""
         return self.message_type == "steering"
-
-    @property
-    def message(self) -> str:
-        """Compatibility accessor for internal call sites during the cutover."""
-        return self.content
 
     @model_validator(mode="after")
     def validate_message_shape(self) -> AssistantRequest:
@@ -165,7 +215,7 @@ class AssistantRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def normalize_camel_case(cls, data: Any) -> Any:
-        """Normalize camelCase keys from the host to snake_case.
+        """Normalize camelCase keys from the frontend to snake_case.
 
         Covers three scopes:
         1. Top-level keys (sessionId → session_id, hostContext → host_context),
@@ -191,9 +241,6 @@ class AssistantRequest(BaseModel):
         if isinstance(cfg, dict):
             data = {**data, "config": {_camel_to_snake(k): v for k, v in cfg.items()}}
 
-        if data.get("message_type") == "guidance":
-            data = {**data, "message_type": "steering"}
-
         return data
 
     @model_validator(mode="before")
@@ -209,7 +256,7 @@ class AssistantRequest(BaseModel):
         if not isinstance(data, dict):
             return data
 
-        for key in _SCREENSHOT_TOP_LEVEL_KEYS:
+        for key in SCREENSHOT_KEYS:
             value = data.get(key)
             if isinstance(value, str) and value.startswith("data:image/"):
                 existing = data.get("images") or []

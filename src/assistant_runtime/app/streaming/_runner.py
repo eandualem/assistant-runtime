@@ -59,10 +59,6 @@ from assistant_runtime.services.tools._request_context import (
     assistant_request_context,
     get_current_telegram_chat_binding,
 )
-from assistant_runtime.services.tools._screen_tools import (
-    clear_current_screenshot,
-    set_current_screenshot,
-)
 from assistant_runtime.services.tracing import create_request_trace
 
 if TYPE_CHECKING:
@@ -236,8 +232,6 @@ class TurnRunner:
             return
 
         # --- the run ------------------------------------------------------------
-        if plan.screenshot:
-            set_current_screenshot(plan.screenshot)
         try:
             async for event in self._run_agent(
                 plan,
@@ -324,7 +318,6 @@ class TurnRunner:
             ):
                 yield event
         finally:
-            clear_current_screenshot()
             session_context.pop("current_assistant_message_id", None)
             if (
                 state.persisted
@@ -379,7 +372,7 @@ class TurnRunner:
         session_id = plan.session_id
         telegram_chat_id: str | None = None
         async with asyncio.timeout(self._config.stream_timeout_seconds):
-            with assistant_request_context(session_id):
+            with assistant_request_context(session_id, screenshot=plan.screenshot):
                 async with ctx.agent.iter(
                     user_prompt,
                     message_history=message_history or None,
