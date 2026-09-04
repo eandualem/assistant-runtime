@@ -836,3 +836,30 @@ class TestRegisterNotesTools:
         register_notes_tools(registry, MarkdownNotes(tmp_path))
         schema = registry._backend_definitions["manage_notes"].parameters_schema
         assert "folder" in schema["properties"]
+
+
+class TestRobustness:
+    def test_sequence_frontmatter_is_ignored(self, notes_dir):
+        path = notes_dir / "odd.md"
+        path.write_text("---\n- a\n- b\n---\nbody\n")
+        parsed = _store(notes_dir).parse_note(path)
+        assert parsed["title"] == "odd"
+        assert parsed["content"] == "body"
+
+    async def test_limit_zero_returns_nothing(self, notes_dir):
+        await _manage(notes_dir)(action="create", title="One", content="alpha")
+        listed = await _manage(notes_dir)(action="list", limit=0)
+        assert listed["notes"] == []
+        found = await _manage(notes_dir)(action="search", query="alpha", limit=0)
+        assert found["results"] == []
+
+    async def test_same_title_never_overwrites(self, notes_dir):
+        import asyncio
+
+        manage = _manage(notes_dir)
+        results = await asyncio.gather(
+            *(manage(action="create", title="Same", content=f"body {i}") for i in range(5))
+        )
+        names = {r["filename"] for r in results}
+        assert len(names) == 5
+        assert len(list(notes_dir.glob("*.md"))) == 5
