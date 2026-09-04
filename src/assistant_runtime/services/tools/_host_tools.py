@@ -36,7 +36,7 @@ TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 def _validate(schemas: HostToolSchemas, source: str) -> None:
     for name, schema in schemas.items():
-        if not isinstance(name, str) or not TOOL_NAME_RE.match(name):
+        if not isinstance(name, str) or not TOOL_NAME_RE.fullmatch(name):
             raise ToolValidationError(
                 f"Host tool name {name!r} from {source} must match {TOOL_NAME_RE.pattern}"
             )
