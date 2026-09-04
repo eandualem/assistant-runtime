@@ -137,6 +137,32 @@ class TestDeliver:
         assert [p["content"] for p in pending] == ["[via:inbox from:bot] first"]
         assert (await service.health_check())["queued"] == 1  # the other session's note waits
 
+    async def test_unrouted_messages_can_be_skipped_instead_of_queued(self):
+        service = _service(SessionStore())
+        await service.start()
+
+        result = await service.deliver(
+            from_agent="heartbeat", via="heartbeat", message="tick", queue_when_unrouted=False
+        )
+
+        assert result == {"status": "skipped", "reason": "no_active_session"}
+        assert (await service.health_check())["queued"] == 0
+
+    async def test_a_message_queued_before_its_session_exists_waits_for_it(self):
+        store = SessionStore()
+        service = _service(store)
+        await service.start()
+        await service.deliver(from_agent="bot", via="inbox", message="early", session_id="sess-1")
+
+        assert await service.drain("sess-1") == 0  # no such session yet: nothing consumed
+        assert (await service.health_check())["queued"] == 1
+
+        await store.register_user_message(_request("user-1"))
+        assert await service.drain("sess-1") == 1
+        pending = await store.list_pending_steering("sess-1")
+        assert [p["content"] for p in pending] == ["[via:inbox from:bot] early"]
+        assert (await service.health_check())["queued"] == 0
+
     async def test_database_inbox_is_used_when_healthy(self):
         db = MagicMock()
         db.healthy = True

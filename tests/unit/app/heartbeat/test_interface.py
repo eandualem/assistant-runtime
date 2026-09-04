@@ -63,11 +63,14 @@ class TestEnqueueOnce:
             "from_agent": "heartbeat",
             "via": "heartbeat",
             "message": "[via:heartbeat]",
+            "queue_when_unrouted": False,
         }
         assert (await service.health_check())["last_heartbeat_at"] is not None
 
-    async def test_queued_result_is_not_a_heartbeat(self, service, ingress):
-        ingress.deliver = AsyncMock(return_value={"status": "queued", "inbox_id": "x"})
+    async def test_skipped_result_is_not_a_heartbeat(self, service, ingress):
+        ingress.deliver = AsyncMock(
+            return_value={"status": "skipped", "reason": "no_active_session"}
+        )
         await service.start()
         await service.enqueue_once()
         assert (await service.health_check())["last_heartbeat_at"] is None
