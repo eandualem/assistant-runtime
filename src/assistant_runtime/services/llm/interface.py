@@ -21,9 +21,9 @@ from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.services.llm._codex_model import OpenAICodexResponsesModel
 from assistant_runtime.services.llm._settings import build_model_settings, validate_model_id
 from assistant_runtime.services.llm.config import (
-    _PROVIDER_ENV_VAR_MAP,
     PROVIDER_DEFAULT_MODELS,
     PROVIDER_DEFAULT_SUMMARIZATION_MODELS,
+    PROVIDER_ENV_VARS,
     LLMConfig,
     ProviderConfig,
 )
@@ -137,7 +137,7 @@ class LlmService:
                 raise ProviderConfigError(f"Invalid providers_json: {e}") from e
 
         # 2. Auto-detect from individual env vars (supplement, don't overwrite)
-        for provider_name, env_var in _PROVIDER_ENV_VAR_MAP.items():
+        for provider_name, env_var in PROVIDER_ENV_VARS.items():
             if provider_name not in existing:
                 api_key = os.getenv(env_var)
                 if api_key:
@@ -147,7 +147,7 @@ class LlmService:
 
         # 3. Export keys for Pydantic AI auto-detection
         for provider in providers:
-            env_var = _PROVIDER_ENV_VAR_MAP.get(provider.provider)
+            env_var = PROVIDER_ENV_VARS.get(provider.provider)
             if env_var and not os.getenv(env_var):
                 os.environ[env_var] = provider.api_key.get_secret_value()
                 logger.debug("Exported API key for Pydantic AI", provider=provider.provider)
@@ -193,7 +193,7 @@ class LlmService:
         """
         from pydantic import SecretStr
 
-        if provider not in _PROVIDER_ENV_VAR_MAP:
+        if provider not in PROVIDER_ENV_VARS:
             raise ProviderConfigError(f"Unknown provider: {provider}")
 
         # Update or add provider in memory
@@ -202,7 +202,7 @@ class LlmService:
 
         # Track as DB-sourced and export to env var for Pydantic AI
         self._db_providers[provider] = "database"
-        env_var = _PROVIDER_ENV_VAR_MAP[provider]
+        env_var = PROVIDER_ENV_VARS[provider]
         os.environ[env_var] = api_key
         logger.info("Provider API key reloaded", provider=provider)
 
@@ -211,12 +211,12 @@ class LlmService:
 
         Called by the providers route after deleting the key from the DB.
         """
-        if provider not in _PROVIDER_ENV_VAR_MAP:
+        if provider not in PROVIDER_ENV_VARS:
             raise ProviderConfigError(f"Unknown provider: {provider}")
 
         self._providers = [p for p in self._providers if p.provider != provider]
         self._db_providers.pop(provider, None)
-        env_var = _PROVIDER_ENV_VAR_MAP[provider]
+        env_var = PROVIDER_ENV_VARS[provider]
         os.environ.pop(env_var, None)
         logger.info("Provider API key removed", provider=provider)
 
@@ -224,7 +224,7 @@ class LlmService:
         """Return provider auth status for each known provider."""
         configured = {p.provider for p in self._providers}
         result = []
-        for provider_name in _PROVIDER_ENV_VAR_MAP:
+        for provider_name in PROVIDER_ENV_VARS:
             has_key = provider_name in configured
             # Determine source: check if from DB (tracked in _db_providers) or env
             source = None
@@ -257,7 +257,7 @@ class LlmService:
                 from assistant_runtime.services.database.repositories import OAuthTokenRepository
 
                 repo = OAuthTokenRepository(session)
-                for provider_name in _PROVIDER_ENV_VAR_MAP:
+                for provider_name in PROVIDER_ENV_VARS:
                     token = await repo.get(provider_name)
                     if token is not None and token.encrypted_api_key:
                         api_key = self._fernet.decrypt(token.encrypted_api_key.encode()).decode()

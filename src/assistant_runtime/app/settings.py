@@ -1,30 +1,40 @@
-"""Runtime configuration — mutable overlay on frozen AppSettings.
+"""Runtime configuration — the mutable overlay between frozen settings and the request.
 
-Three-tier config priority: per-request override > runtime overlay > frozen config default.
-Resolved once at the top of each request handler via ``resolve_effective_config()``.
+Three tiers, most specific wins: the request's ``config`` > the runtime
+overlay (``PATCH /api/settings``) > the frozen ``AssistantConfig``.
+``resolve_effective_config()`` folds them once per request. The tunables
+themselves are declared once, in ``TunableOverrides``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+from pydantic import ValidationError
 
-from assistant_runtime.app.assistant.config import AssistantConfig
+from assistant_runtime.app.assistant.config import (
+    TUNABLE_FIELDS,
+    AssistantConfig,
+    TunableOverrides,
+)
 
 if TYPE_CHECKING:
     from assistant_runtime.services.database.interface import DatabaseService
 
-# Sentinel to distinguish "not set" from "explicitly None"
-_SENTINEL: Any = object()
-
 
 @dataclass(frozen=True)
 class EffectiveConfig:
-    """Resolved configuration for a single request — immutable snapshot."""
+    """The resolved configuration for one request.
+
+    One attribute per tunable (``tests/unit/app/test_settings.py`` checks the
+    two stay in step); the fields the frozen config always provides are typed
+    accordingly.
+    """
 
     default_model: str | None
     thinking_budget: int | None
@@ -39,28 +49,15 @@ class EffectiveConfig:
     subagent_thinking_budget: int | None
 
 
+assert {f.name for f in dataclasses.fields(EffectiveConfig)} == TUNABLE_FIELDS
+
+
 class RuntimeSettings:
-    """Mutable overlay on frozen AssistantConfig.
+    """Mutable overlay on the frozen ``AssistantConfig``.
 
-    Fields set to ``None`` mean "not overridden — use frozen config default".
-    Thread-safe via asyncio.Lock.
+    Holds only the tunables that were explicitly set; everything else falls
+    through to the frozen default. Persisted to Postgres when it is reachable.
     """
-
-    _VALID_FIELDS = frozenset(
-        {
-            "default_model",
-            "thinking_budget",
-            "temperature",
-            "max_turns",
-            "enable_working_memory",
-            "summarization_model",
-            "working_memory_model",
-            "default_image_model",
-            "default_video_model",
-            "subagent_model",
-            "subagent_thinking_budget",
-        }
-    )
 
     def __init__(
         self,
@@ -71,156 +68,96 @@ class RuntimeSettings:
         self._db: DatabaseService | None = database_service
         self._lock = asyncio.Lock()
         self._updated_at: datetime | None = None
+        self._overrides: dict[str, Any] = {}
 
-        # Overlay fields — None = not overridden
-        self._default_model: str | None = None
-        self._thinking_budget: int | None = None
-        self._temperature: float | None = None
-        self._max_turns: int | None = None
-        self._enable_working_memory: bool | None = None
-        self._summarization_model: str | None = None
-        self._working_memory_model: str | None = None
-        self._default_image_model: str | None = None
-        self._default_video_model: str | None = None
-        self._subagent_model: str | None = None
-        self._subagent_thinking_budget: int | None = None
-
-        # Track which fields have been explicitly set
-        self._overridden: set[str] = set()
+    @property
+    def overrides(self) -> dict[str, Any]:
+        """The tunables currently overridden, by name."""
+        return dict(self._overrides)
 
     async def update(self, **kwargs: Any) -> bool:
-        """Update one or more overlay fields.
+        """Set or clear overrides; a ``None`` value clears one.
 
-        Setting a field to ``None`` clears the override (reverts to frozen default).
+        Returns whether the new state was persisted.
 
         Raises:
-            ValueError: If a field name is unknown or a value is out of range.
+            ValueError: An unknown field or a value out of range.
         """
-        # Validate field names
-        unknown = set(kwargs) - self._VALID_FIELDS
+        unknown = set(kwargs) - TUNABLE_FIELDS
         if unknown:
             raise ValueError(f"Unknown settings field(s): {', '.join(sorted(unknown))}")
-
-        # Validate bounds
-        if "temperature" in kwargs and kwargs["temperature"] is not None:
-            t = kwargs["temperature"]
-            if not (0.0 <= t <= 2.0):
-                raise ValueError(f"temperature must be between 0.0 and 2.0, got {t}")
-
-        if "thinking_budget" in kwargs and kwargs["thinking_budget"] is not None:
-            tb = kwargs["thinking_budget"]
-            if not (1 <= tb <= 100_000):
-                raise ValueError(f"thinking_budget must be between 1 and 100000, got {tb}")
-
-        if "subagent_thinking_budget" in kwargs and kwargs["subagent_thinking_budget"] is not None:
-            stb = kwargs["subagent_thinking_budget"]
-            if not (1 <= stb <= 100_000):
-                raise ValueError(
-                    f"subagent_thinking_budget must be between 1 and 100000, got {stb}"
-                )
-
-        if "max_turns" in kwargs and kwargs["max_turns"] is not None:
-            mt = kwargs["max_turns"]
-            if not (1 <= mt <= 50):
-                raise ValueError(f"max_turns must be between 1 and 50, got {mt}")
+        try:
+            validated = TunableOverrides(**kwargs)
+        except ValidationError as e:
+            problems = "; ".join(
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()
+            )
+            raise ValueError(f"Invalid settings: {problems}") from e
 
         async with self._lock:
-            for field, value in kwargs.items():
-                setattr(self, f"_{field}", value)
+            for field in kwargs:
+                value = getattr(validated, field)
                 if value is None:
-                    self._overridden.discard(field)
+                    self._overrides.pop(field, None)
                 else:
-                    self._overridden.add(field)
+                    self._overrides[field] = value
             self._updated_at = datetime.now(UTC)
 
-        # Persist after lock release — best-effort, don't block the caller
         return await self._persist_to_db()
 
     async def load_from_db(self) -> None:
-        """Load persisted settings from DB into the overlay on startup.
-
-        Non-NULL DB fields become runtime overrides. Proceeds silently if DB is unavailable.
-        """
+        """Load persisted overrides on startup; silently skipped without a database."""
         if self._db is None or not getattr(self._db, "healthy", True):
             return
-
         try:
-            async with self._db.session_context() as db_session:
-                from assistant_runtime.services.database.repositories import (
-                    SettingsRepository,
-                )
+            from assistant_runtime.services.database.repositories import SettingsRepository
 
-                repo = SettingsRepository(db_session)
-                row = await repo.get()
+            async with self._db.session_context() as db_session:
+                row = await SettingsRepository(db_session).get()
                 if row is None:
                     return
-
-                for field in self._VALID_FIELDS:
+                for field in TUNABLE_FIELDS:
                     value = getattr(row, field, None)
                     if value is not None:
-                        setattr(self, f"_{field}", value)
-                        self._overridden.add(field)
-
+                        self._overrides[field] = value
                 if row.updated_at is not None:
                     self._updated_at = row.updated_at
-
-            logger.info("Loaded persisted settings from DB", overrides=list(self._overridden))
+            logger.info("Loaded persisted settings from DB", overrides=sorted(self._overrides))
         except Exception as e:
             logger.warning(
                 "Failed to load settings from DB — proceeding with defaults", error=str(e)
             )
 
     async def _persist_to_db(self) -> bool:
-        """Persist current overlay state to DB. Best-effort — failures are logged, not raised."""
+        """Write the full overlay (unset fields as NULL). Best-effort."""
         if self._db is None or not getattr(self._db, "healthy", True):
             return False
-
-        # Build full state dict: overridden fields get values, others get None (clears old values)
-        state: dict[str, Any] = {}
-        for field in self._VALID_FIELDS:
-            if field in self._overridden:
-                state[field] = getattr(self, f"_{field}")
-            else:
-                state[field] = None
-
+        state = {field: self._overrides.get(field) for field in TUNABLE_FIELDS}
         try:
-            async with self._db.session_context() as db_session:
-                from assistant_runtime.services.database.repositories import (
-                    SettingsRepository,
-                )
+            from assistant_runtime.services.database.repositories import SettingsRepository
 
-                repo = SettingsRepository(db_session)
-                await repo.save(state)
+            async with self._db.session_context() as db_session:
+                await SettingsRepository(db_session).save(state)
             return True
         except Exception as e:
             logger.warning("Failed to persist settings to DB", error=str(e))
             return False
 
     def get(self, field: str, frozen_default: Any = None) -> Any:
-        """Return the runtime override if set, otherwise frozen_default.
-
-        Simple consumer API — returns just the value (no source annotation).
-        Used by services that need runtime > frozen two-tier resolution.
-        """
-        if field in self._overridden:
-            return getattr(self, f"_{field}")
-        return frozen_default
-
-    def _resolve_field(self, field: str) -> tuple[Any, str]:
-        """Return (value, source) for a field."""
-        overlay = getattr(self, f"_{field}")
-        if field in self._overridden:
-            return overlay, "runtime"
-        frozen_val = getattr(self._frozen, field, None)
-        return frozen_val, "config_default"
+        """The runtime override for ``field``, else ``frozen_default``."""
+        return self._overrides.get(field, frozen_default)
 
     def to_response_dict(self) -> dict[str, Any]:
-        """Serialize current state for the GET /settings response."""
-        values: dict[str, dict[str, Any]] = {}
-        for field in self._VALID_FIELDS:
-            value, source = self._resolve_field(field)
-            values[field] = {"value": value, "source": source}
-
+        """Every tunable with its value and which tier it came from (``GET /settings``)."""
+        values = {}
+        for field in sorted(TUNABLE_FIELDS):
+            if field in self._overrides:
+                values[field] = {"value": self._overrides[field], "source": "runtime"}
+            else:
+                values[field] = {
+                    "value": getattr(self._frozen, field, None),
+                    "source": "config_default",
+                }
         return {
             "values": values,
             "updated_at": self._updated_at.isoformat() if self._updated_at else None,
@@ -230,43 +167,17 @@ class RuntimeSettings:
 def resolve_effective_config(
     frozen_config: AssistantConfig,
     runtime_settings: RuntimeSettings | None = None,
-    per_request: Any | None = None,
+    per_request: TunableOverrides | None = None,
 ) -> EffectiveConfig:
-    """Resolve three-tier config priority into a frozen snapshot.
+    """Fold the three tiers into one frozen snapshot: request > runtime > frozen."""
+    request_values = per_request.model_dump(exclude_none=True) if per_request else {}
+    runtime_values = runtime_settings.overrides if runtime_settings else {}
 
-    Priority: per_request > runtime_settings > frozen_config.
+    def _pick(field: str) -> Any:
+        if field in request_values:
+            return request_values[field]
+        if field in runtime_values:
+            return runtime_values[field]
+        return getattr(frozen_config, field, None)
 
-    Args:
-        frozen_config: The frozen AssistantConfig from env/startup.
-        runtime_settings: Optional mutable overlay from PATCH /settings.
-        per_request: Optional RequestConfigOverride from the chat request body.
-    """
-
-    def _pick(field: str, frozen_default: Any) -> Any:
-        """First non-sentinel value wins: per_request → runtime → frozen."""
-        # Check per-request override
-        if per_request is not None:
-            val = getattr(per_request, field, None)
-            if val is not None:
-                return val
-
-        # Check runtime overlay
-        if runtime_settings is not None and field in runtime_settings._overridden:
-            return getattr(runtime_settings, f"_{field}")
-
-        # Fall back to frozen config
-        return frozen_default
-
-    return EffectiveConfig(
-        default_model=_pick("default_model", frozen_config.default_model),
-        thinking_budget=_pick("thinking_budget", frozen_config.thinking_budget),
-        temperature=_pick("temperature", frozen_config.temperature),
-        max_turns=_pick("max_turns", frozen_config.max_turns),
-        enable_working_memory=_pick("enable_working_memory", frozen_config.enable_working_memory),
-        summarization_model=_pick("summarization_model", None),
-        working_memory_model=_pick("working_memory_model", None),
-        default_image_model=_pick("default_image_model", None),
-        default_video_model=_pick("default_video_model", None),
-        subagent_model=_pick("subagent_model", None),
-        subagent_thinking_budget=_pick("subagent_thinking_budget", None),
-    )
+    return EffectiveConfig(**{field: _pick(field) for field in TUNABLE_FIELDS})

@@ -115,11 +115,7 @@ class HistorySummarizer:
             if self._runtime_settings
             else self.config.summarization_model
         )
-        if model:
-            return model
-        resolver = getattr(self._llm, "resolve_summarization_model", None)
-        resolved = resolver() if callable(resolver) else None
-        return resolved if isinstance(resolved, str) else None
+        return model or self._llm.resolve_summarization_model()
 
     def _format_messages_for_summarization(self, messages: list[dict[str, Any]]) -> str:
         """Format dict-format messages into a string for the summarization prompt."""

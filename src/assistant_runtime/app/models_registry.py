@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from assistant_runtime.config import AppSettings
+from assistant_runtime.services.llm.config import PROVIDER_ENV_VARS
 
 
 class ModelEntry(BaseModel):
@@ -40,13 +41,9 @@ class ProviderInfo(BaseModel):
     configured: bool
 
 
-# Maps provider name → env var name. Broader than llm/config.py's map
-# (includes image/video providers that aren't Pydantic AI providers).
+# The LLM providers plus the media providers, which are not pydantic-ai providers.
 _REGISTRY_PROVIDER_ENV_MAP: dict[str, str] = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "google": "GOOGLE_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
+    **PROVIDER_ENV_VARS,
     "runway": "RUNWAYML_API_SECRET",
     "luma": "LUMAAI_API_KEY",
 }

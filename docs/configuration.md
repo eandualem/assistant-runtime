@@ -16,12 +16,11 @@ most specific wins.
 | runtime overlay | `PATCH /api/settings` | until changed; persisted in Postgres when available |
 | per request | the message's `config` object | that turn |
 
-The tunables that exist in all three tiers: `default_model`,
+The tunables, which exist in all three tiers: `default_model`,
 `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`,
 `summarization_model`, `working_memory_model`, `default_image_model`,
-`default_video_model`, `subagent_model`. `subagent_thinking_budget` exists
-in the first two tiers only. `GET /api/settings` shows each value and
-which tier it came from.
+`default_video_model`, `subagent_model`, `subagent_thinking_budget`.
+`GET /api/settings` shows each value and which tier it came from.
 
 ## Providers and models
 

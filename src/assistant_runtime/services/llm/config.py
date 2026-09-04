@@ -4,9 +4,6 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 ALLOWED_PROVIDERS = ["anthropic", "openai", "google", "openrouter"]
 
-# Maps provider names to the environment variables Pydantic AI reads for auto-detection.
-# When keys are loaded from LLM_PROVIDERS_JSON, they must be exported to these env vars
-# so that Pydantic AI's provider constructors can find them.
 # The model used when the configured primary/summarization model's provider has
 # no credentials but another provider does. Order = preference.
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
@@ -22,7 +19,9 @@ PROVIDER_DEFAULT_SUMMARIZATION_MODELS: dict[str, str] = {
     "openrouter": "openrouter:x-ai/grok-4.1-fast",
 }
 
-_PROVIDER_ENV_VAR_MAP: dict[str, str] = {
+# The environment variable pydantic-ai reads for each provider's key. Keys
+# loaded from LLM__PROVIDERS_JSON or the database are exported to these names.
+PROVIDER_ENV_VARS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",

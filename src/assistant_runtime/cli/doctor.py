@@ -13,15 +13,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-OK, WARN, FAIL = "ok  ", "warn", "FAIL"
+from assistant_runtime.services.llm.config import PROVIDER_ENV_VARS
 
-# Provider env var → provider prefix, mirrored from services/llm/config.py.
-PROVIDER_KEYS: dict[str, str] = {
-    "ANTHROPIC_API_KEY": "anthropic",
-    "OPENAI_API_KEY": "openai",
-    "GOOGLE_API_KEY": "google",
-    "OPENROUTER_API_KEY": "openrouter",
-}
+OK, WARN, FAIL = "ok  ", "warn", "FAIL"
 
 Line = tuple[str, str]  # (status, message)
 
@@ -42,7 +36,7 @@ def _env_file() -> Line:
 def configured_providers(env: dict[str, str] | None = None) -> list[str]:
     """Provider prefixes that have an API key set."""
     source = os.environ if env is None else env
-    found = [prefix for var, prefix in PROVIDER_KEYS.items() if source.get(var, "").strip()]
+    found = [provider for provider, var in PROVIDER_ENV_VARS.items() if source.get(var, "").strip()]
     if source.get("LLM__PROVIDERS_JSON", "").strip():
         found.append("providers-json")
     return found

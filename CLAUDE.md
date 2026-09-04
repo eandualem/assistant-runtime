@@ -52,9 +52,13 @@ that way: database code is exercised through fakes, the LLM boundary
   `resolve_effective_config()` (`app/settings.py`): frozen `AppSettings`
   from the environment and `.env` (`__` is the nesting delimiter) <
   `RuntimeSettings`, the mutable overlay behind `PATCH /api/settings`
-  (persisted when Postgres is up) < `RequestConfigOverride` in the request
-  body. A new tunable is added to `AssistantConfig`, to
-  `RuntimeSettings._VALID_FIELDS` and `EffectiveConfig`, and to the README.
+  (persisted when Postgres is up) < the request body's `config`. The
+  tunables are declared once, in `TunableOverrides`
+  (`app/assistant/config.py`): the request body, the `PATCH /api/settings`
+  body and the runtime overlay's validation all use it, and
+  `EffectiveConfig` has one attribute per tunable (a test enforces it). A
+  new tunable is a field there, an attribute on `EffectiveConfig`, a column
+  on `user_settings` (migration) and a line in `docs/configuration.md`.
   Secrets (provider keys, tokens) come from the environment only and are
   never persisted except through the encrypted provider-key store.
 - **Postgres is optional and every request path must work without it.**
