@@ -23,7 +23,10 @@ that way: database code is exercised through fakes, the LLM boundary
 
 ## Invariants — do not route around these
 
-- **Every module has the same skeleton.** `config.py` (a frozen pydantic
+- **Every service and app module has the same skeleton** (`services/<name>/`,
+  `app/assistant`, `app/streaming`, `app/heartbeat`; the leaf modules
+  `base`, `artifacts`, `config` and the `app/routes` package are exempt).
+  `config.py` (a frozen pydantic
   model nested into `AppSettings`), `deps.py` (FastAPI `Depends` accessors
   reading `app.state`), `factory.py` (`register_<name>(app_state,
   lifecycle)`: build the service, store it on `app.state`, register it
