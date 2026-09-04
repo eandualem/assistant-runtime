@@ -3,6 +3,8 @@
 assistant-runtime chat [--model M]    talk to the assistant in the terminal (no server, no database)
 assistant-runtime serve [--port P]    run the HTTP + Socket.IO server
 assistant-runtime doctor              check provider keys, model ids, database, optional extras
+assistant-runtime docs [page]         the documentation shipped with this install
+assistant-runtime help [page]         the same pages (alias of docs)
 assistant-runtime version             print the installed version
 
 ``chat`` runs the runtime in-process: the same services, tools and prompt as
@@ -18,6 +20,7 @@ import sys
 from importlib.metadata import PackageNotFoundError, version
 
 from assistant_runtime.cli.chat import cmd_chat
+from assistant_runtime.cli.docs import cmd_docs
 from assistant_runtime.cli.doctor import cmd_doctor
 from assistant_runtime.cli.serve import cmd_serve
 
@@ -56,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="check the environment and configuration")
     p.set_defaults(func=cmd_doctor)
+
+    for name, help_text in (
+        ("docs", "print the documentation shipped with this install"),
+        ("help", "same as docs"),
+    ):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("page", nargs="?", help="page name; omit to list the pages")
+        p.set_defaults(func=cmd_docs)
 
     p = sub.add_parser("version", help="print the installed version")
     p.set_defaults(func=lambda _args: (print(package_version()), 0)[1])

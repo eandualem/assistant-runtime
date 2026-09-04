@@ -112,3 +112,11 @@ line-ending = "auto"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/assistant_runtime"]
+
+# The documentation ships inside the wheel so an installed runtime can print it
+# (`assistant-runtime docs <page>`) without a checkout of the repository.
+[tool.hatch.build.targets.wheel.force-include]
+"docs" = "assistant_runtime/help/docs"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/assistant_runtime", "docs", "alembic", "alembic.ini", "README.md", "LICENSE"]
