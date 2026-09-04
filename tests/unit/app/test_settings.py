@@ -191,11 +191,18 @@ class TestRuntimeSettings:
 class TestRuntimeSettingsDB:
     """Tests for DB persistence in RuntimeSettings."""
 
-    def _make_mock_db(self, *, healthy: bool = True) -> MagicMock:
-        """Create a mock DatabaseService with session_context as async context manager."""
+    def _make_mock_db(self, *, healthy: bool = True, recovers: bool = False) -> MagicMock:
+        """A DatabaseService stand-in whose ``health_check`` may flip ``healthy``."""
         mock_db = MagicMock()
-        mock_db._healthy = healthy
+        mock_db.healthy = healthy
         mock_session = AsyncMock()
+
+        async def health_check() -> dict:
+            if recovers:
+                mock_db.healthy = True
+            return {"healthy": mock_db.healthy}
+
+        mock_db.health_check = AsyncMock(side_effect=health_check)
 
         @asynccontextmanager
         async def fake_session_context():
@@ -359,7 +366,7 @@ class TestRuntimeSettingsDB:
 
     @pytest.mark.asyncio
     async def test_load_from_db_recovers_after_degraded_startup(self):
-        """DB was unhealthy at start but session_context works -- settings load."""
+        """The database was down when probed at startup but answers now: settings load."""
         mock_row = MagicMock()
         mock_row.default_model = "anthropic:claude-sonnet-4-6"
         mock_row.thinking_budget = None
@@ -378,7 +385,7 @@ class TestRuntimeSettingsDB:
         mock_repo.get = AsyncMock(return_value=mock_row)
         mock_settings_repo_cls = MagicMock(return_value=mock_repo)
 
-        mock_db = self._make_mock_db(healthy=False)  # unhealthy at start
+        mock_db = self._make_mock_db(healthy=False, recovers=True)
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
@@ -387,9 +394,25 @@ class TestRuntimeSettingsDB:
         ):
             await rs.load_from_db()
 
-        # Still loaded because we no longer check _healthy
-        assert "default_model" in rs.overrides
+        mock_db.health_check.assert_awaited_once()
         assert rs.overrides["default_model"] == "anthropic:claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_load_from_db_skips_when_still_unreachable(self):
+        mock_repo = MagicMock()
+        mock_repo.get = AsyncMock()
+        mock_db = self._make_mock_db(healthy=False, recovers=False)
+        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
+
+        with patch(
+            "assistant_runtime.services.database.repositories.SettingsRepository",
+            MagicMock(return_value=mock_repo),
+        ):
+            await rs.load_from_db()
+
+        mock_db.health_check.assert_awaited_once()
+        mock_repo.get.assert_not_awaited()
+        assert rs.overrides == {}
 
     @pytest.mark.asyncio
     async def test_persist_returns_false_on_failure(self):
