@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from assistant_runtime.services.tools.providers.backbone._client import (
+    backbone_detail,
     backbone_error,
     backbone_request,
 )
@@ -46,7 +47,7 @@ async def create_meeting_room(
 
     if status not in (200, 201):
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 
@@ -72,7 +73,7 @@ async def list_meeting_rooms(state: str = "") -> dict[str, Any]:
 
     if status != 200:
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 
@@ -118,7 +119,7 @@ async def send_meeting_message(
 
     if status not in (200, 201):
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 
@@ -148,7 +149,7 @@ async def update_meeting_state(room_id: str, state: str) -> dict[str, Any]:
 
     if status != 200:
         return {
-            "error": f"Backbone API error ({status}): {data.get('detail', 'Unknown error')}",
+            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
             "success": False,
         }
 

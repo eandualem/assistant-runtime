@@ -210,3 +210,61 @@ class TestBackboneRetry:
         assert status == -1
         assert "timed out" in data["error"]
         assert data["error_code"] == "BACKBONE_TIMEOUT"
+
+
+class TestCredentialsOverCleartext:
+    async def test_bearer_sent_over_https_and_to_localhost(self, monkeypatch):
+        from assistant_runtime.services.tools.providers.backbone._client import (
+            _credentials_allowed,
+        )
+
+        assert _credentials_allowed("https://backbone.example.com") is True
+        assert _credentials_allowed("http://127.0.0.1:7120") is True
+        assert _credentials_allowed("http://localhost:7120") is True
+        assert _credentials_allowed("http://backbone.internal:7120") is False
+
+    async def test_key_is_withheld_from_a_remote_cleartext_url(self, monkeypatch):
+        monkeypatch.setenv("BACKBONE_URL", "http://backbone.internal:7120")
+        monkeypatch.setenv("BACKBONE_API_KEY", "secret")
+        captured = {}
+
+        class _Response:
+            status_code = 200
+
+            def json(self):
+                return {"ok": True}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def request(self, method, url, headers=None, json=None, params=None):
+                captured["headers"] = headers
+                return _Response()
+
+        monkeypatch.setattr(
+            "assistant_runtime.services.tools.providers.backbone._client.httpx.AsyncClient", _Client
+        )
+        status, _ = await backbone_request("GET", "/api/agents")
+        assert status == 200
+        assert "Authorization" not in captured["headers"]
+
+
+class TestPayloadShapes:
+    def test_error_helpers_tolerate_non_objects(self):
+        from assistant_runtime.services.tools.providers.backbone._client import (
+            backbone_detail,
+            backbone_error,
+        )
+
+        assert backbone_error([]) == "Request failed"
+        assert backbone_error(None) == "Request failed"
+        assert backbone_error({"message": "nope"}) == "nope"
+        assert backbone_detail("oops") == "Unknown error"
+        assert backbone_detail({"detail": "bad"}) == "bad"

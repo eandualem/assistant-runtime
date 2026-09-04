@@ -54,9 +54,9 @@ are part of the runtime and present whenever their own service is
 (artifacts need Postgres, media a provider key). Capabilities (what the
 assistant can do) are offered only when a provider (who does it) is
 configured, so the model is never given a tool that cannot work;
-configuration lists the providers. The backbone, GitHub and Telegram
-integrations are still registered unconditionally and return a structured
-error when unconfigured, until they move to the same model.
+configuration lists the providers. The GitHub and Telegram integrations
+are still registered unconditionally and return a structured error when
+unconfigured, until they move to the same model.
 
 | Group | Tools | Needs |
 |---|---|---|

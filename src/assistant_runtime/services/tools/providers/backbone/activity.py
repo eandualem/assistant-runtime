@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from assistant_runtime.services.tools.providers.backbone._client import (
+    backbone_detail,
     backbone_error,
     backbone_request,
 )
@@ -39,7 +40,7 @@ async def get_delivery_status() -> dict[str, Any]:
     if status == -1:
         return {"error": backbone_error(data), "success": False}
     if status != 200 or not isinstance(data, dict):
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
 
     return {
@@ -66,7 +67,7 @@ async def get_recent_deliveries(limit: int = 20) -> dict[str, Any]:
     if status == -1:
         return {"error": backbone_error(data), "success": False}
     if status != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
 
     items, total = _extract_items(data)
@@ -95,7 +96,7 @@ async def get_failed_deliveries(limit: int = 20) -> dict[str, Any]:
     if status == -1:
         return {"error": backbone_error(data), "success": False}
     if status != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
 
     items, total = _extract_items(data)
@@ -139,7 +140,7 @@ async def get_agent_activity(
         detail = data.get("detail", "Not found") if isinstance(data, dict) else "Not found"
         return {"error": f"Agent activity not found: {detail}", "success": False}
     if status != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
 
     items, total = _extract_items(data)
@@ -171,7 +172,7 @@ async def get_activity_timeline(limit: int = 20, offset: int = 0) -> dict[str, A
     if status == -1:
         return {"error": backbone_error(data), "success": False}
     if status != 200:
-        detail = data.get("detail", "Unknown error") if isinstance(data, dict) else str(data)
+        detail = backbone_detail(data) if isinstance(data, dict) else str(data)
         return {"error": f"Backbone API error ({status}): {detail}", "success": False}
 
     items, total = _extract_items(data)
