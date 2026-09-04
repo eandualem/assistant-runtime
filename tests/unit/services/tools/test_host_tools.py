@@ -56,7 +56,9 @@ class TestLoadHostToolSchemas:
         with pytest.raises(ToolValidationError):
             load_host_tool_schemas(ToolConfig(host_tools={"x": {"parameters": {}}}))
 
-    @pytest.mark.parametrize("name", ["", "has space", "dot.name", "x" * 65, "ünïcode"])
+    @pytest.mark.parametrize(
+        "name", ["", "has space", "dot.name", "x" * 65, "ünïcode", "navigate\n"]
+    )
     def test_invalid_names_rejected(self, name):
         with pytest.raises(ToolValidationError):
             load_host_tool_schemas(ToolConfig(host_tools={name: NAVIGATE}))
