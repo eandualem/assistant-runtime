@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import socketio
 from loguru import logger
 
-from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.app.assistant.models import AssistantRequest, host_context_from_payload
 
 if TYPE_CHECKING:
     from assistant_runtime.app.streaming.interface import StreamingService
@@ -73,9 +73,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
             return
         room = f"session:{session_id}"
         await self.enter_room(sid, room)
-        host_context = None
-        if isinstance(data, dict):
-            host_context = data.get("host_context", data.get("machine_state"))
+        host_context = host_context_from_payload(data)
         streaming_service = self._try_get_streaming_service()
         if streaming_service is not None:
             warm = getattr(streaming_service, "warm_session", None)

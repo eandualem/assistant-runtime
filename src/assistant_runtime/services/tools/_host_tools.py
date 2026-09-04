@@ -15,6 +15,7 @@ Which tools exist is configuration (``ToolConfig.host_tools`` and
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,8 +30,16 @@ from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
 HostToolSchemas = dict[str, dict[str, Any]]
 
 
+# What providers accept as a tool name (Anthropic and OpenAI both enforce this shape).
+TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
 def _validate(schemas: HostToolSchemas, source: str) -> None:
     for name, schema in schemas.items():
+        if not isinstance(name, str) or not TOOL_NAME_RE.match(name):
+            raise ToolValidationError(
+                f"Host tool name {name!r} from {source} must match {TOOL_NAME_RE.pattern}"
+            )
         if not isinstance(schema, dict) or not schema.get("description"):
             raise ToolValidationError(f"Host tool '{name}' from {source} needs a description")
         if not isinstance(schema.get("parameters"), dict):

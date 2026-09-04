@@ -41,6 +41,10 @@ class ToolRegistry:
             )
         if definition.name in self._backend_definitions:
             raise ToolValidationError(f"Backend tool '{definition.name}' already registered")
+        if definition.name in self._host_tool_names:
+            raise ToolValidationError(
+                f"Backend tool '{definition.name}' clashes with a configured host tool"
+            )
         self._backend_definitions[definition.name] = definition
         self._backend_handlers[definition.name] = handler
         self._available_tools_cache.clear()
