@@ -36,40 +36,20 @@ def _normalize_keys(obj: Any) -> Any:
     return obj
 
 
-# Older clients sent the host context under other names. They are accepted and
-# mapped onto the documented shape so a host can migrate at its own pace.
-_LEGACY_TOP_LEVEL_KEYS: dict[str, str] = {"machine_state": "host_context"}
-_LEGACY_CONTEXT_KEYS: dict[str, str] = {"active_page": "page"}
-_LEGACY_PAGE_KEYS: dict[str, str] = {"machines": "state", "available_actions": "actions"}
-
-
-def _rename_keys(obj: dict[str, Any], aliases: dict[str, str]) -> dict[str, Any]:
-    return {aliases.get(k, k): v for k, v in obj.items()}
-
-
-def _apply_context_aliases(host_context: dict[str, Any]) -> dict[str, Any]:
-    """Map legacy key names inside a host context onto the documented shape."""
-    context = _rename_keys(host_context, _LEGACY_CONTEXT_KEYS)
-    page = context.get("page")
-    if isinstance(page, dict):
-        context = {**context, "page": _rename_keys(page, _LEGACY_PAGE_KEYS)}
-    return context
-
-
 def normalize_host_context(raw: Any) -> dict[str, Any] | None:
-    """A host context as the runtime expects it: snake_case keys, documented shape.
+    """A host context as the runtime expects it: snake_case keys throughout.
 
-    Accepts what a client sent (camelCase or snake_case, current or legacy key
-    names) and returns None for anything that is not a mapping. Every entry
-    point that takes a host context (the request model, the Socket.IO join)
-    goes through here so the stored ``last_host_context`` is always canonical.
+    Accepts camelCase or snake_case and returns None for anything that is not
+    a mapping. Every entry point that takes a host context (the request
+    model, the Socket.IO join) goes through here so the stored
+    ``last_host_context`` is always canonical.
     """
     if not isinstance(raw, dict):
         return None
-    return _apply_context_aliases(_normalize_keys(raw))
+    return _normalize_keys(raw)
 
 
-_HOST_CONTEXT_PAYLOAD_KEYS = ("host_context", "hostContext", "machine_state", "machineState")
+_HOST_CONTEXT_PAYLOAD_KEYS = ("host_context", "hostContext")
 
 
 def host_context_from_payload(data: Any) -> dict[str, Any] | None:
@@ -218,18 +198,15 @@ class AssistantRequest(BaseModel):
         """Normalize camelCase keys from the host to snake_case.
 
         Covers three scopes:
-        1. Top-level keys (sessionId → session_id, hostContext → host_context),
-           plus the legacy ``machine_state`` name for the host context
-        2. host_context contents (deep recursive conversion + legacy key aliases)
+        1. Top-level keys (sessionId → session_id, hostContext → host_context)
+        2. host_context contents (deep recursive conversion)
         3. config keys (defaultModel → default_model, thinkingBudget → thinking_budget)
         """
         if not isinstance(data, dict):
             return data
 
         # 1. Normalize top-level keys
-        data = _rename_keys(
-            {_camel_to_snake(k): v for k, v in data.items()}, _LEGACY_TOP_LEVEL_KEYS
-        )
+        data = {_camel_to_snake(k): v for k, v in data.items()}
 
         # 2. Deep-normalize host_context contents + legacy aliases
         ctx = data.get("host_context")

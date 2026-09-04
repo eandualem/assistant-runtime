@@ -37,7 +37,7 @@ Keys may be camelCase; they are normalised.
 | `parent_id` | string, optional | branch from this message instead of the active leaf |
 | `message_type` | `standard` (default) or `steering` | see concepts |
 | `images` | list of data URLs, optional | attached images; a top-level `screenshot` is folded in |
-| `host_context` | object, optional | what the host shows (shape in concepts); the legacy `machine_state` name is accepted |
+| `host_context` | object, optional | what the host shows (shape in concepts) |
 | `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model` |
 | `tool_call_id`, `tool_result` | continuation only | the pending host tool's call id and its result |
 
