@@ -6,17 +6,18 @@ from unittest.mock import patch
 
 import pytest
 
-from assistant_runtime.services.tools._meeting_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.capabilities.rooms import register_rooms_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.backbone.rooms import (
+    BackboneRooms,
     create_meeting_room,
     list_meeting_rooms,
-    register_meeting_tools,
     send_meeting_message,
     update_meeting_state,
 )
-from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "assistant_runtime.services.tools._meeting_tools"
+MODULE = "assistant_runtime.services.tools.providers.backbone.rooms"
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +234,7 @@ class TestUpdateMeetingState:
 class TestRegisterMeetingTools:
     def test_all_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_meeting_tools(registry)
+        register_rooms_tools(registry, BackboneRooms())
 
         names = registry.get_tool_names()
         assert "create_meeting_room" in names
@@ -243,18 +244,18 @@ class TestRegisterMeetingTools:
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_meeting_tools(registry)
+        register_rooms_tools(registry, BackboneRooms())
         assert len(registry._backend_definitions) == 4
 
     def test_all_backend(self):
         registry = ToolRegistry(ToolConfig())
-        register_meeting_tools(registry)
+        register_rooms_tools(registry, BackboneRooms())
         for defn in registry._backend_definitions.values():
             assert defn.category == "backend"
 
     def test_handlers_callable(self):
         registry = ToolRegistry(ToolConfig())
-        register_meeting_tools(registry)
+        register_rooms_tools(registry, BackboneRooms())
         for name in [
             "create_meeting_room",
             "list_meeting_rooms",

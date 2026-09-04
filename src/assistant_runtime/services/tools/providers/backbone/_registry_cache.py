@@ -11,7 +11,7 @@ from typing import Any
 
 from loguru import logger
 
-from assistant_runtime.services.tools._backbone_client import backbone_request
+from assistant_runtime.services.tools.providers.backbone._client import backbone_request
 
 _DEFAULT_TTL = 300.0  # 5 minutes
 

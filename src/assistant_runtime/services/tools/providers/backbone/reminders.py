@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from loguru import logger
-
-from assistant_runtime.services.tools._backbone_client import backbone_error, backbone_request
-from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
+from assistant_runtime.services.tools.providers.backbone._client import (
+    backbone_error,
+    backbone_request,
+)
 
 # ---------------------------------------------------------------------------
 # Tool handlers
@@ -125,76 +124,14 @@ async def toggle_schedule_item(item_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def register_schedule_tools(registry: ToolRegistry) -> None:
-    """Register all schedule management tools."""
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="add_schedule_item",
-            description=(
-                "Add a personal schedule item for today. "
-                "Specify the time (HH:MM format) and a title/description."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "time": {
-                        "type": "string",
-                        "description": "Scheduled time in HH:MM format (e.g. '14:30')",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Description of the schedule item",
-                    },
-                },
-                "required": ["time", "title"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        add_schedule_item,
-    )
+class BackboneReminders:
+    """The reminders capability served by this provider (see ``capabilities.reminders``)."""
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="remove_schedule_item",
-            description=(
-                "Remove a personal schedule item by its ID. "
-                "Only personal items can be removed (not heartbeat or cron items)."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "item_id": {
-                        "type": "string",
-                        "description": "The schedule item ID to remove",
-                    },
-                },
-                "required": ["item_id"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        remove_schedule_item,
-    )
+    async def add_schedule_item(self, time: str, title: str) -> dict[str, Any]:
+        return await add_schedule_item(time=time, title=title)
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="toggle_schedule_item",
-            description=(
-                "Toggle the done/not-done state of a schedule item. "
-                "Reads the current state and sends the opposite value."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "item_id": {
-                        "type": "string",
-                        "description": "The schedule item ID to toggle",
-                    },
-                },
-                "required": ["item_id"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        toggle_schedule_item,
-    )
+    async def remove_schedule_item(self, item_id: str) -> dict[str, Any]:
+        return await remove_schedule_item(item_id=item_id)
 
-    logger.info("Registered schedule management tools", count=3)
+    async def toggle_schedule_item(self, item_id: str) -> dict[str, Any]:
+        return await toggle_schedule_item(item_id=item_id)

@@ -64,7 +64,8 @@ error when unconfigured, until they move to the same model.
 | notes | `manage_notes` | `NOTES_PATH` |
 | library | `list_documents`, `read_document` | `LIBRARY_PATHS` |
 | artifacts | `manage_artifacts` | Postgres |
-| agents, plans, meetings, schedule, swarms, telemetry, repos | `list_agents`, `start_agent`, `send_agent_message`, `approve_plan`, `create_meeting_room`, `add_schedule_item`, `create_swarm`, `get_delivery_status`, `onboard_repo`, ... | agent-backbone at `BACKBONE_URL` |
+| peers, rooms, reminders, activity, workgroups, repositories | `list_agents`, `start_agent`, `send_agent_message`, `create_meeting_room`, `add_schedule_item`, `get_delivery_status`, `create_swarm`, `onboard_repo`, ... | `BACKBONE_URL` |
+| approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR` |
 | github | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
 | telegram | `telegram_send`, `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
 | media | `generate_image`, `generate_video` | an image provider key; the `[video]` extra and a Runway or Luma key |

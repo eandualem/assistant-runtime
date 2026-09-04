@@ -36,6 +36,19 @@ class TestProvidersConfig:
         with pytest.raises(ValueError, match="needs both a name and a path"):
             ProvidersConfig.from_env({"LIBRARY_PATHS": "docs="})
 
+    def test_backbone_and_state_dir(self):
+        config = ProvidersConfig.from_env(
+            {
+                "BACKBONE_URL": "http://127.0.0.1:7120",
+                "BACKBONE_INFRASTRUCTURE_SESSIONS": "gateway, ngrok,",
+                "AGENT_STATE_DIR": "~/.claude/state",
+            }
+        )
+        assert config.backbone_url == "http://127.0.0.1:7120"
+        assert config.backbone_infrastructure_sessions == frozenset({"gateway", "ngrok"})
+        assert config.agent_state_dir == Path("~/.claude/state").expanduser()
+        assert config.configured() == ["backbone", "claude_code"]
+
     def test_bare_library_path_is_the_default_collection(self):
         config = ProvidersConfig.from_env({"LIBRARY_PATHS": "/srv/docs"})
         assert config.library_paths == {"default": Path("/srv/docs")}
@@ -46,6 +59,21 @@ class TestBuildProviders:
         providers = build_providers(ProvidersConfig(notes_path=tmp_path))
         assert set(providers) == {"notes"}
         assert isinstance(providers["notes"], MarkdownNotes)
+
+    def test_backbone_serves_six_capabilities(self):
+        providers = build_providers(ProvidersConfig(backbone_url="http://x"))
+        assert set(providers) == {
+            "peers",
+            "rooms",
+            "reminders",
+            "activity",
+            "workgroups",
+            "repositories",
+        }
+
+    def test_state_dir_serves_approvals(self, tmp_path):
+        providers = build_providers(ProvidersConfig(agent_state_dir=tmp_path))
+        assert set(providers) == {"approvals"}
 
     def test_library_provider(self, tmp_path):
         providers = build_providers(ProvidersConfig(library_paths={"g": tmp_path}))

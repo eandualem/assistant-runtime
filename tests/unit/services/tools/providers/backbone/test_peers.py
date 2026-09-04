@@ -7,28 +7,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from assistant_runtime.services.tools._agent_tools import (
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools._request_context import assistant_request_context
+from assistant_runtime.services.tools.capabilities.peers import register_peers_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.backbone.peers import (
     MAX_SESSION_NAME_LENGTH,
+    BackbonePeers,
     _read_state_file,
     _run_command,
     _validate_session_name,
     check_agent_state,
     get_active_agents,
     list_agents,
-    register_agent_tools,
     send_agent_message,
     start_agent,
     stop_agent,
 )
-from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._request_context import assistant_request_context
-from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-MODULE = "assistant_runtime.services.tools._agent_tools"
+MODULE = "assistant_runtime.services.tools.providers.backbone.peers"
 
 
 def _mock_run(returncode: int = 0, stdout: str = "", stderr: str = ""):
@@ -711,7 +712,7 @@ class TestSendAgentMessage:
 class TestRegisterAgentTools:
     def test_all_tools_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_agent_tools(registry)
+        register_peers_tools(registry, BackbonePeers())
 
         names = registry.get_tool_names()
         assert "list_agents" in names
@@ -723,25 +724,25 @@ class TestRegisterAgentTools:
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_agent_tools(registry)
+        register_peers_tools(registry, BackbonePeers())
         assert len(registry._backend_definitions) == 6
 
     def test_all_are_backend(self):
         registry = ToolRegistry(ToolConfig())
-        register_agent_tools(registry)
+        register_peers_tools(registry, BackbonePeers())
         for defn in registry._backend_definitions.values():
             assert defn.category == "backend"
 
     def test_definitions_have_schemas(self):
         registry = ToolRegistry(ToolConfig())
-        register_agent_tools(registry)
+        register_peers_tools(registry, BackbonePeers())
         for defn in registry._backend_definitions.values():
             assert isinstance(defn.parameters_schema, dict)
             assert defn.description
 
     def test_handlers_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_agent_tools(registry)
+        register_peers_tools(registry, BackbonePeers())
         for name in [
             "list_agents",
             "get_active_agents",
@@ -755,7 +756,7 @@ class TestRegisterAgentTools:
 
     def test_start_agent_schema_has_new_params(self):
         registry = ToolRegistry(ToolConfig())
-        register_agent_tools(registry)
+        register_peers_tools(registry, BackbonePeers())
         schema = registry._backend_definitions["start_agent"].parameters_schema
         properties = schema.get("properties", {})
         assert "working_directory" not in properties
