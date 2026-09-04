@@ -82,7 +82,7 @@ async def list_sessions_backbone(request: Request) -> dict[str, Any]:
     """List active sessions in backbone-expected format.
 
     Returns {"sessions": [{"id": "...", "active": true, ...}]} — distinct
-    from the frontend's GET /sessions which returns a flat list.
+    from the host's GET /sessions which returns a flat list.
     """
     service = _get_assistant_service(request)
     if service is None:

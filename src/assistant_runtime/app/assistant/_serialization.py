@@ -352,7 +352,7 @@ def assistant_record_to_flat_messages(message: MessageRecord) -> list[ModelMessa
     Pydantic AI's ``_handle_deferred_tool_results`` finds the **last**
     ``ModelResponse`` in the history and validates that every tool call in it
     has a matching entry in ``tool_call_results``.  When completed backend
-    tools and a pending frontend tool share the same ``ModelResponse``, the
+    tools and a pending host tool share the same ``ModelResponse``, the
     backend tool's 'skip' entry (added from ``last_model_request``) creates a
     set-equality mismatch (more IDs in ``tool_call_results`` than in the
     response's tool calls).

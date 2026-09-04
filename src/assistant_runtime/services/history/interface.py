@@ -75,7 +75,7 @@ class HistoryService:
             session_context: Session context dict (may be updated with working memory).
             is_continuation: If True, passed through to manager.
             exclude_tool_call_ids: Tool call IDs to exclude from dangling resolution
-                (the pending frontend tool that DeferredToolResults will handle).
+                (the pending host tool that DeferredToolResults will handle).
 
         Returns:
             Tuple of (prepared_history, context_was_modified).

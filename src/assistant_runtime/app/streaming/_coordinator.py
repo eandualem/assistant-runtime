@@ -78,7 +78,7 @@ class EventCoordinator:
     def try_completed(self) -> dict[str, Any] | None:
         """Emit agent_status(completed) if not already emitted.
 
-        Terminal event — bypasses event limit. The frontend MUST receive
+        Terminal event — bypasses event limit. The host MUST receive
         this to exit the "thinking" state.
         """
         if self._completed_emitted:
@@ -105,7 +105,7 @@ class EventCoordinator:
     ) -> dict[str, Any] | None:
         """Emit final_response if not already emitted.
 
-        Terminal event — bypasses event limit. The frontend MUST receive
+        Terminal event — bypasses event limit. The host MUST receive
         this before completed.
         """
         if self._final_response_emitted:

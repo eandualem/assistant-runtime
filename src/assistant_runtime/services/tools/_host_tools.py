@@ -2,7 +2,7 @@
 
 They use Pydantic AI's ExternalToolset + DeferredToolRequests pattern:
 1. The model decides to call a host tool.
-2. The runtime emits a ``tool_call`` event (category ``frontend``) with a call id
+2. The runtime emits a ``tool_call`` event (category ``host``) with a call id
    and ends the turn with ``final_response.pending_tool_call``.
 3. The host executes the tool (navigate, select, refresh, ...).
 4. The host sends a continuation request carrying ``tool_call_id`` and ``tool_result``.
@@ -89,7 +89,7 @@ def get_host_definitions(schemas: HostToolSchemas) -> list[ToolDefinition]:
             name=name,
             description=schema["description"],
             parameters_schema=schema["parameters"],
-            category=ToolCategory.FRONTEND,
+            category=ToolCategory.HOST,
         )
         for name, schema in schemas.items()
     ]

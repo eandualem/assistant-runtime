@@ -77,14 +77,14 @@ class TestToolCallEvent:
         )
         assert event["arguments"] == {}
 
-    def test_frontend_category(self):
+    def test_host_category(self):
         event = make_tool_call_event(
             tool_name="navigate",
             arguments={"page": "agents"},
             call_id="call_789",
-            category="frontend",
+            category="host",
         )
-        assert event["category"] == "frontend"
+        assert event["category"] == "host"
 
     def test_default_category_is_backend(self):
         event = make_tool_call_event("tool", {}, "c1")

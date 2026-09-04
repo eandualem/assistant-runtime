@@ -76,7 +76,7 @@ when the file is absent.
 Tools the **host application executes**, not the runtime: navigate to a
 page, select an item, refresh a view. They are declared in configuration
 (`TOOLS__HOST_TOOLS`), so the runtime ships none. When the model calls
-one, the runtime emits a `tool_call` event with `category: "frontend"`,
+one, the runtime emits a `tool_call` event with `category: "host"`,
 ends the turn with `final_response.pending_tool_call`, and waits. The host
 performs the action and sends a continuation with the matching
 `tool_call_id` and a `tool_result`; the runtime resumes the model with

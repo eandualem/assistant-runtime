@@ -80,9 +80,9 @@ class TestGetHostDefinitions:
     def test_empty(self):
         assert get_host_definitions({}) == []
 
-    def test_definitions_are_frontend_category(self):
+    def test_definitions_are_host_category(self):
         defs = get_host_definitions({"navigate": NAVIGATE})
         assert [d.name for d in defs] == ["navigate"]
-        assert defs[0].category == ToolCategory.FRONTEND
+        assert defs[0].category == ToolCategory.HOST
         assert defs[0].description == NAVIGATE["description"]
         assert defs[0].parameters_schema == NAVIGATE["parameters"]

@@ -403,7 +403,7 @@ class LlmService:
         """Create a configured Pydantic AI Agent.
 
         Tools arrive as parameters — The assistant module passes per-request tool sets
-        based on frontend machine state.
+        based on the host context.
 
         Args:
             model: Model identifier override. Defaults to the effective primary model.
