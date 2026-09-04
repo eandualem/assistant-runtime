@@ -15,6 +15,7 @@ from loguru import logger
 from pydantic_ai import DeferredToolRequests
 from pydantic_ai.usage import UsageLimits
 
+from assistant_runtime.app.assistant._defaults import load_default_artifacts
 from assistant_runtime.app.assistant._prompt_builder import build_system_prompt
 from assistant_runtime.app.assistant._serialization import build_assistant_message_content
 from assistant_runtime.app.assistant._session_store import SessionStore
@@ -76,12 +77,13 @@ class AssistantService:
 
     async def start(self) -> None:
         """Initialize internal components."""
+        db = self._usable_database()
         self._sessions = SessionStore(
-            database_service=self._database_service,
+            database_service=db,
             session_ttl_hours=self._config.session_ttl_hours,
         )
         self._started = True
-        logger.info("Assistant service started")
+        logger.info("Assistant service started", persistence="database" if db else "memory")
 
     async def stop(self) -> None:
         """Shutdown the assistant service."""
@@ -212,8 +214,6 @@ class AssistantService:
 
             # 3. MCP + artifacts + system prompt
             mcp_summary, artifacts = await asyncio.gather(mcp_summary_task, artifacts_task)
-            if artifacts is None:
-                raise AssistantError("Cannot build system prompt: artifact store unavailable")
 
             prompt_result = build_system_prompt(
                 available_tools=available_tools,
@@ -418,10 +418,23 @@ class AssistantService:
             # Working memory extraction is best-effort — don't fail the request
             logger.warning("Working memory extraction failed", error=str(e))
 
-    async def _load_active_artifacts(self) -> dict[str, str] | None:
-        """Load all active artifacts from DB. Returns None if DB unavailable."""
-        if self._database_service is None:
+    def _usable_database(self) -> DatabaseService | None:
+        """The database service when it is reachable, else None (memory-only mode)."""
+        db = self._database_service
+        if db is None or not getattr(db, "healthy", False):
             return None
+        return db
+
+    async def _load_active_artifacts(self) -> dict[str, str]:
+        """Active prompt artifacts: bundled defaults overlaid with the database rows.
+
+        Without a reachable database, or for any name the database has no
+        active row for, the bundled default text is used, so the runtime can
+        build a system prompt with nothing configured beyond a provider key.
+        """
+        defaults = load_default_artifacts()
+        if self._usable_database() is None:
+            return defaults
         now = time.monotonic()
         if (
             self._active_artifacts_cache is not None
@@ -442,13 +455,13 @@ class AssistantService:
                 async with self._database_service.session_context() as session:
                     repo = ArtifactRepository(session)
                     rows = await repo.get_all_active()
-                    artifacts = {row.name: row.content for row in rows}
+                    artifacts = {**defaults, **{row.name: row.content for row in rows}}
                     self._active_artifacts_cache = artifacts
                     self._active_artifacts_cached_at = time.monotonic()
                     return dict(artifacts)
         except Exception as e:
-            logger.warning("Failed to load artifacts from DB", error=str(e))
-            return None
+            logger.warning("Failed to load artifacts from DB, using defaults", error=str(e))
+            return defaults
 
     def _ensure_started(self) -> None:
         """Guard: raise if service not started."""
