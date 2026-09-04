@@ -39,7 +39,9 @@ class TestEffectiveDefaults:
         app.state.llm_service = llm
         app.state.runtime_settings = RuntimeSettings(frozen_config=AssistantConfig())
         await app.state.runtime_settings.update(
-            summarization_model="anthropic:claude-haiku-4-5", subagent_thinking_budget=5000
+            summarization_model="anthropic:claude-haiku-4-5",
+            thinking_budget=2000,
+            subagent_thinking_budget=5000,
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -47,14 +49,21 @@ class TestEffectiveDefaults:
 
         assert defaults["primary_model"] == "openai:gpt-5.6-terra"
         assert defaults["summarization_model"] == "anthropic:claude-haiku-4-5"
+        assert defaults["thinking_budget"] == 2000
         assert defaults["subagent_thinking_budget"] == 5000
         assert defaults["subagent_model"] is None
 
     @pytest.mark.asyncio
     async def test_defaults_fall_back_to_frozen_settings_without_services(self, client):
+        from assistant_runtime.config import AppSettings
+
+        settings = AppSettings()
         defaults = (await client.get("/api/models")).json()["defaults"]
-        assert isinstance(defaults["primary_model"], str)
-        assert isinstance(defaults["default_image_model"], str)
+        assert defaults["primary_model"] == settings.llm.primary_model
+        assert defaults["summarization_model"] == settings.llm.summarization_model
+        assert defaults["thinking_budget"] == settings.assistant.thinking_budget
+        assert defaults["default_image_model"] == settings.media.default_image_model
+        assert defaults["default_video_model"] == settings.media.default_video_model
         assert defaults["subagent_model"] is None
 
 
