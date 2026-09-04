@@ -106,9 +106,17 @@ class RuntimeSettings:
         return await self._persist_to_db()
 
     async def load_from_db(self) -> None:
-        """Load persisted overrides on startup; silently skipped without a database."""
-        if self._db is None or not getattr(self._db, "healthy", True):
+        """Load persisted overrides on startup; silently skipped without a database.
+
+        The database may have come up after the service probed it at startup,
+        so an unhealthy service is probed once more before giving up.
+        """
+        if self._db is None:
             return
+        if not self._db.healthy:
+            await self._db.health_check()
+            if not self._db.healthy:
+                return
         try:
             from assistant_runtime.services.database.repositories import SettingsRepository
 
