@@ -22,9 +22,6 @@ from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
 
 GLOBAL_SKILLS_PATH = Path.home() / ".claude" / "skills"
 
-# Kept for backward compatibility with tests that monkeypatch the old name
-SKILLS_BASE_PATH = GLOBAL_SKILLS_PATH
-
 
 def _parse_frontmatter(content: str) -> dict[str, Any]:
     """Extract YAML frontmatter from a SKILL.md file.

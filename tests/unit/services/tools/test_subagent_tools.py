@@ -26,6 +26,16 @@ MODULE = "assistant_runtime.services.tools._subagent_tools"
 # ---------------------------------------------------------------------------
 
 
+def _register(registry, *, runtime=None, llm=None):
+    """Register run_subagent with stand-in dependencies."""
+    register_subagent_tools(
+        registry,
+        llm or MagicMock(),
+        backend_toolsets=lambda: [],
+        runtime_settings=lambda: runtime,
+    )
+
+
 class TestSubagentDefinition:
     def test_default_values(self):
         defn = SubagentDefinition(
@@ -107,7 +117,7 @@ class TestSubagentRegistry:
 class TestRunSubagentTool:
     async def test_unknown_subagent_returns_error(self):
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry)
 
         handler = registry._backend_handlers["run_subagent"]
 
@@ -136,25 +146,25 @@ class TestRunSubagentTool:
 class TestRegisterSubagentTools:
     def test_tool_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry)
 
         names = registry.get_tool_names()
         assert "run_subagent" in names
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry)
         assert len(registry._backend_definitions) == 1
 
     def test_is_backend_tool(self):
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry)
         defn = registry._backend_definitions["run_subagent"]
         assert defn.category == "backend"
 
     def test_definition_has_schema(self):
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry)
         defn = registry._backend_definitions["run_subagent"]
         assert isinstance(defn.parameters_schema, dict)
         assert defn.description
@@ -162,20 +172,20 @@ class TestRegisterSubagentTools:
 
     def test_handler_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry)
         assert "run_subagent" in registry._backend_handlers
         assert callable(registry._backend_handlers["run_subagent"])
 
     def test_task_is_required(self):
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry)
         schema = registry._backend_definitions["run_subagent"].parameters_schema
         required = schema.get("required", [])
         assert "task" in required
 
     def test_subagent_id_not_required(self):
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry)
         schema = registry._backend_definitions["run_subagent"].parameters_schema
         required = schema.get("required", [])
         assert "subagent_id" not in required
@@ -189,10 +199,10 @@ class TestRegisterSubagentTools:
 class TestRunSubagentRuntimeSettings:
     """Tests for runtime settings being passed through to execute_subagent."""
 
-    def _setup_handler(self):
+    def _setup_handler(self, runtime=None):
         """Register tools and return the run_subagent handler."""
         registry = ToolRegistry(ToolConfig())
-        register_subagent_tools(registry)
+        _register(registry, runtime=runtime)
         return registry._backend_handlers["run_subagent"]
 
     def _make_mock_ctx(self):
@@ -208,21 +218,12 @@ class TestRunSubagentRuntimeSettings:
     async def test_runtime_model_passed_to_executor(self, mock_execute):
         mock_execute.return_value = {"result": "done", "_metadata": {}}
 
-        handler = self._setup_handler()
-        mock_ctx = self._make_mock_ctx()
-
         runtime = MagicMock()
         runtime.get = MagicMock(
-            side_effect=lambda k, default=None: {
-                "subagent_model": "openai:gpt-4o",
-            }.get(k, default)
+            side_effect=lambda k, default=None: {"subagent_model": "openai:gpt-4o"}.get(k, default)
         )
-
-        handler._handler_deps = {
-            "llm_service": MagicMock(),
-            "get_backend_toolsets": MagicMock(return_value=[]),
-            "runtime_settings": runtime,
-        }
+        handler = self._setup_handler(runtime=runtime)
+        mock_ctx = self._make_mock_ctx()
 
         await handler(mock_ctx, task="research something")
         mock_execute.assert_called_once()
@@ -236,21 +237,12 @@ class TestRunSubagentRuntimeSettings:
     async def test_runtime_thinking_budget_passed_to_executor(self, mock_execute):
         mock_execute.return_value = {"result": "done", "_metadata": {}}
 
-        handler = self._setup_handler()
-        mock_ctx = self._make_mock_ctx()
-
         runtime = MagicMock()
         runtime.get = MagicMock(
-            side_effect=lambda k, default=None: {
-                "subagent_thinking_budget": 5000,
-            }.get(k, default)
+            side_effect=lambda k, default=None: {"subagent_thinking_budget": 5000}.get(k, default)
         )
-
-        handler._handler_deps = {
-            "llm_service": MagicMock(),
-            "get_backend_toolsets": MagicMock(return_value=[]),
-            "runtime_settings": runtime,
-        }
+        handler = self._setup_handler(runtime=runtime)
+        mock_ctx = self._make_mock_ctx()
 
         await handler(mock_ctx, task="analyze data")
         mock_execute.assert_called_once()
@@ -266,11 +258,6 @@ class TestRunSubagentRuntimeSettings:
 
         handler = self._setup_handler()
         mock_ctx = self._make_mock_ctx()
-
-        handler._handler_deps = {
-            "llm_service": MagicMock(),
-            "get_backend_toolsets": MagicMock(return_value=[]),
-        }
 
         await handler(mock_ctx, task="check status")
         mock_execute.assert_called_once()

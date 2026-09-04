@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -82,8 +83,19 @@ def list_subagents() -> list[dict[str, Any]]:
     ]
 
 
-def register_subagent_tools(registry: ToolRegistry) -> None:
-    """Register the run_subagent tool with the registry."""
+def register_subagent_tools(
+    registry: ToolRegistry,
+    llm_service: Any,
+    *,
+    backend_toolsets: Callable[[], list[Any]],
+    runtime_settings: Callable[[], Any | None],
+) -> None:
+    """Register ``run_subagent``.
+
+    ``backend_toolsets`` and ``runtime_settings`` are callables because both
+    change after registration: tools keep being registered, and the runtime
+    settings overlay is attached once the lifecycle has started.
+    """
 
     async def run_subagent(
         ctx: RunContext[None],
@@ -115,27 +127,16 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
         # Import here to avoid circular imports at module level
         from assistant_runtime.services.tools._subagent_executor import execute_subagent
 
-        # llm_service and backend_toolsets are injected by the ToolService
-        # via the _handler_deps dict attached to this handler
-        deps = getattr(run_subagent, "_handler_deps", None)
-        if deps is None:
-            return {
-                "error": "Subagent system not initialized",
-                "error_code": "SUBAGENT_NOT_INITIALIZED",
-            }
-
-        runtime_settings = deps.get("runtime_settings")
-        model_override = runtime_settings.get("subagent_model", None) if runtime_settings else None
-        thinking_override = (
-            runtime_settings.get("subagent_thinking_budget", None) if runtime_settings else None
-        )
+        settings = runtime_settings()
+        model_override = settings.get("subagent_model", None) if settings else None
+        thinking_override = settings.get("subagent_thinking_budget", None) if settings else None
 
         return await execute_subagent(
             definition=definition,
             task=task,
             context=context,
-            llm_service=deps["llm_service"],
-            backend_toolsets=deps["get_backend_toolsets"](),
+            llm_service=llm_service,
+            backend_toolsets=backend_toolsets(),
             usage=ctx.usage,
             model_override=model_override,
             thinking_budget_override=thinking_override,

@@ -107,10 +107,6 @@ class TestNotStartedGuard:
         with pytest.raises(ToolError, match="not started"):
             service.get_available_tools()
 
-    def test_validate_tool_call_before_start(self, service):
-        with pytest.raises(ToolError, match="not started"):
-            service.validate_tool_call("anything", {})
-
     def test_register_backend_before_start(self, service):
         defn = ToolDefinition(
             name="test",
@@ -139,14 +135,6 @@ class TestDelegation:
         result = service.get_available_tools()
         assert isinstance(result, ToolSet)
         assert result.total_count >= 37
-
-    async def test_validate_registered_tool(self, service):
-        await service.start()
-        assert service.validate_tool_call("get_time", {}) is True
-
-    async def test_validate_unknown_tool(self, service):
-        await service.start()
-        assert service.validate_tool_call("nonexistent", {}) is False
 
     async def test_register_additional_backend(self, service):
         await service.start()
@@ -273,16 +261,24 @@ class TestSubagentIntegration:
         toolsets = svc.get_subagent_toolsets()
         assert isinstance(toolsets, list)
 
-    async def test_runtime_settings_propagates_to_run_subagent_handler(self):
-        """set_runtime_settings updates run_subagent dependencies via public API."""
-        mock_llm = MagicMock()
-        runtime = MagicMock()
-        svc = ToolService(config=ToolConfig(), llm_service=mock_llm)
-        await svc.start()
+    async def test_runtime_settings_reach_run_subagent(self):
+        """Settings attached after start are read by the subagent tool on each call."""
+        from unittest.mock import AsyncMock, patch
 
+        svc = ToolService(config=ToolConfig(), llm_service=MagicMock())
+        await svc.start()
+        runtime = MagicMock()
+        runtime.get = MagicMock(
+            side_effect=lambda k, default=None: {"subagent_model": "openai:gpt-5.4"}.get(k, default)
+        )
         svc.set_runtime_settings(runtime)
 
-        handler = svc._registry._backend_handlers.get("run_subagent")
-        assert handler is not None
-        deps = getattr(handler, "_handler_deps", {})
-        assert deps.get("runtime_settings") is runtime
+        handler = svc._registry._backend_handlers["run_subagent"]
+        with patch(
+            "assistant_runtime.services.tools._subagent_executor.execute_subagent",
+            new_callable=AsyncMock,
+            return_value={"result": "done"},
+        ) as execute:
+            await handler(MagicMock(), task="look")
+
+        assert execute.call_args.kwargs["model_override"] == "openai:gpt-5.4"

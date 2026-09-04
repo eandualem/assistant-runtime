@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
@@ -27,45 +28,46 @@ def _unknown_artifact_error(name: str) -> dict[str, Any]:
     }
 
 
-async def manage_artifacts(
-    action: str,
-    name: str = "",
-    content: str = "",
-    version: int = 0,
-) -> dict[str, Any]:
-    """Manage versioned prompt artifacts (soul, persona, communication_protocol, ecosystem, scratchpad).
+def build_manage_artifacts(database_service: Any | None) -> Callable[..., Any]:
+    """The ``manage_artifacts`` handler, bound to a database service (or None)."""
 
-    Supports list, view, propose_edit, update_scratchpad, approve, and history actions.
-    """
-    actions = {
-        "list": _list_artifacts,
-        "view": _view_artifact,
-        "propose_edit": _propose_edit,
-        "update_scratchpad": _update_scratchpad,
-        "approve": _approve_artifact,
-        "history": _artifact_history,
-    }
+    async def manage_artifacts(
+        action: str,
+        name: str = "",
+        content: str = "",
+        version: int = 0,
+    ) -> dict[str, Any]:
+        """Manage versioned prompt artifacts (soul, persona, communication_protocol, ecosystem, scratchpad).
 
-    if action not in actions:
-        return {
-            "error": f"Unknown action '{action}'. Valid actions: {', '.join(actions)}",
-            "success": False,
+        Supports list, view, propose_edit, update_scratchpad, approve, and history actions.
+        """
+        actions = {
+            "list": _list_artifacts,
+            "view": _view_artifact,
+            "propose_edit": _propose_edit,
+            "update_scratchpad": _update_scratchpad,
+            "approve": _approve_artifact,
+            "history": _artifact_history,
         }
 
-    # Get database service from handler deps
-    deps = getattr(manage_artifacts, "_handler_deps", None)
-    if deps is None or deps.get("database_service") is None:
-        return {
-            "error": "Artifact store not available (no database connection)",
-            "success": False,
-        }
+        if action not in actions:
+            return {
+                "error": f"Unknown action '{action}'. Valid actions: {', '.join(actions)}",
+                "success": False,
+            }
+        if database_service is None:
+            return {
+                "error": "Artifact store not available (no database connection)",
+                "success": False,
+            }
+        return await actions[action](
+            name=name,
+            content=content,
+            version=version,
+            database_service=database_service,
+        )
 
-    return await actions[action](
-        name=name,
-        content=content,
-        version=version,
-        database_service=deps["database_service"],
-    )
+    return manage_artifacts
 
 
 async def _list_artifacts(
@@ -260,8 +262,8 @@ async def _artifact_history(
     }
 
 
-def register_artifact_tools(registry: ToolRegistry) -> None:
-    """Register the artifact management tool."""
+def register_artifact_tools(registry: ToolRegistry, database_service: Any | None) -> None:
+    """Register the artifact management tool, bound to the database service."""
     from assistant_runtime.artifacts import (
         artifact_role_boundaries_text,
         known_artifact_names_text,
@@ -316,7 +318,7 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
             },
             category=ToolCategory.BACKEND,
         ),
-        manage_artifacts,
+        build_manage_artifacts(database_service),
     )
 
     logger.info("Registered artifact management tool")
