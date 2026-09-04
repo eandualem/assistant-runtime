@@ -7,16 +7,9 @@ from typing import Any
 
 from loguru import logger
 
-from assistant_runtime.services.tools._agent_tools import register_agent_tools
 from assistant_runtime.services.tools._github_tools import register_github_tools
-from assistant_runtime.services.tools._meeting_tools import register_meeting_tools
-from assistant_runtime.services.tools._plan_tools import register_plan_tools
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._repo_tools import register_repo_tools
-from assistant_runtime.services.tools._schedule_tools import register_schedule_tools
-from assistant_runtime.services.tools._swarm_tools import register_swarm_tools
 from assistant_runtime.services.tools._telegram_tools import register_telegram_tools
-from assistant_runtime.services.tools._telemetry_tools import register_telemetry_tools
 from assistant_runtime.services.tools.builtin import register_builtin_tools
 from assistant_runtime.services.tools.capabilities import register_capabilities
 from assistant_runtime.services.tools.config import ToolConfig
@@ -150,13 +143,6 @@ class ToolService:
 
         # Integrations not yet expressed as capabilities; each fails soft when
         # its service is unreachable.
-        register_agent_tools(self._registry)
         register_github_tools(self._registry)
-        register_meeting_tools(self._registry)
-        register_schedule_tools(self._registry)
-        register_telemetry_tools(self._registry)
-        register_swarm_tools(self._registry)
         register_telegram_tools(self._registry)
-        register_plan_tools(self._registry)
-        register_repo_tools(self._registry)
         return capabilities

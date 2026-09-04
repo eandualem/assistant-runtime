@@ -15,6 +15,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+DEFAULT_AGENT_STATE_DIR = Path.home() / ".claude" / "state"
+
 
 def _parse_named_paths(value: str) -> dict[str, Path]:
     """``name=path,name=path`` (or a bare path, named ``default``) into a mapping."""
@@ -49,14 +51,34 @@ class ProvidersConfig(BaseModel):
             "(LIBRARY_PATHS as name=path,name=path)."
         ),
     )
+    backbone_url: str | None = Field(
+        default=None,
+        description="agent-backbone base URL (BACKBONE_URL); enables peers, rooms, reminders, activity, workgroups and repositories.",
+    )
+    backbone_infrastructure_sessions: frozenset[str] = Field(
+        default_factory=frozenset,
+        description="Session names that are infrastructure, not agents (BACKBONE_INFRASTRUCTURE_SESSIONS, comma-separated).",
+    )
+    agent_state_dir: Path | None = Field(
+        default=None,
+        description="Directory of agent state files (AGENT_STATE_DIR); enables approvals and enriches peers.",
+    )
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ProvidersConfig:
         env = os.environ if environ is None else environ
         notes = env.get("NOTES_PATH", "").strip()
+        backbone = env.get("BACKBONE_URL", "").strip()
+        state_dir = env.get("AGENT_STATE_DIR", "").strip()
+        infra = env.get("BACKBONE_INFRASTRUCTURE_SESSIONS", "")
         return cls(
             notes_path=Path(notes).expanduser() if notes else None,
             library_paths=_parse_named_paths(env.get("LIBRARY_PATHS", "")),
+            backbone_url=backbone or None,
+            backbone_infrastructure_sessions=frozenset(
+                s.strip() for s in infra.split(",") if s.strip()
+            ),
+            agent_state_dir=Path(state_dir).expanduser() if state_dir else None,
         )
 
     def configured(self) -> list[str]:
@@ -66,4 +88,8 @@ class ProvidersConfig(BaseModel):
             names.append("notes")
         if self.library_paths:
             names.append("library")
+        if self.backbone_url:
+            names.append("backbone")
+        if self.agent_state_dir is not None:
+            names.append("claude_code")
         return names

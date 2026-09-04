@@ -28,7 +28,17 @@ class TestRegisterCapabilities:
         assert register_capabilities(registry, {"teleport": MagicMock()}) == []
 
     def test_every_capability_has_a_registrar(self):
-        assert set(CAPABILITIES) == {"notes", "library"}
+        assert set(CAPABILITIES) == {
+            "notes",
+            "library",
+            "peers",
+            "rooms",
+            "reminders",
+            "activity",
+            "workgroups",
+            "repositories",
+            "approvals",
+        }
 
 
 class TestToolServiceProviders:

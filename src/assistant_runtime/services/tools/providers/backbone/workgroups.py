@@ -4,29 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from assistant_runtime.services.tools._backbone_client import backbone_error, backbone_request
-from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
-
-_SWARM_PHASES: frozenset[str] = frozenset(
-    {
-        "created",
-        "planning",
-        "working",
-        "validating",
-        "pr_open",
-        "awaiting_review",
-        "merged",
-        "cleaned_up",
-        "failed",
-        "discarded",
-    }
+from assistant_runtime.services.tools.capabilities.workgroups import (
+    _SWARM_PHASES,
+    _SWARM_WORKER_ROLES,
+    _SWARM_WORKER_STATUSES,
+    _WORKER_REQUIRED_FIELDS,
 )
-_SWARM_WORKER_ROLES: frozenset[str] = frozenset({"lead", "coder", "tester", "validator", "scout"})
-_SWARM_WORKER_STATUSES: frozenset[str] = frozenset(
-    {"pending", "started", "working", "pr_created", "done", "failed"}
+from assistant_runtime.services.tools.providers.backbone._client import (
+    backbone_error,
+    backbone_request,
 )
-_WORKER_REQUIRED_FIELDS: tuple[str, ...] = ("name", "role", "branch", "worktree_path", "session")
 
 
 def _validate_required_text(value: str, field_name: str) -> str | None:
@@ -321,175 +308,43 @@ async def complete_swarm(swarm_id: str) -> dict[str, Any]:
     return {"swarm": data, "success": True}
 
 
-def register_swarm_tools(registry: ToolRegistry) -> None:
-    """Register backbone swarm management tools."""
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="create_swarm",
-            description=(
-                "Create a new coding swarm in the backbone with its lead session and optional "
-                "worker registrations."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "repo": {
-                        "type": "string",
-                        "description": "Repository the swarm is working in",
-                    },
-                    "task_id": {
-                        "type": "string",
-                        "description": "Optional task or issue identifier associated with the swarm",
-                    },
-                    "coding_agent_session": {
-                        "type": "string",
-                        "description": "Lead coding-agent session for the swarm",
-                    },
-                    "workers": {
-                        "type": "array",
-                        "description": "Optional worker registrations to attach during swarm creation",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {"type": "string"},
-                                "role": {
-                                    "type": "string",
-                                    "enum": sorted(_SWARM_WORKER_ROLES),
-                                },
-                                "branch": {"type": "string"},
-                                "worktree_path": {"type": "string"},
-                                "session": {"type": "string"},
-                            },
-                            "required": list(_WORKER_REQUIRED_FIELDS),
-                        },
-                    },
-                },
-                "required": ["repo", "coding_agent_session"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        create_swarm,
-    )
+class BackboneWorkgroups:
+    """The workgroups capability served by this provider (see ``capabilities.workgroups``)."""
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="list_swarms",
-            description=(
-                "List swarms known to the backbone, optionally filtered by repository or "
-                "swarm status/phase."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "repo": {
-                        "type": "string",
-                        "description": "Optional repository filter",
-                    },
-                    "status": {
-                        "type": "string",
-                        "description": "Optional swarm phase/status filter",
-                        "enum": sorted(_SWARM_PHASES),
-                    },
-                },
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        list_swarms,
-    )
+    async def create_swarm(
+        self,
+        repo: str,
+        task_id: str | None = None,
+        coding_agent_session: str = "",
+        workers: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        return await create_swarm(
+            repo=repo, task_id=task_id, coding_agent_session=coding_agent_session, workers=workers
+        )
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="get_swarm_detail",
-            description="Get full detail for a swarm, including worker status and progress.",
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "swarm_id": {
-                        "type": "string",
-                        "description": "Swarm identifier to inspect",
-                    }
-                },
-                "required": ["swarm_id"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        get_swarm_detail,
-    )
+    async def list_swarms(
+        self, repo: str | None = None, status: str | None = None
+    ) -> dict[str, Any]:
+        return await list_swarms(repo=repo, status=status)
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="update_worker_status",
-            description=("Update a swarm worker's status and return the refreshed swarm detail."),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "swarm_id": {
-                        "type": "string",
-                        "description": "Swarm identifier",
-                    },
-                    "worker_name": {
-                        "type": "string",
-                        "description": "Worker name within the swarm",
-                    },
-                    "status": {
-                        "type": "string",
-                        "description": "New worker status",
-                        "enum": sorted(_SWARM_WORKER_STATUSES),
-                    },
-                    "pr_number": {
-                        "type": "integer",
-                        "description": "Optional pull request number associated with the worker",
-                    },
-                },
-                "required": ["swarm_id", "worker_name", "status"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        update_worker_status,
-    )
+    async def get_swarm_detail(self, swarm_id: str) -> dict[str, Any]:
+        return await get_swarm_detail(swarm_id=swarm_id)
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="broadcast_to_swarm",
-            description="Broadcast a lead message to every worker session in a swarm.",
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "swarm_id": {
-                        "type": "string",
-                        "description": "Swarm identifier",
-                    },
-                    "from_entity": {
-                        "type": "string",
-                        "description": "Entity sending the broadcast",
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": "Broadcast message content",
-                    },
-                },
-                "required": ["swarm_id", "from_entity", "message"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        broadcast_to_swarm,
-    )
+    async def update_worker_status(
+        self,
+        swarm_id: str,
+        worker_name: str,
+        status: str,
+        pr_number: int | None = None,
+    ) -> dict[str, Any]:
+        return await update_worker_status(
+            swarm_id=swarm_id, worker_name=worker_name, status=status, pr_number=pr_number
+        )
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="complete_swarm",
-            description="Mark a swarm as completed and return the final swarm state.",
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "swarm_id": {
-                        "type": "string",
-                        "description": "Swarm identifier to complete",
-                    }
-                },
-                "required": ["swarm_id"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        complete_swarm,
-    )
+    async def broadcast_to_swarm(
+        self, swarm_id: str, from_entity: str, message: str
+    ) -> dict[str, Any]:
+        return await broadcast_to_swarm(swarm_id=swarm_id, from_entity=from_entity, message=message)
+
+    async def complete_swarm(self, swarm_id: str) -> dict[str, Any]:
+        return await complete_swarm(swarm_id=swarm_id)

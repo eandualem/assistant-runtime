@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from assistant_runtime.services.tools._agent_registry_cache import (
+from assistant_runtime.services.tools.providers.backbone._registry_cache import (
     AgentRegistryCache,
     _reset_registry_cache,
     get_registry_cache,
 )
 
-MODULE = "assistant_runtime.services.tools._agent_registry_cache"
+MODULE = "assistant_runtime.services.tools.providers.backbone._registry_cache"
 
 SAMPLE_AGENTS = [
     {

@@ -5,11 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from loguru import logger
-
-from assistant_runtime.services.tools._backbone_client import backbone_error, backbone_request
-from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
+from assistant_runtime.services.tools.providers.backbone._client import (
+    backbone_error,
+    backbone_request,
+)
 
 # Optional comma-separated allowlist of org names; unset means any non-empty org is accepted.
 REPO_ORGS_ENV = "REPO_ORGS"
@@ -123,74 +122,14 @@ async def list_repos() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def register_repo_tools(registry: ToolRegistry) -> None:
-    """Register all repo management tools."""
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="onboard_repo",
-            description=(
-                "Onboard a new repository into the workspace. Clones the repo, "
-                "sets up CLAUDE.md, .claude/ directory, settings, and registers it "
-                "in the agent backbone. Requires the org name "
-                "and the Git URL."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "org": {
-                        "type": "string",
-                        "description": "Organization the repo belongs to",
-                    },
-                    "url": {
-                        "type": "string",
-                        "description": "Git URL of the repository to onboard",
-                    },
-                },
-                "required": ["org", "url"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        onboard_repo,
-    )
+class BackboneRepositories:
+    """The repositories capability served by this provider (see ``capabilities.repositories``)."""
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="check_repo_status",
-            description=(
-                "Check the onboarding and configuration status of a specific "
-                "repository. Returns setup steps completed, missing config, "
-                "and current state."
-            ),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "org": {
-                        "type": "string",
-                        "description": "Organization the repo belongs to",
-                    },
-                    "repo": {
-                        "type": "string",
-                        "description": "Repository name",
-                    },
-                },
-                "required": ["org", "repo"],
-            },
-            category=ToolCategory.BACKEND,
-        ),
-        check_repo_status,
-    )
+    async def onboard_repo(self, org: str, url: str) -> dict[str, Any]:
+        return await onboard_repo(org=org, url=url)
 
-    registry.register_backend_tool(
-        ToolDefinition(
-            name="list_repos",
-            description=(
-                "List all managed repositories across all organizations. "
-                "Returns repo names, orgs, and basic status for each."
-            ),
-            parameters_schema={"type": "object", "properties": {}},
-            category=ToolCategory.BACKEND,
-        ),
-        list_repos,
-    )
+    async def check_repo_status(self, org: str, repo: str) -> dict[str, Any]:
+        return await check_repo_status(org=org, repo=repo)
 
-    logger.info("Registered repo management tools", count=3)
+    async def list_repos(self) -> dict[str, Any]:
+        return await list_repos()

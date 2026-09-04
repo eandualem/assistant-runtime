@@ -5,15 +5,16 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._schedule_tools import (
+from assistant_runtime.services.tools.capabilities.reminders import register_reminders_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.backbone.reminders import (
+    BackboneReminders,
     add_schedule_item,
-    register_schedule_tools,
     remove_schedule_item,
     toggle_schedule_item,
 )
-from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "assistant_runtime.services.tools._schedule_tools"
+MODULE = "assistant_runtime.services.tools.providers.backbone.reminders"
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +165,7 @@ class TestToggleScheduleItem:
 class TestRegisterScheduleTools:
     def test_all_registered(self):
         registry = ToolRegistry(ToolConfig())
-        register_schedule_tools(registry)
+        register_reminders_tools(registry, BackboneReminders())
 
         names = registry.get_tool_names()
         assert "add_schedule_item" in names
@@ -173,18 +174,18 @@ class TestRegisterScheduleTools:
 
     def test_correct_count(self):
         registry = ToolRegistry(ToolConfig())
-        register_schedule_tools(registry)
+        register_reminders_tools(registry, BackboneReminders())
         assert len(registry._backend_definitions) == 3
 
     def test_all_backend(self):
         registry = ToolRegistry(ToolConfig())
-        register_schedule_tools(registry)
+        register_reminders_tools(registry, BackboneReminders())
         for defn in registry._backend_definitions.values():
             assert defn.category == "backend"
 
     def test_handlers_callable(self):
         registry = ToolRegistry(ToolConfig())
-        register_schedule_tools(registry)
+        register_reminders_tools(registry, BackboneReminders())
         for name in ["add_schedule_item", "remove_schedule_item", "toggle_schedule_item"]:
             assert name in registry._backend_handlers
             assert callable(registry._backend_handlers[name])
