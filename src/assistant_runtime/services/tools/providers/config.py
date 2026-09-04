@@ -59,6 +59,19 @@ class ProvidersConfig(BaseModel):
         default_factory=frozenset,
         description="Session names that are infrastructure, not agents (BACKBONE_INFRASTRUCTURE_SESSIONS, comma-separated).",
     )
+    github_token: str | None = Field(
+        default=None, description="GitHub token (GITHUB_TOKEN); enables issues."
+    )
+    github_repo: str | None = Field(
+        default=None,
+        description="owner/name of the issue repository (GITHUB_REPO_OWNER, GITHUB_REPO_NAME).",
+    )
+    telegram_token: str | None = Field(
+        default=None, description="Telegram bot token (TELEGRAM_TOKEN); enables messaging."
+    )
+    telegram_chat_id: str | None = Field(
+        default=None, description="Telegram chat the assistant answers in (TELEGRAM_CHAT_ID)."
+    )
     agent_state_dir: Path | None = Field(
         default=None,
         description="Directory of agent state files (AGENT_STATE_DIR); enables approvals and enriches peers.",
@@ -71,7 +84,15 @@ class ProvidersConfig(BaseModel):
         backbone = env.get("BACKBONE_URL", "").strip()
         state_dir = env.get("AGENT_STATE_DIR", "").strip()
         infra = env.get("BACKBONE_INFRASTRUCTURE_SESSIONS", "")
+        owner, repo = (
+            env.get("GITHUB_REPO_OWNER", "").strip(),
+            env.get("GITHUB_REPO_NAME", "").strip(),
+        )
         return cls(
+            github_token=env.get("GITHUB_TOKEN", "").strip() or None,
+            github_repo=f"{owner}/{repo}" if owner and repo else None,
+            telegram_token=env.get("TELEGRAM_TOKEN", "").strip() or None,
+            telegram_chat_id=env.get("TELEGRAM_CHAT_ID", "").strip() or None,
             notes_path=Path(notes).expanduser() if notes else None,
             library_paths=_parse_named_paths(env.get("LIBRARY_PATHS", "")),
             backbone_url=backbone or None,
@@ -90,6 +111,10 @@ class ProvidersConfig(BaseModel):
             names.append("library")
         if self.backbone_url:
             names.append("backbone")
+        if self.github_token and self.github_repo:
+            names.append("github")
+        if self.telegram_token and self.telegram_chat_id:
+            names.append("telegram")
         if self.agent_state_dir is not None:
             names.append("claude_code")
         return names

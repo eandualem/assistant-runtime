@@ -38,6 +38,8 @@ class TestRegisterCapabilities:
             "workgroups",
             "repositories",
             "approvals",
+            "issues",
+            "messaging",
         }
 
 

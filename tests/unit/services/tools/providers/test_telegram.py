@@ -8,11 +8,12 @@ import httpx
 
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools._request_context import assistant_request_context
-from assistant_runtime.services.tools._telegram_tools import (
-    register_telegram_tools,
+from assistant_runtime.services.tools.capabilities.messaging import register_messaging_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers.telegram import (
+    TelegramMessaging,
     respond_telegram,
 )
-from assistant_runtime.services.tools.config import ToolConfig
 
 
 class TestRespondTelegram:
@@ -50,7 +51,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools.providers.telegram.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -79,7 +80,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools.providers.telegram.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -114,7 +115,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools.providers.telegram.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -143,7 +144,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools.providers.telegram.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -167,7 +168,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools.providers.telegram.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -193,7 +194,7 @@ class TestRespondTelegram:
                 clear=True,
             ),
             patch(
-                "assistant_runtime.services.tools._telegram_tools.httpx.AsyncClient"
+                "assistant_runtime.services.tools.providers.telegram.httpx.AsyncClient"
             ) as mock_client_cls,
         ):
             mock_client = AsyncMock()
@@ -213,7 +214,7 @@ class TestRegisterTelegramTools:
 
     def test_registers_respond_telegram(self):
         registry = ToolRegistry(ToolConfig())
-        register_telegram_tools(registry)
+        register_messaging_tools(registry, TelegramMessaging())
 
         tool_names = registry.get_tool_names()
         assert "respond_telegram" in tool_names
@@ -221,5 +222,5 @@ class TestRegisterTelegramTools:
     def test_registered_tool_count(self):
         registry = ToolRegistry(ToolConfig())
         initial = registry.backend_tool_count()
-        register_telegram_tools(registry)
+        register_messaging_tools(registry, TelegramMessaging())
         assert registry.backend_tool_count() == initial + 1
