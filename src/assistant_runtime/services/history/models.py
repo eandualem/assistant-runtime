@@ -16,9 +16,8 @@ from pydantic import BaseModel, Field
 
 @dataclass(frozen=True)
 class HistoryPreparationResult:
-    """Debug metadata from history preparation."""
+    """Debug metadata describing one prepared model input."""
 
-    history: list[Any] = field(default_factory=list)
     was_compacted: bool = False
     message_count: int = 0
     estimated_tokens: int = 0
@@ -196,10 +195,6 @@ class CompactionResult(BaseModel):
     )
     errors_encountered: list[str] = Field(
         default_factory=list, description="Errors encountered and their resolution status"
-    )
-    working_memory: WorkingMemory = Field(
-        default_factory=WorkingMemory,
-        description="Structured working memory for the agent",
     )
 
     def to_summary_message(self) -> str:

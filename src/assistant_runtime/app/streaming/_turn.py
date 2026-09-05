@@ -69,8 +69,6 @@ class TurnPlan:
     # What the agent run starts from.
     user_prompt: str | None = None
     history: list[ModelMessage] = field(default_factory=list)
-    history_is_continuation: bool = False
-    exclude_tool_call_ids: set[str] | None = None
     deferred_tool_results: DeferredToolResults | None = None
     accepted_tool_result: ModelRequest | None = None
     suppress_tool_call_ids: set[str] = field(default_factory=set)
@@ -212,8 +210,6 @@ class TurnPlanner:
                 *self._sessions.get_history(session_id, exclude_leaf=True),
                 *flat_assistant,
             ],
-            history_is_continuation=True,
-            exclude_tool_call_ids={pending_tool_call_id},
             deferred_tool_results=DeferredToolResults(calls={request.tool_call_id: tool_result}),
             accepted_tool_result=ModelRequest(
                 parts=[

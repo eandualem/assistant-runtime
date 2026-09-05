@@ -8,6 +8,7 @@ class HistoryConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    compaction_enabled: bool = Field(default=True)
     token_budget: int = Field(default=100_000, ge=5000, le=500_000)
     retain_recent: int = Field(default=5, ge=1, le=50)
     protect_recent_tool_results: int = Field(default=3, ge=0, le=20)

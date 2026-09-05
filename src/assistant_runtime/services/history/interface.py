@@ -1,6 +1,9 @@
 """HistoryService — conversation history management with context window optimization.
 
 Public facade for the history module. Implements LifecycleAware protocol.
+The model-input policy is exposed as a native ``ProcessHistory`` capability
+through :meth:`HistoryService.processor`, so it runs inside Pydantic AI's
+request pipeline rather than ahead of it.
 """
 
 from __future__ import annotations
@@ -8,6 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 
 from assistant_runtime.services.history._manager import HistoryManager
@@ -18,6 +23,51 @@ from assistant_runtime.services.history.models import HistoryPreparationResult, 
 
 if TYPE_CHECKING:
     from assistant_runtime.services.llm.interface import LlmService
+
+
+class HistoryProcessor:
+    """One turn's model-input policy, attachable as a native capability.
+
+    Pydantic AI calls :meth:`process` before every model request of the
+    run(s) it is attached to. ``result`` describes the most recent model
+    input. The source messages are never modified, and the current run's
+    own messages pass through verbatim so the run still reports them as new.
+    """
+
+    def __init__(self, manager: HistoryManager, session_context: dict[str, Any]) -> None:
+        self._manager = manager
+        self._session_context = session_context
+        self.result: HistoryPreparationResult | None = None
+
+    def capability(self) -> ProcessHistory:
+        """The native capability wrapping this processor."""
+        return ProcessHistory(self.process)
+
+    async def process(
+        self, ctx: RunContext[Any], messages: list[ModelMessage]
+    ) -> list[ModelMessage]:
+        """Return the messages the model should see for this request."""
+        frozen_from = next(
+            (i for i, m in enumerate(messages) if getattr(m, "run_id", None) == ctx.run_id),
+            len(messages),
+        )
+        try:
+            prepared, was_compacted = await self._manager.prepare_history(
+                messages, self._session_context, frozen_from=frozen_from
+            )
+        except Exception as e:
+            if isinstance(e, CompactionError):
+                raise
+            raise CompactionError(f"History preparation failed: {e}") from e
+
+        self.result = HistoryPreparationResult(
+            was_compacted=was_compacted,
+            message_count=len(prepared),
+            estimated_tokens=self._manager._estimate_tokens(prepared),
+            compacted_from=len(messages) if was_compacted else 0,
+            message_summaries=HistoryService._summarize_messages(prepared),
+        )
+        return prepared
 
 
 class HistoryService:
@@ -60,56 +110,20 @@ class HistoryService:
         if self._manager is not None:
             self._manager.set_runtime_settings(runtime_settings)
 
-    async def prepare_history_with_metadata(
-        self,
-        history: list[ModelMessage],
-        session_context: dict[str, Any],
-        *,
-        is_continuation: bool = False,
-        exclude_tool_call_ids: set[str] | None = None,
-    ) -> HistoryPreparationResult:
-        """Prepare history and return debug metadata.
+    def processor(self, session_context: dict[str, Any]) -> HistoryProcessor | None:
+        """A per-turn processor, or None when compaction is disabled.
 
-        Args:
-            history: Current conversation history.
-            session_context: Session context dict.
-            is_continuation: If True, passed through to manager.
-            exclude_tool_call_ids: Tool call IDs to exclude from dangling resolution.
-
-        Returns:
-            HistoryPreparationResult with history and debug metadata.
+        ``session_context`` receives the compaction cache; attach the
+        processor's capability to every agent run of the turn.
 
         Raises:
-            CompactionError: If history preparation fails.
+            CompactionError: If the service is not started.
         """
         if self._manager is None:
             raise CompactionError("History service not started")
-
-        original_count = len(history)
-
-        try:
-            prepared, was_compacted = await self._manager.prepare_history(
-                history,
-                session_context,
-                is_continuation=is_continuation,
-                exclude_tool_call_ids=exclude_tool_call_ids,
-            )
-        except Exception as e:
-            if isinstance(e, CompactionError):
-                raise
-            raise CompactionError(f"History preparation failed: {e}") from e
-
-        estimated_tokens = self._manager._estimate_tokens(prepared)
-        summaries = self._summarize_messages(prepared)
-
-        return HistoryPreparationResult(
-            history=prepared,
-            was_compacted=was_compacted,
-            message_count=len(prepared),
-            estimated_tokens=estimated_tokens,
-            compacted_from=original_count if was_compacted else 0,
-            message_summaries=summaries,
-        )
+        if not self._config.compaction_enabled:
+            return None
+        return HistoryProcessor(self._manager, session_context)
 
     @staticmethod
     def _summarize_messages(

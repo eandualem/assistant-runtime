@@ -138,10 +138,7 @@ class HistorySummarizer:
     ) -> CompactionResult:
         """Summarize messages into a structured CompactionResult using LLM."""
         if not messages:
-            return CompactionResult(
-                summary=existing_summary or "",
-                working_memory=WorkingMemory(),
-            )
+            return CompactionResult(summary=existing_summary or "")
 
         start_time = time.time()
 
@@ -316,7 +313,4 @@ class HistorySummarizer:
             summary=fallback_summary,
             user_goal=first_goal,
             current_state="Unknown (summarization failed)",
-            working_memory=WorkingMemory(
-                active_goal=first_goal,
-            ),
         )

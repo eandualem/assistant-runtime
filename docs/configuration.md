@@ -71,9 +71,10 @@ sampling parameters are not sent a temperature.
 
 | Setting | Default | Meaning |
 |---|---|---|
+| `compaction_enabled` | `true` | run the built-in history policy; `false` when the application supplies its own through `AssistantDefinition.capabilities` |
 | `token_budget` | `100000` | history sent to the model is compacted to fit this |
 | `retain_recent` | `5` | most recent messages kept verbatim |
-| `protect_recent_tool_results` | `3` | recent tool results never summarised |
+| `protect_recent_tool_results` | `3` | most recent tool results (counted individually) never cleared |
 | `message_truncation_limit` | `1000` | characters per message in summaries |
 | `summarization_model`, `working_memory_model` | unset | override the models for these tasks |
 | `working_memory_enabled` | `true` | |
