@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 def register_builtin_tools(
     registry: ToolRegistry,
     *,
-    database_service: Any | None,
+    artifact_service: Any | None,
     llm_service: Any | None,
     media_service: Any | None,
     backend_toolsets: Callable[[], list[Any]],
@@ -38,7 +38,7 @@ def register_builtin_tools(
     if enabled is None or "screen" in enabled:
         register_screen_tools(registry)
     if enabled is None or "artifacts" in enabled:
-        register_artifact_tools(registry, database_service)
+        register_artifact_tools(registry, artifact_service)
     if llm_service is not None and (enabled is None or "subagent" in enabled):
         register_subagent_tools(
             registry,

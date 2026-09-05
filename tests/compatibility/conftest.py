@@ -20,7 +20,10 @@ from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.assistant.interface import AssistantService
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.artifacts import neutral_profile
 from assistant_runtime.config import AppSettings
+from assistant_runtime.services.artifacts.config import ArtifactsConfig
+from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.database.interface import DatabaseService
 from assistant_runtime.services.history.config import HistoryConfig
 from assistant_runtime.services.history.interface import HistoryService
@@ -121,15 +124,20 @@ async def runtime(monkeypatch, script, host_schema, history_config):
     # Keep build_agent, Agent.iter, graph execution and toolsets real.
     monkeypatch.setattr(llm, "_resolve_agent_model", lambda _model: script.model())
     history = HistoryService(history_config, llm_service=llm)
-    tools = ToolService(ToolConfig(host_tools=host_schema))
+    artifacts = ArtifactService(ArtifactsConfig(), neutral_profile())
+    tools = ToolService(
+        ToolConfig(host_tools=host_schema, builtin_tools=frozenset({"time", "screen"})),
+        artifact_service=artifacts,
+    )
     assistant = AssistantService(
         AssistantConfig(enable_working_memory=False),
         llm_service=llm,
         history_service=history,
         tool_service=tools,
+        artifact_service=artifacts,
     )
     streaming = StreamingService(StreamingConfig(), history, tools, assistant)
-    services = [llm, history, tools, assistant, streaming]
+    services = [llm, history, artifacts, tools, assistant, streaming]
     started = []
     try:
         for service in services:

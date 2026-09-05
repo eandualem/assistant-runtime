@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from assistant_runtime.main import create_app
+from tests.integration.conftest import make_artifact_service
 
 from .conftest import _make_mock_agent
 
@@ -49,17 +50,22 @@ async def integration_client(monkeypatch):
 
     llm_service = LlmService(config=settings.llm)
     history_service = HistoryService(config=settings.history, llm_service=llm_service)
-    tool_service = ToolService(config=settings.tools)
+    artifact_service = make_artifact_service()
+
+    tool_service = ToolService(config=settings.tools, artifact_service=artifact_service)
     assistant_service = AssistantService(
         config=settings.assistant,
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
+        artifact_service=artifact_service,
         runtime_settings=runtime_settings,
     )
 
     await lifecycle.register("llm_service", llm_service)
     await lifecycle.register("history_service", history_service)
+
+    await lifecycle.register("artifact_service", artifact_service)
     await lifecycle.register("tool_service", tool_service)
     await lifecycle.register("assistant_service", assistant_service)
     await lifecycle.start_all()

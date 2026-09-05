@@ -14,14 +14,7 @@ from typing import Any
 from loguru import logger
 
 from assistant_runtime.app.assistant.models import PromptResult
-
-# The artifact catalog lives in assistant_runtime.artifacts (a leaf module shared
-# with the tools layer); re-exported here for the app-layer callers and tests.
-from assistant_runtime.artifacts import (  # noqa: E402
-    ARTIFACT_CATALOG,
-    REQUIRED_ARTIFACT_NAMES,
-    SCRATCHPAD_ARTIFACT_NAME,
-)
+from assistant_runtime.artifacts import AssistantProfile, neutral_profile
 from assistant_runtime.services.history.models import WorkingMemory
 from assistant_runtime.services.tools.models import ToolSet
 
@@ -254,24 +247,22 @@ def build_system_prompt(
     host_context: dict[str, Any] | None = None,
     mcp_summary: list[dict[str, Any]] | None = None,
     artifacts: dict[str, str],
+    profile: AssistantProfile | None = None,
 ) -> PromptResult:
     """Compose system prompt from module fragments.
 
-    Order: stable fragments first (cached by Anthropic), dynamic fragments last.
-    Artifact role boundary:
-    - soul: enduring purpose, values, non-negotiables, deepest identity guidance
-    - persona: style, stance, behavioral voice
-    - communication_protocol: interaction and routing rules
-    - ecosystem: world model, roles, org structure, system topology
-    - scratchpad: short-lived operational memory
+    Order: the profile's artifacts in their declared order (stable, so
+    provider prompt caching works), then the connected MCP servers, the
+    current time, the host context and working memory (dynamic, last).
 
     Args:
         available_tools: Tools available for this request.
         session_context: Session context dict (may contain working memory).
         host_context: What the host application is showing (see _host_context_fragment).
         mcp_summary: MCP server connection summary for prompt context.
-        artifacts: DB-loaded artifact name→content map. Must contain soul,
-            persona, communication_protocol, and ecosystem.
+        artifacts: Artifact name→text map, normally ``ArtifactService.active_texts()``.
+        profile: The assistant profile naming and ordering the artifacts;
+            the neutral built-in when omitted.
 
     Returns:
         PromptResult with composed content and fragment metadata.
@@ -279,23 +270,19 @@ def build_system_prompt(
     Raises:
         ValueError: If a required artifact is missing or empty.
     """
-    # Validate required artifacts
-    for name in REQUIRED_ARTIFACT_NAMES:
-        if not artifacts.get(name):
+    profile = profile if profile is not None else neutral_profile()
+    for name in profile.required_names:
+        if not (artifacts.get(name) or "").strip():
             raise ValueError(f"Missing required artifact: {name}")
 
     # Collect named fragments
     named_fragments: list[tuple[str, str]] = []
 
-    # Stable fragments (cacheable) — from DB artifacts
-    for artifact in ARTIFACT_CATALOG:
-        if artifact.required:
-            named_fragments.append((artifact.name, artifacts[artifact.name]))
-
-    # Scratchpad — optional
-    scratchpad_content = artifacts.get(SCRATCHPAD_ARTIFACT_NAME)
-    if scratchpad_content:
-        named_fragments.append((SCRATCHPAD_ARTIFACT_NAME, scratchpad_content))
+    # Stable fragments (cacheable): the profile's artifacts, in order.
+    for artifact in profile.artifacts:
+        content = (artifacts.get(artifact.name) or "").strip()
+        if content:
+            named_fragments.append((artifact.name, content))
 
     mcp_frag = _mcp_connections_fragment(mcp_summary)
     if mcp_frag:

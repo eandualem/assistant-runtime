@@ -1,451 +1,194 @@
-"""Tests for the artifact management tool."""
+"""The artifact management tool against a real ArtifactService on an in-memory store."""
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+import pytest
 
-from assistant_runtime.services.tools.builtin.artifacts import build_manage_artifacts
+from assistant_runtime.artifacts import ArtifactDefinition, ArtifactPolicy, AssistantProfile
+from assistant_runtime.services.artifacts.config import ArtifactsConfig
+from assistant_runtime.services.artifacts.interface import ArtifactService
+from assistant_runtime.services.artifacts.models import Actor
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.builtin.artifacts import (
+    build_manage_artifacts,
+    register_artifact_tools,
+)
+from assistant_runtime.services.tools.config import ToolConfig
 
-MODULE = "assistant_runtime.services.database.repositories"
-
-
-def _make_mock_db():
-    """Create a mock database service with a session_context async context manager."""
-    mock_db = MagicMock()
-
-    @asynccontextmanager
-    async def mock_session_ctx():
-        yield MagicMock()
-
-    mock_db.session_context = mock_session_ctx
-    return mock_db
-
-
-def _make_artifact_row(
-    *,
-    name: str = "persona",
-    content: str = "You are the assistant.",
-    version: int = 1,
-    is_active: bool = True,
-    proposed_by: str = "system",
-    created_at: datetime | None = None,
-) -> MagicMock:
-    """Create a mock ArtifactORM row with the given attributes."""
-    row = MagicMock()
-    row.name = name
-    row.content = content
-    row.version = version
-    row.is_active = is_active
-    row.proposed_by = proposed_by
-    row.created_at = created_at or datetime(2026, 2, 22, 12, 0, 0, tzinfo=UTC)
-    return row
+PROFILE = AssistantProfile(
+    name="shop",
+    artifacts=(
+        ArtifactDefinition(
+            name="instructions", role="purpose", required=True, default="Help shoppers"
+        ),
+        ArtifactDefinition(
+            name="persona",
+            role="voice",
+            default="Warm",
+            policy=ArtifactPolicy(assistant_edit="autonomous", assistant_activate=True),
+        ),
+        ArtifactDefinition(name="scratchpad", policy=ArtifactPolicy(assistant_edit="autonomous")),
+        ArtifactDefinition(name="policies", default="Refunds", policy=ArtifactPolicy("none")),
+    ),
+)
 
 
-class TestManageArtifactsDispatch:
-    """Tests for action dispatch and dependency validation."""
+@pytest.fixture
+async def artifacts() -> ArtifactService:
+    service = ArtifactService(ArtifactsConfig(), PROFILE)
+    await service.start()
+    return service
 
-    async def test_unknown_action_returns_error(self):
-        manage_artifacts = build_manage_artifacts(_make_mock_db())
-        result = await manage_artifacts(action="invalid")
+
+@pytest.fixture
+def manage(artifacts):
+    return build_manage_artifacts(artifacts)
+
+
+class TestDispatch:
+    async def test_unknown_action(self, manage):
+        result = await manage(action="approve")
         assert result["success"] is False
-        assert "Unknown action" in result["error"]
-        assert "invalid" in result["error"]
+        assert result["error_code"] == "unknown_action"
+        assert "activate" in result["error"]
 
-    async def test_no_database_service_returns_error(self):
-        manage_artifacts = build_manage_artifacts(None)
-        result = await manage_artifacts(action="list")
+    async def test_no_service(self):
+        result = await build_manage_artifacts(None)(action="list")
+        assert result == {
+            "error": "Artifact service not available",
+            "error_code": "artifacts_unavailable",
+            "success": False,
+        }
+
+    async def test_name_required(self, manage):
+        result = await manage(action="view")
+        assert result["error_code"] == "missing_name"
+
+    async def test_unknown_artifact(self, manage):
+        result = await manage(action="view", name="soul")
         assert result["success"] is False
-        assert "not available" in result["error"]
+        assert result["error_code"] == "unknown_artifact"
+        assert "instructions, persona, scratchpad, policies" in result["error"]
 
 
-class TestListAction:
-    """Tests for the list action."""
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_list_action_returns_artifacts(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        rows = [
-            _make_artifact_row(name="soul", content="Deeper alignment", version=1),
-            _make_artifact_row(name="ecosystem", content="Agent ecosystem info", version=3),
-            _make_artifact_row(name="persona", content="You are the assistant.", version=2),
-            _make_artifact_row(name="scratchpad", content="Notes here", version=5),
-        ]
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.get_all_active = AsyncMock(return_value=rows)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="list")
-
-        assert result["success"] is True
+class TestReads:
+    async def test_list_describes_the_profile_and_permissions(self, manage, artifacts):
+        await artifacts.update("persona", "Direct", actor=Actor("host"))
+        result = await manage(action="list")
+        assert result["success"]
         assert result["count"] == 4
-        assert len(result["artifacts"]) == 4
+        assert result["durable"] is False
+        by_name = {item["name"]: item for item in result["artifacts"]}
+        assert by_name["instructions"]["allowed_actions"] == ["propose"]
+        assert by_name["instructions"]["version"] is None
+        assert by_name["instructions"]["required"] is True
+        assert by_name["persona"]["version"] == 1
+        assert by_name["persona"]["allowed_actions"] == ["propose", "update", "activate"]
+        assert by_name["policies"]["allowed_actions"] == []
+        assert [item["name"] for item in result["artifacts"]] == list(PROFILE.names)
 
-        artifact_names = [a["name"] for a in result["artifacts"]]
-        assert artifact_names == ["soul", "persona", "ecosystem", "scratchpad"]
-        assert "soul" in artifact_names
-        assert "ecosystem" in artifact_names
-        assert "persona" in artifact_names
-        assert "scratchpad" in artifact_names
-
-        # Check individual artifact structure
-        persona = next(a for a in result["artifacts"] if a["name"] == "persona")
-        assert persona["version"] == 2
-        assert persona["char_count"] == len("You are the assistant.")
-        assert persona["proposed_by"] == "system"
-        assert persona["created_at"] is not None
-
-
-class TestViewAction:
-    """Tests for the view action."""
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_view_action_returns_content(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        row = _make_artifact_row(name="persona", content="You are the assistant.", version=2)
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.get_active = AsyncMock(return_value=row)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="view", name="persona")
-
-        assert result["success"] is True
-        assert result["name"] == "persona"
-        assert result["content"] == "You are the assistant."
-        assert result["version"] == 2
-        assert result["proposed_by"] == "system"
-        assert result["created_at"] is not None
-
-    async def test_view_action_no_name_returns_error(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="view", name="")
-
-        assert result["success"] is False
-        assert "Name is required" in result["error"]
-
-    async def test_view_action_unknown_artifact_returns_error(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="view", name="not-real")
-
-        assert result["success"] is False
-        assert "Known artifacts" in result["error"]
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_view_action_not_found_returns_error(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.get_active = AsyncMock(return_value=None)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="view", name="persona")
-
-        assert result["success"] is False
-        assert "No active artifact found" in result["error"]
-        assert "persona" in result["error"]
-
-
-class TestProposeEditAction:
-    """Tests for the propose_edit action."""
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_propose_edit_creates_inactive_version(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        new_row = _make_artifact_row(
-            name="persona",
-            content="Updated persona.",
-            version=3,
-            is_active=False,
-            proposed_by="assistant",
-        )
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.propose = AsyncMock(return_value=new_row)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(
-            action="propose_edit", name="persona", content="Updated persona."
-        )
-
-        assert result["success"] is True
-        assert result["name"] == "persona"
-        assert result["version"] == 3
-        assert result["is_active"] is False
-        assert "approval" in result["message"].lower()
-
-        # Verify propose was called with correct args
-        mock_repo_instance.propose.assert_awaited_once_with(
-            "persona", "Updated persona.", proposed_by="assistant"
-        )
-
-    async def test_propose_edit_no_name_returns_error(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="propose_edit", name="", content="some content")
-
-        assert result["success"] is False
-        assert "Name is required" in result["error"]
-
-    async def test_propose_edit_no_content_returns_error(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="propose_edit", name="persona", content="")
-
-        assert result["success"] is False
-        assert "Content is required" in result["error"]
-
-    async def test_propose_edit_unknown_artifact_returns_error(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="propose_edit", name="not-real", content="x")
-
-        assert result["success"] is False
-        assert "Known artifacts" in result["error"]
-
-
-class TestUpdateScratchpadAction:
-    """Tests for the update_scratchpad action."""
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_update_scratchpad_auto_approves(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        row = _make_artifact_row(
-            name="scratchpad",
-            content="New observations.",
-            version=4,
-            is_active=True,
-            proposed_by="assistant",
-        )
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.update_scratchpad = AsyncMock(return_value=row)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="update_scratchpad", content="New observations.")
-
-        assert result["success"] is True
-        assert result["name"] == "scratchpad"
-        assert result["version"] == 4
+    async def test_view_default_then_store(self, manage):
+        result = await manage(action="view", name="persona")
+        assert result == {
+            "name": "persona",
+            "version": None,
+            "content": "Warm",
+            "source": "default",
+            "success": True,
+        }
+        await manage(action="update", name="persona", content="Direct")
+        result = await manage(action="view", name="persona")
+        assert result["content"] == "Direct"
+        assert result["source"] == "store"
+        assert result["version"] == 1
         assert result["is_active"] is True
-        assert "activated" in result["message"].lower()
 
-        # Verify update_scratchpad was called with correct args
-        mock_repo_instance.update_scratchpad.assert_awaited_once_with(
-            "New observations.", proposed_by="assistant"
-        )
-
-    async def test_update_scratchpad_no_content_returns_error(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="update_scratchpad", content="")
-
-        assert result["success"] is False
-        assert "Content is required" in result["error"]
-
-
-class TestApproveAction:
-    """Tests for the approve action."""
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_approve_success(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        row = _make_artifact_row(
-            name="persona",
-            content="Approved persona.",
-            version=3,
-            is_active=True,
-            proposed_by="assistant",
-        )
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.approve = AsyncMock(return_value=row)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="approve", name="persona", version=3)
-
-        assert result["success"] is True
-        assert result["name"] == "persona"
-        assert result["version"] == 3
-        assert result["is_active"] is True
-        assert "active" in result["message"].lower()
-
-        mock_repo_instance.approve.assert_awaited_once_with("persona", 3)
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_approve_version_not_found(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.approve = AsyncMock(return_value=None)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="approve", name="persona", version=99)
-
-        assert result["success"] is False
-        assert "No version 99" in result["error"]
-        assert "persona" in result["error"]
-
-    async def test_approve_missing_name(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="approve", name="", version=2)
-
-        assert result["success"] is False
-        assert "Name is required" in result["error"]
-
-    async def test_approve_unknown_artifact(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="approve", name="not-real", version=2)
-
-        assert result["success"] is False
-        assert "Known artifacts" in result["error"]
-
-    async def test_approve_missing_version(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="approve", name="persona", version=0)
-
-        assert result["success"] is False
-        assert "Version is required" in result["error"]
-
-
-class TestHistoryAction:
-    """Tests for the history action."""
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_history_returns_versions(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        rows = [
-            _make_artifact_row(name="persona", content="V1 content", version=1, is_active=False),
-            _make_artifact_row(name="persona", content="V2 updated", version=2, is_active=True),
-            _make_artifact_row(name="persona", content="V3 proposed", version=3, is_active=False),
+    async def test_history(self, manage):
+        await manage(action="update", name="scratchpad", content="a")
+        await manage(action="update", name="scratchpad", content="b")
+        result = await manage(action="history", name="scratchpad")
+        assert [(v["version"], v["is_active"]) for v in result["versions"]] == [
+            (2, True),
+            (1, False),
         ]
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.get_history = AsyncMock(return_value=rows)
-        mock_repo_cls.return_value = mock_repo_instance
+        assert result["count"] == 2
 
-        result = await manage_artifacts(action="history", name="persona")
 
-        assert result["success"] is True
-        assert result["name"] == "persona"
-        assert result["count"] == 3
-        assert len(result["versions"]) == 3
+class TestWrites:
+    async def test_propose_stays_inactive(self, manage, artifacts):
+        result = await manage(action="propose", name="instructions", content="New")
+        assert result["success"]
+        assert result["activated"] is False
+        assert result["version"] == 1
+        assert result["live_version"] is None
+        assert "inactive" in result["message"]
+        assert (await artifacts.active_texts())["instructions"] == "Help shoppers"
 
-        # Check structure of version entries
-        v2 = result["versions"][1]
-        assert v2["version"] == 2
-        assert v2["is_active"] is True
-        assert v2["proposed_by"] == "system"
-        assert v2["char_count"] == len("V2 updated")
-        assert v2["created_at"] is not None
+    async def test_review_required_artifact_cannot_be_updated_or_activated(self, manage):
+        await manage(action="propose", name="instructions", content="New")
+        result = await manage(action="update", name="instructions", content="Now")
+        assert result["error_code"] == "artifact_permission_denied"
+        result = await manage(action="activate", name="instructions", version=1)
+        assert result["error_code"] == "artifact_permission_denied"
 
-        # Verify inactive version
-        v1 = result["versions"][0]
-        assert v1["is_active"] is False
+    async def test_autonomous_update_is_live_at_once(self, manage, artifacts):
+        result = await manage(action="update", name="scratchpad", content="Remember")
+        assert result["activated"] is True
+        assert result["live_version"] == 1
+        assert (await artifacts.active_texts())["scratchpad"] == "Remember"
 
-    async def test_history_missing_name(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
+    async def test_activate_where_allowed(self, manage):
+        await manage(action="update", name="persona", content="v1")
+        await manage(action="update", name="persona", content="v2")
+        result = await manage(action="activate", name="persona", version=1)
+        assert result["success"]
+        assert result["live_version"] == 1
+        result = await manage(action="activate", name="persona")
+        assert result["error_code"] == "missing_version"
+        result = await manage(action="activate", name="persona", version=9)
+        assert result["error_code"] == "artifact_version_not_found"
 
-        result = await manage_artifacts(action="history", name="")
+    async def test_expected_version_conflict(self, manage):
+        await manage(action="update", name="scratchpad", content="v1")
+        result = await manage(action="update", name="scratchpad", content="v2", expected_version=0)
+        assert result["error_code"] == "artifact_version_conflict"
+        result = await manage(action="update", name="scratchpad", content="v2", expected_version=1)
+        assert result["success"]
+        assert result["live_version"] == 2
 
+    async def test_duplicate_and_empty_content(self, manage):
+        await manage(action="update", name="scratchpad", content="same")
+        result = await manage(action="update", name="scratchpad", content="same")
+        assert result["unchanged"] is True
+        assert "nothing changed" in result["message"]
+        result = await manage(action="update", name="scratchpad", content="")
         assert result["success"] is False
-        assert "Name is required" in result["error"]
+        assert result["error_code"] == "artifact_error"
 
-    async def test_history_unknown_artifact(self):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        result = await manage_artifacts(action="history", name="not-real")
-
-        assert result["success"] is False
-        assert "Known artifacts" in result["error"]
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_history_empty(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.get_history = AsyncMock(return_value=[])
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="history", name="persona")
-
-        assert result["success"] is True
-        assert result["count"] == 0
-        assert result["versions"] == []
+    async def test_read_only_artifact(self, manage):
+        result = await manage(action="propose", name="policies", content="x")
+        assert result["error_code"] == "artifact_permission_denied"
 
 
-class TestDispatchApproveAndHistory:
-    """Integration tests verifying action dispatch to approve and history handlers."""
+class TestRegistration:
+    async def test_description_comes_from_the_profile(self, artifacts):
+        registry = ToolRegistry(ToolConfig())
+        register_artifact_tools(registry, artifacts)
+        tools = registry.get_available_tools().backend_tools
+        definition = next(t for t in tools if t.name == "manage_artifacts")
+        assert "persona (voice; you may propose, update, activate)" in definition.description
+        assert "policies (no role given; you may only read)" in definition.description
+        assert definition.parameters_schema["properties"]["action"]["enum"] == [
+            "list",
+            "view",
+            "history",
+            "propose",
+            "update",
+            "activate",
+        ]
+        assert "expected_version" in definition.parameters_schema["properties"]
 
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_action_approve_dispatches_correctly(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        row = _make_artifact_row(name="ecosystem", version=5, is_active=True)
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.approve = AsyncMock(return_value=row)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="approve", name="ecosystem", version=5)
-
-        assert result["success"] is True
-        assert result["version"] == 5
-        mock_repo_instance.approve.assert_awaited_once_with("ecosystem", 5)
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_action_history_dispatches_correctly(self, mock_repo_cls):
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.get_history = AsyncMock(return_value=[])
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="history", name="persona")
-
-        assert result["success"] is True
-        mock_repo_instance.get_history.assert_awaited_once()
-
-    @patch(f"{MODULE}.ArtifactRepository")
-    async def test_version_param_passes_through_to_approve(self, mock_repo_cls):
-        """Verify the version parameter from manage_artifacts reaches _approve_artifact."""
-        mock_db = _make_mock_db()
-        manage_artifacts = build_manage_artifacts(mock_db)
-
-        row = _make_artifact_row(name="persona", version=7, is_active=True)
-        mock_repo_instance = MagicMock()
-        mock_repo_instance.approve = AsyncMock(return_value=row)
-        mock_repo_cls.return_value = mock_repo_instance
-
-        result = await manage_artifacts(action="approve", name="persona", version=7)
-
-        assert result["success"] is True
-        mock_repo_instance.approve.assert_awaited_once_with("persona", 7)
+    def test_registers_without_a_service(self):
+        registry = ToolRegistry(ToolConfig())
+        register_artifact_tools(registry, None)
+        assert "manage_artifacts" in registry.get_tool_names()

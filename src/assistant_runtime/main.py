@@ -23,6 +23,7 @@ from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.config import AppSettings
 from assistant_runtime.logging_config import setup_logging
+from assistant_runtime.services.artifacts.factory import register_artifacts
 from assistant_runtime.services.database.factory import register_database
 from assistant_runtime.services.history.factory import register_history
 from assistant_runtime.services.llm.factory import register_llm
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await register_history(app.state, lifecycle, settings=settings)
         await register_media(app.state, lifecycle, settings=settings)
         await register_mcp(app.state, lifecycle)
+        await register_artifacts(app.state, lifecycle, settings=settings)
         await register_tools(app.state, lifecycle, settings=settings)
         await register_assistant(app.state, lifecycle, settings=settings)
         await register_streaming(app.state, lifecycle, settings=settings)

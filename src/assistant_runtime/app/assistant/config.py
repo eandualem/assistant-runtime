@@ -34,6 +34,13 @@ class AssistantConfig(BaseModel):
         default=True,
         description="Whether to extract working memory deltas after each turn.",
     )
+    profile: str | None = Field(
+        default=None,
+        description=(
+            "Assistant profile: a built-in name (neutral, technical_operator) or the path "
+            "of a TOML profile file. None = neutral. An AssistantDefinition.profile wins."
+        ),
+    )
     session_ttl_hours: int = Field(
         default=24,
         ge=1,
