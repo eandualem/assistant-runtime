@@ -1,10 +1,11 @@
 # Assistant Runtime
 
-An assistant backend that plugs into any work environment. It receives
-messages, runs a model with a set of tools, and streams the result back
-over Socket.IO or returns it over HTTP. It is built on FastAPI,
-python-socketio and pydantic-ai, works with Anthropic, OpenAI, Google and
-OpenRouter models, and integrates with
+A Python assistant backend built on [Pydantic AI](https://pydantic.dev/ai/).
+It brings conversation state, application context, tools, and streaming
+together behind an application you already have. It receives messages,
+runs the configured agent, and streams results over Socket.IO or returns
+them over HTTP. The server uses FastAPI and python-socketio, works with
+Anthropic, OpenAI, Google and OpenRouter models, and integrates with
 [agent-backbone](https://github.com/eandualem/agent-backbone) for
 managing terminal AI agents.
 
@@ -54,8 +55,16 @@ checkout.
 | [getting-started](docs/getting-started.md) | install, one key, chat, server, a minimal client, Postgres, integrations |
 | [configuration](docs/configuration.md) | every setting, the three configuration tiers, secrets |
 | [api](docs/api.md) | HTTP endpoints and the Socket.IO streaming contract |
+| [composition](docs/composition.md) | native tools, capabilities and dependencies in a host-owned Python application |
+| [compatibility](docs/compatibility.md) | tested Pydantic AI versions and migration boundaries |
 
 ## Putting it behind your application
+
+For a Python host, pass an `AssistantDefinition` with native Pydantic AI
+tools, toolsets, capabilities and a dependency factory to `create_asgi_app`
+or `create_runtime`. Both accept the same `AppSettings` and use the same
+turn pipeline. See [composing an assistant](docs/composition.md) for a complete
+server and in-process example.
 
 The runtime knows nothing about any particular host. Your application
 describes itself in two ways, both optional:
@@ -75,7 +84,7 @@ A client needs a Socket.IO connection to the `/assistant` namespace, a
 
 ## Configuration in one screen
 
-Everything comes from the environment or a `.env` file
+Standalone commands read configuration from the environment or a `.env` file
 (`.env.example` lists every variable). The essentials:
 
 ```bash
@@ -126,7 +135,15 @@ encrypted provider-key store behind `PUT /api/providers/{provider}/api-key`.
 
 ## Development
 
+Planned Pydantic AI reuse and assistant-framework generalization are tracked
+in [#83](https://github.com/eandualem/assistant-runtime/issues/83).
+The [compatibility baseline](docs/compatibility.md) records tested versions,
+public API replacement boundaries, and offline regression cases. Streamed
+tool arguments are preserved in session history and host continuations,
+including when the provider represents them as JSON strings.
+
 ```bash
+uv sync --locked --extra dev       # install runtime + test/lint tools from uv.lock
 make check                        # ruff check + format check + pytest; the CI gate
 make test                         # pytest only; no services needed
 make dev                          # uvicorn with reload on port 7100
@@ -134,9 +151,23 @@ make db-up / db-upgrade / db-migrate MSG="..."   # Postgres in Docker, migration
 ```
 
 Python 3.12 or 3.13. Tests run without Postgres or network access.
-`CLAUDE.md` documents the module skeleton, the startup order, the layering
-and the invariants a change must keep. Pull requests target `develop`;
-CodeRabbit reviews every one.
+[AGENTS.md](AGENTS.md) documents the module skeleton, the startup order,
+the layering and the invariants a change must keep. Pull requests target
+`develop`; CodeRabbit reviews every one.
+
+### Working with coding agents
+
+[AGENTS.md](AGENTS.md) is the shared source of project instructions. Codex
+loads it automatically; [CLAUDE.md](CLAUDE.md) imports it for Claude Code.
+With another CLI, ask it to read `AGENTS.md` before working if it does not
+discover the file itself. Edit shared guidance in `AGENTS.md` so it stays
+consistent across tools.
+
+Start a new agent session from this checkout after changing the instructions.
+These files provide project context; CLI credentials, permissions, MCP
+connections, plugins, and private conversation memory remain configured
+separately in each tool. Keep durable project knowledge in the repository
+docs so future sessions can use it.
 
 ### Layout
 

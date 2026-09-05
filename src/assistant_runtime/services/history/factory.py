@@ -9,9 +9,11 @@ from assistant_runtime.config import AppSettings
 from assistant_runtime.services.history.interface import HistoryService
 
 
-async def register_history(app_state: Any, lifecycle: LifecycleManager) -> None:
+async def register_history(
+    app_state: Any, lifecycle: LifecycleManager, *, settings: AppSettings | None = None
+) -> None:
     """Create HistoryService, store on app_state, register with lifecycle."""
-    settings = AppSettings()
+    settings = settings if settings is not None else AppSettings()
     llm_service = app_state.llm_service  # Must be registered first
     service = HistoryService(config=settings.history, llm_service=llm_service)
     app_state.history_service = service

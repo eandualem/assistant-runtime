@@ -9,9 +9,11 @@ from assistant_runtime.config import AppSettings
 from assistant_runtime.services.database.interface import DatabaseService
 
 
-async def register_database(app_state: Any, lifecycle: LifecycleManager) -> None:
+async def register_database(
+    app_state: Any, lifecycle: LifecycleManager, *, settings: AppSettings | None = None
+) -> None:
     """Create DatabaseService, store on app_state, register with lifecycle."""
-    settings = AppSettings()
+    settings = settings if settings is not None else AppSettings()
     service = DatabaseService(config=settings.database)
     app_state.database_service = service
     await lifecycle.register("database_service", service)

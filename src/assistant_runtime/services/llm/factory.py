@@ -9,9 +9,11 @@ from assistant_runtime.config import AppSettings
 from assistant_runtime.services.llm.interface import LlmService
 
 
-async def register_llm(app_state: Any, lifecycle: LifecycleManager) -> None:
+async def register_llm(
+    app_state: Any, lifecycle: LifecycleManager, *, settings: AppSettings | None = None
+) -> None:
     """Create LlmService, store on app_state, register with lifecycle."""
-    settings = AppSettings()
+    settings = settings if settings is not None else AppSettings()
     service = LlmService(config=settings.llm)
     oauth_service = getattr(app_state, "oauth_service", None)
     if oauth_service is not None:

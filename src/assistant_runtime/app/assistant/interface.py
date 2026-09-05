@@ -7,6 +7,7 @@ lives in ``app/streaming``; this service owns what a turn is built from.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,7 @@ from assistant_runtime.app.assistant._defaults import load_default_artifacts
 from assistant_runtime.app.assistant._prompt_builder import build_system_prompt
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.config import AssistantConfig
+from assistant_runtime.app.assistant.definition import AssistantDefinition
 from assistant_runtime.app.assistant.exceptions import AssistantError
 from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest
 from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
@@ -43,6 +45,7 @@ class AssistantService:
         tool_service: ToolService,
         runtime_settings: RuntimeSettings | None = None,
         database_service: DatabaseService | None = None,
+        definition: AssistantDefinition | None = None,
     ) -> None:
         self._config = config
         self._llm = llm_service
@@ -50,6 +53,7 @@ class AssistantService:
         self._tools = tool_service
         self._runtime_settings = runtime_settings
         self._database_service: DatabaseService | None = database_service
+        self._definition = definition
         self._sessions: SessionStore | None = None
         self._active_artifacts_cache: dict[str, str] | None = None
         self._active_artifacts_cached_at = 0.0
@@ -183,6 +187,21 @@ class AssistantService:
             available_tools = self._tools.get_available_tools(host_context)
             toolsets = self._tools.build_toolset(host_context)
 
+            native_options: dict[str, Any] = {}
+            deps = None
+            if self._definition is not None:
+                definition = self._definition
+                toolsets = [*toolsets, *definition.toolsets]
+                native_options = {
+                    "tools": definition.tools,
+                    "capabilities": definition.capabilities,
+                    "deps_type": definition.deps_type,
+                }
+                if definition.deps_factory is not None:
+                    deps = definition.deps_factory(request)
+                    if inspect.isawaitable(deps):
+                        deps = await deps
+
             mcp_summary_task = asyncio.create_task(self._tools.get_mcp_summary())
             artifacts_task = asyncio.create_task(self._load_active_artifacts())
 
@@ -216,6 +235,7 @@ class AssistantService:
                 output_type=output_type,
                 thinking_budget=effective.thinking_budget,
                 temperature=effective.temperature,
+                **native_options,
             )
 
         return AgentSetupContext(
@@ -228,6 +248,7 @@ class AssistantService:
             output_type=output_type,
             effective_config=effective,
             mcp_summary=mcp_summary,
+            deps=deps,
         )
 
     async def update_working_memory(

@@ -129,7 +129,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "lumaai", marker = "extra == 'video'", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
-    { name = "pydantic-ai-slim", extras = ["anthropic", "openai", "google", "openrouter", "mcp"], specifier = ">=2.38.0" },
+    { name = "pydantic-ai-slim", extras = ["anthropic", "openai", "google", "openrouter", "mcp"], specifier = ">=2.38.0,<3" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0.0" },

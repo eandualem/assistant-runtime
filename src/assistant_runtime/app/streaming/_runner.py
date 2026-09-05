@@ -37,7 +37,7 @@ from assistant_runtime.app.assistant._serialization import (
     build_steering_request,
 )
 from assistant_runtime.app.assistant.exceptions import SessionError
-from assistant_runtime.app.streaming._agent_run import iterate_run
+from assistant_runtime.app.streaming._agent_run import TurnPolicy, iterate_run
 from assistant_runtime.app.streaming._coordinator import EventCoordinator
 from assistant_runtime.app.streaming._event_builder import (
     make_debug_agent_config_event,
@@ -205,7 +205,11 @@ class TurnRunner:
                 set_current_observation=False,
             )
             trace_cm.__enter__()
+        except asyncio.CancelledError:
+            session_context.pop("current_assistant_message_id", None)
+            raise
         except Exception as e:
+            session_context.pop("current_assistant_message_id", None)
             is_session_error = isinstance(e, SessionError)
             logger.error(
                 "[STREAM] Turn setup failed after started",
@@ -368,26 +372,25 @@ class TurnRunner:
         deferred_tool_results: Any,
         usage: Any,
     ) -> AsyncIterator[dict[str, Any]]:
-        """One ``agent.iter`` run; ``state`` receives its messages, usage and output."""
+        """One native event stream; ``state`` receives its messages, usage and output."""
         session_id = plan.session_id
         telegram_chat_id: str | None = None
         async with asyncio.timeout(self._config.stream_timeout_seconds):
             with assistant_request_context(session_id, screenshot=plan.screenshot):
-                async with ctx.agent.iter(
+                async with ctx.agent.run_stream_events(
                     user_prompt,
                     message_history=message_history or None,
                     usage_limits=ctx.usage_limits,
                     deferred_tool_results=deferred_tool_results,
                     usage=usage,
+                    deps=ctx.deps,
+                    capabilities=[TurnPolicy(self._sessions, session_id, plan.session_context)],
                 ) as run:
                     async for event in iterate_run(
                         run,
                         coordinator,
                         config=self._config,
                         tools=self._tools,
-                        sessions=self._sessions,
-                        session_id=session_id,
-                        session_context=plan.session_context,
                         emit_debug=self._config.emit_debug_events,
                         suppress_tool_call_ids=plan.suppress_tool_call_ids,
                     ):

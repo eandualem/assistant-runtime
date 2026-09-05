@@ -1,9 +1,11 @@
 # Configuration
 
-Everything is read from the environment, plus a `.env` file in the working
+By default, settings are read from the environment and a `.env` file in the working
 directory. Nested settings use `__` as the separator: `DATABASE__PORT`,
 `LLM__PRIMARY_MODEL`, `TOOLS__PAGE_SCOPES`. `.env.example` in the
-repository lists every variable with a comment.
+repository lists every variable with a comment. Python hosts may supply one
+`AppSettings` object to the [application factories](composition.md); every
+settings-based service uses that object.
 
 ## Three tiers
 
@@ -12,7 +14,7 @@ most specific wins.
 
 | Tier | Where it comes from | Lifetime |
 |---|---|---|
-| frozen | environment and `.env` at startup | the process |
+| frozen | supplied `AppSettings`, or environment and `.env` at startup | the process |
 | runtime overlay | `PATCH /api/settings` | until changed; persisted in Postgres when available |
 | per request | the message's `config` object | that turn |
 
@@ -92,6 +94,8 @@ sampling parameters are not sent a temperature.
 |---|---|---|
 | `max_tools_per_request` | `64` | warn above this many tools in one request |
 | `tool_timeout_seconds` | `30` | |
+| `builtin_tools` | `["time", "screen", "artifacts", "subagent", "media", "video"]` | selected built-in groups; `[]` disables all, existing service requirements still apply |
+| `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup |
 | `host_tools` | `{}` | tools the host executes: `{"name": {"description": "...", "parameters": <JSON schema>}}`; names must match `^[A-Za-z0-9_-]{1,64}$` |
 | `host_tools_path` | unset | a JSON file with the same shape, merged over `host_tools` |
 | `page_scopes` | `{}` | `{"page name": ["tool", ...]}`: backend tools allowed while the host shows that page; unlisted pages get every tool |
@@ -99,6 +103,11 @@ sampling parameters are not sent a temperature.
 
 JSON values are given as JSON strings in the environment:
 `TOOLS__PAGE_SCOPES='{"tasks": ["create_issue", "get_time"]}'`.
+Selections do not filter configured host tools, MCP servers or native
+assistant extensions. Runtime business capability names are `notes`,
+`library`, `peers`, `rooms`, `reminders`, `activity`, `workgroups`,
+`repositories`, `approvals`, `issues`, and `messaging`; they are distinct
+from native [Pydantic AI capabilities](composition.md).
 
 ### Media (`MEDIA__*`)
 

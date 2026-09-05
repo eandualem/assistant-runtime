@@ -38,3 +38,39 @@ jobs:
         env:
           TERM: xterm
         run: make check
+
+  pydantic-ai-compatibility:
+    name: Pydantic AI ${{ matrix.pydantic-ai-version }} compatibility
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pydantic-ai-version: ["2.38.0", "2.40.0"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install locked runtime and test dependencies
+        run: uv sync --locked --extra dev
+      - name: Exercise real upstream execution in an isolated overlay
+        run: >-
+          uv run --no-sync
+          --with pydantic-ai-slim==${{ matrix.pydantic-ai-version }}
+          --with pydantic-graph==${{ matrix.pydantic-ai-version }}
+          python -m pytest tests/compatibility -q
+      - name: Check optional adapter and Harness imports separately
+        run: |
+          uv run --no-sync \
+            --with 'pydantic-ai-slim[ag-ui,ui]==${{ matrix.pydantic-ai-version }}' \
+            --with pydantic-ai-harness==0.29.0 python - <<'PY'
+          from pydantic_ai.ui.ag_ui import AGUIAdapter
+          from pydantic_ai.ui.vercel_ai import VercelAIAdapter
+          from pydantic_ai_harness.compaction import SummarizingCompaction
+          from pydantic_ai_harness.memory import Memory
+          from pydantic_ai_harness.step_persistence import StepPersistence
+          print("Optional imports passed; runtime integration is not asserted.")
+          PY

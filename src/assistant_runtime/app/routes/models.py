@@ -46,7 +46,9 @@ def _effective_defaults(request: Request) -> dict[str, Any]:
     up, so the provider-aware fallback is reflected.
     """
     state = request.app.state
-    settings = AppSettings()
+    settings = getattr(state, "settings", None)
+    if settings is None:
+        settings = AppSettings()
     runtime = getattr(state, "runtime_settings", None)
     llm = getattr(state, "llm_service", None)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -15,7 +16,9 @@ from loguru import logger
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import AgentCapability
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.tools import Tool, ToolFuncEither
 
 from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.model_catalog import (
@@ -409,6 +412,8 @@ class LlmService:
         output_type: type | list[type] = str,
         thinking_budget: int | None = None,
         temperature: float | None = None,
+        tools: Sequence[Tool[Any] | ToolFuncEither[Any, ...]] = (),
+        capabilities: Sequence[AgentCapability[Any]] = (),
     ) -> Agent:
         """Create a configured Pydantic AI Agent.
 
@@ -420,6 +425,8 @@ class LlmService:
             system_prompt: System prompt instructions.
             deps_type: Agent dependencies type.
             toolsets: Optional list of toolsets to register.
+            tools: Native function tools supplied by the host application.
+            capabilities: Native Pydantic AI behavior extensions.
             output_type: Expected output type(s).
             thinking_budget: Optional thinking token budget for extended thinking.
             temperature: Optional temperature override.
@@ -443,6 +450,8 @@ class LlmService:
             "instructions": system_prompt,
             "model_settings": settings,
             "output_type": output_type,
+            "tools": tools,
+            "capabilities": capabilities,
         }
         if toolsets:
             agent_kwargs["toolsets"] = toolsets

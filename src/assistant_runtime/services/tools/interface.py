@@ -9,7 +9,7 @@ from loguru import logger
 
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.builtin import register_builtin_tools
-from assistant_runtime.services.tools.capabilities import register_capabilities
+from assistant_runtime.services.tools.capabilities import CAPABILITIES, register_capabilities
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.exceptions import ToolError
 from assistant_runtime.services.tools.models import ToolDefinition, ToolSet
@@ -39,6 +39,9 @@ class ToolService:
 
     async def start(self) -> None:
         """Initialize registry and register default tools."""
+        selected = self._config.provider_capabilities
+        if selected is not None and (unknown := selected - CAPABILITIES.keys()):
+            raise ToolError(f"Unknown provider capabilities: {', '.join(sorted(unknown))}")
         self._registry = ToolRegistry(self._config)
         capabilities = self._register_default_tools()
         self._started = True
@@ -134,7 +137,14 @@ class ToolService:
             media_service=self._media_service,
             backend_toolsets=self._registry.build_subagent_toolset,
             runtime_settings=lambda: self._runtime_settings,
+            enabled=self._config.builtin_tools,
         )
         # Host tools from configuration (always available, bypass page scoping)
         self._registry.register_host_tools()
-        return register_capabilities(self._registry, self._providers)
+        selected = self._config.provider_capabilities
+        providers = (
+            self._providers
+            if selected is None
+            else {name: provider for name, provider in self._providers.items() if name in selected}
+        )
+        return register_capabilities(self._registry, providers)

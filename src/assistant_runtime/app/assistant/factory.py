@@ -9,13 +9,15 @@ from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.config import AppSettings
 
 
-async def register_assistant(app_state: Any, lifecycle: LifecycleManager) -> None:
+async def register_assistant(
+    app_state: Any, lifecycle: LifecycleManager, *, settings: AppSettings | None = None
+) -> None:
     """Create AssistantService, store on app_state, register with lifecycle.
 
     Depends on llm_service, history_service, and tool_service being already
     registered on app_state.
     """
-    settings = AppSettings()
+    settings = settings if settings is not None else AppSettings()
     service = AssistantService(
         config=settings.assistant,
         llm_service=app_state.llm_service,
@@ -23,6 +25,7 @@ async def register_assistant(app_state: Any, lifecycle: LifecycleManager) -> Non
         tool_service=app_state.tool_service,
         runtime_settings=getattr(app_state, "runtime_settings", None),
         database_service=getattr(app_state, "database_service", None),
+        definition=getattr(app_state, "assistant_definition", None),
     )
     app_state.assistant_service = service
     await lifecycle.register("assistant_service", service)

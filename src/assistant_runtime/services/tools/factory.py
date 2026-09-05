@@ -10,9 +10,11 @@ from assistant_runtime.services.tools.interface import ToolService
 from assistant_runtime.services.tools.providers import build_providers
 
 
-async def register_tools(app_state: Any, lifecycle: LifecycleManager) -> None:
+async def register_tools(
+    app_state: Any, lifecycle: LifecycleManager, *, settings: AppSettings | None = None
+) -> None:
     """Create ToolService, store on app_state, register with lifecycle."""
-    settings = AppSettings()
+    settings = settings if settings is not None else AppSettings()
     media_service = getattr(app_state, "media_service", None)
     llm_service = getattr(app_state, "llm_service", None)
     mcp_service = getattr(app_state, "mcp_service", None)
