@@ -22,7 +22,6 @@ from assistant_runtime.app.streaming._usage import cache_counts
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.exceptions import StreamingError
 from assistant_runtime.app.streaming.interface import StreamingService
-from assistant_runtime.services.history.models import HistoryPreparationResult
 from assistant_runtime.services.tools._request_context import record_current_telegram_chat_binding
 from assistant_runtime.services.tools.models import ToolSet
 
@@ -126,22 +125,8 @@ def _make_service(
     agent = MagicMock()
     agent.run_stream_events = MagicMock(return_value=run)
 
-    history_service = AsyncMock()
-
-    async def _prepare(
-        history: list[Any],
-        _ctx: dict[str, Any],
-        is_continuation: bool = False,
-        exclude_tool_call_ids: set[str] | None = None,
-    ) -> HistoryPreparationResult:
-        return HistoryPreparationResult(
-            history=history,
-            was_compacted=False,
-            message_count=len(history),
-            estimated_tokens=0,
-        )
-
-    history_service.prepare_history_with_metadata = AsyncMock(side_effect=_prepare)
+    history_service = MagicMock()
+    history_service.processor.return_value = None
 
     assistant_service = MagicMock()
     assistant_service.get_session_store.return_value = sessions

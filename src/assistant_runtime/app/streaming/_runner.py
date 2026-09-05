@@ -3,9 +3,10 @@
 The shape of every turn is the same:
 
 1. ``agent_status: started``;
-2. agent setup (system prompt, tools, model) and history preparation, with
-   ``debug_*`` events describing them;
-3. the agent run, streamed through ``_agent_run.iterate_run``;
+2. agent setup (system prompt, tools, model), with ``debug_*`` events
+   describing it;
+3. the agent run, streamed through ``_agent_run.iterate_run``; the history
+   policy runs inside it as a native capability before each model request;
 4. the assistant message persisted (created or extended);
 5. the output: a text reply, or a deferred host-tool call the host must
    answer; steering queued during the run is delivered as follow-up runs
@@ -69,7 +70,7 @@ if TYPE_CHECKING:
     from assistant_runtime.app.streaming._turn import TurnPlan
     from assistant_runtime.app.streaming.config import StreamingConfig
     from assistant_runtime.services.database.interface import DatabaseService
-    from assistant_runtime.services.history.interface import HistoryService
+    from assistant_runtime.services.history.interface import HistoryProcessor, HistoryService
     from assistant_runtime.services.tools.interface import ToolService
 
 _LLM_ERROR_TYPES = {
@@ -116,6 +117,7 @@ class _RunState:
     pending_tool_call: dict[str, Any] | None = None
     persisted: bool = False
     cancelled: bool = False
+    history: HistoryProcessor | None = None
 
 
 class TurnRunner:
@@ -180,22 +182,14 @@ class TurnRunner:
                         image_count=len(request.images),
                     )
                 )
-            (ctx, agent_setup_ms), (history_result, history_prep_ms) = await control.prepare(
+            [(ctx, agent_setup_ms)] = await control.prepare(
                 _timed(lambda: self._assistant.prepare_agent_context(request, session_context)),
-                _timed(
-                    lambda: self._history.prepare_history_with_metadata(
-                        plan.history,
-                        session_context,
-                        is_continuation=plan.history_is_continuation,
-                        exclude_tool_call_ids=plan.exclude_tool_call_ids,
-                    )
-                ),
             )
             control.check_cancelled()
             resolved_model = ctx.resolved_model
-            prepared_history = history_result.history
+            state.history = self._history.processor(session_context)
             if emit_debug:
-                for event in self._setup_debug_events(ctx, history_result, session_id):
+                for event in self._setup_debug_events(ctx, session_id):
                     yield coordinator.track_debug(event)
             logger.info(
                 "[STREAM] Turn setup ready",
@@ -203,7 +197,6 @@ class TurnRunner:
                 session_id=session_id,
                 model=resolved_model,
                 agent_setup_ms=agent_setup_ms,
-                history_prep_ms=history_prep_ms,
                 pre_stream_ms=(time.monotonic() - started_at) * 1000,
             )
             trace_cm = create_request_trace(
@@ -223,12 +216,15 @@ class TurnRunner:
                 state,
                 control=control,
                 user_prompt=plan.user_prompt,
-                message_history=prepared_history,
+                message_history=plan.history,
                 deferred_tool_results=plan.deferred_tool_results,
                 usage=None,
             ):
                 yield event
             if emit_debug:
+                history_event = self._history_debug_event(state)
+                if history_event is not None:
+                    yield coordinator.track_debug(history_event)
                 yield coordinator.track_debug(self._usage_debug_event(state.run_usage))
             control.check_cancelled()
             await self._persist(plan, state)
@@ -467,7 +463,8 @@ class TurnRunner:
                             deps=ctx.deps,
                             cancellation_token=control.token,
                             capabilities=[
-                                TurnPolicy(self._sessions, session_id, plan.session_context)
+                                TurnPolicy(self._sessions, session_id, plan.session_context),
+                                *([state.history.capability()] if state.history else []),
                             ],
                         ) as run:
                             async for event in iterate_run(
@@ -600,9 +597,7 @@ class TurnRunner:
         return False
 
     @staticmethod
-    def _setup_debug_events(
-        ctx: AgentSetupContext, history_result: Any, session_id: str
-    ) -> list[dict[str, Any]]:
+    def _setup_debug_events(ctx: AgentSetupContext, session_id: str) -> list[dict[str, Any]]:
         tools = ctx.available_tools
         return [
             make_debug_tool_selection_event(
@@ -632,14 +627,21 @@ class TurnRunner:
                 temperature=ctx.effective_config.temperature,
                 session_id=session_id,
             ),
-            make_debug_history_event(
-                message_count=history_result.message_count,
-                estimated_tokens=history_result.estimated_tokens,
-                was_compacted=history_result.was_compacted,
-                compacted_from=history_result.compacted_from,
-                messages=history_result.message_summaries,
-            ),
         ]
+
+    @staticmethod
+    def _history_debug_event(state: _RunState) -> dict[str, Any] | None:
+        """Describe the model input the history policy last produced, if it ran."""
+        result = state.history.result if state.history is not None else None
+        if result is None:
+            return None
+        return make_debug_history_event(
+            message_count=result.message_count,
+            estimated_tokens=result.estimated_tokens,
+            was_compacted=result.was_compacted,
+            compacted_from=result.compacted_from,
+            messages=result.message_summaries,
+        )
 
     @staticmethod
     def _usage_debug_event(run_usage: Any) -> dict[str, Any]:

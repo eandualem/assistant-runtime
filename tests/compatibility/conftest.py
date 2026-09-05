@@ -9,8 +9,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai import models
-from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ThinkingPart, ToolCallPart
+from pydantic_ai.models.function import (
+    AgentInfo,
+    DeltaThinkingPart,
+    FunctionModel,
+)
 
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.assistant.interface import AssistantService
@@ -55,15 +59,34 @@ class ModelScript:
     steps: list = field(default_factory=list)
     requests: list[list[ModelMessage]] = field(default_factory=list)
 
-    async def stream(self, messages: list[ModelMessage], info: AgentInfo):
+    def _frames(self, messages: list[ModelMessage]) -> list:
         index = len(self.requests)
         self.requests.append(copy.deepcopy(messages))
         assert index < len(self.steps), "Agent made an unexpected model request"
-        for frame in self.steps[index]:
+        return self.steps[index]
+
+    async def stream(self, messages: list[ModelMessage], info: AgentInfo):
+        for frame in self._frames(messages):
             yield frame
 
+    async def respond(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        """The same script for non-streamed requests, such as the summarizer's."""
+        parts: list = []
+        for frame in self._frames(messages):
+            if isinstance(frame, str):
+                parts.append(TextPart(frame))
+                continue
+            for delta in frame.values():
+                if isinstance(delta, DeltaThinkingPart):
+                    parts.append(ThinkingPart(delta.content or ""))
+                else:
+                    parts.append(
+                        ToolCallPart(delta.name or "", delta.json_args, delta.tool_call_id)
+                    )
+        return ModelResponse(parts=parts)
+
     def model(self):
-        return FunctionModel(stream_function=self.stream)
+        return FunctionModel(function=self.respond, stream_function=self.stream)
 
 
 @pytest.fixture
@@ -87,11 +110,17 @@ def host_schema():
 
 
 @pytest.fixture
-async def runtime(monkeypatch, script, host_schema):
+def history_config(request):
+    """Override with ``pytest.mark.parametrize("history_config", [...], indirect=True)``."""
+    return getattr(request, "param", HistoryConfig())
+
+
+@pytest.fixture
+async def runtime(monkeypatch, script, host_schema, history_config):
     llm = LlmService(LLMConfig())
     # Keep build_agent, Agent.iter, graph execution and toolsets real.
     monkeypatch.setattr(llm, "_resolve_agent_model", lambda _model: script.model())
-    history = HistoryService(HistoryConfig(), llm_service=llm)
+    history = HistoryService(history_config, llm_service=llm)
     tools = ToolService(ToolConfig(host_tools=host_schema))
     assistant = AssistantService(
         AssistantConfig(enable_working_memory=False),

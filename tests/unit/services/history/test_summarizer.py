@@ -54,7 +54,6 @@ class TestSummarizeStructured:
         expected = CompactionResult(
             summary="Agent checked tmux sessions.",
             user_goal="Monitor agents",
-            working_memory=WorkingMemory(active_goal="Monitor agents"),
         )
         mock_llm.build_agent.return_value = _mock_agent_run(expected)
 

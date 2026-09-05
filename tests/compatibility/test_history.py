@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import (
     BinaryContent,
@@ -23,6 +23,8 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.toolsets import ExternalToolset
 from sqlalchemy.dialects.postgresql import dialect
 
 from assistant_runtime.app.assistant._serialization import (
@@ -34,8 +36,35 @@ from assistant_runtime.app.assistant._session_persistence import LoadedSession
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant._stale_tools import STALE_HOST_TOOL_OUTPUT
 from assistant_runtime.services.database.models import MessageORM
+from assistant_runtime.services.history._manager import (
+    COMPACTION_CACHE_KEY,
+    SUMMARY_MARKER,
+    TOOL_RESULT_PLACEHOLDER,
+)
+from assistant_runtime.services.history.config import HistoryConfig
+from assistant_runtime.services.history.models import CompactionResult
+from assistant_runtime.services.llm.interface import LlmService
 
-from .test_execution import assert_terminal, calls, request
+from .test_execution import assert_terminal, calls, register_lookup, request
+
+# 25k characters estimate above the smallest allowed budget of 5000 tokens.
+LONG_TEXT = "x" * 25_000
+SMALL_BUDGET = {"token_budget": 5000, "retain_recent": 1, "protect_recent_tool_results": 0}
+
+
+def _texts(messages):
+    return [
+        getattr(part, "content", None)
+        for message in messages
+        for part in message.parts
+        if isinstance(getattr(part, "content", None), str)
+    ]
+
+
+async def _first_turn_with_long_answer(runtime, script):
+    script.steps = [[LONG_TEXT]]
+    final = assert_terminal([e async for e in runtime.streaming.stream_message(request())])
+    return {"id": "user-2", "parent_id": final["message_id"], "content": "Again"}
 
 
 @pytest.mark.parametrize("args", [{"item": "sample"}, '{"item":"sample"}', '{"item":', "[]", None])
@@ -258,3 +287,167 @@ async def test_session_reload_restores_tree_and_repairs_unfinished_host_action(
         restored._db.update_segments.assert_not_awaited()
         assert loaded["message_count"] == 4
         assert [m["id"] for m in loaded["cached_path"]][:-1] == ["user-1", "user-2"]
+
+
+async def test_public_continuation_closes_older_dangling_call_with_deferred_result(
+    script, host_schema
+):
+    """The runtime no longer repairs history itself; core handles both calls."""
+    history = [
+        ModelRequest(parts=[UserPromptPart("first")]),
+        ModelResponse(parts=[ToolCallPart("select_item", '{"item":"a"}', "old-1")]),
+        ModelRequest(parts=[UserPromptPart("second")]),
+        ModelResponse(parts=[ToolCallPart("select_item", '{"item":"b"}', "host-1")]),
+    ]
+    original = copy.deepcopy(history)
+    toolset = ExternalToolset(
+        [
+            ToolDefinition(name=name, parameters_json_schema=schema["parameters"])
+            for name, schema in host_schema.items()
+        ]
+    )
+    script.steps = [["Done."]]
+    agent = Agent(script.model(), toolsets=[toolset], output_type=[str, DeferredToolRequests])
+    async with agent.run_stream_events(
+        None,
+        message_history=history,
+        deferred_tool_results=DeferredToolResults(calls={"host-1": {"ok": True}}),
+    ) as stream:
+        async for _ in stream:
+            pass
+    returns = {
+        p.tool_call_id: p
+        for m in script.requests[0]
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    }
+    assert returns["old-1"].outcome == "interrupted"
+    assert returns["host-1"].outcome == "success"
+    assert returns["host-1"].content == {"ok": True}
+    assert history == original
+
+
+@pytest.mark.parametrize("history_config", [HistoryConfig(**SMALL_BUDGET)], indirect=True)
+async def test_runtime_clears_old_tool_results_in_model_input_only(runtime, script):
+    async def lookup(item):
+        return {"value": LONG_TEXT if item == "a" else "small"}
+
+    register_lookup(runtime, lookup)
+    script.steps = [[calls(("lookup", '{"item":"a"}', "lookup-1"))], ["First."]]
+    first = assert_terminal([e async for e in runtime.streaming.stream_message(request())])
+    script.steps.extend([[calls(("lookup", '{"item":"b"}', "lookup-2"))], ["Second."]])
+    follow_up = request(id="user-2", parent_id=first["message_id"], content="Again")
+    assert_terminal([e async for e in runtime.streaming.stream_message(follow_up)])
+    # Turn two: the first request already exceeds the budget through lookup-1.
+    returns = {
+        p.tool_call_id: p
+        for m in script.requests[2]
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    }
+    assert returns["lookup-1"].content == TOOL_RESULT_PLACEHOLDER
+    assert returns["lookup-1"].tool_name == "lookup"
+    # The turn's own result is never cleared: the run must keep reporting it.
+    returns = {
+        p.tool_call_id: p
+        for m in script.requests[3]
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    }
+    assert {call: r.content for call, r in returns.items()} == {
+        "lookup-1": TOOL_RESULT_PLACEHOLDER,
+        "lookup-2": {"value": "small"},
+    }
+    assert SUMMARY_MARKER not in "".join(_texts(script.requests[3]))
+    # Stored segments keep the real outputs.
+    path = await runtime.sessions.get_message_path("compat")
+    outputs = [
+        tool["output"]["value"]
+        for record in path
+        for segment in record.get("segments") or []
+        if segment["kind"] == "tool_group"
+        for tool in segment["tools"]
+    ]
+    assert outputs == [LONG_TEXT, "small"]
+
+
+@pytest.mark.parametrize("history_config", [HistoryConfig(**SMALL_BUDGET)], indirect=True)
+async def test_runtime_summarizes_once_per_turn_through_native_execution(runtime, script):
+    follow_up = await _first_turn_with_long_answer(runtime, script)
+
+    executed = []
+
+    async def lookup(item):
+        executed.append(item)
+        return {"value": "small"}
+
+    register_lookup(runtime, lookup)
+    script.steps.extend(
+        [
+            # The summarizer's own native run returns the structured summary.
+            [calls(("final_result", '{"summary":"Earlier: a long answer"}', "sum-1"))],
+            [calls(("lookup", '{"item":"sample"}', "lookup-1"))],
+            ["Done."],
+        ]
+    )
+    events = [e async for e in runtime.streaming.stream_message(request(**follow_up))]
+    assert_terminal(events)
+    assert "".join(e["content"] for e in events if e["type"] == "text_delta") == "Done."
+    assert executed == ["sample"]
+    assert len(script.requests) == 4
+    summary_texts = [t for t in _texts(script.requests[1]) if "Earlier" not in t]
+    assert any("Analyze the following conversation" in t for t in summary_texts)
+    for model_input in script.requests[2:]:
+        texts = _texts(model_input)
+        assert texts[0] == "Help"
+        assert texts[1].startswith(SUMMARY_MARKER)
+        assert "Earlier: a long answer" in texts[1]
+        assert LONG_TEXT not in texts
+    assert _texts(script.requests[2])[2:] == ["Again"]
+    tool_return = next(
+        p for m in script.requests[3] for p in m.parts if isinstance(p, ToolReturnPart)
+    )
+    assert tool_return.content == {"value": "small"}
+    ctx = runtime.sessions.get_context("compat")
+    assert ctx[COMPACTION_CACHE_KEY]["prefix_count"] == 2
+    assert not ctx.get("working_memory")
+    path = await runtime.sessions.get_message_path("compat")
+    assert path[1]["content"] == LONG_TEXT
+    assert [m["role"] for m in path] == ["user", "assistant", "user", "assistant"]
+
+
+@pytest.mark.parametrize("history_config", [HistoryConfig(**SMALL_BUDGET)], indirect=True)
+async def test_runtime_summary_failure_falls_back_without_failing_the_turn(
+    runtime, script, monkeypatch
+):
+    follow_up = await _first_turn_with_long_answer(runtime, script)
+    build_agent = LlmService.build_agent
+
+    def failing_summarizer(self, *args, **kwargs):
+        agent = build_agent(self, *args, **kwargs)
+        if kwargs.get("output_type") is CompactionResult:
+            agent = MagicMock(run=AsyncMock(side_effect=RuntimeError("summarizer down")))
+        return agent
+
+    monkeypatch.setattr(LlmService, "build_agent", failing_summarizer)
+    script.steps.append(["Done."])
+    events = [e async for e in runtime.streaming.stream_message(request(**follow_up))]
+    assert_terminal(events)
+    assert "".join(e["content"] for e in events if e["type"] == "text_delta") == "Done."
+    texts = _texts(script.requests[1])
+    assert texts[1].startswith(SUMMARY_MARKER)
+    assert "summarization failed" in texts[1]
+    assert LONG_TEXT not in texts
+
+
+@pytest.mark.parametrize(
+    "history_config",
+    [HistoryConfig(compaction_enabled=False, **SMALL_BUDGET)],
+    indirect=True,
+)
+async def test_runtime_disabled_compaction_leaves_history_to_host_capabilities(runtime, script):
+    follow_up = await _first_turn_with_long_answer(runtime, script)
+    script.steps.append(["Done."])
+    assert_terminal([e async for e in runtime.streaming.stream_message(request(**follow_up))])
+    assert LONG_TEXT in _texts(script.requests[1])
+    assert COMPACTION_CACHE_KEY not in runtime.sessions.get_context("compat")

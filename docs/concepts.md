@@ -158,12 +158,27 @@ after each turn when `enable_working_memory` is on.
 
 ## History
 
-Long conversations are compacted before they reach the model: the history
-service keeps the most recent messages verbatim (`HISTORY__RETAIN_RECENT`),
-protects recent tool results, and summarises older messages with the
-summarisation model so the whole history fits `HISTORY__TOKEN_BUDGET`
-tokens. The tree in the session is never modified by compaction; only
-what is sent to the model is.
+Long conversations are compacted before they reach the model. The history
+policy is a native `ProcessHistory` capability that Pydantic AI runs before
+every model request of a turn. Within `HISTORY__TOKEN_BUDGET` (estimated)
+tokens the history is sent unchanged. Over budget, older tool results
+become placeholders, keeping the `HISTORY__PROTECT_RECENT_TOOL_RESULTS`
+most recent ones (a cleared result keeps its outcome and metadata). If
+that is not enough, messages older than the `HISTORY__RETAIN_RECENT` most
+recent are replaced by a summary written with the summarisation model,
+with the first user message kept verbatim. The summary is cached in the
+session, so a turn with many tool calls pays for it once and later turns
+extend it; the cache is in memory only, and a restarted process summarises
+again. When the summarisation model fails, a short deterministic summary
+is used and the turn continues.
+
+The conversation tree is never modified: only the model input is, the
+turn's own messages are always passed through verbatim, and compaction does
+not write working memory (that is the separate per-turn extraction).
+Dangling tool calls and orphaned tool results are repaired by Pydantic AI
+itself. Set `HISTORY__COMPACTION_ENABLED=false` to replace the policy with
+one supplied through `AssistantDefinition.capabilities`, for example a
+Harness compaction strategy.
 
 ## Envelopes
 
