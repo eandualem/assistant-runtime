@@ -69,12 +69,11 @@ class SessionRepository:
     ) -> list[SessionORM]:
         """List non-expired sessions, most recently updated first.
 
-        With ``owner_id``, only that principal's sessions and the unowned
-        ones (which any principal may reach) are listed.
+        With ``owner_id``, only that principal's sessions are listed.
         """
         stmt = select(SessionORM).where(SessionORM.expires_at > func.now())
         if owner_id is not None:
-            stmt = stmt.where((SessionORM.owner_id == owner_id) | (SessionORM.owner_id.is_(None)))
+            stmt = stmt.where(SessionORM.owner_id == owner_id)
         result = await self._session.execute(
             stmt.order_by(SessionORM.updated_at.desc()).limit(limit).offset(offset)
         )
@@ -147,8 +146,9 @@ class SessionRepository:
         """Atomic INSERT ... ON CONFLICT DO UPDATE.
 
         Eliminates the race condition in check-then-insert patterns. The
-        owner is written on insert and only ever set (never cleared) on
-        update, so a legacy row keeps NULL until an administrator assigns it.
+        owner is written on insert only: reassignment goes through
+        ``update()``, so a stale state save can never restore an owner an
+        administrator cleared or changed.
         """
         values: dict[str, object] = {
             "id": session_id,
@@ -170,7 +170,6 @@ class SessionRepository:
             "working_memory": stmt.excluded.working_memory,
             "telegram_chat_id": stmt.excluded.telegram_chat_id,
             "telegram_bound_at": stmt.excluded.telegram_bound_at,
-            "owner_id": func.coalesce(SessionORM.owner_id, stmt.excluded.owner_id),
             "updated_at": func.now(),
         }
         if expires_at is not None:

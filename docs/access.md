@@ -33,10 +33,12 @@ from assistant_runtime.principal import Credentials, Principal
 
 
 async def authenticate(credentials: Credentials) -> Principal | None:
-    token = (credentials.header("authorization") or "").removeprefix("Bearer ")
-    user = await my_identity_system.verify(token)          # the host's own system
-    if user is None:
+    scheme, _, token = (credentials.header("authorization") or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
         return None                                        # -> 401 / connection refused
+    user = await my_identity_system.verify(token.strip())  # the host's own system
+    if user is None:
+        return None
     return Principal(id=user.id, roles=set(user.roles), label=user.name)
 
 
@@ -60,13 +62,14 @@ terminal `final_response` / `error` of type `forbidden` for a streamed
 turn. Administrators reach every session and `GET /api/sessions` lists
 all of them for an administrator and only the caller's own otherwise.
 
-Sessions without an owner — rows created before ownership existed, or
-created by system paths such as message ingress — are reachable by any
-principal until an administrator assigns one with
-`PATCH /api/sessions/{id}/owner {"owner_id": "..."}` (null makes it
-unowned again). Migration `0021` adds the column and leaves existing rows
-unowned; assign them before switching a shared installation out of
-`trusted_local`.
+Sessions without an owner — rows created before ownership existed — are
+reachable only by administrators until one assigns them with
+`PATCH /api/sessions/{id}/owner {"owner_id": "..."}` (null makes a session
+unowned again, i.e. administrator-only). Migration `0021` adds the column
+and leaves existing rows unowned; assign them when moving a shared
+installation out of `trusted_local`. The owner is written when the session
+is created and changed only through that route; the state saves a turn
+performs never touch it.
 
 In-process callers (`create_runtime`, the CLI, the ingress) act as the
 local operator unless they pass `principal=` to `run_message`,

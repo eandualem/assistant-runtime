@@ -64,5 +64,6 @@ class TestOwnership:
         assert can_access_session(owner, "u1")
         assert not can_access_session(other, "u1")
         assert can_access_session(admin, "u1")
-        # Unowned (legacy or system-created) sessions are reachable until assigned.
-        assert can_access_session(other, None)
+        # Unowned (legacy) sessions are administrator-only until assigned.
+        assert not can_access_session(other, None)
+        assert can_access_session(admin, None)

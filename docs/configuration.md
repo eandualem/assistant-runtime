@@ -106,7 +106,7 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | `debounce_seconds` | `0.05` | text delta coalescing |
 | `max_events_per_stream` | `10000` | safety limit |
 | `stream_timeout_seconds` | `300` | one turn |
-| `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for a trusted client, the socket has no authentication |
+| `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for trusted clients: the events carry the system prompt and history of the caller's own sessions |
 
 ### Tools (`TOOLS__*`)
 

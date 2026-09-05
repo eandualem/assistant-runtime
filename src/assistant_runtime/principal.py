@@ -95,10 +95,10 @@ def can_access_session(principal: Principal, owner_id: str | None) -> bool:
     """Whether ``principal`` may read or act on a session owned by ``owner_id``.
 
     Admins reach every session. A session without an owner (created before
-    ownership existed, or by a system path) is reachable by any principal
-    until an administrator assigns it.
+    ownership existed) is reachable only by administrators until one assigns
+    it; ordinary principals reach their own sessions and nothing else.
     """
-    return principal.is_admin or owner_id is None or owner_id == principal.id
+    return principal.is_admin or (owner_id is not None and owner_id == principal.id)
 
 
 __all__ = [

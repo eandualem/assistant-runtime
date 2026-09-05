@@ -343,22 +343,24 @@ class StreamingService:
         message = (
             "Request cancelled before turn acceptance" if is_cancelled else f"Setup failed: {exc}"
         )
-        await self._runner.save_trace(
-            request.session_id,
-            [
-                make_debug_error_event(
-                    message,
-                    error_type=error_type,
-                    retry_allowed=retry_allowed,
-                    trace_id=trace_id,
-                    model="unknown",
-                    phase="setup",
-                )
-            ],
-            trace_id=trace_id,
-            user_message=request.content,
-            screenshot=request.images[0] if request.images else None,
-        )
+        # A denied request leaves nothing under the session it could not reach.
+        if not isinstance(exc, AccessDeniedError):
+            await self._runner.save_trace(
+                request.session_id,
+                [
+                    make_debug_error_event(
+                        message,
+                        error_type=error_type,
+                        retry_allowed=retry_allowed,
+                        trace_id=trace_id,
+                        model="unknown",
+                        phase="setup",
+                    )
+                ],
+                trace_id=trace_id,
+                user_message=request.content,
+                screenshot=request.images[0] if request.images else None,
+            )
         yield make_agent_status_event("started")
         yield make_final_response_event(
             None,

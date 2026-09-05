@@ -199,8 +199,9 @@ The host owns resources returned by the factory, including their cleanup.
 Use host-managed pools or resource scopes. For HTTP, middleware or a host
 dependency can establish trusted request context that the factory reads;
 for Socket.IO, establish it in the host's event/task scope. A payload's
-`session_id` and `host_context` are client input, not authenticated identity.
-This API does not add authentication or tenant isolation.
+`session_id` and `host_context` are client input, not authenticated identity;
+the caller's identity is the `Principal` the access module establishes (see
+[identity](#identity)), which the dependency factory does not receive.
 
 Native tools/toolsets/capabilities may be reused across concurrent requests,
 as they are in Pydantic AI. Keep per-request mutable data in dependencies or

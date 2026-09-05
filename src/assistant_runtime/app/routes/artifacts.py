@@ -2,7 +2,8 @@
 
 The routes act as the ``host`` actor of the profile's policies. Reads need
 an authenticated caller; every mutation is administration (the ``admin``
-role). They work with or without Postgres; responses carry ``durable`` so
+role) attributed to the authenticated principal, never to a name in the
+body. They work with or without Postgres; responses carry ``durable`` so
 a client knows whether versions survive a restart.
 """
 
@@ -36,13 +37,11 @@ router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
 class ProposeRequest(BaseModel):
     content: str = Field(..., min_length=1)
-    proposed_by: str = Field(default="host", max_length=32)
     expected_version: int | None = None
 
 
 class UpdateRequest(BaseModel):
     content: str = Field(..., min_length=1)
-    proposed_by: str = Field(default="host", max_length=32)
     expected_version: int | None = None
 
 
@@ -52,7 +51,6 @@ class ArtifactActionRequest(BaseModel):
     action: str = Field(..., pattern="^(approve|rollback|propose|update)$")
     version: int | None = None
     content: str | None = None
-    proposed_by: str = Field(default="host", max_length=32)
     expected_version: int | None = None
 
 
@@ -117,9 +115,9 @@ async def _update(
 
 
 async def _activate(
-    artifacts: ArtifactService, name: str, version: int, *, rollback: bool
+    artifacts: ArtifactService, name: str, version: int, actor_id: str, *, rollback: bool
 ) -> dict[str, Any]:
-    result = await artifacts.activate(name, version, actor=Actor("host"))
+    result = await artifacts.activate(name, version, actor=Actor("host", actor_id))
     message = (
         f"Rolled back {name} to version {version}."
         if rollback
@@ -225,9 +223,7 @@ async def propose_artifact(
     """Propose a new version of an artifact (inactive until approved)."""
     artifacts = get_artifact_service(request)
     try:
-        return await _propose(
-            artifacts, name, body.content, body.proposed_by, body.expected_version
-        )
+        return await _propose(artifacts, name, body.content, admin.id, body.expected_version)
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -242,7 +238,7 @@ async def update_artifact(
     """Write a new version and activate it at once."""
     artifacts = get_artifact_service(request)
     try:
-        return await _update(artifacts, name, body.content, body.proposed_by, body.expected_version)
+        return await _update(artifacts, name, body.content, admin.id, body.expected_version)
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -255,7 +251,7 @@ async def approve_artifact(name: str, version: int, request: Request, admin: Adm
     """Approve (activate) a specific version of an artifact."""
     artifacts = get_artifact_service(request)
     try:
-        return await _activate(artifacts, name, version, rollback=False)
+        return await _activate(artifacts, name, version, admin.id, rollback=False)
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -268,7 +264,7 @@ async def rollback_artifact(name: str, version: int, request: Request, admin: Ad
     """Reactivate an earlier version of an artifact."""
     artifacts = get_artifact_service(request)
     try:
-        return await _activate(artifacts, name, version, rollback=True)
+        return await _activate(artifacts, name, version, admin.id, rollback=True)
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -289,12 +285,12 @@ async def artifact_action(
                     status_code=422, detail=f"version is required for {body.action}"
                 )
             return await _activate(
-                artifacts, name, body.version, rollback=body.action == "rollback"
+                artifacts, name, body.version, admin.id, rollback=body.action == "rollback"
             )
         if not body.content:
             raise HTTPException(status_code=422, detail=f"content is required for {body.action}")
         handler = _propose if body.action == "propose" else _update
-        return await handler(artifacts, name, body.content, body.proposed_by, body.expected_version)
+        return await handler(artifacts, name, body.content, admin.id, body.expected_version)
     except HTTPException:
         raise
     except ArtifactError as e:
@@ -309,7 +305,7 @@ async def delete_artifact(name: str, request: Request, admin: AdminDep) -> dict:
     """Delete every stored version; the profile's default text applies again."""
     artifacts = get_artifact_service(request)
     try:
-        count = await artifacts.delete(name, actor=Actor("host"))
+        count = await artifacts.delete(name, actor=Actor("host", admin.id))
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:

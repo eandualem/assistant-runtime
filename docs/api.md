@@ -1,9 +1,10 @@
 # HTTP & Socket.IO API
 
 Base URL `http://127.0.0.1:7100`. HTTP routes are under `/api`; streaming
-is Socket.IO on the `/assistant` namespace. There is no authentication:
-bind to localhost or put a reverse proxy with auth in front. Interactive
-OpenAPI docs are served at `/docs`.
+is Socket.IO on the `/assistant` namespace. Callers are identified as
+configured by `ACCESS__MODE` (see below and [access](access.md)); the
+default treats every caller as the local operator, so bind to localhost.
+Interactive OpenAPI docs are served at `/docs`.
 
 ## Who is calling
 
@@ -12,7 +13,7 @@ configured by `ACCESS__MODE` (see [access](access.md)): the local
 operator by default, the `X-Assistant-Principal` / `X-Assistant-Roles`
 headers behind an authenticating proxy, or the host's callback. An
 unidentified caller gets `401` (a refused connection on Socket.IO); a
-session that belongs to someone else `403` (`assistant:error` of type
+session that belongs to someone else (or an unowned legacy session, for a non-administrator) `403` (`assistant:error` of type
 `forbidden`); administration without the `admin` role `403`.
 Administration covers `PATCH /api/settings`, providers, OAuth, ingress,
 the inbox, debugging, every artifact mutation and session reassignment.

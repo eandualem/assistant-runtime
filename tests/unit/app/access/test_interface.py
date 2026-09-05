@@ -108,6 +108,8 @@ class TestRules:
 
     def test_check_session(self):
         AccessService.check_session(Principal(id="u1"), "u1", "s")
-        AccessService.check_session(Principal(id="u1"), None, "s")
+        AccessService.check_session(Principal(id="root", roles={"admin"}), None, "s")
+        with pytest.raises(AccessDeniedError):
+            AccessService.check_session(Principal(id="u1"), None, "s")
         with pytest.raises(AccessDeniedError, match="Session 's' belongs to another principal"):
             AccessService.check_session(Principal(id="u2"), "u1", "s")

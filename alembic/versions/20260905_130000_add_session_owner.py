@@ -4,8 +4,8 @@ Revision ID: 0021
 Revises: 0020
 Create Date: 2026-09-05 13:00:00.000000
 
-Rows created before ownership existed keep a NULL owner: any principal can
-reach them until an administrator assigns one (PATCH /api/sessions/{id}/owner).
+Rows created before ownership existed keep a NULL owner: only administrators
+can reach them until one assigns an owner (PATCH /api/sessions/{id}/owner).
 """
 
 from typing import Sequence, Union

@@ -419,8 +419,8 @@ class SessionStore:
     ) -> list[dict[str, Any]]:
         """List sessions with metadata and tree message counts.
 
-        ``owner_id`` limits the list to that principal's sessions plus the
-        unowned ones; None lists everything (administration).
+        ``owner_id`` limits the list to that principal's sessions; None lists
+        everything (administration).
         """
         if self._db is None:
             sessions = [
@@ -433,7 +433,7 @@ class SessionStore:
                     "created_at": None,
                 }
                 for sid, ctx in self._sessions.items()
-                if owner_id is None or ctx.get("owner_id") in (None, owner_id)
+                if owner_id is None or ctx.get("owner_id") == owner_id
             ]
             return sessions[offset : offset + limit]
 

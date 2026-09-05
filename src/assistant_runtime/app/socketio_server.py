@@ -364,6 +364,9 @@ class AssistantNamespace(socketio.AsyncNamespace):
             # Cancellation outcomes come from the runtime's native run control.
             # A transport being replaced may itself be blocked in socket emit.
             raise
+        except AccessDeniedError as e:
+            with contextlib.suppress(Exception):
+                await self._forbid(sid, e)
         except Exception as e:
             logger.exception(
                 "[STREAM] _run_stream failed",
