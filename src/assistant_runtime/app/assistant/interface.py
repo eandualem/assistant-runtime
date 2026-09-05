@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic_ai import DeferredToolRequests
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage
 
+from assistant_runtime.app.assistant._budget import build_usage_limits
 from assistant_runtime.app.assistant._prompt_builder import build_system_prompt
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.config import AssistantConfig
@@ -22,6 +23,7 @@ from assistant_runtime.app.assistant.definition import AssistantDefinition
 from assistant_runtime.app.assistant.exceptions import AssistantError
 from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest
 from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
+from assistant_runtime.app.streaming._usage import usage_dict
 from assistant_runtime.host_context import view_name_of
 from assistant_runtime.services.tracing import create_span
 
@@ -204,7 +206,11 @@ class AssistantService:
                 self._config, self._runtime_settings, request_config
             )
             resolved_model = self._llm.resolve_model(effective.default_model)
-            usage_limits = UsageLimits(request_limit=effective.max_turns)
+            usage_limits = build_usage_limits(
+                self._config.budget,
+                self._definition.usage_limits if self._definition is not None else None,
+                request_limit=effective.max_turns,
+            )
 
             # 3. MCP + artifacts + system prompt
             mcp_summary, artifacts = await asyncio.gather(mcp_summary_task, artifacts_task)
@@ -251,8 +257,13 @@ class AssistantService:
         session_id: str,
         session_context: dict[str, Any],
         turn_number: int,
-    ) -> None:
-        """Extract the working-memory delta from the recent path and persist it (best-effort)."""
+    ) -> dict[str, Any] | None:
+        """Extract the working-memory delta from the recent path and persist it (best-effort).
+
+        Returns the usage of the extraction's model call, so the turn can
+        account for it, or None when nothing ran.
+        """
+        usage = RunUsage()
         try:
             from assistant_runtime.services.history.models import WorkingMemory
 
@@ -272,12 +283,15 @@ class AssistantService:
                     }
                 )
 
-            updated_wm = await self._history.extract_memory_delta(current_wm, recent, turn_number)
+            updated_wm = await self._history.extract_memory_delta(
+                current_wm, recent, turn_number, usage=usage
+            )
             session_context["working_memory"] = updated_wm
             await sessions.save_session_state_async(session_id)
         except Exception as e:
             # Working memory extraction is best-effort — don't fail the request
             logger.warning("Working memory extraction failed", error=str(e))
+        return usage_dict(usage) if usage.has_values() else None
 
     def _usable_database(self) -> DatabaseService | None:
         """The database service when it is reachable, else None (memory-only mode)."""

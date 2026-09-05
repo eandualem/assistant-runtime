@@ -14,6 +14,7 @@ from loguru import logger
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
+from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.services.history._manager import HistoryManager
 from assistant_runtime.services.history._summarizer import HistorySummarizer
@@ -38,6 +39,8 @@ class HistoryProcessor:
         self._manager = manager
         self._session_context = session_context
         self.result: HistoryPreparationResult | None = None
+        self.usage = RunUsage()
+        """Usage of the summarisation calls this turn made, for the turn's accounting."""
 
     def capability(self) -> ProcessHistory:
         """The native capability wrapping this processor."""
@@ -53,7 +56,7 @@ class HistoryProcessor:
         )
         try:
             prepared, was_compacted = await self._manager.prepare_history(
-                messages, self._session_context, frozen_from=frozen_from
+                messages, self._session_context, frozen_from=frozen_from, usage=self.usage
             )
         except Exception as e:
             if isinstance(e, CompactionError):
@@ -185,6 +188,8 @@ class HistoryService:
         current_wm: WorkingMemory,
         recent_messages: list[dict[str, Any]],
         turn_number: int,
+        *,
+        usage: RunUsage | None = None,
     ) -> WorkingMemory:
         """Extract working memory updates from recent messages.
 
@@ -200,5 +205,5 @@ class HistoryService:
             raise CompactionError("History service not started")
 
         return await self._manager._summarizer.extract_memory_delta(
-            current_wm, recent_messages, turn_number
+            current_wm, recent_messages, turn_number, usage=usage
         )

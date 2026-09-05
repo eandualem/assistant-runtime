@@ -172,20 +172,39 @@ class RuntimeSettings:
         }
 
 
+# Cost-bearing tunables an untrusted request may lower but never raise past
+# the host's (runtime or frozen) value.
+CEILING_FIELDS: frozenset[str] = frozenset(
+    {"max_turns", "thinking_budget", "subagent_thinking_budget"}
+)
+
+
 def resolve_effective_config(
     frozen_config: AssistantConfig,
     runtime_settings: RuntimeSettings | None = None,
     per_request: TunableOverrides | None = None,
 ) -> EffectiveConfig:
-    """Fold the three tiers into one frozen snapshot: request > runtime > frozen."""
+    """Fold the three tiers into one frozen snapshot: request > runtime > frozen.
+
+    The runtime overlay is administration and trusted. The request body is
+    not: for ``CEILING_FIELDS`` it can only narrow the host's value.
+    """
     request_values = per_request.model_dump(exclude_none=True) if per_request else {}
     runtime_values = runtime_settings.overrides if runtime_settings else {}
 
-    def _pick(field: str) -> Any:
-        if field in request_values:
-            return request_values[field]
+    def _trusted(field: str) -> Any:
         if field in runtime_values:
             return runtime_values[field]
         return getattr(frozen_config, field, None)
+
+    def _pick(field: str) -> Any:
+        if field in request_values:
+            requested = request_values[field]
+            ceiling = _trusted(field)
+            if field in CEILING_FIELDS and ceiling is not None and requested > ceiling:
+                logger.debug("Request override clamped", field=field, requested=requested)
+                return ceiling
+            return requested
+        return _trusted(field)
 
     return EffectiveConfig(**{field: _pick(field) for field in TUNABLE_FIELDS})

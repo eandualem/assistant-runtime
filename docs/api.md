@@ -123,6 +123,16 @@ client performs the action and sends `assistant:message` with
 `tool_call_id` = `pending_tool_call.call_id`, `tool_result` = whatever the
 action produced (any JSON), and `content` empty. The model resumes.
 
+## Usage
+
+`final_response.usage` and each stored assistant message carry
+`{input_tokens, output_tokens, total_tokens, requests, tool_calls, cost_usd, auxiliary?}`;
+`cost_usd` is null when the provider reports no price, and `auxiliary`
+holds `summarization` and `working_memory` usage when those ran. A turn
+that reaches a usage limit ends with `final_response.error_type` and a
+terminal `error.error_type` of `usage_limit` (`retry_allowed: false`),
+with the partial message saved. See [concepts](concepts.md#usage-and-budgets).
+
 ## Sessions
 
 | Route | Returns |

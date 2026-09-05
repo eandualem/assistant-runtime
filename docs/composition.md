@@ -148,6 +148,14 @@ rewrite its `scratchpad` immediately, propose a new `tone` for the host to
 approve through `/api/artifacts`, and only read `instructions` until the
 host changes it. See [concepts](concepts.md#prompt-artifacts-and-profiles).
 
+## Budgets
+
+`AssistantDefinition(usage_limits=UsageLimits(...))` sets native per-turn
+ceilings (tool calls, tokens, cost) from host code; `ASSISTANT__BUDGET__*`
+does the same from configuration and the stricter of the two applies.
+Requests can only narrow `max_turns` and the thinking budgets. See
+[usage and budgets](concepts.md#usage-and-budgets).
+
 ## Identity
 
 With `ACCESS__MODE=host`, `AssistantDefinition(authenticate=...)` turns a

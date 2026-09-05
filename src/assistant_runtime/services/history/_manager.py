@@ -34,6 +34,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.services.history._summarizer import HistorySummarizer
 from assistant_runtime.services.history.config import HistoryConfig
@@ -62,6 +63,7 @@ class HistoryManager:
         *,
         frozen_from: int | None = None,
         config_override: HistoryConfig | None = None,
+        usage: RunUsage | None = None,
     ) -> tuple[list[ModelMessage], bool]:
         """Return the model input for ``history`` and whether it was summarized.
 
@@ -105,7 +107,9 @@ class HistoryManager:
             f"[HISTORY] After tool clearing: {tokens_after_clearing} tokens, "
             f"still exceeds budget {config.token_budget}, triggering compaction"
         )
-        compacted = await self._compact(prepared, session_context, config, frozen_from=frozen)
+        compacted = await self._compact(
+            prepared, session_context, config, frozen_from=frozen, usage=usage
+        )
 
         return compacted, compacted is not prepared
 
@@ -204,6 +208,7 @@ class HistoryManager:
         config: HistoryConfig | None = None,
         *,
         frozen_from: int | None = None,
+        usage: RunUsage | None = None,
     ) -> list[ModelMessage]:
         """Replace older messages with a summary, keeping the head and the recent tail.
 
@@ -264,7 +269,7 @@ class HistoryManager:
             to_summarize, truncation_limit=effective_config.message_truncation_limit
         )
         compaction_result = await self._summarizer.summarize_structured(
-            summarizer_dicts, existing_summary
+            summarizer_dicts, existing_summary, usage=usage
         )
         summary_content = compaction_result.to_summary_message()
         session_context[COMPACTION_CACHE_KEY] = {
