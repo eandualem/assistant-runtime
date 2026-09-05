@@ -122,16 +122,24 @@ class SessionStore:
         session_id = request.session_id
         ctx = await self.get_context_if_exists_async(session_id)
 
+        # The owner is decided here but published only after the row is written.
+        new_owner: str | None = None
         if request.parent_id is None:
+            if ctx is not None and ctx["message_count"] == 0 and self._db is not None:
+                # An empty cached context (a join warm-up, a history read) may
+                # shadow a persisted session; its stored owner and messages win.
+                loaded = await self._load_session_singleflight(session_id)
+                if loaded is not None:
+                    self._sessions[session_id] = loaded
+                    ctx = loaded
             if ctx is None:
                 ctx = self.get_context(session_id)
-                ctx["owner_id"] = owner_id
+                new_owner = owner_id
             elif ctx["message_count"] > 0:
                 raise ValueError("Only the first message in a session may have parent_id = null")
             elif ctx.get("owner_id") is None:
-                # A context created ahead of the first message (a join warm-up,
-                # a history read) belongs to whoever sends that message.
-                ctx["owner_id"] = owner_id
+                # A context created ahead of the first message belongs to whoever sends it.
+                new_owner = owner_id
         else:
             if ctx is None:
                 raise LookupError("Session not found")
@@ -154,8 +162,12 @@ class SessionStore:
             "created_at": datetime.now(UTC),
         }
         if self._db is not None:
-            await self._db.ensure_session(session_id, ctx.get("title"), ctx.get("owner_id"))
+            await self._db.ensure_session(
+                session_id, ctx.get("title"), new_owner or ctx.get("owner_id")
+            )
             await self._db.create_message(record)
+        if new_owner is not None:
+            ctx["owner_id"] = new_owner
 
         _add_message(ctx, record)
         _refresh_cached_path_for_new_leaf(ctx, record)
