@@ -5,6 +5,18 @@ is Socket.IO on the `/assistant` namespace. There is no authentication:
 bind to localhost or put a reverse proxy with auth in front. Interactive
 OpenAPI docs are served at `/docs`.
 
+## Who is calling
+
+Every route and the Socket.IO connection establish a principal as
+configured by `ACCESS__MODE` (see [access](access.md)): the local
+operator by default, the `X-Assistant-Principal` / `X-Assistant-Roles`
+headers behind an authenticating proxy, or the host's callback. An
+unidentified caller gets `401` (a refused connection on Socket.IO); a
+session that belongs to someone else `403` (`assistant:error` of type
+`forbidden`); administration without the `admin` role `403`.
+Administration covers `PATCH /api/settings`, providers, OAuth, ingress,
+the inbox, debugging, every artifact mutation and session reassignment.
+
 ## Health
 
 `GET /health`: `{"healthy": bool, "components": {name: {...}}}`, status
@@ -114,13 +126,14 @@ action produced (any JSON), and `content` empty. The model resumes.
 
 | Route | Returns |
 |---|---|
-| `GET /api/sessions?limit=50&offset=0` | `[{session_id, title, turn_number, message_count, created_at}]` |
+| `GET /api/sessions?limit=50&offset=0` | `[{session_id, owner_id, title, turn_number, message_count, created_at}]`; the caller's own sessions, every session for an administrator |
 | `GET /api/sessions/{id}` | turn count, message count, pending tool call |
 | `GET /api/sessions/{id}/messages` | the root-to-leaf path, for display |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |
 | `POST /api/sessions/{id}/repair` | mark host tool calls that never got a result as failed, so the session can continue |
 | `DELETE /api/sessions/{id}` | delete the session |
+| `PATCH /api/sessions/{id}/owner` `{"owner_id"}` | assign the session to a principal (administration; null makes it unowned) |
 
 ## Settings, models, providers
 

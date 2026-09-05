@@ -259,6 +259,7 @@ class TestListSessions:
         assert result == [
             {
                 "session_id": "sess-1",
+                "owner_id": None,
                 "title": "Hello",
                 "turn_number": 1,
                 "message_count": 2,
@@ -282,6 +283,7 @@ class TestSingleflightHydration:
             started.set()
             await release.wait()
             return LoadedSession(
+                owner_id=None,
                 turn_number=3,
                 working_memory=None,
                 title="t",

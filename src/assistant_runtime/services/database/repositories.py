@@ -36,12 +36,14 @@ class SessionRepository:
         session_id: str,
         title: str | None = None,
         expires_at: datetime | None = None,
+        owner_id: str | None = None,
     ) -> SessionORM:
         """Create a new session row."""
         values: dict[str, object] = {
             "id": session_id,
             "title": title,
             "turn_number": 0,
+            "owner_id": owner_id,
         }
         if expires_at is not None:
             values["expires_at"] = expires_at
@@ -62,14 +64,19 @@ class SessionRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_all(self, limit: int = 50, offset: int = 0) -> list[SessionORM]:
-        """List non-expired sessions ordered by most recently updated."""
+    async def list_all(
+        self, limit: int = 50, offset: int = 0, *, owner_id: str | None = None
+    ) -> list[SessionORM]:
+        """List non-expired sessions, most recently updated first.
+
+        With ``owner_id``, only that principal's sessions and the unowned
+        ones (which any principal may reach) are listed.
+        """
+        stmt = select(SessionORM).where(SessionORM.expires_at > func.now())
+        if owner_id is not None:
+            stmt = stmt.where((SessionORM.owner_id == owner_id) | (SessionORM.owner_id.is_(None)))
         result = await self._session.execute(
-            select(SessionORM)
-            .where(SessionORM.expires_at > func.now())
-            .order_by(SessionORM.updated_at.desc())
-            .limit(limit)
-            .offset(offset)
+            stmt.order_by(SessionORM.updated_at.desc()).limit(limit).offset(offset)
         )
         return list(result.scalars().all())
 
@@ -135,10 +142,13 @@ class SessionRepository:
         telegram_chat_id: str | None = None,
         telegram_bound_at: datetime | None = None,
         expires_at: datetime | None = None,
+        owner_id: str | None = None,
     ) -> None:
         """Atomic INSERT ... ON CONFLICT DO UPDATE.
 
-        Eliminates the race condition in check-then-insert patterns.
+        Eliminates the race condition in check-then-insert patterns. The
+        owner is written on insert and only ever set (never cleared) on
+        update, so a legacy row keeps NULL until an administrator assigns it.
         """
         values: dict[str, object] = {
             "id": session_id,
@@ -147,6 +157,7 @@ class SessionRepository:
             "working_memory": working_memory,
             "telegram_chat_id": telegram_chat_id,
             "telegram_bound_at": telegram_bound_at,
+            "owner_id": owner_id,
         }
         if expires_at is not None:
             values["expires_at"] = expires_at
@@ -159,6 +170,7 @@ class SessionRepository:
             "working_memory": stmt.excluded.working_memory,
             "telegram_chat_id": stmt.excluded.telegram_chat_id,
             "telegram_bound_at": stmt.excluded.telegram_bound_at,
+            "owner_id": func.coalesce(SessionORM.owner_id, stmt.excluded.owner_id),
             "updated_at": func.now(),
         }
         if expires_at is not None:

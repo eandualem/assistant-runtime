@@ -56,6 +56,15 @@ current Claude models get adaptive thinking with an effort level mapped
 from `thinking_budget`; older ones get a fixed budget; models that reject
 sampling parameters are not sent a temperature.
 
+### Access (`ACCESS__*`)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `mode` | `trusted_local` | `trusted_local` (every caller is the local operator), `header` (an authenticating proxy sets the principal header) or `host` (`AssistantDefinition.authenticate` decides); see [access](access.md) |
+| `principal_header` | `X-Assistant-Principal` | header carrying the principal id in header mode |
+| `roles_header` | `X-Assistant-Roles` | comma-separated roles in header mode; `admin` administers |
+| `cors_origins` | `["*"]` | allowed browser origins; restrict when exposed |
+
 ### Assistant (`ASSISTANT__*`)
 
 | Setting | Default | Meaning |

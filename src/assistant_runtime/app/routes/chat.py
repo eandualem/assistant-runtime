@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
+from assistant_runtime.app.access.deps import PrincipalDep
 from assistant_runtime.app.assistant.models import AssistantRequest, AssistantResult
 from assistant_runtime.app.streaming.deps import StreamingServiceDep
 
@@ -12,9 +13,11 @@ router = APIRouter()
 
 
 @router.post("/chat/{session_id}/cancel")
-async def cancel_chat(session_id: str, service: StreamingServiceDep) -> dict[str, bool]:
+async def cancel_chat(
+    session_id: str, service: StreamingServiceDep, principal: PrincipalDep
+) -> dict[str, bool]:
     """Request cancellation; the active turn persists its snapshot before ending."""
-    return {"cancel_requested": await service.cancel_session(session_id)}
+    return {"cancel_requested": await service.cancel_session(session_id, principal=principal)}
 
 
 @router.post("/chat")
@@ -22,6 +25,7 @@ async def chat(
     request: Request,
     assistant_request: AssistantRequest,
     service: StreamingServiceDep,
+    principal: PrincipalDep,
 ) -> AssistantResult:
     """Run one turn and return the final answer."""
     logger.info("Received chat request", session_id=assistant_request.session_id)
@@ -40,4 +44,4 @@ async def chat(
         except Exception as exc:
             logger.warning("OAuth refresh failed before chat", error=str(exc))
 
-    return await service.run_message(assistant_request)
+    return await service.run_message(assistant_request, principal=principal)

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from assistant_runtime.app.access.deps import require_admin
 from assistant_runtime.app.assistant._prompt_builder import _mcp_connections_fragment
 
-router = APIRouter(prefix="/debug", tags=["debug"])
+router = APIRouter(prefix="/debug", tags=["debug"], dependencies=[Depends(require_admin)])
 
 
 @router.get("/tools")

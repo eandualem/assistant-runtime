@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from assistant_runtime.app.access.deps import require_admin
 from assistant_runtime.app.ingress.deps import IngressServiceDep
 
-router = APIRouter(prefix="/assistant", tags=["assistant-ingress"])
+router = APIRouter(
+    prefix="/assistant", tags=["assistant-ingress"], dependencies=[Depends(require_admin)]
+)
 
 
 class InjectRequest(BaseModel):

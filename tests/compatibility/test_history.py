@@ -255,6 +255,7 @@ async def test_session_reload_restores_tree_and_repairs_unfinished_host_action(
         "compat", request(id="steering-1", message_type="steering", content="Remember this")
     )
     snapshot = LoadedSession(
+        owner_id=None,
         turn_number=ctx["turn_number"],
         working_memory=ctx["working_memory"],
         title=ctx["title"],

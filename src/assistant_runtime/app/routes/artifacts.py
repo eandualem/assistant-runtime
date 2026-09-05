@@ -1,8 +1,9 @@
 """Artifact endpoints — the host's access to versioned prompt content.
 
-The routes act as the ``host`` actor of the profile's policies. They work
-with or without Postgres; responses carry ``durable`` so a client knows
-whether versions survive a restart.
+The routes act as the ``host`` actor of the profile's policies. Reads need
+an authenticated caller; every mutation is administration (the ``admin``
+role). They work with or without Postgres; responses carry ``durable`` so
+a client knows whether versions survive a restart.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from assistant_runtime.app.access.deps import AdminDep, PrincipalDep
 from assistant_runtime.services.artifacts.deps import get_artifact_service
 from assistant_runtime.services.artifacts.exceptions import (
     ArtifactConflictError,
@@ -132,7 +134,7 @@ async def _activate(
 
 
 @router.get("")
-async def list_artifacts(request: Request) -> list[dict]:
+async def list_artifacts(request: Request, principal: PrincipalDep) -> list[dict]:
     """Active versions of the profile's artifacts, in prompt order."""
     artifacts = get_artifact_service(request)
     try:
@@ -143,7 +145,7 @@ async def list_artifacts(request: Request) -> list[dict]:
 
 
 @router.get("/profile")
-async def get_profile(request: Request) -> dict:
+async def get_profile(request: Request, principal: PrincipalDep) -> dict:
     """The profile: every artifact, its role, policy and whether a version is active."""
     artifacts = get_artifact_service(request)
     try:
@@ -173,7 +175,7 @@ async def get_profile(request: Request) -> dict:
 
 
 @router.get("/{name}")
-async def get_artifact(name: str, request: Request) -> dict:
+async def get_artifact(name: str, request: Request, principal: PrincipalDep) -> dict:
     """The active version of an artifact, or its default text when none is active."""
     artifacts = get_artifact_service(request)
     try:
@@ -202,6 +204,7 @@ async def get_artifact(name: str, request: Request) -> dict:
 async def get_artifact_history(
     name: str,
     request: Request,
+    principal: PrincipalDep,
     limit: int = Query(20, ge=1, le=100),
 ) -> list[dict]:
     """Version history for an artifact, newest first."""
@@ -216,7 +219,9 @@ async def get_artifact_history(
 
 
 @router.post("/{name}/propose", status_code=201)
-async def propose_artifact(name: str, body: ProposeRequest, request: Request) -> dict:
+async def propose_artifact(
+    name: str, body: ProposeRequest, request: Request, admin: AdminDep
+) -> dict:
     """Propose a new version of an artifact (inactive until approved)."""
     artifacts = get_artifact_service(request)
     try:
@@ -231,7 +236,9 @@ async def propose_artifact(name: str, body: ProposeRequest, request: Request) ->
 
 
 @router.patch("/{name}")
-async def update_artifact(name: str, body: UpdateRequest, request: Request) -> dict:
+async def update_artifact(
+    name: str, body: UpdateRequest, request: Request, admin: AdminDep
+) -> dict:
     """Write a new version and activate it at once."""
     artifacts = get_artifact_service(request)
     try:
@@ -244,7 +251,7 @@ async def update_artifact(name: str, body: UpdateRequest, request: Request) -> d
 
 
 @router.post("/{name}/approve/{version}")
-async def approve_artifact(name: str, version: int, request: Request) -> dict:
+async def approve_artifact(name: str, version: int, request: Request, admin: AdminDep) -> dict:
     """Approve (activate) a specific version of an artifact."""
     artifacts = get_artifact_service(request)
     try:
@@ -257,7 +264,7 @@ async def approve_artifact(name: str, version: int, request: Request) -> dict:
 
 
 @router.post("/{name}/rollback/{version}")
-async def rollback_artifact(name: str, version: int, request: Request) -> dict:
+async def rollback_artifact(name: str, version: int, request: Request, admin: AdminDep) -> dict:
     """Reactivate an earlier version of an artifact."""
     artifacts = get_artifact_service(request)
     try:
@@ -270,7 +277,9 @@ async def rollback_artifact(name: str, version: int, request: Request) -> dict:
 
 
 @router.post("/{name}/actions")
-async def artifact_action(name: str, body: ArtifactActionRequest, request: Request) -> dict:
+async def artifact_action(
+    name: str, body: ArtifactActionRequest, request: Request, admin: AdminDep
+) -> dict:
     """Unified action endpoint: approve, rollback, propose or update a named artifact."""
     artifacts = get_artifact_service(request)
     try:
@@ -296,7 +305,7 @@ async def artifact_action(name: str, body: ArtifactActionRequest, request: Reque
 
 
 @router.delete("/{name}")
-async def delete_artifact(name: str, request: Request) -> dict:
+async def delete_artifact(name: str, request: Request, admin: AdminDep) -> dict:
     """Delete every stored version; the profile's default text applies again."""
     artifacts = get_artifact_service(request)
     try:

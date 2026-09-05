@@ -16,8 +16,10 @@ from weakref import WeakValueDictionary
 import socketio
 from loguru import logger
 
+from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.host_context import host_context_from_payload
+from assistant_runtime.principal import Credentials, Principal
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -75,17 +77,42 @@ class AssistantNamespace(socketio.AsyncNamespace):
         # Running handlers and their waiters retain their lock; idle sessions
         # need no permanent namespace entry.
         self._session_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        # The principal established at connect time, per socket.
+        self._principals: dict[str, Principal] = {}
 
     @property
     def _streaming_service(self) -> StreamingService:
         return self.server.fastapi_app.state.streaming_service
 
     async def on_connect(self, sid: str, environ: dict, auth: Any = None) -> bool:
-        logger.info("Socket.IO client connected", sid=sid, namespace=self.namespace)
+        """Authenticate the connection; a rejected caller is never joined to anything."""
+        access = getattr(self.server.fastapi_app.state, "access_service", None)
+        if access is None:
+            logger.warning("Socket.IO connection refused: access service missing", sid=sid)
+            return False
+        try:
+            principal = await access.authenticate(Credentials.from_environ(environ, auth))
+        except AuthenticationError as e:
+            logger.info("Socket.IO connection refused", sid=sid, reason=str(e))
+            return False
+        self._principals[sid] = principal
+        logger.info(
+            "Socket.IO client connected",
+            sid=sid,
+            namespace=self.namespace,
+            principal=principal.id,
+        )
         return True
 
     async def on_disconnect(self, sid: str) -> None:
+        self._principals.pop(sid, None)
         logger.info("Socket.IO client disconnected", sid=sid, namespace=self.namespace)
+
+    def _principal(self, sid: str) -> Principal | None:
+        return self._principals.get(sid)
+
+    async def _forbid(self, sid: str, exc: Exception) -> None:
+        await self.emit("assistant:error", {"type": "forbidden", "message": str(exc)}, to=sid)
 
     async def on_assistant_join_session(self, sid: str, data: dict[str, Any]) -> None:
         """Client joins a session room for receiving events."""
@@ -104,16 +131,18 @@ class AssistantNamespace(socketio.AsyncNamespace):
                 to=sid,
             )
             return
-        room = f"session:{session_id}"
-        await self.enter_room(sid, room)
+        principal = self._principal(sid)
         streaming_service = self._try_get_streaming_service()
         if streaming_service is not None:
             warm = getattr(streaming_service, "warm_session", None)
             if callable(warm):
                 try:
-                    maybe_awaitable = warm(session_id, host_context)
+                    maybe_awaitable = warm(session_id, host_context, principal=principal)
                     if inspect.isawaitable(maybe_awaitable):
                         await maybe_awaitable
+                except AccessDeniedError as e:
+                    await self._forbid(sid, e)
+                    return
                 except Exception as e:
                     logger.warning(
                         "Session warmup failed during join",
@@ -121,6 +150,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
                         session_id=session_id,
                         error=str(e),
                     )
+        await self.enter_room(sid, f"session:{session_id}")
         logger.info("Client joined session room", sid=sid, session_id=session_id)
 
     async def on_assistant_message(self, sid: str, data: dict[str, Any]) -> None:
@@ -159,7 +189,11 @@ class AssistantNamespace(socketio.AsyncNamespace):
                 action = await self._streaming_service.accept_steering(
                     request,
                     has_live_stream=has_live_stream,
+                    principal=self._principal(sid),
                 )
+            except AccessDeniedError as e:
+                await self._forbid(sid, e)
+                return
             except Exception as e:
                 logger.error(
                     "Steering queueing failed",
@@ -185,7 +219,13 @@ class AssistantNamespace(socketio.AsyncNamespace):
             if active_task.done():
                 self._release_stream(session_id, active_task)
             elif not request.is_continuation:
-                await self._streaming_service.cancel_session(session_id)
+                try:
+                    await self._streaming_service.cancel_session(
+                        session_id, principal=self._principal(sid)
+                    )
+                except AccessDeniedError as e:
+                    await self._forbid(sid, e)
+                    return
                 await self._streaming_service.wait_for_session(session_id)
                 # Its producer is drained, but socket emission may still be
                 # blocked. Finish that consumer before exposing a replacement.
@@ -210,7 +250,13 @@ class AssistantNamespace(socketio.AsyncNamespace):
         async with self._session_lock(session_id):
             task = self._active_streams.get(session_id)
             delivery = self._stream_delivery.get(task)
-            cancelled = await self._streaming_service.cancel_session(session_id)
+            try:
+                cancelled = await self._streaming_service.cancel_session(
+                    session_id, principal=self._principal(sid)
+                )
+            except AccessDeniedError as e:
+                await self._forbid(sid, e)
+                return
             if delivery is not None and not delivery.started:
                 # The consumer may not have registered a producer yet, or may
                 # still be waiting for a predecessor. Do not let that scheduled
@@ -240,7 +286,9 @@ class AssistantNamespace(socketio.AsyncNamespace):
 
     def _start_stream(self, sid: str, request: AssistantRequest) -> None:
         self._start_transport(
-            sid, request.session_id, self._streaming_service.stream_message(request)
+            sid,
+            request.session_id,
+            self._streaming_service.stream_message(request, principal=self._principal(sid)),
         )
 
     async def _cancelled_before_start_events(

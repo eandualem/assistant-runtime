@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from pydantic_ai.exceptions import RunCancelled
 
+from assistant_runtime.app.access.exceptions import AccessDeniedError
 from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
 from assistant_runtime.app.assistant.models import AssistantRequest, AssistantResult
 from assistant_runtime.app.streaming._control import TurnControl
@@ -30,6 +31,7 @@ from assistant_runtime.app.streaming._runner import TurnRunner, format_error_mes
 from assistant_runtime.app.streaming._turn import TurnPlanner
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.exceptions import StreamingError, StreamSetupError
+from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal, can_access_session
 
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant._session_store import SessionStore
@@ -93,15 +95,27 @@ class StreamingService:
         await asyncio.gather(*(turn.done.wait() for turn in turns))
         logger.info("Streaming service stopped")
 
-    async def cancel_session(self, session_id: str) -> bool:
+    async def cancel_session(self, session_id: str, *, principal: Principal | None = None) -> bool:
         """Request cancellation of the active turn; idle host actions are unchanged.
 
         Returns whether an active, cancellable turn was found. Its producer
         saves the native snapshot and emits its terminal events. Use
         ``wait_for_session`` when the caller needs finalization to finish.
+        ``principal`` must own the session (``AccessDeniedError`` otherwise);
+        in-process callers that pass none act as the local operator.
         """
+        await self._authorize(session_id, principal)
         turn = self._active_turns.get(session_id)
         return turn.cancel() if turn is not None else False
+
+    async def _authorize(self, session_id: str, principal: Principal | None) -> None:
+        """Deny a principal that may not act on an existing session."""
+        actor = principal or LOCAL_PRINCIPAL
+        if actor.is_admin:
+            return
+        context = await self._sessions.get_context_if_exists_async(session_id)
+        if context is not None and not can_access_session(actor, context.get("owner_id")):
+            raise AccessDeniedError(f"Session '{session_id}' belongs to another principal")
 
     @staticmethod
     def cancelled_before_start_events(session_id: str) -> list[dict[str, Any]]:
@@ -139,20 +153,32 @@ class StreamingService:
         return {"healthy": self._started}
 
     async def warm_session(
-        self, session_id: str, host_context: dict[str, Any] | None = None
+        self,
+        session_id: str,
+        host_context: dict[str, Any] | None = None,
+        *,
+        principal: Principal | None = None,
     ) -> None:
         """Warm shared request-path state for a joined session."""
         if not self._started:
             return
+        await self._authorize(session_id, principal)
         await self._assistant_service.warm_session(session_id, host_context)
 
-    async def accept_steering(self, request: AssistantRequest, *, has_live_stream: bool) -> str:
+    async def accept_steering(
+        self,
+        request: AssistantRequest,
+        *,
+        has_live_stream: bool,
+        principal: Principal | None = None,
+    ) -> str:
         """Queue steering behind a live stream, or promote it to run now: ``queued``/``promoted``."""
         if not request.is_steering:
             raise SessionError("Only steering requests can be accepted")
         session_context = await self._sessions.get_context_if_exists_async(request.session_id)
         if session_context is None:
             raise SessionError(f"Steering rejected: session '{request.session_id}' does not exist")
+        await self._authorize(request.session_id, principal)
 
         if has_live_stream or session_context.get("pending_tool_call_id"):
             await self._sessions.queue_steering(request.session_id, request)
@@ -175,8 +201,13 @@ class StreamingService:
         await self._sessions.queue_steering(request.session_id, request)
         return "promoted"
 
-    async def stream_message(self, request: AssistantRequest) -> AsyncIterator[dict[str, Any]]:
+    async def stream_message(
+        self, request: AssistantRequest, *, principal: Principal | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
         """Run one turn and yield events through ``agent_status: completed``.
+
+        ``principal`` owns a session the request creates and must be allowed
+        on one that exists; without one the caller is the local operator.
 
         A producer owns execution and persistence so a slow or disappearing
         consumer cannot interrupt finalization. Closing/cancelling this
@@ -195,7 +226,9 @@ class StreamingService:
                 raise StreamingError("Streaming service not started")
         turn = TurnControl()
         self._active_turns[request.session_id] = turn
-        turn.task = asyncio.create_task(self._produce_turn(request, turn))
+        turn.task = asyncio.create_task(
+            self._produce_turn(request, turn, principal or LOCAL_PRINCIPAL)
+        )
         try:
             while (event := await turn.events.get()) is not None:
                 yield event
@@ -206,10 +239,12 @@ class StreamingService:
             # Consumer cancellation must not cancel the native snapshot writer.
             await asyncio.shield(turn.task)
 
-    async def _produce_turn(self, request: AssistantRequest, turn: TurnControl) -> None:
+    async def _produce_turn(
+        self, request: AssistantRequest, turn: TurnControl, principal: Principal
+    ) -> None:
         """Drive the one turn pipeline independently of transport backpressure."""
         try:
-            async with aclosing(self._stream_turn(request, turn)) as stream:
+            async with aclosing(self._stream_turn(request, turn, principal)) as stream:
                 async for event in stream:
                     turn.events.put_nowait(event)
         except BaseException as exc:
@@ -222,12 +257,12 @@ class StreamingService:
             turn.events.put_nowait(None)
 
     async def _stream_turn(
-        self, request: AssistantRequest, turn: TurnControl
+        self, request: AssistantRequest, turn: TurnControl, principal: Principal
     ) -> AsyncIterator[dict[str, Any]]:
         """Plan and execute an accepted turn through the shared runner."""
         try:
-            (plan,) = await turn.prepare(TurnPlanner(self._sessions).plan(request))
-        except (StreamSetupError, SessionError, RunCancelled) as e:
+            (plan,) = await turn.prepare(TurnPlanner(self._sessions).plan(request, principal))
+        except (StreamSetupError, SessionError, AccessDeniedError, RunCancelled) as e:
             # Nothing was emitted yet: send a minimal lifecycle envelope so the
             # client can leave its "thinking" state.
             async for event in self._setup_failure_envelope(request, e):
@@ -245,17 +280,20 @@ class StreamingService:
         async for event in self._runner.run(plan, control=turn):
             yield event
 
-    async def run_message(self, request: AssistantRequest) -> AssistantResult:
+    async def run_message(
+        self, request: AssistantRequest, *, principal: Principal | None = None
+    ) -> AssistantResult:
         """Run one turn and return the final answer (the non-streaming form).
 
         Raises:
             SessionError: The request does not fit the session (unknown parent, ...).
+            AccessDeniedError: The principal may not act on the session.
             AgentRunError: The run failed.
         """
         text: list[str] = []
         final: dict[str, Any] | None = None
         error: dict[str, Any] | None = None
-        async for event in self.stream_message(request):
+        async for event in self.stream_message(request, principal=principal):
             kind = event.get("type")
             if kind == "text_delta":
                 text.append(event.get("content") or "")
@@ -267,6 +305,8 @@ class StreamingService:
             message = (error or {}).get("message") or "Agent execution failed"
             if (final or {}).get("error_type") == "session_error":
                 raise SessionError(message)
+            if (final or {}).get("error_type") == "forbidden":
+                raise AccessDeniedError(message)
             raise AgentRunError(message)
         turn_number = self._sessions.get_context(request.session_id).get("turn_number", 0)
         return AssistantResult(
@@ -281,10 +321,16 @@ class StreamingService:
     async def _setup_failure_envelope(
         self, request: AssistantRequest, exc: Exception
     ) -> AsyncIterator[dict[str, Any]]:
-        is_session_error = isinstance(exc, SessionError)
+        is_session_error = isinstance(exc, SessionError | AccessDeniedError)
         is_cancelled = isinstance(exc, RunCancelled)
         error_type = (
-            "cancelled" if is_cancelled else "session_error" if is_session_error else "setup_error"
+            "cancelled"
+            if is_cancelled
+            else "forbidden"
+            if isinstance(exc, AccessDeniedError)
+            else "session_error"
+            if is_session_error
+            else "setup_error"
         )
         (logger.warning if is_session_error else logger.error)(
             "[STREAM] Setup failed — emitting minimal lifecycle envelope",

@@ -148,6 +148,15 @@ rewrite its `scratchpad` immediately, propose a new `tone` for the host to
 approve through `/api/artifacts`, and only read `instructions` until the
 host changes it. See [concepts](concepts.md#prompt-artifacts-and-profiles).
 
+## Identity
+
+With `ACCESS__MODE=host`, `AssistantDefinition(authenticate=...)` turns a
+transport's `Credentials` (headers, the Socket.IO connect payload, the
+client address) into a `Principal`, or None to reject the caller. Sessions
+belong to the principal that created them; in-process callers pass
+`principal=` to `run_message` and friends, or act as the local operator.
+See [identity and access](access.md).
+
 ## Cancelling a turn
 
 The runtime uses Pydantic AI's `CancellationToken` and `RunCancelled`

@@ -110,9 +110,12 @@ class SessionStore:
     # --- messages -----------------------------------------------------------
 
     async def register_user_message(
-        self, request: AssistantRequest
+        self, request: AssistantRequest, *, owner_id: str | None = None
     ) -> tuple[dict[str, Any], MessageRecord]:
-        """Persist a user-side message send and update the active cached path."""
+        """Persist a user-side message send and update the active cached path.
+
+        ``owner_id`` is recorded when this message creates the session.
+        """
         if request.is_steering:
             raise ValueError("Steering messages are stored separately from the conversation tree")
 
@@ -122,6 +125,7 @@ class SessionStore:
         if request.parent_id is None:
             if ctx is None:
                 ctx = self.get_context(session_id)
+                ctx["owner_id"] = owner_id
             elif ctx["message_count"] > 0:
                 raise ValueError("Only the first message in a session may have parent_id = null")
         else:
@@ -146,7 +150,7 @@ class SessionStore:
             "created_at": datetime.now(UTC),
         }
         if self._db is not None:
-            await self._db.ensure_session(session_id, ctx.get("title"))
+            await self._db.ensure_session(session_id, ctx.get("title"), ctx.get("owner_id"))
             await self._db.create_message(record)
 
         _add_message(ctx, record)
@@ -396,27 +400,44 @@ class SessionStore:
             return None
         return await self._db.session_for_telegram_chat(chat_id)
 
+    async def set_owner(self, session_id: str, owner_id: str | None) -> None:
+        """Assign (or clear) the session's owner, in memory and in the row."""
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        ctx["owner_id"] = owner_id
+        if self._db is not None:
+            await self._db.set_owner(session_id, owner_id)
+
     async def delete_session(self, session_id: str) -> None:
         if self._db is not None:
             await self._db.delete(session_id)
         self._sessions.pop(session_id, None)
 
-    async def list_sessions(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
-        """List sessions with metadata and tree message counts."""
+    async def list_sessions(
+        self, limit: int = 50, offset: int = 0, *, owner_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List sessions with metadata and tree message counts.
+
+        ``owner_id`` limits the list to that principal's sessions plus the
+        unowned ones; None lists everything (administration).
+        """
         if self._db is None:
             sessions = [
                 {
                     "session_id": sid,
+                    "owner_id": ctx.get("owner_id"),
                     "title": ctx.get("title"),
                     "turn_number": ctx.get("turn_number", 0),
                     "message_count": ctx.get("message_count", 0),
                     "created_at": None,
                 }
                 for sid, ctx in self._sessions.items()
+                if owner_id is None or ctx.get("owner_id") in (None, owner_id)
             ]
             return sessions[offset : offset + limit]
 
-        results = await self._db.list_sessions(limit, offset)
+        results = await self._db.list_sessions(limit, offset, owner_id=owner_id)
         # The in-memory context is ahead of the row for sessions being worked on.
         for result in results:
             ctx = self._sessions.get(result["session_id"])
@@ -536,6 +557,7 @@ def _empty_context() -> dict[str, Any]:
         "turn_number": 0,
         "working_memory": None,
         "title": None,
+        "owner_id": None,
         "telegram_chat_id": None,
         "telegram_bound_at": None,
         "last_host_context": None,
@@ -560,6 +582,7 @@ def _context_from_loaded(loaded: LoadedSession) -> dict[str, Any]:
     ctx["turn_number"] = loaded.turn_number
     ctx["working_memory"] = loaded.working_memory
     ctx["title"] = loaded.title
+    ctx["owner_id"] = loaded.owner_id
     ctx["telegram_chat_id"] = loaded.telegram_chat_id
     ctx["telegram_bound_at"] = loaded.telegram_bound_at
     for record in loaded.messages:
