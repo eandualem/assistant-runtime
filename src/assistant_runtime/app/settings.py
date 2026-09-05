@@ -201,9 +201,13 @@ def resolve_effective_config(
         if field in request_values:
             requested = request_values[field]
             ceiling = _trusted(field)
-            if field in CEILING_FIELDS and ceiling is not None and requested > ceiling:
-                logger.debug("Request override clamped", field=field, requested=requested)
-                return ceiling
+            if field in CEILING_FIELDS:
+                if ceiling is None:
+                    # The host disabled this budget; a request cannot switch it on.
+                    return None
+                if requested > ceiling:
+                    logger.debug("Request override clamped", field=field, requested=requested)
+                    return ceiling
             return requested
         return _trusted(field)
 
