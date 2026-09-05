@@ -11,6 +11,7 @@ output so the history stays consistent.
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -128,11 +129,13 @@ def store_pending_call(
     session_context: dict[str, Any],
     *,
     assistant_segments: list[dict[str, Any]] | None = None,
+    host_tool_names: set[str] | None = None,
 ) -> dict[str, Any]:
     """Record the single deferred host-tool call and return its ``final_response`` payload.
 
     The persisted assistant segments are the source of truth for the call id
-    and arguments when they disagree with the run output.
+    and arguments when they disagree with the run output. ``host_tool_names``
+    adds the actions the request declared to the configured host tools.
     """
     calls = list(output.calls)
     if len(calls) != 1:
@@ -140,12 +143,17 @@ def store_pending_call(
             f"Host tool protocol violation: expected exactly 1 deferred tool call, got {len(calls)}"
         )
     first = calls[0]
-    if not tools.is_host_tool(first.tool_name):
+    known = host_tool_names or set()
+
+    def is_host(name: str) -> bool:
+        return name in known or tools.is_host_tool(name)
+
+    if not is_host(first.tool_name):
         raise ValueError(
             f"Host tool protocol violation: unknown deferred host tool '{first.tool_name}'"
         )
 
-    pending = _pending_call_from_segments(tools, assistant_segments)
+    pending = _pending_call_from_segments(is_host, assistant_segments)
     if pending is not None:
         if pending["tool_name"] != first.tool_name or pending["call_id"] != first.tool_call_id:
             logger.warning(
@@ -168,7 +176,7 @@ def store_pending_call(
 
 
 def _pending_call_from_segments(
-    tools: ToolService, segments: list[dict[str, Any]] | None
+    is_host: Callable[[str], bool], segments: list[dict[str, Any]] | None
 ) -> dict[str, Any] | None:
     """The one host-tool entry without an output in persisted assistant segments."""
     if not segments:
@@ -178,9 +186,7 @@ def _pending_call_from_segments(
         for segment in segments
         if segment.get("kind") == "tool_group"
         for tool in segment.get("tools", [])
-        if isinstance(tool, dict)
-        and tools.is_host_tool(str(tool.get("name", "")))
-        and "output" not in tool
+        if isinstance(tool, dict) and is_host(str(tool.get("name", ""))) and "output" not in tool
     ]
     if not pending:
         return None

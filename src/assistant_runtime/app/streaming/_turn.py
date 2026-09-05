@@ -19,6 +19,7 @@ fault, not retryable) and anything else ``StreamSetupError``.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -26,11 +27,15 @@ from typing import TYPE_CHECKING, Any, Literal
 from loguru import logger
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.messages import (
+    BinaryContent,
+    DocumentUrl,
+    ImageUrl,
     ModelMessage,
     ModelRequest,
     ModelResponse,
     ToolCallPart,
     ToolReturnPart,
+    UserContent,
 )
 
 from assistant_runtime.app.assistant._serialization import (
@@ -67,7 +72,7 @@ class TurnPlan:
     prior_assistant_messages: list[ModelMessage] = field(default_factory=list)
     prior_usage: dict[str, int] | None = None
     # What the agent run starts from.
-    user_prompt: str | None = None
+    user_prompt: str | Sequence[UserContent] | None = None
     history: list[ModelMessage] = field(default_factory=list)
     deferred_tool_results: DeferredToolResults | None = None
     accepted_tool_result: ModelRequest | None = None
@@ -116,12 +121,15 @@ class TurnPlanner:
             session_context=session_context,
             assistant_message_id=assistant_message_id,
             assistant_parent_id=request.id,
-            user_prompt=request.content,
+            user_prompt=build_user_prompt(request),
             history=self._sessions.get_history(session_id, exclude_leaf=True),
-            screenshot=extract_screenshot_data_uri(images=request.images),
+            screenshot=request.screenshot,
             turn_number=session_context.get("turn_number", 0),
             input_message=request.content,
-            trace_metadata={"has_images": bool(request.images)},
+            trace_metadata={
+                "has_images": bool(request.images),
+                "attachments": len(request.attachments),
+            },
         )
 
     async def _plan_continuation(self, request: AssistantRequest) -> TurnPlan:
@@ -189,8 +197,8 @@ class TurnPlanner:
 
         # The host may attach a post-action screenshot; it goes to look_at_screen,
         # not into the model context.
-        screenshot = extract_screenshot_data_uri(
-            images=request.images, tool_result=request.tool_result
+        screenshot = request.screenshot or extract_screenshot_data_uri(
+            tool_result=request.tool_result
         )
         tool_result = (
             strip_screenshot_from_tool_result(request.tool_result)
@@ -269,3 +277,26 @@ class TurnPlanner:
             input_message=request.content,
             trace_metadata={"steering": True},
         )
+
+
+def build_user_prompt(request: AssistantRequest) -> str | list[UserContent]:
+    """The user prompt with reference attachments as native Pydantic AI content.
+
+    Screenshots are not included: they stay available to ``look_at_screen``.
+    """
+    parts: list[UserContent] = []
+    for attachment in request.reference_attachments:
+        if attachment.text is not None:
+            label = attachment.name or "attachment"
+            parts.append(f"[{label}]\n{attachment.text}")
+        elif attachment.data_uri is not None:
+            parts.append(BinaryContent.from_data_uri(attachment.data_uri))
+        elif attachment.url is not None:
+            parts.append(
+                ImageUrl(url=attachment.url)
+                if attachment.kind == "image"
+                else DocumentUrl(url=attachment.url)
+            )
+    if not parts:
+        return request.content
+    return [request.content, *parts] if request.content else parts

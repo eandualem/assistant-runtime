@@ -89,7 +89,12 @@ class TestChatEndpoint:
 
         assert response.status_code == 200
         request = service.run_message.await_args.args[0]
-        assert request.host_context == {"page": {"name": "agents", "data": {"entities": []}}}
+        assert request.host_context["view"] == {
+            "name": "agents",
+            "description": "",
+            "data": {"entities": []},
+            "state": {},
+        }
 
     @pytest.mark.asyncio
     async def test_chat_session_rejection_is_a_409(self) -> None:

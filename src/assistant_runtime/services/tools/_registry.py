@@ -10,6 +10,7 @@ from loguru import logger
 from pydantic_ai.toolsets import FunctionToolset
 
 from assistant_runtime.base.resilience import retry_with_backoff
+from assistant_runtime.host_context import HostAction, actions_of, view_name_of
 from assistant_runtime.services.tools._host_tools import (
     build_host_toolset,
     get_host_definitions,
@@ -118,8 +119,9 @@ class ToolRegistry:
         - FunctionToolset for backend tools (with real handlers, wrapped with safety net)
         - ExternalToolset for host tools (deferred execution via DeferredToolRequests)
         """
+        request_actions = self._request_actions(host_context)
         cache_key = self._cache_key(host_context)
-        cached = self._toolset_cache.get(cache_key)
+        cached = self._toolset_cache.get(cache_key) if not request_actions else None
         if cached is not None:
             return list(cached)
 
@@ -141,6 +143,15 @@ class ToolRegistry:
         # Host tools — always appended, bypass page scoping
         if self._host_toolset is not None:
             toolsets.append(self._host_toolset)
+        if request_actions:
+            toolsets.append(
+                build_host_toolset(
+                    {
+                        a.name: {"description": a.description, "parameters": a.parameters}
+                        for a in request_actions
+                    }
+                )
+            )
 
         logger.debug(
             "[TOOLS] Built toolsets",
@@ -148,7 +159,9 @@ class ToolRegistry:
             host=len(self._host_definitions),
             toolsets=len(toolsets),
         )
-        self._toolset_cache[cache_key] = list(toolsets)
+        if not request_actions:
+            # Declared actions vary per request; caching them would grow without bound.
+            self._toolset_cache[cache_key] = list(toolsets)
         return list(toolsets)
 
     def build_subagent_toolset(self) -> list:
@@ -212,8 +225,9 @@ class ToolRegistry:
         never scoped.
         """
         page_name = self._page_name(host_context)
-        cache_key = page_name or None
-        cached = self._available_tools_cache.get(cache_key)
+        request_actions = self._request_actions(host_context)
+        cache_key = self._cache_key(host_context)
+        cached = self._available_tools_cache.get(cache_key) if not request_actions else None
         if cached is not None:
             return cached
 
@@ -235,21 +249,45 @@ class ToolRegistry:
 
         toolset = ToolSet(
             backend_tools=backend,
-            host_tools=self._host_definitions,
+            host_tools=[
+                *self._host_definitions,
+                *(
+                    ToolDefinition(
+                        name=a.name,
+                        description=a.description,
+                        parameters_schema=a.parameters,
+                        category=ToolCategory.HOST,
+                    )
+                    for a in request_actions
+                ),
+            ],
             page=page_name,
             filtered_out_count=total_before - total,
         )
-        self._available_tools_cache[cache_key] = toolset
+        if not request_actions:
+            self._available_tools_cache[cache_key] = toolset
         return toolset
 
     @staticmethod
     def _page_name(host_context: dict[str, Any] | None = None) -> str | None:
-        """Extract the page name from a host context."""
-        if host_context and isinstance(host_context.get("page"), dict):
-            name = host_context["page"].get("name")
-            return str(name) if name else None
-        return None
+        """The view (page) name of a host context."""
+        return view_name_of(host_context)
+
+    def _request_actions(self, host_context: dict[str, Any] | None) -> list[HostAction]:
+        """Actions the host declared for this turn, minus names already taken."""
+        actions = []
+        for action in actions_of(host_context):
+            if action.name in self._backend_definitions or any(
+                action.name == d.name for d in self._host_definitions
+            ):
+                logger.warning(
+                    "Request-declared action shadows a registered tool; ignored",
+                    action=action.name,
+                )
+                continue
+            actions.append(action)
+        return actions
 
     def _cache_key(self, host_context: dict[str, Any] | None = None) -> str | None:
-        """Cache by page since tool availability is page-scoped."""
+        """Cache by page; contexts with declared actions are never cached."""
         return self._page_name(host_context) or None

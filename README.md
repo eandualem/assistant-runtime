@@ -56,6 +56,7 @@ checkout.
 | Page | What it covers |
 |---|---|
 | [concepts](docs/concepts.md) | sessions, turns, tools, host tools, host context, artifacts, envelopes |
+| [host contract](docs/host-contract.md) | the versioned `host_context`, attachments and action protocol a host uses |
 | [getting-started](docs/getting-started.md) | install, one key, chat, server, a minimal client, Postgres, integrations |
 | [configuration](docs/configuration.md) | every setting, the three configuration tiers, secrets |
 | [api](docs/api.md) | HTTP endpoints and the Socket.IO streaming contract |
@@ -80,17 +81,18 @@ The runtime knows nothing about any particular host. Your application
 describes itself in two ways, both optional:
 
 - **Host context**, sent with a message: what the user is looking at, as
-  a small JSON object (`page`, `navigation`, `background`). It goes into
-  the system prompt and can select which tools apply to the current page.
-- **Host tools**, declared in configuration: actions your application
-  performs. The model calls them like any tool; the runtime emits a
-  `tool_call` event, ends the turn with a pending call, and resumes when
-  your application sends the result back.
+  a small versioned JSON object (`host`, `view`, `navigation`,
+  `attachments`, `background`, `extensions`). It goes into the system
+  prompt and can select which tools apply to the current view.
+- **Host actions**, declared in configuration or per request: actions your
+  application performs. The model calls them like any tool; the runtime
+  emits a `tool_call` event, ends the turn with a pending call, and resumes
+  when your application sends the result back.
 
 A client needs a Socket.IO connection to the `/assistant` namespace, a
 `join_session`, and a `message`. The events it receives are listed in
 [docs/api.md](docs/api.md); the host contract in
-[docs/concepts.md](docs/concepts.md).
+[docs/host-contract.md](docs/host-contract.md).
 
 ## Configuration in one screen
 
@@ -189,6 +191,7 @@ src/assistant_runtime/
   cli/           chat, serve, doctor, docs
   help/          the documentation, when installed from a wheel
   artifacts.py   assistant profiles: the artifact schema, built-ins, TOML loading
+  host_context.py  the host contract: versioned context, attachments, actions
   profiles/      the example technical_operator texts
   model_catalog.py  providers, key variables, fallback models, the model list
   config.py      AppSettings, composed from every module's config

@@ -127,9 +127,9 @@ execution, history, serialization, or the upstream dependency; see
   attached through each service's `set_runtime_settings()`.
 - **Layering, bottom up.** `base` (lifecycle, protocols, resilience,
   exceptions), `artifacts` (assistant profiles: the artifact schema, the
-  built-in `neutral` and `technical_operator` profiles, TOML loading) and
-  `model_catalog` (providers, their key variables, fallback defaults and
-  the model list) are leaves. `services/*` import `base`, `config` and the
+  built-in `neutral` and `technical_operator` profiles, TOML loading),
+  `host_context` (the host contract) and `model_catalog` (providers, their
+  key variables, fallback defaults and the model list) are leaves. `services/*` import `base`, `config` and the
   `services/tracing` helpers; `services/tools` may import `services/media`
   and `services/artifacts`; no service imports `app`. `app/assistant` (prompt, sessions, per-request
   agent setup) imports services; `app/streaming` (the turn pipeline) imports
@@ -186,9 +186,14 @@ execution, history, serialization, or the upstream dependency; see
   a provider that implements the Protocol; no capability names a specific
   integration.
 - **Nothing about a particular host lives in code.** What the host shows
-  arrives as `host_context` on the request (shape in the README). Tools
-  the host executes, page-scoped tool lists and invalidation domains are
-  configuration (`TOOLS__HOST_TOOLS`, `TOOLS__PAGE_SCOPES`,
+  arrives as `host_context` on the request, validated against the
+  versioned contract in the leaf `host_context.py` (`HostContext`,
+  `Attachment`, `HostAction`; docs in `docs/host-contract.md`) and stored
+  in its canonical form. Reference attachments become native Pydantic AI
+  content on the user prompt; screenshots stay behind `look_at_screen`.
+  Tools the host executes are configuration (`TOOLS__HOST_TOOLS`) or
+  request-declared `host_context.actions`; page-scoped tool lists and
+  invalidation domains are configuration (`TOOLS__PAGE_SCOPES`,
   `TOOLS__INVALIDATIONS`), all empty by default.
 - **A session is a tree of messages.** Each message has a `parent_id`; the
   session tracks the active leaf and the path to it is the model history.

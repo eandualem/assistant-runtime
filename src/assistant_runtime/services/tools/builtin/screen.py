@@ -1,9 +1,11 @@
 """``look_at_screen`` — on-demand inspection of the screenshot the host attached.
 
-Images are never sent to the model automatically; the host attaches one to
-the request (``images[]`` or a top-level ``screenshot`` field), the turn
-pipeline binds it to the request context, and the model calls this tool
-when it wants to see it.
+Screenshots are never sent to the model automatically; the host attaches
+one to the request (an attachment with ``purpose: "screenshot"``, or the
+legacy ``images[]`` / top-level ``screenshot`` field), the turn pipeline
+binds it to the request context, and the model calls this tool when it
+wants to see it. Reference attachments, by contrast, go straight into the
+message as native content.
 """
 
 from __future__ import annotations
@@ -23,8 +25,8 @@ async def look_at_screen() -> BinaryContent | dict[str, str]:
         return {
             "error": (
                 "No screenshot available for this request. "
-                "The host must include the screenshot as a data URI in "
-                "images[], or as a top-level 'screenshot' field in the request. "
+                "The host must attach the screenshot as a data URI (an attachment "
+                "with purpose 'screenshot', or the legacy images[] field). "
                 "After UI navigation, the next message must include a fresh capture."
             ),
             "error_code": "NO_SCREENSHOT",

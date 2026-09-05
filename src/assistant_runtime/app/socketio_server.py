@@ -16,7 +16,8 @@ from weakref import WeakValueDictionary
 import socketio
 from loguru import logger
 
-from assistant_runtime.app.assistant.models import AssistantRequest, host_context_from_payload
+from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.host_context import host_context_from_payload
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -94,9 +95,17 @@ class AssistantNamespace(socketio.AsyncNamespace):
                 "assistant:error", {"type": "validation", "message": "Missing session_id"}, to=sid
             )
             return
+        try:
+            host_context = host_context_from_payload(data)
+        except ValueError as e:
+            await self.emit(
+                "assistant:error",
+                {"type": "validation", "message": f"Invalid host_context: {e}"},
+                to=sid,
+            )
+            return
         room = f"session:{session_id}"
         await self.enter_room(sid, room)
-        host_context = host_context_from_payload(data)
         streaming_service = self._try_get_streaming_service()
         if streaming_service is not None:
             warm = getattr(streaming_service, "warm_session", None)

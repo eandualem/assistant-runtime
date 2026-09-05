@@ -175,13 +175,12 @@ class TestHostContextFragment:
     def test_empty_dict(self):
         assert _host_context_fragment({}) == ""
 
-    def test_missing_page(self):
-        assert _host_context_fragment({"something": "else"}) == ""
+    def test_context_without_a_view_is_fine(self):
+        assert _host_context_fragment({"version": 1}) == ""
+        frag = _host_context_fragment({"host": {"name": "billing", "kind": "service"}})
+        assert frag == "The host application is billing (service)."
 
-    def test_page_without_name(self):
-        assert _host_context_fragment({"page": {"data": {"x": 1}}}) == ""
-
-    def test_missing_page_logs_warning(self):
+    def test_invalid_context_logs_a_warning_and_renders_nothing(self):
         from io import StringIO
 
         from loguru import logger
@@ -190,23 +189,29 @@ class TestHostContextFragment:
         handler_id = logger.add(sink, format="{message}", level="WARNING")
         try:
             assert _host_context_fragment({"something": "else"}) == ""
-            assert "no page name" in sink.getvalue()
+            assert "could not be interpreted" in sink.getvalue()
         finally:
             logger.remove(handler_id)
 
-    def test_header_names_the_page(self):
-        frag = _host_context_fragment({"page": {"name": "settings"}})
-        assert frag == "The host application is showing: settings."
+    def test_header_names_the_view(self):
+        frag = _host_context_fragment({"view": {"name": "settings"}})
+        assert frag == "The host is showing: settings."
 
-    def test_header_includes_description(self):
+    def test_page_alias_and_description(self):
         frag = _host_context_fragment(
             {"page": {"name": "editor", "description": "A file is open for editing."}}
         )
-        assert frag.startswith("The host application is showing: editor. A file is open")
+        assert frag.startswith("The host is showing: editor. A file is open")
+
+    def test_host_identity_comes_first(self):
+        frag = _host_context_fragment(
+            {"host": {"name": "web", "kind": "browser", "version": "2.1"}, "view": {"name": "a"}}
+        )
+        assert frag.splitlines()[0] == "The host application is web (browser) version 2.1."
 
     def test_data_renders_structured_items(self):
         ctx = {
-            "page": {
+            "view": {
                 "name": "tasks",
                 "data": {
                     "issues": [
@@ -224,26 +229,23 @@ class TestHostContextFragment:
 
     def test_data_no_truncation(self):
         long_title = "x" * 500
-        ctx = {"page": {"name": "tasks", "data": {"issues": [{"title": long_title}]}}}
+        ctx = {"view": {"name": "tasks", "data": {"issues": [{"title": long_title}]}}}
         assert long_title in _host_context_fragment(ctx)
 
     def test_data_lists_as_bullets(self):
-        ctx = {"page": {"name": "home", "data": {"recent": ["a", "b"]}}}
+        ctx = {"view": {"name": "home", "data": {"recent": ["a", "b"]}}}
         frag = _host_context_fragment(ctx)
         assert "recent:" in frag
         assert "- a" in frag
         assert "- b" in frag
 
     def test_scalar_data_inline(self):
-        ctx = {"page": {"name": "home", "data": {"theme": "dark"}}}
+        ctx = {"view": {"name": "home", "data": {"theme": "dark"}}}
         assert "theme: dark" in _host_context_fragment(ctx)
-
-    def test_no_data_key(self):
-        assert "showing: agents" in _host_context_fragment({"page": {"name": "agents"}})
 
     def test_state_rendered_as_json(self):
         ctx = {
-            "page": {
+            "view": {
                 "name": "agents",
                 "data": {"sessions": [{"name": "leo", "state": "idle"}]},
                 "state": {
@@ -260,84 +262,51 @@ class TestHostContextFragment:
         assert '"current": "loaded"' in frag
         assert "SELECT" in frag
 
-    def test_no_state_key_no_section(self):
-        frag = _host_context_fragment({"page": {"name": "agents", "data": {"sessions": []}}})
-        assert "Page state:" not in frag
-
     def test_empty_state_no_section(self):
-        frag = _host_context_fragment({"page": {"name": "agents", "state": {}}})
+        frag = _host_context_fragment({"view": {"name": "agents", "state": {}}})
         assert "Page state:" not in frag
 
     def test_background_summary(self):
         ctx = {
-            "page": {"name": "tasks", "data": {}},
+            "view": {"name": "tasks"},
             "background": {
-                "agents": {"state": "idle", "summary": {"entityCount": 5}},
-                "sessions": {"state": "loaded", "summary": {"sessionCount": 3}},
+                "agents": {"state": "idle", "summary": {"entity_count": 5}},
+                "sessions": {"state": "loaded", "summary": {"session_count": 3}},
             },
         }
         frag = _host_context_fragment(ctx)
         assert "Background:" in frag
         assert "agents (idle)" in frag
         assert "sessions (loaded)" in frag
-        assert "5 entityCount" in frag
-        assert "3 sessionCount" in frag
+        assert "5 entity_count" in frag
+        assert "3 session_count" in frag
 
     def test_background_flat_dict_fallback(self):
-        ctx = {"page": {"name": "tasks"}, "background": {"agents": {"online": 5, "offline": 2}}}
+        ctx = {"view": {"name": "tasks"}, "background": {"agents": {"online": 5, "offline": 2}}}
         frag = _host_context_fragment(ctx)
         assert "Background:" in frag
         assert "5 online" in frag
 
-    def test_actions(self):
+    def test_actions_are_listed_as_callable_tools(self):
         ctx = {
-            "page": {
-                "name": "tasks",
-                "actions": [
-                    {"event_type": "NAVIGATE", "label": "Go to agents"},
-                    {"event_type": "REFRESH", "label": ""},
-                ],
-            },
+            "view": {"name": "tasks"},
+            "actions": [
+                {"name": "navigate", "description": "Go to another view."},
+                {"name": "refresh", "description": "Reload the list."},
+            ],
         }
         frag = _host_context_fragment(ctx)
-        assert "Available host actions:" in frag
-        assert "- NAVIGATE (Go to agents)" in frag
-        assert "- REFRESH" in frag
+        assert "Host actions available as tools for this turn:" in frag
+        assert "- navigate: Go to another view." in frag
+        assert "- refresh: Reload the list." in frag
 
-    def test_actions_with_params(self):
-        ctx = {
-            "page": {
-                "name": "meetings",
-                "actions": [
-                    {
-                        "event_type": "user.selectRoom",
-                        "label": "Select Room",
-                        "params": [
-                            {"name": "id", "type": "string", "required": True},
-                            {"name": "focus", "type": "boolean", "required": False},
-                            {"name": "note"},
-                        ],
-                    },
-                ],
-            },
-        }
-        frag = _host_context_fragment(ctx)
-        assert (
-            "- user.selectRoom (Select Room) — params: id (string, required), focus (boolean), note"
-            in frag
-        )
-
-    def test_empty_actions_omitted(self):
-        frag = _host_context_fragment({"page": {"name": "tasks", "actions": []}})
-        assert "Available host actions:" not in frag
-
-    def test_actions_not_read_from_top_level(self):
-        ctx = {"page": {"name": "tasks"}, "actions": [{"event_type": "X"}]}
-        assert "Available host actions:" not in _host_context_fragment(ctx)
+    def test_legacy_page_actions_are_not_rendered(self):
+        ctx = {"page": {"name": "tasks", "actions": [{"event_type": "X"}]}}
+        assert _host_context_fragment(ctx) == ""
 
     def test_navigation_targets(self):
         ctx = {
-            "page": {"name": "home"},
+            "view": {"name": "home"},
             "navigation": [
                 {"route": "/agents", "name": "Agents", "description": "Monitor agent sessions"},
                 {"route": "/tasks", "name": "Tasks", "description": "View GitHub issues"},
@@ -347,40 +316,47 @@ class TestHostContextFragment:
         assert "Navigation:" in frag
         assert "- Agents — Monitor agent sessions" in frag
         assert "- Tasks — View GitHub issues" in frag
+        assert "/agents" not in frag
 
     def test_navigation_targets_no_description(self):
-        ctx = {"page": {"name": "home"}, "navigation": [{"name": "Settings"}, "About"]}
-        frag = _host_context_fragment(ctx)
-        assert "- Settings" in frag
-        assert "- About" in frag
-        assert "— " not in frag.split("Navigation:")[1]
+        ctx = {"view": {"name": "home"}, "navigation": [{"name": "Agents"}]}
+        assert "- Agents" in _host_context_fragment(ctx)
 
-    def test_empty_navigation_omitted(self):
-        assert "Navigation:" not in _host_context_fragment(
-            {"page": {"name": "home"}, "navigation": []}
-        )
+    def test_attachments_and_freshness_and_extensions(self):
+        ctx = {
+            "view": {"name": "home"},
+            "attachments": [
+                {"kind": "image", "purpose": "screenshot", "data_uri": "data:image/png;base64,x"},
+                {"kind": "text", "text": "notes", "name": "notes.txt", "description": "meeting"},
+            ],
+            "captured_at": "2000-01-01T00:00:00Z",
+            "extensions": {"tenant": "acme"},
+        }
+        frag = _host_context_fragment(ctx)
+        assert "- a screenshot of the current screen (call look_at_screen to see it)" in frag
+        assert "- notes.txt — meeting (attached to the message)" in frag
+        assert "treat it as stale" in frag
+        assert 'Host data:\n```json\n{\n  "tenant": "acme"\n}\n```' in frag
 
     def test_section_order(self):
         ctx = {
-            "page": {
-                "name": "p",
-                "data": {"k": "v"},
-                "state": {"s": 1},
-                "actions": [{"event_type": "A"}],
-            },
-            "navigation": ["n"],
-            "background": {"b": {"x": 1}},
+            "host": {"name": "web", "kind": "browser"},
+            "view": {"name": "tasks", "data": {"count": 1}, "state": {"a": 1}},
+            "navigation": [{"name": "Agents"}],
+            "actions": [{"name": "go", "description": "Go."}],
+            "background": {"agents": {"state": "idle"}},
         }
         frag = _host_context_fragment(ctx)
-        positions = [
-            frag.index("showing: p"),
-            frag.index("k: v"),
+        order = [
+            frag.index("The host application is web"),
+            frag.index("The host is showing: tasks"),
+            frag.index("count: 1"),
             frag.index("Page state:"),
             frag.index("Navigation:"),
-            frag.index("Available host actions:"),
+            frag.index("Host actions available"),
             frag.index("Background:"),
         ]
-        assert positions == sorted(positions)
+        assert order == sorted(order)
 
 
 class TestRenderState:
