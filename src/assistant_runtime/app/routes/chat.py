@@ -11,6 +11,12 @@ from assistant_runtime.app.streaming.deps import StreamingServiceDep
 router = APIRouter()
 
 
+@router.post("/chat/{session_id}/cancel")
+async def cancel_chat(session_id: str, service: StreamingServiceDep) -> dict[str, bool]:
+    """Request cancellation; the active turn persists its snapshot before ending."""
+    return {"cancel_requested": await service.cancel_session(session_id)}
+
+
 @router.post("/chat")
 async def chat(
     request: Request,

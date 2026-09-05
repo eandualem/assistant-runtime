@@ -20,7 +20,8 @@ What you get:
   actions your own application performs when the model asks.
 - A streaming contract designed for user interfaces: thinking, text, tool
   calls and results as ordered events, with a continuation protocol for
-  tools the host executes.
+  tools the host executes. Cancelling a turn retains partial text and
+  completed tool results in its session.
 - A terminal chat, so you can try all of it with one API key and no
   separate user interface.
 
@@ -65,6 +66,12 @@ tools, toolsets, capabilities and a dependency factory to `create_asgi_app`
 or `create_runtime`. Both accept the same `AppSettings` and use the same
 turn pipeline. See [composing an assistant](docs/composition.md) for a complete
 server and in-process example.
+
+Stop an active turn through `POST /api/chat/{session_id}/cancel`, Socket.IO
+`assistant:cancel`, or the in-process `cancel_session` method. Cancellation
+saves the work completed so far and drains running tools before the next
+turn starts. A Socket.IO disconnect leaves the turn running; reconnect and
+read the session to recover its saved state. See [turn control](docs/api.md#turn-control).
 
 The runtime knows nothing about any particular host. Your application
 describes itself in two ways, both optional:

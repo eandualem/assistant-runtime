@@ -321,10 +321,10 @@ async def test_public_cancellation_preserves_partial_response_and_closes_stream(
     )
 
 
-async def test_runtime_task_cancellation_clears_live_state_without_persisting_partial_turn(
+async def test_runtime_task_cancellation_persists_partial_turn_and_preserves_caller_cancellation(
     runtime, script, monkeypatch
 ):
-    """Characterize today's disconnect behavior before adopting RunCancelled."""
+    """A cancelled consumer still waits for native snapshot persistence."""
     received, closed = asyncio.Event(), asyncio.Event()
 
     async def slow_response(messages, info):
@@ -356,10 +356,10 @@ async def test_runtime_task_cancellation_clears_live_state_without_persisting_pa
             await asyncio.gather(task, return_exceptions=True)
     assert closed.is_set()
     assert not runtime.sessions.get_context("compat").get("current_assistant_message_id")
-    assert [m["role"] for m in await runtime.sessions.get_message_path("compat")] == ["user"]
-    assert not any(e["type"] == "final_response" for e in events)
-    assert events[-1]["type"] == "agent_status"
-    assert events[-1]["status"] == "completed"
+    path = await runtime.sessions.get_message_path("compat")
+    assert [m["role"] for m in path] == ["user", "assistant"]
+    assert path[-1]["content"] == "Partial response"
+    assert await runtime.streaming.cancel_session("compat") is False
 
 
 async def test_public_cancel_drains_inflight_tool_and_retains_call_history(script):

@@ -161,6 +161,16 @@ execution, history, serialization, or the upstream dependency; see
   call ends the turn with `final_response.pending_tool_call`; the
   continuation must carry the matching `tool_call_id`, and a session holds
   at most one pending call.
+- **Turn cancellation uses native snapshots.** A turn owns one Pydantic AI
+  `CancellationToken`; preserve `RunCancelled.new_messages()` and usage,
+  including partial text and completed tools, before releasing the session.
+  Mark unresolved calls interrupted without asserting their external effects
+  failed. Accepted host results stay on the existing assistant row.
+  Ordinary replacement waits for cancellation cleanup; continuations wait
+  without cancelling. Iterator closure/cancellation and shutdown cancel and
+  drain the producer; Socket.IO disconnects leave it running. External
+  `CancelledError` keeps propagating. Steering remains pending until a
+  successful model response consumes it, so interrupted delivery can retry.
 - **Streaming events are dicts with a `type`.** They are built only by
   `app/streaming/_event_builder.py` and mapped to `assistant:*` Socket.IO
   events by `_EVENT_TYPE_MAP` in `app/socketio_server.py`;
@@ -208,6 +218,19 @@ names, ids or private hostnames).
   receives merges from `develop`. Never push to `main` or `develop`
   directly. CodeRabbit reviews every pull request; address its actionable
   comments before merging.
+- **Implementation delivery.** Investigation alone does not need a PR;
+  every implementation change does. Run the required checks and review the
+  change with surveyor agents before opening its PR. Address their findings,
+  then push, follow CodeRabbit's review and CI, fix actionable feedback, and
+  merge when the required checks and review are clear.
+- **Issue completion.** A PR that finishes an issue must include an explicit
+  closing reference in its body, such as `Closes #86`, for each completed
+  issue. After merging, verify that GitHub closed those issues; close them
+  explicitly if it did not. Record the precise merged PR link in each
+  completed issue and in the user-facing completion report, and update the
+  parent roadmap. For partial work, use `Part of #...`, record what remains,
+  and leave the issue open. Retire outdated issues with an explicit reason;
+  never describe unimplemented work as completed.
 - Docs are part of a change: the README section that describes the
   behaviour you touched is updated in the same pull request.
 - Optional integrations are optional extras (`[video]`, `[tracing]`) and
