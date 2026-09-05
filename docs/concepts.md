@@ -1,10 +1,11 @@
 # Concepts
 
-Assistant Runtime is an **assistant backend**: it receives messages, runs a
-model with a set of tools, and streams the result back. It is meant to sit
-behind a host application you already have (a dashboard, an IDE, a chat
-client, a terminal) rather than to be a product on its own. Built on
-FastAPI, Socket.IO and pydantic-ai.
+Assistant Runtime is a **Python assistant backend built on Pydantic AI**.
+It receives messages, runs a configured agent, and streams the result back.
+It supplies conversation state, application context, and host integration
+around Pydantic AI's agent primitives. The FastAPI and Socket.IO server sits
+behind an application you already have: a dashboard, an IDE, a chat client,
+or a terminal.
 
 It is not a model provider (it calls Anthropic, OpenAI, Google or
 OpenRouter), not an agent orchestrator (agent-backbone does that; the

@@ -21,3 +21,6 @@ coverage_html/
 
 # Local MCP server configuration (copy from mcp_servers.example.json)
 mcp_servers.json
+
+# Local analysis and implementation plans
+/planning/

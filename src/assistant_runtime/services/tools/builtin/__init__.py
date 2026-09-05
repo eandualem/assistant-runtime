@@ -1,4 +1,4 @@
-"""Tools that need no external system: always registered.
+"""Runtime-owned tool groups, selected by configuration.
 
 The current time, the host's screenshot, the prompt artifacts, subagents and
 media generation. Everything else the assistant can do is a *capability*
@@ -30,12 +30,16 @@ def register_builtin_tools(
     media_service: Any | None,
     backend_toolsets: Callable[[], list[Any]],
     runtime_settings: Callable[[], Any | None],
+    enabled: frozenset[str] | None = None,
 ) -> None:
     """Register the built-in tools; the optional ones only when their service exists."""
-    register_time_tools(registry)
-    register_screen_tools(registry)
-    register_artifact_tools(registry, database_service)
-    if llm_service is not None:
+    if enabled is None or "time" in enabled:
+        register_time_tools(registry)
+    if enabled is None or "screen" in enabled:
+        register_screen_tools(registry)
+    if enabled is None or "artifacts" in enabled:
+        register_artifact_tools(registry, database_service)
+    if llm_service is not None and (enabled is None or "subagent" in enabled):
         register_subagent_tools(
             registry,
             llm_service,
@@ -43,8 +47,10 @@ def register_builtin_tools(
             runtime_settings=runtime_settings,
         )
     if media_service is not None:
-        register_media_tools(registry, media_service)
-        register_video_tools(registry, media_service)
+        if enabled is None or "media" in enabled:
+            register_media_tools(registry, media_service)
+        if enabled is None or "video" in enabled:
+            register_video_tools(registry, media_service)
 
 
 __all__ = ["register_builtin_tools"]

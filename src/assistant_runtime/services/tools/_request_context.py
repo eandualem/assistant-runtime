@@ -12,13 +12,22 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
+
+
+@dataclass
+class _TelegramChatBinding:
+    # Native agent/tool tasks inherit this object through their copied context.
+    # Mutating it makes a tool's binding visible to the request's parent task.
+    chat_id: str | None = None
+
 
 _current_assistant_session_id: ContextVar[str | None] = ContextVar(
     "_current_assistant_session_id",
     default=None,
 )
 _current_screenshot: ContextVar[str | None] = ContextVar("_current_screenshot", default=None)
-_current_telegram_chat_binding: ContextVar[str | None] = ContextVar(
+_current_telegram_chat_binding: ContextVar[_TelegramChatBinding | None] = ContextVar(
     "_current_telegram_chat_binding",
     default=None,
 )
@@ -29,7 +38,7 @@ def assistant_request_context(session_id: str, *, screenshot: str | None = None)
     """Bind the request's session id and screenshot for backend tool handlers."""
     session_token = _current_assistant_session_id.set(session_id)
     screenshot_token = _current_screenshot.set(screenshot)
-    telegram_token = _current_telegram_chat_binding.set(None)
+    telegram_token = _current_telegram_chat_binding.set(_TelegramChatBinding())
     try:
         yield
     finally:
@@ -50,9 +59,12 @@ def get_current_screenshot() -> str | None:
 
 def record_current_telegram_chat_binding(chat_id: str) -> None:
     """Record the Telegram chat id used during the current assistant request."""
-    _current_telegram_chat_binding.set(chat_id)
+    binding = _current_telegram_chat_binding.get()
+    if binding is not None:
+        binding.chat_id = chat_id
 
 
 def get_current_telegram_chat_binding() -> str | None:
     """Return the Telegram chat id used during the current assistant request."""
-    return _current_telegram_chat_binding.get()
+    binding = _current_telegram_chat_binding.get()
+    return binding.chat_id if binding is not None else None

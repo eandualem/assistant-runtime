@@ -86,6 +86,7 @@ class AgentSetupContext:
     output_type: Any  # str
     effective_config: Any  # EffectiveConfig
     mcp_summary: list[dict[str, Any]] | None
+    deps: Any = None
 
 
 # Keys under which a host may carry a screenshot data URI, at the top level

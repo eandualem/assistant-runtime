@@ -26,6 +26,45 @@ async def client():
 
 class TestEffectiveDefaults:
     @pytest.mark.asyncio
+    async def test_defaults_use_supplied_app_settings(self):
+        from assistant_runtime.app.assistant.config import AssistantConfig
+        from assistant_runtime.app.settings import RuntimeSettings
+        from assistant_runtime.config import AppSettings
+        from assistant_runtime.main import create_app
+        from assistant_runtime.services.history.config import HistoryConfig
+        from assistant_runtime.services.llm.config import LLMConfig
+        from assistant_runtime.services.media.config import MediaConfig
+
+        settings = AppSettings(
+            _env_file=None,
+            assistant=AssistantConfig(thinking_budget=7777),
+            llm=LLMConfig(
+                primary_model="openai:gpt-5.6-terra",
+                summarization_model="openai:gpt-5.6-luna",
+            ),
+            history=HistoryConfig(working_memory_model="openai:gpt-5.6-luna"),
+            media=MediaConfig(
+                default_image_model="google:custom-image-model",
+                default_video_model="luma:custom-video-model",
+            ),
+        )
+        app = create_app(settings=settings)
+        app.state.runtime_settings = RuntimeSettings(frozen_config=settings.assistant)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            defaults = (await c.get("/api/models")).json()["defaults"]
+            await app.state.runtime_settings.update(default_image_model="openai:runtime-image")
+            overridden = (await c.get("/api/models")).json()["defaults"]
+
+        assert defaults["primary_model"] == settings.llm.primary_model
+        assert defaults["summarization_model"] == settings.llm.summarization_model
+        assert defaults["thinking_budget"] == 7777
+        assert defaults["working_memory_model"] == settings.history.working_memory_model
+        assert defaults["default_image_model"] == settings.media.default_image_model
+        assert defaults["default_video_model"] == settings.media.default_video_model
+        assert overridden["default_image_model"] == "openai:runtime-image"
+        assert overridden["thinking_budget"] == 7777
+
+    @pytest.mark.asyncio
     async def test_defaults_reflect_runtime_overrides_and_the_llm_service(self):
         from unittest.mock import MagicMock
 

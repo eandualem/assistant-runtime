@@ -1,7 +1,7 @@
 """Layering guard: services never import the app layer.
 
 `base` and `artifacts` are leaves, `services/*` may import `base`, `config`,
-`artifacts` and each other as documented in CLAUDE.md, and only the top
+`artifacts` and each other as documented in AGENTS.md, and only the top
 layer (`app`, `main`, `cli`, and `config`, which composes every module's
 config model) may import `app/*`. A service that reaches into `app` would create
 an import cycle through `config` (which composes every module's config) and

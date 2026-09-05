@@ -9,9 +9,11 @@ from assistant_runtime.config import AppSettings
 from assistant_runtime.services.oauth.interface import OAuthService
 
 
-async def register_oauth(app_state: Any, lifecycle: LifecycleManager) -> None:
+async def register_oauth(
+    app_state: Any, lifecycle: LifecycleManager, *, settings: AppSettings | None = None
+) -> None:
     """Create OAuthService, store on app_state, register with lifecycle."""
-    settings = AppSettings()
+    settings = settings if settings is not None else AppSettings()
     service = OAuthService(config=settings.oauth)
 
     # Inject database service dependency

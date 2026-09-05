@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ConfigDict, TypeAdapter
 from pydantic_ai.messages import (
     BinaryContent,
     ModelMessage,
@@ -22,6 +23,7 @@ MessageRecord = dict[str, Any]
 SteeringRecord = dict[str, Any]
 
 _STEERING_PREFIX = "Additional user steering while you were working:\n"
+_TOOL_OUTPUT_ADAPTER = TypeAdapter(Any, config=ConfigDict(ser_json_bytes="base64"))
 
 
 def canonicalize_assistant_segments(segments: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -180,16 +182,18 @@ def build_assistant_message_content(
     messages: list[ModelMessage],
 ) -> tuple[str, list[dict[str, Any]], datetime | None]:
     """Extract assistant content + canonicalized segments from a single turn's messages."""
-    tool_results: dict[str, Any] = {}
+    tool_results: dict[str, dict[str, Any]] = {}
     for message in messages:
         if not isinstance(message, ModelRequest):
             continue
         for part in message.parts:
             if isinstance(part, ToolReturnPart):
-                tool_results[part.tool_call_id] = normalize_tool_output_for_storage(
-                    part.tool_name,
-                    part.content,
-                )
+                result = {"output": normalize_tool_output_for_storage(part.tool_name, part.content)}
+                # Existing records imply success. Preserve native failures and
+                # denials explicitly so reloaded history keeps their semantics.
+                if part.outcome != "success":
+                    result["outcome"] = part.outcome
+                tool_results[part.tool_call_id] = result
 
     segments: list[dict[str, Any]] = []
     timestamp: datetime | None = None
@@ -207,10 +211,10 @@ def build_assistant_message_content(
                 tool_entry = {
                     "id": part.tool_call_id,
                     "name": part.tool_name,
-                    "input": part.args if isinstance(part.args, dict) else {},
+                    "input": part.args_as_dict(),
                 }
                 if part.tool_call_id in tool_results:
-                    tool_entry["output"] = tool_results[part.tool_call_id]
+                    tool_entry.update(tool_results[part.tool_call_id])
                 if segments and segments[-1]["kind"] == "tool_group":
                     segments[-1]["tools"].append(tool_entry)
                 else:
@@ -235,7 +239,16 @@ def build_steering_request(steering_records: list[SteeringRecord]) -> ModelReque
 
 
 def normalize_tool_output_for_storage(tool_name: str, content: Any) -> Any:
-    """Strip binary / multimodal payloads so persisted tool outputs stay serializable."""
+    """Redact media and encode native tool values for JSON-backed session storage."""
+    redacted = _omit_tool_output_media(tool_name, content)
+    # Native tools can return models, dataclasses, dates and other values that
+    # Pydantic AI accepts but the database's plain JSON serializer does not.
+    # Match upstream's JSON-mode and alias handling without changing model input.
+    return _TOOL_OUTPUT_ADAPTER.dump_python(redacted, mode="json", by_alias=True)
+
+
+def _omit_tool_output_media(tool_name: str, content: Any) -> Any:
+    """Preserve the runtime's media omission policy before JSON conversion."""
     if tool_name == "look_at_screen":
         return "[Inspected current screen]"
     if isinstance(content, BinaryContent):
@@ -251,12 +264,9 @@ def normalize_tool_output_for_storage(tool_name: str, content: Any) -> Any:
             result["kind"] = content.kind
         return result
     if isinstance(content, dict):
-        return {
-            key: normalize_tool_output_for_storage(tool_name, value)
-            for key, value in content.items()
-        }
-    if isinstance(content, list):
-        return [normalize_tool_output_for_storage(tool_name, item) for item in content]
+        return {key: _omit_tool_output_media(tool_name, value) for key, value in content.items()}
+    if isinstance(content, (list, tuple)):
+        return [_omit_tool_output_media(tool_name, item) for item in content]
     return content
 
 
@@ -314,6 +324,7 @@ def _assistant_record_to_messages(message: MessageRecord) -> list[ModelMessage]:
                         content=tool.get("output"),
                         tool_call_id=str(tool.get("id", "")),
                         timestamp=_coerce_datetime(message.get("created_at")) or datetime.now(UTC),
+                        outcome=tool.get("outcome", "success"),
                     )
                 )
             request_messages.append(
@@ -395,6 +406,7 @@ def assistant_record_to_flat_messages(message: MessageRecord) -> list[ModelMessa
                             content=tool.get("output"),
                             tool_call_id=str(tool.get("id", "")),
                             timestamp=timestamp,
+                            outcome=tool.get("outcome", "success"),
                         )
                     )
                 else:

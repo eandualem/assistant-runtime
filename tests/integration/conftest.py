@@ -1,7 +1,7 @@
 """Shared fixtures for integration tests.
 
 Integration tests wire real services together, mocking only the LLM boundary
-(Agent.run / Agent.iter). This catches cross-module wiring issues that unit
+(Agent.run / Agent.run_stream_events). This catches cross-module wiring issues that unit
 tests miss.
 """
 
@@ -12,7 +12,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic_graph import End
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.run import AgentRunResultEvent
 
 from assistant_runtime.app.assistant.interface import AssistantService
 from assistant_runtime.app.settings import RuntimeSettings
@@ -47,7 +48,9 @@ def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
     """Create a mock AgentRunResult."""
     result = MagicMock()
     result.output = output
-    result.all_messages.return_value = []
+    messages = [ModelResponse(parts=[TextPart(content=output)])] if isinstance(output, str) else []
+    result.all_messages.return_value = messages
+    result.new_messages.return_value = messages
     # Usage mock for debug events
     usage = MagicMock()
     usage.input_tokens = 100
@@ -61,33 +64,35 @@ def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
 
 
 def _make_mock_agent(output: Any = "Test response") -> MagicMock:
-    """Create a mock Agent whose ``iter()`` yields a run that ends immediately."""
+    """Create a mock Agent whose event stream yields one final result."""
     agent = MagicMock()
-    agent.iter = MagicMock(side_effect=lambda *_a, **_k: _make_mock_agent_run(output))
+    agent.run_stream_events = MagicMock(side_effect=lambda *_a, **_k: _make_mock_agent_run(output))
     return agent
 
 
-def _make_mock_agent_run(output: Any = "Test response") -> MagicMock:
-    """Create a mock agent.iter() context manager returning End immediately."""
+def _make_mock_agent_run(output: Any = "Test response") -> Any:
+    """Create an event-stream context manager yielding one final result."""
 
     class _MockRun:
         def __init__(self):
-            self.ctx = MagicMock()
             self.result = _make_mock_agent_result(output)
             self._done = False
 
         async def __aenter__(self):
+            self._done = False
             return self
 
         async def __aexit__(self, *args):
             pass
 
-        @property
-        def next_node(self):
-            return End(data=output)
+        def __aiter__(self):
+            return self
 
-        async def next(self, node):
-            return End(data=output)
+        async def __anext__(self):
+            if self._done:
+                raise StopAsyncIteration
+            self._done = True
+            return AgentRunResultEvent(self.result)
 
     return _MockRun()
 
