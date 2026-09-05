@@ -300,21 +300,37 @@ class TurnRunner:
             # Native limits stop the run before the request that would exceed
             # them; the work done so far was captured by _run_agent.
             control.accepting_cancel = False
-            await self._persist_cancelled(plan, state, interrupted=False)
-            state.cancelled = False
-            logger.info(
-                "[STREAM] Turn stopped by usage limit", session_id=session_id, error=str(exc)
-            )
-            for event in self._exhausted_events(
-                coordinator,
-                plan,
-                state,
-                message=str(exc),
-                model=resolved_model,
-                trace_id=trace_id,
-                phase=phase,
-                emit_debug=emit_debug,
-            ):
+            try:
+                await self._persist_cancelled(plan, state, interrupted=False)
+            except Exception as persist_exc:
+                logger.exception("Usage-limited turn could not be saved", session_id=session_id)
+                events = self._terminal_error_events(
+                    coordinator,
+                    session_id=session_id,
+                    message=f"Usage-limited turn could not be saved: {persist_exc}",
+                    error_type="persistence_error",
+                    retry_allowed=False,
+                    trace_id=trace_id,
+                    model=resolved_model,
+                    phase=phase,
+                    emit_debug=emit_debug,
+                )
+            else:
+                state.cancelled = False
+                logger.info(
+                    "[STREAM] Turn stopped by usage limit", session_id=session_id, error=str(exc)
+                )
+                events = self._exhausted_events(
+                    coordinator,
+                    plan,
+                    state,
+                    message=str(exc),
+                    model=resolved_model,
+                    trace_id=trace_id,
+                    phase=phase,
+                    emit_debug=emit_debug,
+                )
+            for event in events:
                 yield event
         except StreamingError:
             raise
