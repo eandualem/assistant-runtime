@@ -59,10 +59,10 @@ cancellation snapshots and application-owned finalization.
 | Cancellation | **Composed** `CancellationToken`, `RunCancelled.new_messages()` / `.usage`, and `RunCancelled.from_cancellation()` | Native cases cover partial responses and tool-task teardown; the runtime saves snapshots through the same assistant-row persistence path, including accepted host results, and completes one cancellation lifecycle |
 | Deferred host actions | **Keep composing** `ExternalToolset`, `DeferredToolRequests`, `DeferredToolResults` | Host continuation executes a backend tool once and keeps the same assistant message; batch calls resume upstream after JSON serialization, while the current host protocol rejects two pending calls |
 | Tool arguments | **Compose** `ToolCallPart.args_as_dict()` | Five serialization cases plus a real streamed host continuation cover dicts, JSON objects, malformed/non-object JSON and empty args |
-| Model-input history cleanup | **Replace overlapping repair** through the public `Agent` run pipeline; do not import cleanup helpers | `test_public_history_closes_dangling_calls_including_malformed_args`, `test_public_history_drops_orphaned_results_before_model_request`; preserve the source conversation and pending frontier semantics |
-| Custom history selection | **Compose** `ProcessHistory` capability | `test_public_process_history_can_filter_model_input_without_editing_source`; the application owns which branch and records supply history |
+| Model-input history cleanup | **Replaced** by the public `Agent` run pipeline; the runtime no longer repairs dangling calls or orphaned results itself ([#87](https://github.com/eandualem/assistant-runtime/issues/87)) | `test_public_history_closes_dangling_calls_including_malformed_args`, `test_public_history_drops_orphaned_results_before_model_request`, `test_public_continuation_closes_older_dangling_call_with_deferred_result`; the source conversation and pending frontier semantics are preserved |
+| Application history policy | **Composed** as a `ProcessHistory` capability (`HistoryService.processor()`), attached to every run of a turn | `test_runtime_clears_old_tool_results_in_model_input_only`, `test_runtime_summarizes_once_per_turn_through_native_execution`, `test_runtime_summary_failure_falls_back_without_failing_the_turn`, `test_runtime_disabled_compaction_leaves_history_to_host_capabilities`; the application owns which branch and records supply history, the budget, clearing and the structured summary |
 | Session storage and reload | **Keep** application tree/steering persistence | `test_session_reload_restores_tree_and_repairs_unfinished_host_action`; flat upstream message serialization does not encode this tree or recover its pending host-action state |
-| Compaction / working memory | **Keep pending evaluation** of Harness `ClearToolResults`, `SummarizingCompaction`, `Memory` | Existing `tests/unit/services/history/` covers current behavior; imports alone do not prove equivalent summaries, working-memory extraction or source-history retention |
+| Harness compaction / memory | **Deferred** as a core dependency; usable by applications through `AssistantDefinition.capabilities` with `HISTORY__COMPACTION_ENABLED=false` | Evaluated 2026-09-05 with `pydantic-ai-harness==0.29.0` on core 2.38.0 (see below); working memory stays a separate per-turn extraction |
 | UI protocols | **Evaluate composition** with `AGUIAdapter` / `VercelAIAdapter` | Import smoke checks only; protocol-to-session mapping remains #93 |
 | Definitions / evolving artifacts | **Keep** versioned application definitions; compose native instructions/capabilities | No replacement of definition, activation, rollback or mutation policy established; existing artifact tests remain authoritative |
 | Usage, models, images and toolsets | **Keep composing** native `UsageLimits`, model/provider APIs, `BinaryContent`, `FunctionToolset` | Existing tests under `tests/unit/services/` and screenshot tests remain regression coverage; this baseline does not justify replacing the subscription transport or extending accounting |
@@ -107,6 +107,25 @@ the live documentation can advance beyond the lockfile.
   does not prove the external action failed or prevent its late execution.
   [StepPersistence](https://pydantic.dev/docs/ai/harness/step-persistence/)
   is not a full graph checkpoint or an exactly-once side-effect guarantee.
+- A history processor's output becomes the run's history: core assigns
+  `ctx.state.message_history[:] = processed` and recomputes the new-message
+  index from `run_id`. The runtime therefore never transforms messages that
+  carry the current run's id, so `new_messages()` (what the assistant row
+  stores) stays the raw model output, while earlier turns are cleared or
+  summarised for the model only. A follow-up steering run of the same turn
+  receives the processed history and may summarise once more.
+- Harness compaction, evaluated offline on 2026-09-05 with
+  `pydantic-ai-harness==0.29.0` and core 2.38.0: `TieredCompaction`,
+  `ClearToolResults` and `SummarizingCompaction` install and run with a
+  `FunctionModel`. `SummarizingCompaction` rewrites the run's
+  `all_messages()` to the summary plus retained tail, spends one request of
+  the run's `UsageLimits` (the runtime's `max_turns`) on the summary, needs a
+  resolved `Model` for the subscription transport, writes a plain-text
+  summary rather than the runtime's structured `CompactionResult`, and the
+  package still warns about renamed classes. Adoption is deferred until the
+  usage budget work in [#94](https://github.com/eandualem/assistant-runtime/issues/94);
+  applications can attach it today through `AssistantDefinition.capabilities`
+  after disabling the built-in policy.
 - Runtime execution uses `Agent.run_stream_events()` without private graph
   imports or state access. A per-run capability uses public node predicates
   and `RunContext.enqueue` to deliver mid-tool steering. Screen retention
