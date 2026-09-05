@@ -87,7 +87,7 @@ class TestAssistantNamespaceJoin:
         assert context["view"] == {
             "name": "tasks",
             "description": "",
-            "data": {"active_filters": []},
+            "data": {"activeFilters": []},
             "state": {},
         }
 

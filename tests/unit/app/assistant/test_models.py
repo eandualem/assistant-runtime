@@ -17,10 +17,36 @@ class TestHelpers:
         assert camel_to_snake("eventType") == "event_type"
         assert camel_to_snake("HTMLParser") == "html_parser"
 
-    def test_normalize_keys_deep(self) -> None:
-        assert normalize_host_context({"view": {"name": "agents", "state": {"listMode": 1}}})[
-            "view"
-        ]["state"] == {"list_mode": 1}
+    def test_contract_keys_normalize_but_host_payloads_do_not(self) -> None:
+        context = normalize_host_context(
+            {"view": {"name": "agents", "state": {"listMode": 1}}, "capturedAt": None}
+        )
+        assert context["view"]["state"] == {"listMode": 1}
+        assert "captured_at" not in context  # None values are dropped from the canonical form
+
+    def test_host_context_attachments_join_the_request(self) -> None:
+        request = AssistantRequest.model_validate(
+            {
+                "id": "user-1",
+                "session_id": "sess-1",
+                "content": "Look",
+                "attachments": [{"kind": "text", "text": "same"}],
+                "host_context": {
+                    "attachments": [
+                        {
+                            "kind": "image",
+                            "purpose": "screenshot",
+                            "dataUri": "data:image/png;base64,s",
+                        },
+                        {"kind": "text", "text": "same"},
+                        {"kind": "text", "text": "other"},
+                    ]
+                },
+            }
+        )
+        assert request.screenshot == "data:image/png;base64,s"
+        assert [a.text for a in request.reference_attachments] == ["same", "other"]
+        assert len(request.host_context["attachments"]) == 3
 
 
 class TestAssistantRequest:

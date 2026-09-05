@@ -56,8 +56,12 @@ it for later messages that carry none.
 
 Unknown fields anywhere are rejected (`422` on HTTP, `assistant:error` of
 type `validation` on Socket.IO) with the field path. `view.data` +
-`view.state` + `extensions` may total 32,000 characters of JSON; curate
-what the model needs instead of sending everything.
+`view.state` + `extensions` may total 32,000 characters of JSON; a context
+carries at most 50 navigation targets, 32 actions and 16 attachments.
+Curate what the model needs instead of sending everything. Keys inside
+`view.data`, `view.state`, `background`, `extensions` and action
+`parameters` are the host's own and are passed through verbatim; only the
+contract's field names are normalised.
 
 Absent context: the prompt has no host section and every backend tool is
 available. A context without `view` (a service, a background worker) is
@@ -65,7 +69,8 @@ fine: it can still carry `host`, `actions` and `extensions`.
 
 ## Attachments
 
-On the message body as `attachments` (and inside `host_context`):
+On the message body as `attachments`, or inside `host_context`; both reach
+the turn the same way (message-level first, duplicates dropped):
 
 ```json
 {"kind": "image", "purpose": "reference", "name": "photo", "description": "the receipt",

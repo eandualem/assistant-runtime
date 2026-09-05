@@ -123,6 +123,39 @@ class TestValidation:
         with pytest.raises(ValidationError, match="Curate what the model needs"):
             HostContext.from_payload(big)
 
+    def test_opaque_payload_keys_are_not_renamed(self):
+        context = HostContext.from_payload(
+            {
+                "view": {"name": "a", "data": {"activeFilters": [1]}, "state": {"listMode": 1}},
+                "background": {"agentSessions": {"state": "idle"}},
+                "extensions": {"tenantId": "acme"},
+                "actions": [
+                    {
+                        "name": "go",
+                        "description": "Go.",
+                        "parameters": {"type": "object", "properties": {"orderId": {}}},
+                    }
+                ],
+            }
+        )
+        assert context.view.data == {"activeFilters": [1]}
+        assert context.view.state == {"listMode": 1}
+        assert context.background == {"agentSessions": {"state": "idle"}}
+        assert context.extensions == {"tenantId": "acme"}
+        assert context.actions[0].parameters["properties"] == {"orderId": {}}
+
+    def test_cardinality_limits(self):
+        with pytest.raises(ValidationError, match="at most 32"):
+            HostContext.from_payload(
+                {"actions": [{"name": f"a{i}", "description": "x"} for i in range(33)]}
+            )
+        with pytest.raises(ValidationError, match="at most 16"):
+            HostContext.from_payload(
+                {"attachments": [{"kind": "text", "text": str(i)} for i in range(17)]}
+            )
+        with pytest.raises(ValidationError, match="at most 50"):
+            HostContext.from_payload({"navigation": [{"name": f"n{i}"} for i in range(51)]})
+
     def test_duplicate_action_names(self):
         with pytest.raises(ValidationError, match="duplicate names"):
             HostContext.from_payload(

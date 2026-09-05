@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
-import json
 from collections.abc import Callable
 from typing import Any
 
@@ -121,8 +119,9 @@ class ToolRegistry:
         - FunctionToolset for backend tools (with real handlers, wrapped with safety net)
         - ExternalToolset for host tools (deferred execution via DeferredToolRequests)
         """
+        request_actions = self._request_actions(host_context)
         cache_key = self._cache_key(host_context)
-        cached = self._toolset_cache.get(cache_key)
+        cached = self._toolset_cache.get(cache_key) if not request_actions else None
         if cached is not None:
             return list(cached)
 
@@ -144,7 +143,6 @@ class ToolRegistry:
         # Host tools — always appended, bypass page scoping
         if self._host_toolset is not None:
             toolsets.append(self._host_toolset)
-        request_actions = self._request_actions(host_context)
         if request_actions:
             toolsets.append(
                 build_host_toolset(
@@ -161,7 +159,9 @@ class ToolRegistry:
             host=len(self._host_definitions),
             toolsets=len(toolsets),
         )
-        self._toolset_cache[cache_key] = list(toolsets)
+        if not request_actions:
+            # Declared actions vary per request; caching them would grow without bound.
+            self._toolset_cache[cache_key] = list(toolsets)
         return list(toolsets)
 
     def build_subagent_toolset(self) -> list:
@@ -225,8 +225,9 @@ class ToolRegistry:
         never scoped.
         """
         page_name = self._page_name(host_context)
+        request_actions = self._request_actions(host_context)
         cache_key = self._cache_key(host_context)
-        cached = self._available_tools_cache.get(cache_key)
+        cached = self._available_tools_cache.get(cache_key) if not request_actions else None
         if cached is not None:
             return cached
 
@@ -257,13 +258,14 @@ class ToolRegistry:
                         parameters_schema=a.parameters,
                         category=ToolCategory.HOST,
                     )
-                    for a in self._request_actions(host_context)
+                    for a in request_actions
                 ),
             ],
             page=page_name,
             filtered_out_count=total_before - total,
         )
-        self._available_tools_cache[cache_key] = toolset
+        if not request_actions:
+            self._available_tools_cache[cache_key] = toolset
         return toolset
 
     @staticmethod
@@ -287,13 +289,5 @@ class ToolRegistry:
         return actions
 
     def _cache_key(self, host_context: dict[str, Any] | None = None) -> str | None:
-        """Cache by page and by the declared actions, which change availability."""
-        page = self._page_name(host_context)
-        actions = self._request_actions(host_context)
-        if not actions:
-            return page or None
-        signature = hashlib.blake2b(
-            json.dumps([a.model_dump() for a in actions], sort_keys=True).encode(),
-            digest_size=8,
-        ).hexdigest()
-        return f"{page or ''}#{signature}"
+        """Cache by page; contexts with declared actions are never cached."""
+        return self._page_name(host_context) or None

@@ -196,7 +196,7 @@ def _render_freshness(context: HostContext) -> str:
     if age < 60:
         return f"Context captured {int(age)} seconds ago."
     minutes = int(age // 60)
-    if minutes < 120:
+    if minutes < 60:
         return f"Context captured {minutes} minutes ago; it may be stale."
     return f"Context captured {minutes // 60} hours ago; treat it as stale."
 

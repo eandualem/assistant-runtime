@@ -412,14 +412,18 @@ class TestRequestDeclaredActions:
         assert available.host_tools == []
         assert len(registry.build_toolset({"view": {"name": "orders"}})) == 1
 
-    def test_caches_are_keyed_by_the_declared_actions(self, registry):
+    def test_contexts_with_actions_are_never_cached(self, registry):
         plain = registry.get_available_tools(self._context())
         with_action = registry.get_available_tools(self._context("open_order"))
         other_action = registry.get_available_tools(self._context("close_order"))
         assert plain.host_tools == []
         assert [t.name for t in with_action.host_tools] == ["open_order"]
         assert [t.name for t in other_action.host_tools] == ["close_order"]
-        assert registry.get_available_tools(self._context("open_order")) is with_action
+        assert registry.get_available_tools(self._context()) is plain
+        assert registry.get_available_tools(self._context("open_order")) is not with_action
+        registry.build_toolset(self._context("open_order"))
+        assert set(registry._toolset_cache) <= {"orders", None}
+        assert set(registry._available_tools_cache) <= {"orders", None}
 
     def test_shadowing_a_registered_tool_is_ignored(self, backend_definition, dummy_handler):
         registry = ToolRegistry(

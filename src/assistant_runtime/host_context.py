@@ -15,7 +15,11 @@ mistakes surface at the edge; deliberate host-specific data goes under
 
 Size rules (characters of the JSON form): ``MAX_CONTEXT_CHARS`` for the
 ``view.data`` + ``view.state`` + ``extensions`` payload, and
-``MAX_ATTACHMENT_CHARS`` for one attachment's data URI or text.
+``MAX_ATTACHMENT_CHARS`` for one attachment's data URI or text; at most
+``MAX_NAVIGATION`` targets, ``MAX_ACTIONS`` actions and ``MAX_ATTACHMENTS``
+attachments per context. Keys inside ``view.data``, ``view.state``,
+``background``, ``extensions`` and action ``parameters`` are the host's own
+and are never renamed.
 """
 
 from __future__ import annotations
@@ -30,6 +34,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 HOST_CONTEXT_VERSION = 1
 MAX_CONTEXT_CHARS = 32_000
 MAX_ATTACHMENT_CHARS = 12_000_000
+MAX_NAVIGATION = 50
+MAX_ACTIONS = 32
+MAX_ATTACHMENTS = 16
 # What providers accept as a tool name; request-declared actions become tools.
 ACTION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -42,9 +49,18 @@ def camel_to_snake(name: str) -> str:
     return _CAMEL_RE_2.sub(r"\1_\2", _CAMEL_RE_1.sub(r"\1_\2", name)).lower()
 
 
+# Host-owned payloads the runtime passes through verbatim: renaming keys in
+# them would change the host's data or a JSON schema's property names.
+_OPAQUE_KEYS = frozenset({"data", "state", "background", "extensions", "parameters"})
+
+
 def _snake_keys(obj: Any) -> Any:
+    """Normalise the contract's own field names; opaque host payloads stay as sent."""
     if isinstance(obj, dict):
-        return {camel_to_snake(k): _snake_keys(v) for k, v in obj.items()}
+        return {
+            camel_to_snake(k): (v if camel_to_snake(k) in _OPAQUE_KEYS else _snake_keys(v))
+            for k, v in obj.items()
+        }
     if isinstance(obj, list):
         return [_snake_keys(item) for item in obj]
     return obj
@@ -157,11 +173,11 @@ class HostContext(_Strict):
     version: int = HOST_CONTEXT_VERSION
     host: HostIdentity | None = None
     view: View | None = None
-    navigation: list[NavigationTarget] = Field(default_factory=list)
+    navigation: list[NavigationTarget] = Field(default_factory=list, max_length=MAX_NAVIGATION)
     background: dict[str, Any] = Field(default_factory=dict)
     """Summaries of what is off screen: ``{"name": {"state": ..., "summary": {...}}}``."""
-    actions: list[HostAction] = Field(default_factory=list)
-    attachments: list[Attachment] = Field(default_factory=list)
+    actions: list[HostAction] = Field(default_factory=list, max_length=MAX_ACTIONS)
+    attachments: list[Attachment] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
     captured_at: datetime | None = None
     """When the host captured this context; rendered so the model can judge freshness."""
     extensions: dict[str, Any] = Field(default_factory=dict)
@@ -275,8 +291,11 @@ def actions_of(host_context: dict[str, Any] | None) -> list[HostAction]:
 __all__ = [
     "ACTION_NAME_RE",
     "HOST_CONTEXT_VERSION",
+    "MAX_ACTIONS",
+    "MAX_ATTACHMENTS",
     "MAX_ATTACHMENT_CHARS",
     "MAX_CONTEXT_CHARS",
+    "MAX_NAVIGATION",
     "Attachment",
     "HostAction",
     "HostContext",

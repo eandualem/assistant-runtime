@@ -40,6 +40,33 @@ async def test_reference_attachments_reach_the_model_as_native_content(runtime, 
     assert path[0]["content"] == "What is this?"
 
 
+async def test_host_context_attachments_reach_the_turn(runtime, script):
+    script.steps = [["Seen."]]
+    events = [
+        e
+        async for e in runtime.streaming.stream_message(
+            request(
+                content="Look",
+                host_context={
+                    "view": {"name": "gallery"},
+                    "attachments": [
+                        {"kind": "image", "dataUri": PNG, "name": "photo"},
+                        {"kind": "image", "purpose": "screenshot", "dataUri": PNG},
+                    ],
+                },
+            )
+        )
+    ]
+    assert_terminal(events)
+    prompt = next(p for m in script.requests[0] for p in m.parts if isinstance(p, UserPromptPart))
+    assert isinstance(prompt.content, list)
+    assert isinstance(prompt.content[1], BinaryContent)
+    assert len(prompt.content) == 2
+    instructions = script.requests[0][-1].instructions or ""
+    assert "call look_at_screen to see it" in instructions
+    assert "photo (attached to the message)" in instructions
+
+
 async def test_request_declared_action_is_called_and_continued(runtime, script):
     host_context = {
         "host": {"name": "orders-app", "kind": "desktop"},

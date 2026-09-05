@@ -20,6 +20,25 @@ from assistant_runtime.host_context import (
 _camel_to_snake = camel_to_snake
 
 
+def _dedupe_attachments(items: list[Any]) -> list[Any]:
+    """Keep the first of attachments that carry the same content for the same purpose."""
+    seen: set[tuple[Any, ...]] = set()
+    unique: list[Any] = []
+    for item in items:
+        if isinstance(item, dict):
+            key = (
+                item.get("purpose", "reference"),
+                item.get("data_uri"),
+                item.get("url"),
+                item.get("text"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+        unique.append(item)
+    return unique
+
+
 def normalize_host_context(raw: Any) -> dict[str, Any] | None:
     """A host context in its canonical form, or None for anything that is not a mapping.
 
@@ -213,7 +232,14 @@ class AssistantRequest(BaseModel):
         for image in images:
             if isinstance(image, str) and image:
                 attachments.append({"kind": "image", "purpose": "screenshot", "data_uri": image})
-        data = {**data, "images": images, "attachments": attachments}
+        # Attachments carried inside host_context reach the turn the same way;
+        # message-level ones come first and duplicates are dropped.
+        context = data.get("host_context")
+        if isinstance(context, dict):
+            attachments.extend(
+                item for item in context.get("attachments", []) if isinstance(item, dict)
+            )
+        data = {**data, "images": images, "attachments": _dedupe_attachments(attachments)}
 
         # 3. Normalize config keys (shallow — flat model)
         cfg = data.get("config")
