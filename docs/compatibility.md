@@ -107,4 +107,6 @@ the live documentation can advance beyond the lockfile.
 
 No dependency upgrade is required for these supported replacements. The
 remaining cancellation, history and recovery policies are tracked by
-#86, #87 and #92.
+issues [#86](https://github.com/eandualem/assistant-runtime/issues/86),
+[#87](https://github.com/eandualem/assistant-runtime/issues/87) and
+[#92](https://github.com/eandualem/assistant-runtime/issues/92).

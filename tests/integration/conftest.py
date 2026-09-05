@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.run import AgentRunResultEvent
 
 from assistant_runtime.app.assistant.interface import AssistantService
@@ -47,7 +48,9 @@ def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
     """Create a mock AgentRunResult."""
     result = MagicMock()
     result.output = output
-    result.all_messages.return_value = []
+    messages = [ModelResponse(parts=[TextPart(content=output)])] if isinstance(output, str) else []
+    result.all_messages.return_value = messages
+    result.new_messages.return_value = messages
     # Usage mock for debug events
     usage = MagicMock()
     usage.input_tokens = 100

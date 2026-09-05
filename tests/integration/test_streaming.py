@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.run import AgentRunResultEvent
 
 from assistant_runtime.app.assistant.models import AssistantRequest
@@ -88,7 +89,10 @@ class TestStreamingPipeline:
         assistant = wired_services["assistant_service"]
 
         mock_result = _make_mock_agent_result("Done")
-        mock_result.all_messages.return_value = [MagicMock(), MagicMock()]
+        mock_result.all_messages.return_value = [
+            ModelRequest(parts=[UserPromptPart(content="Save me")]),
+            *mock_result.new_messages.return_value,
+        ]
 
         class _MockRun:
             def __init__(self):
@@ -128,6 +132,7 @@ class TestStreamingPipeline:
         assert len(path) == 2
         assert path[0]["id"] == "user-1"
         assert path[1]["role"] == "assistant"
+        assert path[1]["content"] == "Done"
 
     @pytest.mark.asyncio
     async def test_coordinator_dedup_in_real_flow(self, wired_services):

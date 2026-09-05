@@ -20,10 +20,6 @@ from assistant_runtime.services.tools._request_context import (
     record_current_telegram_chat_binding,
 )
 
-from . import test_composition
-
-isolated_services = test_composition.isolated_services
-
 
 def test_binding_scope_resets_after_nested_failure_and_ignores_outside_writes():
     def fail_in_nested_context():

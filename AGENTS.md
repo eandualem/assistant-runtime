@@ -214,7 +214,7 @@ names, ids or private hostnames).
   are imported lazily; the core install must not need them.
 - No personal identifiers anywhere: names, chat ids, org names and local
   paths are configuration or neutral fixtures.
-- **One turn pipeline.** Every request kind (new message, host-tool
+- **Shared turn pipeline.** Every request kind (new message, host-tool
   continuation, promoted steering) is described by `TurnPlanner`
   (`app/streaming/_turn.py`) and executed by `TurnRunner`
   (`app/streaming/_runner.py`); `_agent_run.py` maps public Pydantic AI events

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
-from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -13,17 +12,13 @@ from pydantic import ValidationError
 from pydantic_ai.messages import ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
-from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.assistant.exceptions import AgentRunError
 from assistant_runtime.app.assistant.models import AssistantRequest
-from assistant_runtime.config import AppSettings
 from assistant_runtime.main import AssistantDefinition, create_app, create_asgi_app, create_runtime
-from assistant_runtime.services.database.interface import DatabaseService
 from assistant_runtime.services.llm.interface import LlmService
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.exceptions import ToolError
 from assistant_runtime.services.tools.interface import ToolService
-from assistant_runtime.services.tools.providers.config import ProvidersConfig
 
 HOST_MODULE = """\
 import asyncio
@@ -79,23 +74,6 @@ def host_app(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.fixture
-def isolated_services(monkeypatch, tmp_path):
-    # The model and database are the only service boundaries replaced. No
-    # Agent methods, tools, factories, turn services or HTTP handlers are mocked.
-    monkeypatch.setattr(DatabaseService, "start", AsyncMock())
-    monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda: None)
-    monkeypatch.setattr("assistant_runtime.main.initialize_tracing", lambda: False)
-    monkeypatch.setattr("assistant_runtime.main.setup_logging", lambda **_: None)
-    monkeypatch.setenv("MCP_CONFIG_PATH", str(tmp_path / "absent-mcp.json"))
-    return AppSettings(
-        _env_file=None,
-        assistant=AssistantConfig(enable_working_memory=False, max_turns=4),
-        tools=ToolConfig(builtin_tools=frozenset(), provider_capabilities=frozenset()),
-        providers=ProvidersConfig(),
-    )
 
 
 @pytest.mark.parametrize("transport", ["http", "in-process"])

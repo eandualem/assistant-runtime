@@ -22,7 +22,6 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from assistant_runtime.main import AssistantDefinition, create_runtime
 from assistant_runtime.services.llm.interface import LlmService
 
-from .test_composition import isolated_services as isolated_services
 from .test_execution import assert_terminal, request
 
 
