@@ -3,6 +3,23 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class UsageBudget(BaseModel):
+    """Per-turn ceilings the host sets, in native Pydantic AI terms.
+
+    Every field is optional; unset means no limit of that kind. ``max_turns``
+    (the request limit) stays a tunable on ``AssistantConfig``. Cost limits
+    only apply when the provider reports a price for the model.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tool_calls: int | None = Field(default=None, ge=0, description="Tool calls per turn")
+    input_tokens: int | None = Field(default=None, ge=1, description="Input tokens per turn")
+    output_tokens: int | None = Field(default=None, ge=1, description="Output tokens per turn")
+    total_tokens: int | None = Field(default=None, ge=1, description="Total tokens per turn")
+    cost_usd: float | None = Field(default=None, gt=0, description="Reported cost per turn, USD")
+
+
 class AssistantConfig(BaseModel):
     """Assistant module configuration. Nested into AppSettings as `assistant`."""
 
@@ -33,6 +50,10 @@ class AssistantConfig(BaseModel):
     enable_working_memory: bool = Field(
         default=True,
         description="Whether to extract working memory deltas after each turn.",
+    )
+    budget: UsageBudget = Field(
+        default_factory=UsageBudget,
+        description="Per-turn usage ceilings (ASSISTANT__BUDGET__*); see docs/concepts.md.",
     )
     profile: str | None = Field(
         default=None,
