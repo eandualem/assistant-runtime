@@ -106,31 +106,19 @@ that result. A session holds at most one pending host tool call.
 ## Host context
 
 What the host is showing right now, sent with a message (or with
-`assistant:join_session` to warm the session) as `host_context`:
+`assistant:join_session` to warm the session) as `host_context`. Version 1
+of the contract is a small, typed structure: descriptive `host` metadata,
+the current `view` (name, description, curated `data`, `state`),
+`navigation`, `actions` the host will perform when called, `attachments`,
+`background` summaries, `captured_at` and an `extensions` object for
+anything host-specific. Only `view.name` is required within a view; a
+context without a view is fine for a service host. Unknown fields are
+rejected at the edge. The last context a session received is reused for
+later messages that carry none. The full shape, the attachment model and
+the action protocol are in [the host contract](host-contract.md).
 
-```json
-{
-  "page": {
-    "name": "tasks",
-    "description": "The issue list, filtered to open bugs.",
-    "data": {"issues": [{"number": 42, "title": "Fix login"}]},
-    "state": {"filters": {"label": "bug"}},
-    "actions": [{"event_type": "select_issue", "label": "Select an issue",
-                 "params": [{"name": "number", "type": "integer", "required": true}]}]
-  },
-  "navigation": [{"name": "agents", "description": "Running agents"}],
-  "background": {"agents": {"state": "idle", "summary": {"count": 3}}}
-}
-```
-
-Only `page.name` is required. `data` is rendered for the model as
-key-value pairs, `state` is passed through as JSON, `actions` lists the
-events the host accepts, `navigation` the places it can go, `background`
-summaries of what is off screen. The last context a session received is
-reused for later messages that carry none.
-
-The page name also selects tools: `TOOLS__PAGE_SCOPES` maps a page name to
-the backend tools allowed while the host shows it. Pages that are not
+The view name also selects tools: `TOOLS__PAGE_SCOPES` maps a view name to
+the backend tools allowed while the host shows it. Views that are not
 listed get every tool.
 
 ## Prompt artifacts and profiles

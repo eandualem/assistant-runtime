@@ -110,9 +110,15 @@ async def iterate_run(
     tools: ToolService,
     emit_debug: bool,
     suppress_tool_call_ids: set[str] | None = None,
+    host_tool_names: set[str] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Translate native events without executing or inspecting graph nodes."""
+    """Translate native events without executing or inspecting graph nodes.
+
+    ``host_tool_names`` are the host tools of this turn (configured ones
+    plus those the request declared); calls to them are ``category: host``.
+    """
     suppressed = suppress_tool_call_ids or set()
+    host_names = host_tool_names if host_tool_names is not None else set()
     tool_started: dict[str, float] = {}
     async for event in stream:
         if isinstance(event, PartStartEvent):
@@ -143,7 +149,8 @@ async def iterate_run(
             if emit_debug:
                 coordinator.flush_thinking()
             tool_started[tc.tool_call_id] = time.monotonic()
-            category = "host" if tools.is_host_tool(tc.tool_name) else "backend"
+            is_host = tc.tool_name in host_names or tools.is_host_tool(tc.tool_name)
+            category = "host" if is_host else "backend"
             yield _track(
                 coordinator,
                 make_tool_call_event(

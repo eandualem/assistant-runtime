@@ -15,6 +15,12 @@ from loguru import logger
 
 from assistant_runtime.app.assistant.models import PromptResult
 from assistant_runtime.artifacts import AssistantProfile, neutral_profile
+from assistant_runtime.host_context import (
+    Attachment,
+    HostAction,
+    HostContext,
+    NavigationTarget,
+)
 from assistant_runtime.services.history.models import WorkingMemory
 from assistant_runtime.services.tools.models import ToolSet
 
@@ -143,98 +149,114 @@ def _render_state(state: dict[str, Any]) -> str:
     return "Page state:\n```json\n" + json.dumps(state, indent=2, default=str) + "\n```"
 
 
-def _render_actions(actions: list[Any]) -> str:
-    """List the host actions the model may trigger, with their parameter shapes."""
-    lines = ["Available host actions:"]
+def _render_actions(actions: list[HostAction]) -> str:
+    """The actions the host declared for this turn; they are callable tools."""
+    if not actions:
+        return ""
+    lines = ["Host actions available as tools for this turn:"]
     for action in actions:
-        if not isinstance(action, dict):
-            lines.append(f"- {action}")
-            continue
-        event_type = action.get("event_type", "")
-        label = action.get("label", "")
-        line = f"- {event_type} ({label})" if label else f"- {event_type}"
-        param_strs = []
-        for p in action.get("params", []) or []:
-            if not isinstance(p, dict):
-                continue
-            p_name = p.get("name", "?")
-            p_type = p.get("type", "")
-            p_req = p.get("required", False)
-            desc = f"{p_name} ({p_type}" if p_type else p_name
-            if p_type:
-                desc += ", required)" if p_req else ")"
-            elif p_req:
-                desc += " (required)"
-            param_strs.append(desc)
-        if param_strs:
-            line += f" — params: {', '.join(param_strs)}"
-        lines.append(line)
-    return "\n".join(lines) if len(lines) > 1 else ""
+        lines.append(f"- {action.name}: {action.description}")
+    return "\n".join(lines)
 
 
-def _render_navigation(navigation: list[Any]) -> str:
+def _render_navigation(navigation: list[NavigationTarget]) -> str:
     """List the places the host can navigate to."""
+    if not navigation:
+        return ""
     lines = ["Navigation:"]
     for target in navigation:
-        if isinstance(target, dict):
-            name = target.get("name", "unknown")
-            desc = target.get("description", "")
-            lines.append(f"- {name} — {desc}" if desc else f"- {name}")
-        else:
-            lines.append(f"- {target}")
-    return "\n".join(lines) if len(lines) > 1 else ""
+        lines.append(
+            f"- {target.name} — {target.description}" if target.description else f"- {target.name}"
+        )
+    return "\n".join(lines)
+
+
+def _render_attachments(attachments: list[Attachment]) -> str:
+    """What the host attached: reference content is in the message, screenshots are on demand."""
+    if not attachments:
+        return ""
+    lines = []
+    for attachment in attachments:
+        if attachment.purpose == "screenshot":
+            lines.append("- a screenshot of the current screen (call look_at_screen to see it)")
+            continue
+        label = attachment.name or attachment.kind
+        if attachment.description:
+            label += f" — {attachment.description}"
+        lines.append(f"- {label} (attached to the message)")
+    return "Attachments:\n" + "\n".join(lines)
+
+
+def _render_freshness(context: HostContext) -> str:
+    age = context.age_seconds()
+    if age is None:
+        return ""
+    if age < 0:
+        return "Context captured just now."
+    if age < 60:
+        return f"Context captured {int(age)} seconds ago."
+    minutes = int(age // 60)
+    if minutes < 120:
+        return f"Context captured {minutes} minutes ago; it may be stale."
+    return f"Context captured {minutes // 60} hours ago; treat it as stale."
 
 
 def _host_context_fragment(host_context: dict[str, Any] | None) -> str:
     """What the host application is showing right now.
 
-    Shape (every key optional except ``page.name``):
-    ``page``: ``{"name", "description", "data", "state", "actions"}``;
-    ``navigation``: places the host can navigate to;
-    ``background``: summaries of things not on screen.
+    ``host_context`` is the canonical dict of a ``HostContext`` (version 1;
+    see ``host_context.py``). Without a context, or with one that has
+    nothing to say, the fragment is empty and the model works from the
+    conversation alone.
     """
     if not host_context:
         return ""
-
-    page = host_context.get("page")
-    if not isinstance(page, dict) or not page.get("name"):
-        logger.warning("host_context present but has no page name")
+    try:
+        context = HostContext.from_payload(host_context)
+    except ValueError as e:
+        logger.warning("host_context could not be interpreted", error=str(e))
+        return ""
+    if context is None:
         return ""
 
     sections: list[str] = []
-    header = f"The host application is showing: {page['name']}."
-    description = page.get("description")
-    if description:
-        header += f" {description}"
-    sections.append(header)
+    if context.host is not None:
+        host = context.host
+        line = f"The host application is {host.name} ({host.kind})"
+        if host.version:
+            line += f" version {host.version}"
+        sections.append(line + ".")
 
-    page_data = page.get("data", {})
-    if isinstance(page_data, dict) and page_data:
-        sections.extend(_render_generic_data(page_data))
+    view = context.view
+    if view is not None:
+        header = f"The host is showing: {view.name}."
+        if view.description:
+            header += f" {view.description}"
+        sections.append(header)
+        if view.data:
+            sections.extend(_render_generic_data(view.data))
+        if view.state:
+            sections.append(_render_state(view.state))
 
-    state = page.get("state", {})
-    if isinstance(state, dict) and state:
-        sections.append(_render_state(state))
-
-    navigation = host_context.get("navigation", [])
-    if isinstance(navigation, list) and navigation:
-        nav_text = _render_navigation(navigation)
-        if nav_text:
-            sections.append(nav_text)
-
-    actions = page.get("actions", [])
-    if isinstance(actions, list) and actions:
-        actions_text = _render_actions(actions)
-        if actions_text:
-            sections.append(actions_text)
-
-    background = host_context.get("background", {})
-    if isinstance(background, dict):
-        bg_line = _render_background(background)
-        if bg_line:
-            sections.append(bg_line)
+    for text in (
+        _render_navigation(context.navigation),
+        _render_actions(context.actions),
+        _render_attachments(context.attachments),
+        _render_background(context.background),
+        _render_extensions(context.extensions),
+        _render_freshness(context),
+    ):
+        if text:
+            sections.append(text)
 
     return "\n".join(sections)
+
+
+def _render_extensions(extensions: dict[str, Any]) -> str:
+    """Host-specific data the runtime does not interpret, as JSON."""
+    if not extensions:
+        return ""
+    return "Host data:\n```json\n" + json.dumps(extensions, indent=2, default=str) + "\n```"
 
 
 # --- Public API ---

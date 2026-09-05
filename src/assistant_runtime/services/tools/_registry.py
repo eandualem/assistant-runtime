@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -10,6 +12,7 @@ from loguru import logger
 from pydantic_ai.toolsets import FunctionToolset
 
 from assistant_runtime.base.resilience import retry_with_backoff
+from assistant_runtime.host_context import HostAction, actions_of, view_name_of
 from assistant_runtime.services.tools._host_tools import (
     build_host_toolset,
     get_host_definitions,
@@ -141,6 +144,16 @@ class ToolRegistry:
         # Host tools — always appended, bypass page scoping
         if self._host_toolset is not None:
             toolsets.append(self._host_toolset)
+        request_actions = self._request_actions(host_context)
+        if request_actions:
+            toolsets.append(
+                build_host_toolset(
+                    {
+                        a.name: {"description": a.description, "parameters": a.parameters}
+                        for a in request_actions
+                    }
+                )
+            )
 
         logger.debug(
             "[TOOLS] Built toolsets",
@@ -212,7 +225,7 @@ class ToolRegistry:
         never scoped.
         """
         page_name = self._page_name(host_context)
-        cache_key = page_name or None
+        cache_key = self._cache_key(host_context)
         cached = self._available_tools_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -235,7 +248,18 @@ class ToolRegistry:
 
         toolset = ToolSet(
             backend_tools=backend,
-            host_tools=self._host_definitions,
+            host_tools=[
+                *self._host_definitions,
+                *(
+                    ToolDefinition(
+                        name=a.name,
+                        description=a.description,
+                        parameters_schema=a.parameters,
+                        category=ToolCategory.HOST,
+                    )
+                    for a in self._request_actions(host_context)
+                ),
+            ],
             page=page_name,
             filtered_out_count=total_before - total,
         )
@@ -244,12 +268,32 @@ class ToolRegistry:
 
     @staticmethod
     def _page_name(host_context: dict[str, Any] | None = None) -> str | None:
-        """Extract the page name from a host context."""
-        if host_context and isinstance(host_context.get("page"), dict):
-            name = host_context["page"].get("name")
-            return str(name) if name else None
-        return None
+        """The view (page) name of a host context."""
+        return view_name_of(host_context)
+
+    def _request_actions(self, host_context: dict[str, Any] | None) -> list[HostAction]:
+        """Actions the host declared for this turn, minus names already taken."""
+        actions = []
+        for action in actions_of(host_context):
+            if action.name in self._backend_definitions or any(
+                action.name == d.name for d in self._host_definitions
+            ):
+                logger.warning(
+                    "Request-declared action shadows a registered tool; ignored",
+                    action=action.name,
+                )
+                continue
+            actions.append(action)
+        return actions
 
     def _cache_key(self, host_context: dict[str, Any] | None = None) -> str | None:
-        """Cache by page since tool availability is page-scoped."""
-        return self._page_name(host_context) or None
+        """Cache by page and by the declared actions, which change availability."""
+        page = self._page_name(host_context)
+        actions = self._request_actions(host_context)
+        if not actions:
+            return page or None
+        signature = hashlib.blake2b(
+            json.dumps([a.model_dump() for a in actions], sort_keys=True).encode(),
+            digest_size=8,
+        ).hexdigest()
+        return f"{page or ''}#{signature}"

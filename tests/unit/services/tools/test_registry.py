@@ -383,3 +383,51 @@ class TestPageScopes:
         scoped.warm_host_context({"page": {"name": "tasks"}})
         assert "tasks" in scoped._available_tools_cache
         assert "tasks" in scoped._toolset_cache
+
+
+class TestRequestDeclaredActions:
+    """``host_context.actions`` become host tools for the turns that carry them."""
+
+    def _context(self, *names, view="orders"):
+        return {
+            "view": {"name": view},
+            "actions": [{"name": n, "description": f"Do {n}."} for n in names],
+        }
+
+    def test_actions_join_the_host_tools_and_toolsets(
+        self, registry, backend_definition, dummy_handler
+    ):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        available = registry.get_available_tools(self._context("open_order"))
+        assert [t.name for t in available.host_tools] == ["open_order"]
+        assert available.host_tools[0].category == ToolCategory.HOST
+        assert available.page == "orders"
+        toolsets = registry.build_toolset(self._context("open_order"))
+        assert len(toolsets) == 2  # backend FunctionToolset + ExternalToolset for the action
+        assert not registry.is_host_tool("open_order")  # per turn, not registered globally
+
+    def test_without_actions_nothing_changes(self, registry, backend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        available = registry.get_available_tools({"view": {"name": "orders"}})
+        assert available.host_tools == []
+        assert len(registry.build_toolset({"view": {"name": "orders"}})) == 1
+
+    def test_caches_are_keyed_by_the_declared_actions(self, registry):
+        plain = registry.get_available_tools(self._context())
+        with_action = registry.get_available_tools(self._context("open_order"))
+        other_action = registry.get_available_tools(self._context("close_order"))
+        assert plain.host_tools == []
+        assert [t.name for t in with_action.host_tools] == ["open_order"]
+        assert [t.name for t in other_action.host_tools] == ["close_order"]
+        assert registry.get_available_tools(self._context("open_order")) is with_action
+
+    def test_shadowing_a_registered_tool_is_ignored(self, backend_definition, dummy_handler):
+        registry = ToolRegistry(
+            ToolConfig(
+                host_tools={"navigate": {"description": "Go", "parameters": {"type": "object"}}}
+            )
+        )
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        registry.register_host_tools()
+        available = registry.get_available_tools(self._context("get_time", "navigate", "fresh"))
+        assert [t.name for t in available.host_tools] == ["navigate", "fresh"]

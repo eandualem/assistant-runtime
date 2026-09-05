@@ -80,9 +80,36 @@ class TestAssistantNamespaceJoin:
             },
         )
 
-        streaming.warm_session.assert_awaited_once_with(
-            "sess-1", {"page": {"name": "tasks", "data": {"active_filters": []}}}
+        streaming.warm_session.assert_awaited_once()
+        session_id, context = streaming.warm_session.await_args.args
+        assert session_id == "sess-1"
+        assert context["version"] == 1
+        assert context["view"] == {
+            "name": "tasks",
+            "description": "",
+            "data": {"active_filters": []},
+            "state": {},
+        }
+
+    @pytest.mark.asyncio
+    async def test_join_session_rejects_invalid_host_context(self) -> None:
+        streaming = MagicMock()
+        streaming.warm_session = AsyncMock()
+        namespace = AssistantNamespace("/assistant")
+        namespace.server = _server_with_streaming_service(streaming)
+        namespace.emit = AsyncMock()
+        namespace.enter_room = AsyncMock()
+
+        await namespace.on_assistant_join_session(
+            "sid-1", {"session_id": "sess-1", "host_context": {"surprise": 1}}
         )
+
+        streaming.warm_session.assert_not_awaited()
+        namespace.enter_room.assert_not_awaited()
+        event, payload = namespace.emit.await_args.args
+        assert event == "assistant:error"
+        assert payload["type"] == "validation"
+        assert "surprise" in payload["message"]
 
     @pytest.mark.asyncio
     async def test_join_session_without_context_warms_with_none(self) -> None:

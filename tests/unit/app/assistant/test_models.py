@@ -7,22 +7,20 @@ from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.app.assistant.models import (
     AssistantRequest,
     AssistantResult,
-    _camel_to_snake,
-    _normalize_keys,
-    host_context_from_payload,
     normalize_host_context,
 )
+from assistant_runtime.host_context import camel_to_snake, host_context_from_payload
 
 
 class TestHelpers:
     def test_camel_to_snake(self) -> None:
-        assert _camel_to_snake("eventType") == "event_type"
-        assert _camel_to_snake("HTMLParser") == "html_parser"
+        assert camel_to_snake("eventType") == "event_type"
+        assert camel_to_snake("HTMLParser") == "html_parser"
 
-    def test_normalize_keys(self) -> None:
-        assert _normalize_keys({"activePage": {"pageName": "agents"}}) == {
-            "active_page": {"page_name": "agents"}
-        }
+    def test_normalize_keys_deep(self) -> None:
+        assert normalize_host_context({"view": {"name": "agents", "state": {"listMode": 1}}})[
+            "view"
+        ]["state"] == {"list_mode": 1}
 
 
 class TestAssistantRequest:
@@ -54,10 +52,33 @@ class TestAssistantRequest:
         )
 
         assert request.session_id == "sess-1"
+        # Canonical form: version 1, ``page`` becomes ``view``, empty fields dropped.
         assert request.host_context == {
-            "page": {"name": "agents", "data": {"entities": [{"name": "leo"}]}}
+            "version": 1,
+            "view": {
+                "name": "agents",
+                "description": "",
+                "data": {"entities": [{"name": "leo"}]},
+                "state": {},
+            },
+            "navigation": [],
+            "background": {},
+            "actions": [],
+            "attachments": [],
+            "extensions": {},
         }
         assert request.config == TunableOverrides(default_model="openai/gpt-5.4")
+
+    def test_invalid_host_context_is_a_validation_error(self) -> None:
+        with pytest.raises(ValueError, match="surprise"):
+            AssistantRequest.model_validate(
+                {
+                    "id": "user-1",
+                    "session_id": "sess-1",
+                    "content": "x",
+                    "host_context": {"surprise": True},
+                }
+            )
 
     def test_normalize_host_context_rejects_non_mappings(self) -> None:
         assert normalize_host_context(None) is None
@@ -66,10 +87,11 @@ class TestAssistantRequest:
 
     def test_host_context_from_payload_accepts_both_spellings(self) -> None:
         payload = {"hostContext": {"page": {"name": "a"}}}
-        assert host_context_from_payload(payload) == {"page": {"name": "a"}}
-        assert host_context_from_payload({"host_context": {"page": {"name": "b"}}}) == {
-            "page": {"name": "b"}
-        }
+        assert host_context_from_payload(payload)["view"]["name"] == "a"
+        assert (
+            host_context_from_payload({"host_context": {"view": {"name": "b"}}})["view"]["name"]
+            == "b"
+        )
         assert host_context_from_payload({"session_id": "s"}) is None
         assert host_context_from_payload("nope") is None
 
@@ -122,6 +144,25 @@ class TestAssistantRequest:
         )
 
         assert request.images == ["data:image/png;base64,abc123"]
+        assert request.screenshot == "data:image/png;base64,abc123"
+        assert [a.purpose for a in request.attachments] == ["screenshot"]
+        assert request.reference_attachments == []
+
+    def test_reference_attachments_are_separate_from_the_screenshot(self) -> None:
+        request = AssistantRequest.model_validate(
+            {
+                "id": "user-1",
+                "session_id": "sess-1",
+                "content": "Compare",
+                "images": ["data:image/png;base64,shot"],
+                "attachments": [
+                    {"kind": "image", "dataUri": "data:image/jpeg;base64,ref"},
+                    {"kind": "text", "text": "notes", "name": "notes.txt"},
+                ],
+            }
+        )
+        assert request.screenshot == "data:image/png;base64,shot"
+        assert [a.kind for a in request.reference_attachments] == ["image", "text"]
 
     def test_missing_id_is_validation_error(self) -> None:
         with pytest.raises(ValidationError):
