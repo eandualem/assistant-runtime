@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+from assistant_runtime.principal import Principal
+
 
 @dataclass
 class _TelegramChatBinding:
@@ -27,6 +29,7 @@ _current_assistant_session_id: ContextVar[str | None] = ContextVar(
     default=None,
 )
 _current_screenshot: ContextVar[str | None] = ContextVar("_current_screenshot", default=None)
+_current_principal: ContextVar[Principal | None] = ContextVar("_current_principal", default=None)
 _current_telegram_chat_binding: ContextVar[_TelegramChatBinding | None] = ContextVar(
     "_current_telegram_chat_binding",
     default=None,
@@ -34,17 +37,26 @@ _current_telegram_chat_binding: ContextVar[_TelegramChatBinding | None] = Contex
 
 
 @contextmanager
-def assistant_request_context(session_id: str, *, screenshot: str | None = None) -> Iterator[None]:
-    """Bind the request's session id and screenshot for backend tool handlers."""
+def assistant_request_context(
+    session_id: str, *, screenshot: str | None = None, principal: Principal | None = None
+) -> Iterator[None]:
+    """Bind the request's session id, screenshot and principal for backend tool handlers."""
     session_token = _current_assistant_session_id.set(session_id)
     screenshot_token = _current_screenshot.set(screenshot)
+    principal_token = _current_principal.set(principal)
     telegram_token = _current_telegram_chat_binding.set(_TelegramChatBinding())
     try:
         yield
     finally:
         _current_telegram_chat_binding.reset(telegram_token)
+        _current_principal.reset(principal_token)
         _current_screenshot.reset(screenshot_token)
         _current_assistant_session_id.reset(session_token)
+
+
+def get_current_principal() -> Principal | None:
+    """The trusted principal of the current request, for tools that need it."""
+    return _current_principal.get()
 
 
 def get_current_assistant_session_id() -> str | None:

@@ -56,6 +56,15 @@ current Claude models get adaptive thinking with an effort level mapped
 from `thinking_budget`; older ones get a fixed budget; models that reject
 sampling parameters are not sent a temperature.
 
+### Access (`ACCESS__*`)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `mode` | `trusted_local` | `trusted_local` (every caller is the local operator), `header` (an authenticating proxy sets the principal header) or `host` (`AssistantDefinition.authenticate` decides); see [access](access.md) |
+| `principal_header` | `X-Assistant-Principal` | header carrying the principal id in header mode |
+| `roles_header` | `X-Assistant-Roles` | comma-separated roles in header mode; `admin` administers |
+| `cors_origins` | `["*"]` | allowed browser origins; restrict when exposed |
+
 ### Assistant (`ASSISTANT__*`)
 
 | Setting | Default | Meaning |
@@ -97,7 +106,7 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | `debounce_seconds` | `0.05` | text delta coalescing |
 | `max_events_per_stream` | `10000` | safety limit |
 | `stream_timeout_seconds` | `300` | one turn |
-| `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for a trusted client, the socket has no authentication |
+| `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for trusted clients: the events carry the system prompt and history of the caller's own sessions |
 
 ### Tools (`TOOLS__*`)
 

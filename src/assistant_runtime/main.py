@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
+from assistant_runtime.app.access.factory import register_access
 from assistant_runtime.app.assistant.definition import AssistantDefinition
 from assistant_runtime.app.assistant.exceptions import AssistantError, SessionError
 from assistant_runtime.app.assistant.factory import register_assistant
@@ -55,6 +57,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         setup_logging(json_output=settings.log_json, level=settings.log_level)
 
         # Register modules in dependency order (infrastructure first, then services, then app)
+        await register_access(app.state, lifecycle, settings=settings)
         await register_database(app.state, lifecycle, settings=settings)
         await register_oauth(app.state, lifecycle, settings=settings)
         await register_llm(app.state, lifecycle, settings=settings)
@@ -122,16 +125,25 @@ def create_app(
     app.state.assistant_definition = assistant
     app.state.settings = settings
 
-    # CORS middleware
+    # CORS: ACCESS__CORS_ORIGINS, "*" by default for the localhost-bound install.
+    origins = list((settings or AppSettings()).access.cors_origins)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=origins,
+        allow_credentials="*" not in origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
     # Exception handlers
+    @app.exception_handler(AuthenticationError)
+    async def authentication_error_handler(request, exc: AuthenticationError):
+        return JSONResponse(status_code=401, content={"error": str(exc), "type": "Unauthorized"})
+
+    @app.exception_handler(AccessDeniedError)
+    async def access_denied_handler(request, exc: AccessDeniedError):
+        return JSONResponse(status_code=403, content={"error": str(exc), "type": "Forbidden"})
+
     @app.exception_handler(SessionError)
     async def session_error_handler(request, exc: SessionError):
         # The request does not fit the session (unknown session or parent,

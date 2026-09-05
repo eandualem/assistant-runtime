@@ -96,7 +96,7 @@ class TestReads:
 class TestWrites:
     async def test_propose_then_approve(self, client, artifacts):
         response = await client.post(
-            "/artifacts/instructions/propose", json={"content": "Help more", "proposed_by": "ops"}
+            "/artifacts/instructions/propose", json={"content": "Help more"}
         )
         assert response.status_code == 201
         body = response.json()
@@ -104,7 +104,7 @@ class TestWrites:
         assert body["is_active"] is False
         assert body["effective_on_next_request"] is False
         assert body["live_version"] is None
-        assert body["proposed_by"] == "ops"
+        assert body["proposed_by"] == "local"  # the authenticated principal, not the body
         assert body["durable"] is False
         assert (await artifacts.active_texts())["instructions"] == "Help"
 

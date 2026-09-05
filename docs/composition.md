@@ -148,6 +148,15 @@ rewrite its `scratchpad` immediately, propose a new `tone` for the host to
 approve through `/api/artifacts`, and only read `instructions` until the
 host changes it. See [concepts](concepts.md#prompt-artifacts-and-profiles).
 
+## Identity
+
+With `ACCESS__MODE=host`, `AssistantDefinition(authenticate=...)` turns a
+transport's `Credentials` (headers, the Socket.IO connect payload, the
+client address) into a `Principal`, or None to reject the caller. Sessions
+belong to the principal that created them; in-process callers pass
+`principal=` to `run_message` and friends, or act as the local operator.
+See [identity and access](access.md).
+
 ## Cancelling a turn
 
 The runtime uses Pydantic AI's `CancellationToken` and `RunCancelled`
@@ -190,8 +199,9 @@ The host owns resources returned by the factory, including their cleanup.
 Use host-managed pools or resource scopes. For HTTP, middleware or a host
 dependency can establish trusted request context that the factory reads;
 for Socket.IO, establish it in the host's event/task scope. A payload's
-`session_id` and `host_context` are client input, not authenticated identity.
-This API does not add authentication or tenant isolation.
+`session_id` and `host_context` are client input, not authenticated identity;
+the caller's identity is the `Principal` the access module establishes (see
+[identity](#identity)), which the dependency factory does not receive.
 
 Native tools/toolsets/capabilities may be reused across concurrent requests,
 as they are in Pydantic AI. Keep per-request mutable data in dependencies or

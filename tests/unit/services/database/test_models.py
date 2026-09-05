@@ -16,6 +16,7 @@ class TestSessionORM:
             "turn_number",
             "working_memory",
             "telegram_chat_id",
+            "owner_id",
             "telegram_bound_at",
             "created_at",
             "updated_at",

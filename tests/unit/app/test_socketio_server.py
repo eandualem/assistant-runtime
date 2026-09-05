@@ -122,7 +122,7 @@ class TestAssistantNamespaceJoin:
 
         await namespace.on_assistant_join_session("sid-1", {"session_id": "sess-1"})
 
-        streaming.warm_session.assert_awaited_once_with("sess-1", None)
+        streaming.warm_session.assert_awaited_once_with("sess-1", None, principal=None)
 
 
 class TestAssistantNamespaceMessages:
@@ -144,7 +144,7 @@ class TestAssistantNamespaceMessages:
         namespace = AssistantNamespace("/assistant")
         namespace.emit = AsyncMock()
 
-        async def _stream(_request):
+        async def _stream(_request, **_kwargs):
             yield {"type": "agent_status", "status": "started"}
             yield {
                 "type": "final_response",
@@ -183,7 +183,7 @@ class TestAssistantNamespaceMessages:
         old_task = asyncio.create_task(_never_finishes())
         namespace._active_streams["sess-1"] = old_task
 
-        async def _stream(_request):
+        async def _stream(_request, **_kwargs):
             yield {"type": "agent_status", "status": "started"}
             yield {"type": "agent_status", "status": "completed"}
 
@@ -206,7 +206,7 @@ class TestAssistantNamespaceMessages:
 
         assert old_task.cancelling() > 0
         assert old_task.done()
-        streaming_service.cancel_session.assert_awaited_once_with("sess-1")
+        streaming_service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
         streaming_service.wait_for_session.assert_awaited_once_with("sess-1")
         await namespace._active_streams["sess-1"]
 
@@ -218,7 +218,7 @@ class TestAssistantNamespaceMessages:
         old_task = asyncio.create_task(_never_finishes())
         namespace._active_streams["sess-1"] = old_task
 
-        async def _stream(_request):
+        async def _stream(_request, **_kwargs):
             yield {"type": "agent_status", "status": "started"}
             yield {"type": "agent_status", "status": "completed"}
 
@@ -274,7 +274,7 @@ class TestAssistantNamespaceMessages:
         namespace = AssistantNamespace("/assistant")
         namespace.emit = AsyncMock()
 
-        async def _stream(_request):
+        async def _stream(_request, **_kwargs):
             yield {"type": "agent_status", "status": "started"}
             yield {
                 "type": "final_response",
@@ -311,7 +311,7 @@ class TestAssistantNamespaceCancellation:
         entered, predecessor_finished, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
         produced = []
 
-        async def stream(_request):
+        async def stream(_request, **_kwargs):
             try:
                 entered.set()
                 await predecessor_finished.wait()
@@ -336,7 +336,7 @@ class TestAssistantNamespaceCancellation:
                 assert closed.is_set() is waiting
                 assert namespace._active_streams == {}
                 assert namespace._stream_delivery == {}
-                service.cancel_session.assert_awaited_once_with("sess-1")
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
                 service.wait_for_session.assert_awaited_once_with("sess-1")
                 assert [call.args[1] for call in namespace.emit.await_args_list] == (
                     StreamingService.cancelled_before_start_events("sess-1")
@@ -348,7 +348,7 @@ class TestAssistantNamespaceCancellation:
     async def test_explicit_cancel_reaches_runtime_while_transport_is_emitting(self):
         emitting, release_emit, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-        async def stream(_request):
+        async def stream(_request, **_kwargs):
             yield {"type": "agent_status", "status": "started"}
             yield {"type": "text_delta", "content": "Partial"}
             await cancelled.wait()
@@ -361,7 +361,7 @@ class TestAssistantNamespaceCancellation:
                 emitting.set()
                 await release_emit.wait()
 
-        async def cancel(session_id):
+        async def cancel(session_id, **_kwargs):
             cancelled.set()
             return True
 
@@ -373,7 +373,7 @@ class TestAssistantNamespaceCancellation:
             async with asyncio.timeout(5):
                 await emitting.wait()
                 await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
-                service.cancel_session.assert_awaited_once_with("sess-1")
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
                 assert task.cancelling() == 0
                 assert not task.done()
                 release_emit.set()
@@ -385,7 +385,7 @@ class TestAssistantNamespaceCancellation:
     async def test_cancel_still_closes_lifecycle_when_producer_finishes_without_events(self):
         entered, finish = asyncio.Event(), asyncio.Event()
 
-        async def stream(_request):
+        async def stream(_request, **_kwargs):
             entered.set()
             await finish.wait()
             return
@@ -395,7 +395,7 @@ class TestAssistantNamespaceCancellation:
         await namespace.on_assistant_message("sid-1", _message("user-1"))
         task = namespace._active_streams["sess-1"]
 
-        async def cancel(session_id):
+        async def cancel(session_id, **_kwargs):
             finish.set()
             await task
             return True
@@ -422,7 +422,7 @@ class TestAssistantNamespaceCancellation:
         start, emitting, release_emit = asyncio.Event(), asyncio.Event(), asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def stream(_request):
+        async def stream(_request, **_kwargs):
             await start.wait()
             yield {"type": "agent_status", "status": "started"}
             await cancelled.wait()
@@ -436,7 +436,7 @@ class TestAssistantNamespaceCancellation:
                 emitting.set()
                 await release_emit.wait()
 
-        async def cancel(session_id):
+        async def cancel(session_id, **_kwargs):
             start.set()
             await emitting.wait()
             cancelled.set()
@@ -467,7 +467,7 @@ class TestAssistantNamespaceCancellation:
     async def test_debug_event_does_not_count_as_started_for_cancellation(self):
         emitted = asyncio.Event()
 
-        async def stream(_request):
+        async def stream(_request, **_kwargs):
             yield {"type": "debug_request", "message": "Preparing"}
             emitted.set()
             await asyncio.Event().wait()
@@ -491,7 +491,7 @@ class TestAssistantNamespaceCancellation:
     async def test_blocked_early_cancellation_envelope_does_not_block_replacement(self):
         emitting, replaced = asyncio.Event(), asyncio.Event()
 
-        async def stream(request):
+        async def stream(request, **_kwargs):
             assert request.id == "user-2"
             replaced.set()
             yield {"type": "agent_status", "status": "started"}
@@ -536,13 +536,13 @@ class TestAssistantNamespaceCancellation:
 
         await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
 
-        service.cancel_session.assert_awaited_once_with("sess-1")
+        service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
 
     async def test_replacement_waits_for_native_drain_before_closing_old_transport(self):
         emitting, drain_started, drained = asyncio.Event(), asyncio.Event(), asyncio.Event()
         old_closed, new_started = asyncio.Event(), asyncio.Event()
 
-        async def stream(request):
+        async def stream(request, **_kwargs):
             if request.id == "user-1":
                 try:
                     yield {"type": "text_delta", "content": "Partial"}
@@ -585,7 +585,7 @@ class TestAssistantNamespaceCancellation:
                 await replacement
                 await new_started.wait()
                 assert old_task.done()
-                service.cancel_session.assert_awaited_once_with("sess-1")
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
         finally:
             tasks = [
                 task
@@ -602,7 +602,7 @@ class TestAssistantNamespaceCancellation:
         draining, release_drain = asyncio.Event(), asyncio.Event()
         drain_count = 0
 
-        async def stream(request):
+        async def stream(request, **_kwargs):
             transport_tasks[request.id] = asyncio.current_task()
             started[request.id].set()
             yield {"type": "agent_status", "status": "started"}
@@ -649,7 +649,7 @@ class TestAssistantNamespaceCancellation:
     async def test_old_stream_release_keeps_new_owner(self, ending):
         started, finish = asyncio.Event(), asyncio.Event()
 
-        async def stream(_request):
+        async def stream(_request, **_kwargs):
             started.set()
             await finish.wait()
             if ending == "failure":
@@ -677,7 +677,7 @@ class TestAssistantNamespaceCancellation:
     async def test_disconnect_allows_turn_to_finish(self):
         started, finish, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-        async def stream(_request):
+        async def stream(_request, **_kwargs):
             try:
                 started.set()
                 yield {"type": "text_delta", "content": "Partial"}
@@ -705,7 +705,7 @@ class TestAssistantNamespaceCancellation:
     async def test_emit_failure_closes_service_stream_before_task_finishes(self):
         closed = asyncio.Event()
 
-        async def stream(_request):
+        async def stream(_request, **_kwargs):
             try:
                 yield {"type": "text_delta", "content": "Partial"}
                 await asyncio.Event().wait()

@@ -7,10 +7,11 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from assistant_runtime.app.access.deps import require_admin
 from assistant_runtime.model_catalog import ALLOWED_PROVIDERS
 from assistant_runtime.services.llm.interface import LlmService
 
-router = APIRouter(prefix="/providers", tags=["providers"])
+router = APIRouter(prefix="/providers", tags=["providers"], dependencies=[Depends(require_admin)])
 
 _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "anthropic": "Anthropic",

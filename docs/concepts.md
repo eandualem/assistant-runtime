@@ -24,6 +24,10 @@ With Postgres the tree is persisted and survives restarts; without it
 sessions live in memory for the life of the process. Sessions expire after
 `ASSISTANT__SESSION_TTL_HOURS` (24 by default).
 
+A session belongs to the principal whose message created it; other
+principals cannot read or continue it, administrators can (see
+[identity and access](access.md)).
+
 ## Turn
 
 One request from the client and everything the model does in response:

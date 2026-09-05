@@ -109,8 +109,9 @@ execution, history, serialization, or the upstream dependency; see
 ## Invariants — do not route around these
 
 - **Every service and app module has the same skeleton** (`services/<name>/`,
-  `app/assistant`, `app/streaming`, `app/ingress`, `app/heartbeat`; the leaf modules
-  `base`, `artifacts`, `config` and the `app/routes` package are exempt).
+  `app/access`, `app/assistant`, `app/streaming`, `app/ingress`, `app/heartbeat`;
+  the leaf modules `base`, `artifacts`, `host_context`, `principal`, `config`
+  and the `app/routes` package are exempt).
   `config.py` (a frozen pydantic
   model nested into `AppSettings`), `deps.py` (FastAPI `Depends` accessors
   reading `app.state`), `factory.py` (`register_<name>(app_state,
@@ -119,17 +120,18 @@ execution, history, serialization, or the upstream dependency; see
   implementing `LifecycleAware`: `start`, `stop`, `health_check`),
   `exceptions.py`, and optionally `models.py`. Files starting with `_` are
   private to their module; other modules use the interface class only.
-- **Startup order is registration order** (`main.py:lifespan`): database,
-  oauth, llm, history, media, mcp, artifacts, tools, assistant, streaming,
-  ingress, heartbeat.
+- **Startup order is registration order** (`main.py:lifespan`): access,
+  database, oauth, llm, history, media, mcp, artifacts, tools, assistant,
+  streaming, ingress, heartbeat.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
 - **Layering, bottom up.** `base` (lifecycle, protocols, resilience,
   exceptions), `artifacts` (assistant profiles: the artifact schema, the
   built-in `neutral` and `technical_operator` profiles, TOML loading),
-  `host_context` (the host contract) and `model_catalog` (providers, their
-  key variables, fallback defaults and the model list) are leaves. `services/*` import `base`, `config` and the
+  `host_context` (the host contract), `principal` (trusted identity and the
+  ownership rule) and `model_catalog` (providers, their key variables,
+  fallback defaults and the model list) are leaves. `services/*` import `base`, `config` and the
   `services/tracing` helpers; `services/tools` may import `services/media`
   and `services/artifacts`; no service imports `app`. `app/assistant` (prompt, sessions, per-request
   agent setup) imports services; `app/streaming` (the turn pipeline) imports
@@ -234,6 +236,18 @@ execution, history, serialization, or the upstream dependency; see
   environment variable carrying each key, the per-provider fallback models
   and the catalog `GET /api/models` exposes live in `model_catalog.py`.
   Keep both in step when adding a model.
+- **Identity comes from the host, never from the request.** `app/access`
+  establishes a `Principal` (leaf `principal.py`) per caller from
+  `ACCESS__MODE` (`trusted_local` default, `header` behind an
+  authenticating proxy, `host` through `AssistantDefinition.authenticate`);
+  routes take it through `PrincipalDep`/`AdminDep`, the Socket.IO namespace
+  at connect time, in-process callers through `principal=` (the local
+  operator otherwise). Sessions record `owner_id`; `can_access_session`
+  is the one rule (owner, admin, or unowned), applied by the turn planner,
+  the streaming service and the session routes. Administration (settings
+  writes, provider keys, OAuth, ingress, inbox, debug, artifact mutations,
+  session reassignment) requires the `admin` role. Tools read the principal
+  from the request context. Docs: `docs/access.md`.
 - **Messages carry a provenance envelope** (`[via:telegram from:X]`,
   `[via:tmux from:agent]`, `[via:room ...]`, `[via:backbone]`); the
   communication protocol artifact tells the model to answer on the same
