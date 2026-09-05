@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import case, delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant_runtime.services.database.models import (
@@ -458,6 +459,9 @@ class InboxRepository:
         return list(result.scalars().all())
 
 
+_PROPOSE_ATTEMPTS = 3
+
+
 class ArtifactRepository:
     """CRUD operations for versioned prompt artifacts. Uses flush() — caller owns commit.
 
@@ -509,30 +513,39 @@ class ArtifactRepository:
     async def propose(self, scope: str, name: str, content: str, proposed_by: str) -> ArtifactORM:
         """Create a new version of an artifact (inactive until approved).
 
-        Auto-increments version based on MAX(version) for this name.
+        The version is MAX(version) + 1. Two concurrent writers can compute
+        the same number; the unique constraint rejects the loser, whose
+        insert is retried from a savepoint with a fresh number.
         """
-        max_result = await self._session.execute(
-            select(func.max(ArtifactORM.version)).where(
-                ArtifactORM.assistant == scope, ArtifactORM.name == name
+        for attempt in range(_PROPOSE_ATTEMPTS):
+            max_result = await self._session.execute(
+                select(func.max(ArtifactORM.version)).where(
+                    ArtifactORM.assistant == scope, ArtifactORM.name == name
+                )
             )
-        )
-        current_max = max_result.scalar_one_or_none() or 0
-        next_version = current_max + 1
-
-        result = await self._session.execute(
-            insert(ArtifactORM)
-            .values(
-                assistant=scope,
-                name=name,
-                content=content,
-                version=next_version,
-                is_active=False,
-                proposed_by=proposed_by,
-            )
-            .returning(ArtifactORM)
-        )
-        await self._session.flush()
-        return result.scalar_one()
+            next_version = (max_result.scalar_one_or_none() or 0) + 1
+            try:
+                async with self._session.begin_nested():
+                    result = await self._session.execute(
+                        insert(ArtifactORM)
+                        .values(
+                            assistant=scope,
+                            name=name,
+                            content=content,
+                            version=next_version,
+                            is_active=False,
+                            proposed_by=proposed_by,
+                        )
+                        .returning(ArtifactORM)
+                    )
+                    row = result.scalar_one()
+            except IntegrityError:
+                if attempt == _PROPOSE_ATTEMPTS - 1:
+                    raise
+                continue
+            await self._session.flush()
+            return row
+        raise AssertionError("unreachable")
 
     async def approve(self, scope: str, name: str, version: int) -> ArtifactORM | None:
         """Approve a version: deactivate current active, activate target.

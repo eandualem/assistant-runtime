@@ -125,7 +125,10 @@ async def runtime(monkeypatch, script, host_schema, history_config):
     monkeypatch.setattr(llm, "_resolve_agent_model", lambda _model: script.model())
     history = HistoryService(history_config, llm_service=llm)
     artifacts = ArtifactService(ArtifactsConfig(), neutral_profile())
-    tools = ToolService(ToolConfig(host_tools=host_schema), artifact_service=artifacts)
+    tools = ToolService(
+        ToolConfig(host_tools=host_schema, builtin_tools=frozenset({"time", "screen"})),
+        artifact_service=artifacts,
+    )
     assistant = AssistantService(
         AssistantConfig(enable_working_memory=False),
         llm_service=llm,

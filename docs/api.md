@@ -156,8 +156,10 @@ stale `expected_version` `409`, a missing version `404`.
 | `POST /api/artifacts/{name}/actions` `{"action": "propose"\|"update"\|"approve"\|"rollback", ...}` | the four above behind one endpoint |
 | `DELETE /api/artifacts/{name}` | delete every version; the default applies again |
 
-Names are `soul`, `persona`, `communication_protocol`, `ecosystem`,
-`scratchpad`.
+Artifact names come from the active profile; `GET /api/artifacts/profile`
+lists them. The built-in `technical_operator` profile defines `soul`,
+`persona`, `communication_protocol`, `ecosystem` and `scratchpad`; the
+default `neutral` profile defines `instructions` and `scratchpad`.
 
 ## Messages from other systems
 

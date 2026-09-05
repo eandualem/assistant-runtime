@@ -4,7 +4,8 @@ Revision ID: 0020
 Revises: 0019
 Create Date: 2026-09-05 12:00:00.000000
 
-Existing rows keep working for the profile named ``default``.
+Existing rows were written by the original technical-operator assistant, so they
+are assigned to the ``technical_operator`` profile.
 """
 
 from typing import Sequence, Union
@@ -23,7 +24,10 @@ def upgrade() -> None:
     op.add_column(
         "artifacts",
         sa.Column(
-            "assistant", sa.String(length=64), nullable=False, server_default=sa.text("'default'")
+            "assistant",
+            sa.String(length=64),
+            nullable=False,
+            server_default=sa.text("'technical_operator'"),
         ),
     )
     op.drop_constraint("uq_artifacts_name_version", "artifacts", type_="unique")

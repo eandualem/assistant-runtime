@@ -45,6 +45,10 @@ class ArtifactPolicy:
             raise ValueError(
                 f"assistant_edit must be one of {', '.join(_EDIT_POLICIES)}: {self.assistant_edit!r}"
             )
+        # Policies decide authorization; a quoted "false" must not read as true.
+        for name in ("assistant_activate", "host_edit"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean: {getattr(self, name)!r}")
 
 
 @dataclass(frozen=True)
@@ -73,7 +77,9 @@ class AssistantProfile:
     """The ordered artifacts of one assistant, plus the store scope they live in.
 
     ``name`` scopes stored versions: two profiles with different names never
-    see each other's artifacts, even when artifact names coincide.
+    see each other's artifacts, even when artifact names coincide. The
+    built-ins use ``neutral`` and ``technical_operator``; a file profile
+    without a name is ``default``.
     """
 
     name: str = "default"
@@ -130,7 +136,7 @@ class AssistantProfile:
 def neutral_profile() -> AssistantProfile:
     """The default: one required instructions artifact and an autonomous scratchpad."""
     return AssistantProfile(
-        name="default",
+        name="neutral",
         artifacts=(
             ArtifactDefinition(
                 name="instructions",
@@ -161,7 +167,8 @@ def technical_operator_profile() -> AssistantProfile:
         "ecosystem": "world model, roles, org structure, system topology",
     }
     return AssistantProfile(
-        name="default",
+        # Rows stored before profiles existed belong to this assistant (migration 0020).
+        name="technical_operator",
         artifacts=(
             *(
                 ArtifactDefinition(

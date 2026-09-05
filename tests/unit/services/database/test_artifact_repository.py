@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from assistant_runtime.services.database.models import ArtifactORM
 from assistant_runtime.services.database.repositories import ArtifactRepository
@@ -21,6 +23,12 @@ def mock_session():
     session.add = MagicMock()
     session.flush = AsyncMock()
     session.execute = AsyncMock()
+
+    @asynccontextmanager
+    async def savepoint():
+        yield
+
+    session.begin_nested = MagicMock(side_effect=savepoint)
     return session
 
 
@@ -252,3 +260,39 @@ class TestApprove:
         result = await repo.approve("default", "persona", version=2)
 
         assert result.is_active is True
+
+
+class TestProposeRetry:
+    async def test_concurrent_version_collision_is_retried(self, repo, mock_session):
+        max_result = MagicMock()
+        max_result.scalar_one_or_none.return_value = 2
+        inserted = MagicMock(spec=ArtifactORM)
+        inserted.version = 4
+        insert_result = MagicMock()
+        insert_result.scalar_one.return_value = inserted
+        max_after = MagicMock()
+        max_after.scalar_one_or_none.return_value = 3
+        mock_session.execute.side_effect = [
+            max_result,
+            IntegrityError("insert", {}, Exception("duplicate")),
+            max_after,
+            insert_result,
+        ]
+
+        result = await repo.propose("default", "persona", "text", "host")
+
+        assert result is inserted
+        assert mock_session.begin_nested.call_count == 2
+        second_insert = mock_session.execute.call_args_list[3].args[0]
+        assert second_insert.compile().params["version"] == 4
+
+    async def test_persistent_collision_raises(self, repo, mock_session):
+        max_result = MagicMock()
+        max_result.scalar_one_or_none.return_value = 1
+        mock_session.execute.side_effect = [
+            max_result,
+            IntegrityError("insert", {}, Exception("dup")),
+        ] * 3
+
+        with pytest.raises(IntegrityError):
+            await repo.propose("default", "persona", "text", "host")

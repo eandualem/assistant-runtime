@@ -198,7 +198,7 @@ class ArtifactORM(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     assistant: Mapped[str] = mapped_column(
-        String(64), nullable=False, server_default=text("'default'")
+        String(64), nullable=False, server_default=text("'technical_operator'")
     )
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)

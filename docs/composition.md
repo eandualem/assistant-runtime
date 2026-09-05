@@ -91,7 +91,8 @@ assistant = AssistantDefinition(
     profile=profile,
 )
 settings = AppSettings(
-    tools=ToolConfig(builtin_tools=frozenset(), provider_capabilities=frozenset()),
+    # "artifacts" registers manage_artifacts, so the model can evolve its scratchpad.
+    tools=ToolConfig(builtin_tools=frozenset({"artifacts"}), provider_capabilities=frozenset()),
     providers=ProvidersConfig(),
 )
 app = create_asgi_app(assistant=assistant, settings=settings)
@@ -135,9 +136,11 @@ startup is interrupted.
 `profile` defines the prompt's leading fragments: their names, order,
 default text and mutation policy. It replaces the neutral built-in and the
 `ASSISTANT__PROFILE` setting. The same profile can be a TOML file instead
-(see `load_profile_file` in `assistant_runtime.artifacts`). Two hosts with
-different profile names never share stored versions, and a host that
-wants the original technical-operator assistant uses
+(see `load_profile_file` in `assistant_runtime.artifacts`). Stored
+versions are scoped by the profile's `name`: two hosts with different
+names never share them, and the built-ins use `neutral` and
+`technical_operator` (rows written before profiles existed belong to the
+latter). A host that wants the original technical-operator assistant uses
 `technical_operator_profile()`.
 
 Policies are enforced by the runtime, so the example above lets the model

@@ -165,7 +165,9 @@ have not seen; writing content identical to the active version records
 nothing. Versions live in Postgres when it is reachable and in process
 memory otherwise; every mutation result and `GET /api/artifacts/profile`
 report `durable`. Stored versions are scoped by the profile's `name`, so
-two assistants never share artifacts.
+two assistants never share artifacts; the built-ins are `neutral` and
+`technical_operator`, and versions stored before profiles existed belong
+to `technical_operator`.
 
 After the artifacts come the connected MCP servers, the current time, the
 host context and the session's **working memory**: a small structured

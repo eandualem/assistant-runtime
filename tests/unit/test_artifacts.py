@@ -25,6 +25,16 @@ class TestSchema:
         with pytest.raises(ValueError, match="assistant_edit must be one of"):
             ArtifactPolicy(assistant_edit="anything")
 
+    @pytest.mark.parametrize("field", ["assistant_activate", "host_edit"])
+    @pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+    def test_policy_booleans_are_strict(self, field, value):
+        with pytest.raises(ValueError, match=f"{field} must be a boolean"):
+            ArtifactPolicy(**{field: value})
+
+    def test_quoted_policy_values_in_files_are_rejected(self):
+        with pytest.raises(ValueError, match="host_edit must be a boolean"):
+            profile_from_mapping({"artifacts": [{"name": "a", "policy": {"host_edit": "false"}}]})
+
     @pytest.mark.parametrize("name", ["Soul", "1st", "with-dash", "", "a" * 65])
     def test_artifact_name_must_be_an_identifier(self, name):
         with pytest.raises(ValueError, match="Artifact name"):
@@ -92,9 +102,10 @@ class TestBuiltinProfiles:
         for private in ("lovely", "jarvis", "loveble"):
             assert private not in blob
 
-    def test_both_builtins_share_the_default_store_scope(self):
-        # Switching between them keeps previously stored versions addressable.
-        assert neutral_profile().name == technical_operator_profile().name == "default"
+    def test_builtins_have_distinct_store_scopes(self):
+        # The example assistant keeps the rows written before profiles existed.
+        assert neutral_profile().name == "neutral"
+        assert technical_operator_profile().name == "technical_operator"
 
 
 class TestProfileFiles:
