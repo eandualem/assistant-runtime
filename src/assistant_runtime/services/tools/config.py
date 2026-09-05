@@ -1,6 +1,6 @@
 """Configuration for the tool service module."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +19,16 @@ class ToolConfig(BaseModel):
 
     max_tools_per_request: int = Field(default=64, ge=1, le=100)
     tool_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    builtin_tools: frozenset[
+        Literal["time", "screen", "artifacts", "subagent", "media", "video"]
+    ] = Field(
+        default=frozenset({"time", "screen", "artifacts", "subagent", "media", "video"}),
+        description="Built-in tool groups to register; an empty set disables all built-ins.",
+    )
+    provider_capabilities: frozenset[str] | None = Field(
+        default=None,
+        description="Runtime business capabilities to expose from configured providers. None enables every configured capability; an empty set disables all.",
+    )
 
     host_tools: dict[str, dict[str, Any]] = Field(
         default_factory=dict,

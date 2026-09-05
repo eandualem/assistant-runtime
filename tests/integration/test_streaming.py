@@ -1,11 +1,11 @@
-"""Integration tests for the streaming pipeline — real wiring, mocked Agent.iter()."""
+"""Integration tests for the streaming pipeline — real wiring, mocked Agent.run_stream_events()."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic_graph import End
+from pydantic_ai.run import AgentRunResultEvent
 
 from assistant_runtime.app.assistant.models import AssistantRequest
 
@@ -31,7 +31,7 @@ class TestStreamingPipeline:
         mock_run = _make_mock_agent_run("Streamed result")
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
+        mock_agent.run_stream_events = MagicMock(return_value=mock_run)
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
@@ -61,7 +61,7 @@ class TestStreamingPipeline:
         mock_run = _make_mock_agent_run("The answer is 42")
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
+        mock_agent.run_stream_events = MagicMock(return_value=mock_run)
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
@@ -92,8 +92,8 @@ class TestStreamingPipeline:
 
         class _MockRun:
             def __init__(self):
-                self.ctx = MagicMock()
                 self.result = mock_result
+                self._done = False
 
             async def __aenter__(self):
                 return self
@@ -101,15 +101,17 @@ class TestStreamingPipeline:
             async def __aexit__(self, *args):
                 pass
 
-            @property
-            def next_node(self):
-                return End(data="Done")
+            def __aiter__(self):
+                return self
 
-            async def next(self, node):
-                return End(data="Done")
+            async def __anext__(self):
+                if self._done:
+                    raise StopAsyncIteration
+                self._done = True
+                return AgentRunResultEvent(self.result)
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=_MockRun())
+        mock_agent.run_stream_events = MagicMock(return_value=_MockRun())
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             async for _ in streaming.stream_message(
@@ -134,7 +136,7 @@ class TestStreamingPipeline:
         mock_run = _make_mock_agent_run("OK")
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
+        mock_agent.run_stream_events = MagicMock(return_value=mock_run)
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
@@ -165,7 +167,7 @@ class TestStreamingPipeline:
         mock_run = _make_mock_agent_run("OK")
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
+        mock_agent.run_stream_events = MagicMock(return_value=mock_run)
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             async for _ in streaming.stream_message(

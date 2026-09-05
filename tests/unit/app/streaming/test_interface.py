@@ -8,14 +8,14 @@ import pytest
 from pydantic_ai import DeferredToolRequests
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.run import AgentRunResultEvent
 from pydantic_ai.usage import UsageLimits
-from pydantic_graph import End
 
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
 from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
 from assistant_runtime.app.settings import EffectiveConfig
-from assistant_runtime.app.streaming._agent_run import deliver_steering_into_request
+from assistant_runtime.app.streaming._agent_run import enqueue_pending_steering
 from assistant_runtime.app.streaming._host_tool import STALE_HOST_TOOL_OUTPUT
 from assistant_runtime.app.streaming._runner import TurnRunner
 from assistant_runtime.app.streaming._usage import cache_counts
@@ -64,15 +64,23 @@ class _MockRun:
             total_tokens=12,
             requests=1,
         )
-        self.next_node = End(data=output)
-        self.ctx = MagicMock()
-        self.ctx.state.message_history = all_messages
+        self._done = False
 
     async def __aenter__(self) -> _MockRun:
+        self._done = False
         return self
 
     async def __aexit__(self, *_args: Any) -> None:
         return None
+
+    def __aiter__(self) -> _MockRun:
+        return self
+
+    async def __anext__(self) -> AgentRunResultEvent:
+        if self._done:
+            raise StopAsyncIteration
+        self._done = True
+        return AgentRunResultEvent(self.result)
 
 
 def _agent_context(agent: Any) -> AgentSetupContext:
@@ -116,7 +124,7 @@ def _make_service(
         ],
     )
     agent = MagicMock()
-    agent.iter = MagicMock(return_value=run)
+    agent.run_stream_events = MagicMock(return_value=run)
 
     history_service = AsyncMock()
 
@@ -453,7 +461,7 @@ class TestStreamingService:
         assert record["status"] == "promoted"
 
     @pytest.mark.asyncio
-    async def test_deliver_steering_into_request_marks_pending_records_delivered(self) -> None:
+    async def test_enqueue_pending_steering_marks_pending_records_delivered(self) -> None:
         sessions = SessionStore()
         await _seed_basic_turn(sessions)
         await sessions.queue_steering(
@@ -475,16 +483,18 @@ class TestStreamingService:
         service = _make_service(sessions=sessions)
         await service.start()
 
-        node = MagicMock()
-        node.request = ModelRequest(parts=[])
+        run = MagicMock()
 
-        delivered = await deliver_steering_into_request(
-            sessions, "sess-1", sessions.get_context("sess-1"), next_node=node
+        delivered = await enqueue_pending_steering(
+            sessions, "sess-1", sessions.get_context("sess-1"), run=run
         )
 
         assert [record["id"] for record in delivered] == ["steering-1", "steering-2"]
-        assert len(node.request.parts) == 2
-        assert "Additional user steering" in node.request.parts[0].content
+        run.enqueue.assert_called_once()
+        queued_request = run.enqueue.call_args.args[0]
+        assert len(queued_request.parts) == 2
+        assert "Additional user steering" in queued_request.parts[0].content
+        assert run.enqueue.call_args.kwargs == {"priority": "asap"}
         assert sessions.get_context("sess-1")["pending_steering_ids"] == []
 
     @pytest.mark.asyncio
@@ -531,7 +541,7 @@ class TestStreamingService:
 
         service = _make_service()
         failing_agent = MagicMock()
-        failing_agent.iter = MagicMock(return_value=_FailingRun())
+        failing_agent.run_stream_events = MagicMock(return_value=_FailingRun())
         service._assistant_service.prepare_agent_context = AsyncMock(
             return_value=_agent_context(failing_agent)
         )
@@ -579,7 +589,7 @@ class TestStreamingService:
 
         service = _make_service()
         failing_agent = MagicMock()
-        failing_agent.iter = MagicMock(return_value=_FailingRun())
+        failing_agent.run_stream_events = MagicMock(return_value=_FailingRun())
         service._assistant_service.prepare_agent_context = AsyncMock(
             return_value=_agent_context(failing_agent)
         )
@@ -671,7 +681,7 @@ class TestMultiToolContinuation:
         ctx["pending_tool_name"] = "ui_send_event"
         ctx["pending_assistant_message_id"] = "assistant-1"
 
-        # Build what agent.iter would return after a successful continuation:
+        # Build what agent.run_stream_events would return after a successful continuation:
         # The flat history + tool return for the host tool + LLM's final response
         from assistant_runtime.app.assistant._serialization import assistant_record_to_flat_messages
 
@@ -721,10 +731,10 @@ class TestMultiToolContinuation:
         assert final["message_id"] == "assistant-1"
         assert not final.get("error")
 
-        # Verify agent.iter was called with the flat history structure
+        # Verify agent.run_stream_events was called with the flat history structure
         agent = service._assistant_service.prepare_agent_context.return_value.agent
-        iter_call = agent.iter.call_args
-        message_history = iter_call.kwargs.get("message_history") or iter_call.args[1]
+        stream_call = agent.run_stream_events.call_args
+        message_history = stream_call.kwargs.get("message_history") or stream_call.args[1]
 
         # The LAST ModelResponse should contain ONLY the pending host tool.
         # Completed backend tools go in an earlier ModelResponse + ModelRequest.
@@ -745,7 +755,7 @@ class TestMultiToolContinuation:
         )
 
         # Verify deferred_tool_results was passed correctly
-        deferred = iter_call.kwargs.get("deferred_tool_results")
+        deferred = stream_call.kwargs.get("deferred_tool_results")
         assert deferred is not None
         assert "call-host-1" in deferred.calls
 
@@ -855,8 +865,8 @@ class TestMultiToolContinuation:
 
         # The LAST ModelResponse should contain ONLY the pending host tool
         agent = service._assistant_service.prepare_agent_context.return_value.agent
-        iter_call = agent.iter.call_args
-        message_history = iter_call.kwargs.get("message_history") or iter_call.args[1]
+        stream_call = agent.run_stream_events.call_args
+        message_history = stream_call.kwargs.get("message_history") or stream_call.args[1]
 
         last_model_response = None
         for msg in reversed(message_history):
@@ -1213,7 +1223,7 @@ class TestRunMessage:
 
         service = _make_service()
         agent = MagicMock()
-        agent.iter = MagicMock(return_value=_FailingRun())
+        agent.run_stream_events = MagicMock(return_value=_FailingRun())
         service._assistant_service.prepare_agent_context = AsyncMock(
             return_value=_agent_context(agent)
         )
