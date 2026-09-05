@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.heartbeat.config import HeartbeatConfig
 from assistant_runtime.app.streaming.config import StreamingConfig
+from assistant_runtime.services.artifacts.config import ArtifactsConfig
 from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.history.config import HistoryConfig
 from assistant_runtime.services.llm.config import LLMConfig
@@ -24,6 +25,7 @@ class AppSettings(BaseSettings):
     log_json: bool = False
 
     database: DatabaseConfig = DatabaseConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
     llm: LLMConfig = LLMConfig()
     history: HistoryConfig = HistoryConfig()
     media: MediaConfig = MediaConfig()

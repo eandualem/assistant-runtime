@@ -18,13 +18,13 @@ async def register_tools(
     media_service = getattr(app_state, "media_service", None)
     llm_service = getattr(app_state, "llm_service", None)
     mcp_service = getattr(app_state, "mcp_service", None)
-    database_service = getattr(app_state, "database_service", None)
+    artifact_service = getattr(app_state, "artifact_service", None)
     service = ToolService(
         config=settings.tools,
         media_service=media_service,
         llm_service=llm_service,
         mcp_service=mcp_service,
-        database_service=database_service,
+        artifact_service=artifact_service,
         providers=build_providers(settings.providers),
     )
     app_state.tool_service = service

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
@@ -10,6 +9,7 @@ from pydantic_ai.messages import ModelResponse, TextPart
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.assistant.interface import AssistantService
 from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.artifacts import technical_operator_profile
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 
@@ -57,21 +57,19 @@ def _run_result(output: str = "Hello!") -> MagicMock:
     return result
 
 
-@pytest.fixture(autouse=True)
-def _mock_artifacts() -> Any:
-    with patch.object(
-        AssistantService,
-        "_load_active_artifacts",
-        new=AsyncMock(
-            return_value={
-                "persona": "You are the assistant.",
-                "communication_protocol": "Envelope tags may be present.",
-                "ecosystem": "Agents are available.",
-                "soul": "Increase the operator's leverage.",
-            }
-        ),
-    ):
-        yield
+@pytest.fixture
+def artifact_service() -> MagicMock:
+    service = MagicMock()
+    service.profile = technical_operator_profile()
+    service.active_texts = AsyncMock(
+        return_value={
+            "persona": "You are the assistant.",
+            "communication_protocol": "Envelope tags may be present.",
+            "ecosystem": "Agents are available.",
+            "soul": "Increase the operator's leverage.",
+        }
+    )
+    return service
 
 
 @pytest.fixture
@@ -105,12 +103,14 @@ def service(
     llm_service: MagicMock,
     history_service: AsyncMock,
     tool_service: MagicMock,
+    artifact_service: MagicMock,
 ) -> AssistantService:
     return AssistantService(
         config=AssistantConfig(),
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
+        artifact_service=artifact_service,
     )
 
 

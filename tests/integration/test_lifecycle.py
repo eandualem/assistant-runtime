@@ -10,6 +10,7 @@ from assistant_runtime.config import AppSettings
 from assistant_runtime.services.history.interface import HistoryService
 from assistant_runtime.services.llm.interface import LlmService
 from assistant_runtime.services.tools.interface import ToolService
+from tests.integration.conftest import make_artifact_service
 
 
 class TestFullLifecycle:
@@ -18,7 +19,7 @@ class TestFullLifecycle:
         """All services start successfully in dependency order."""
         health = await wired_services["lifecycle"].health()
         assert health["healthy"] is True
-        assert len(health["components"]) == 5
+        assert len(health["components"]) == 6
 
     @pytest.mark.asyncio
     async def test_all_components_healthy(self, wired_services):
@@ -68,6 +69,7 @@ class TestFullLifecycle:
             llm_service=llm,
             history_service=history,
             tool_service=tools,
+            artifact_service=make_artifact_service(),
         )
 
         await lm.register("llm", llm)

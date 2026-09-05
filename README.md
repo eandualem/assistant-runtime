@@ -38,9 +38,12 @@ uv run assistant-runtime chat
 `chat` runs the runtime in-process and streams the reply to the terminal.
 `uv run assistant-runtime serve` runs the HTTP and Socket.IO server on
 `127.0.0.1:7100`; `doctor` reports what is configured. Postgres is
-optional: without it sessions live in memory and the bundled prompt
-artifacts are used. With it (`make db-up && make db-upgrade`) sessions
-persist and artifacts and settings become editable through the API.
+optional: without it sessions and prompt-artifact versions live in memory.
+With it (`make db-up && make db-upgrade`) sessions, artifact versions and
+settings persist. The assistant's artifacts (its instructions, what it may
+rewrite about itself) come from a profile: the neutral built-in,
+`ASSISTANT__PROFILE=technical_operator` for the example operator assistant,
+a TOML file, or `AssistantDefinition(profile=...)` in host code.
 
 The full walkthrough is in [docs/getting-started.md](docs/getting-started.md).
 
@@ -185,7 +188,8 @@ src/assistant_runtime/
   app/           assistant (prompt, sessions), streaming (the turn pipeline), routes
   cli/           chat, serve, doctor, docs
   help/          the documentation, when installed from a wheel
-  artifacts.py   the prompt artifact catalog
+  artifacts.py   assistant profiles: the artifact schema, built-ins, TOML loading
+  profiles/      the example technical_operator texts
   model_catalog.py  providers, key variables, fallback models, the model list
   config.py      AppSettings, composed from every module's config
   main.py        the FastAPI app, lifespan and Socket.IO wrapper

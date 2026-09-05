@@ -9,11 +9,12 @@ import sys
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
-from pydantic_ai.messages import ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import SystemPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from assistant_runtime.app.assistant.exceptions import AgentRunError
 from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.artifacts import ArtifactDefinition, ArtifactPolicy, AssistantProfile
 from assistant_runtime.main import AssistantDefinition, create_app, create_asgi_app, create_runtime
 from assistant_runtime.services.llm.interface import LlmService
 from assistant_runtime.services.tools.config import ToolConfig
@@ -114,6 +115,7 @@ async def test_external_module_uses_native_extensions_and_request_scoped_deps(
                 ("llm_service", "llm"),
                 ("history_service", "history"),
                 ("media_service", "media"),
+                ("artifact_service", "artifacts"),
                 ("tool_service", "tools"),
                 ("assistant_service", "assistant"),
                 ("streaming_service", "streaming"),
@@ -241,3 +243,88 @@ async def test_unknown_provider_selection_fails_at_startup():
 def test_unknown_builtin_selection_is_rejected():
     with pytest.raises(ValidationError):
         ToolConfig(builtin_tools={"misspelled"})
+
+
+async def test_two_definitions_run_their_own_profiles_and_evolve_artifacts(
+    isolated_services, monkeypatch
+):
+    """Distinct instructions without core edits; an allowed self-edit reaches the next prompt."""
+    prompts: list[str] = []
+
+    async def model_response(messages, info):
+        system = [p.content for m in messages for p in m.parts if isinstance(p, SystemPromptPart)]
+        instructions = [m.instructions for m in messages if getattr(m, "instructions", None)]
+        prompts.append("\n".join([*system, *instructions]))
+        returns = [p for p in messages[-1].parts if isinstance(p, ToolReturnPart)]
+        prompt = [p.content for m in messages for p in m.parts if isinstance(p, UserPromptPart)]
+        if returns:
+            yield "Noted."
+        elif (
+            "manage_artifacts" in {t.name for t in info.function_tools}
+            and prompt[-1] == "Remember blue"
+        ):
+            yield {
+                0: DeltaToolCall(
+                    "manage_artifacts",
+                    '{"action":"update","name":"scratchpad","content":"Customer prefers blue"}',
+                    tool_call_id="artifact-1",
+                )
+            }
+        else:
+            yield "Hello."
+
+    model = FunctionModel(stream_function=model_response)
+    monkeypatch.setattr(LlmService, "_resolve_agent_model", lambda self, name: model)
+    settings = isolated_services.model_copy(
+        update={
+            "tools": ToolConfig(
+                builtin_tools=frozenset({"artifacts"}), provider_capabilities=frozenset()
+            )
+        }
+    )
+    shop = AssistantDefinition(
+        profile=AssistantProfile(
+            name="shop",
+            artifacts=[
+                ArtifactDefinition(
+                    name="instructions", required=True, default="You help shoppers."
+                ),
+                ArtifactDefinition(
+                    name="scratchpad", policy=ArtifactPolicy(assistant_edit="autonomous")
+                ),
+            ],
+        )
+    )
+    clinic = AssistantDefinition(
+        profile=AssistantProfile(
+            name="clinic",
+            artifacts=[
+                ArtifactDefinition(
+                    name="instructions", required=True, default="You book appointments."
+                )
+            ],
+        )
+    )
+
+    async with create_runtime(assistant=shop, settings=settings) as runtime:
+        first = await runtime.run_message(
+            AssistantRequest(id="m1", session_id="s", content="Remember blue")
+        )
+        assert first.content == "Noted."
+        second = await runtime.run_message(
+            AssistantRequest(id="m2", session_id="s", parent_id=first.message_id, content="Hi")
+        )
+        assert second.content == "Hello."
+    async with create_runtime(assistant=clinic, settings=settings) as runtime:
+        await runtime.run_message(AssistantRequest(id="m1", session_id="s", content="Hi"))
+
+    assert len(prompts) == 4
+    assert prompts[0].startswith("You help shoppers.")
+    assert "Customer prefers blue" not in prompts[0]
+    # The write lands in the next turn's prompt, not in the same turn's later requests.
+    assert "Customer prefers blue" not in prompts[1]
+    assert "You help shoppers.\n\nCustomer prefers blue" in prompts[2]
+    assert prompts[3].startswith("You book appointments.")
+    assert "Customer prefers blue" not in prompts[3]
+    for text in prompts:
+        assert "operator" not in text.lower()

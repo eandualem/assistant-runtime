@@ -1,4 +1,9 @@
-"""Artifact management tool — CRUD for versioned prompt artifacts."""
+"""Artifact management tool — the assistant's access to its own prompt artifacts.
+
+Every action goes through ``ArtifactService``, which enforces the profile's
+policies for the ``assistant`` actor; the tool only translates results and
+errors into the registry's dict contract.
+"""
 
 from __future__ import annotations
 
@@ -7,318 +12,220 @@ from typing import Any
 
 from loguru import logger
 
+from assistant_runtime.services.artifacts.exceptions import ArtifactError
+from assistant_runtime.services.artifacts.interface import ArtifactService
+from assistant_runtime.services.artifacts.models import Actor, ArtifactVersion, MutationResult
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
 
+ASSISTANT = Actor(kind="assistant")
+ACTIONS = ("list", "view", "history", "propose", "update", "activate")
 
-def _unknown_artifact_error(name: str) -> dict[str, Any]:
-    """Build a consistent unknown-artifact error payload."""
-    from assistant_runtime.artifacts import (
-        artifact_role_boundaries_text,
-        known_artifact_names_text,
-    )
 
+def _version_dict(row: ArtifactVersion, *, content: bool = False) -> dict[str, Any]:
+    data = {
+        "name": row.name,
+        "version": row.version,
+        "is_active": row.is_active,
+        "proposed_by": row.proposed_by,
+        "char_count": len(row.content),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+    if content:
+        data["content"] = row.content
+    return data
+
+
+def _mutation_dict(result: MutationResult, message: str) -> dict[str, Any]:
     return {
-        "error": (
-            f"Unknown artifact '{name}'. "
-            f"Known artifacts: {known_artifact_names_text()}. "
-            f"Role boundaries: {artifact_role_boundaries_text()}."
-        ),
-        "success": False,
+        **_version_dict(result.version),
+        "activated": result.activated,
+        "live_version": result.live_version,
+        "unchanged": result.unchanged,
+        "durable": result.durable,
+        "message": message,
+        "success": True,
     }
 
 
-def build_manage_artifacts(database_service: Any | None) -> Callable[..., Any]:
-    """The ``manage_artifacts`` handler, bound to a database service (or None)."""
+def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., Any]:
+    """The ``manage_artifacts`` handler, bound to the artifact service (or None)."""
 
     async def manage_artifacts(
         action: str,
         name: str = "",
         content: str = "",
         version: int = 0,
+        expected_version: int | None = None,
     ) -> dict[str, Any]:
-        """Manage versioned prompt artifacts (soul, persona, communication_protocol, ecosystem, scratchpad).
-
-        Supports list, view, propose_edit, update_scratchpad, approve, and history actions.
-        """
-        actions = {
-            "list": _list_artifacts,
-            "view": _view_artifact,
-            "propose_edit": _propose_edit,
-            "update_scratchpad": _update_scratchpad,
-            "approve": _approve_artifact,
-            "history": _artifact_history,
-        }
-
-        if action not in actions:
+        """Read and evolve the prompt artifacts the profile allows the assistant to change."""
+        if action not in ACTIONS:
             return {
-                "error": f"Unknown action '{action}'. Valid actions: {', '.join(actions)}",
+                "error": f"Unknown action '{action}'. Valid actions: {', '.join(ACTIONS)}",
+                "error_code": "unknown_action",
                 "success": False,
             }
-        if database_service is None:
+        if artifacts is None:
             return {
-                "error": "Artifact store not available (no database connection)",
+                "error": "Artifact service not available",
+                "error_code": "artifacts_unavailable",
                 "success": False,
             }
-        return await actions[action](
-            name=name,
-            content=content,
-            version=version,
-            database_service=database_service,
-        )
+        if action != "list" and not name:
+            return {
+                "error": f"Name is required for {action}",
+                "error_code": "missing_name",
+                "success": False,
+            }
+        try:
+            if action == "list":
+                return await _list(artifacts)
+            if action == "view":
+                return await _view(artifacts, name)
+            if action == "history":
+                return await _history(artifacts, name)
+            if action == "propose":
+                result = await artifacts.propose(
+                    name, content, actor=ASSISTANT, expected_version=expected_version
+                )
+                message = (
+                    "Content already active; nothing changed."
+                    if result.unchanged
+                    else f"Version {result.version.version} proposed; it stays inactive until activated."
+                )
+                return _mutation_dict(result, message)
+            if action == "update":
+                result = await artifacts.update(
+                    name, content, actor=ASSISTANT, expected_version=expected_version
+                )
+                message = (
+                    "Content already active; nothing changed."
+                    if result.unchanged
+                    else f"Version {result.version.version} is active; later prompts use it."
+                )
+                return _mutation_dict(result, message)
+            if not version:
+                return {
+                    "error": "Version is required for activate",
+                    "error_code": "missing_version",
+                    "success": False,
+                }
+            result = await artifacts.activate(name, version, actor=ASSISTANT)
+            return _mutation_dict(result, f"Version {version} of '{name}' is now active.")
+        except ArtifactError as e:
+            return {"error": str(e), "error_code": e.error_code, "success": False}
 
     return manage_artifacts
 
 
-async def _list_artifacts(
-    database_service: Any,
-    **_kwargs: Any,
-) -> dict[str, Any]:
-    """List all active artifacts with versions and sizes."""
-    from assistant_runtime.artifacts import artifact_sort_key
-    from assistant_runtime.services.database.repositories import ArtifactRepository
-
-    async with database_service.session_context() as session:
-        repo = ArtifactRepository(session)
-        rows = await repo.get_all_active()
-    rows = sorted(rows, key=lambda row: artifact_sort_key(row.name))
-
-    return {
-        "artifacts": [
+async def _list(artifacts: ArtifactService) -> dict[str, Any]:
+    """Every artifact of the profile: its role, what the assistant may do, its live version."""
+    active = {row.name: row for row in await artifacts.list_active()}
+    items = []
+    for definition in artifacts.profile.artifacts:
+        row = active.get(definition.name)
+        items.append(
             {
-                "name": row.name,
-                "version": row.version,
-                "char_count": len(row.content),
-                "proposed_by": row.proposed_by,
-                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "name": definition.name,
+                "role": definition.role,
+                "required": definition.required,
+                "allowed_actions": artifacts.allowed_actions(definition.name, "assistant"),
+                **(
+                    _version_dict(row)
+                    if row is not None
+                    else {"version": None, "char_count": len(definition.default)}
+                ),
             }
-            for row in rows
-        ],
-        "count": len(rows),
-        "success": True,
-    }
+        )
+    return {"artifacts": items, "count": len(items), "durable": artifacts.durable, "success": True}
 
 
-async def _view_artifact(
-    name: str,
-    database_service: Any,
-    **_kwargs: Any,
-) -> dict[str, Any]:
-    """View the active content of an artifact."""
-    if not name:
-        return {"error": "Name is required for view", "success": False}
-    from assistant_runtime.artifacts import is_known_artifact_name
-
-    if not is_known_artifact_name(name):
-        return _unknown_artifact_error(name)
-
-    from assistant_runtime.services.database.repositories import ArtifactRepository
-
-    async with database_service.session_context() as session:
-        repo = ArtifactRepository(session)
-        row = await repo.get_active(name)
-
+async def _view(artifacts: ArtifactService, name: str) -> dict[str, Any]:
+    row = await artifacts.get_active(name)
     if row is None:
-        return {"error": f"No active artifact found: {name}", "success": False}
-
-    return {
-        "name": row.name,
-        "version": row.version,
-        "content": row.content,
-        "proposed_by": row.proposed_by,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "success": True,
-    }
-
-
-async def _propose_edit(
-    name: str,
-    content: str,
-    database_service: Any,
-    **_kwargs: Any,
-) -> dict[str, Any]:
-    """Propose a new version of an artifact (requires approval to activate)."""
-    if not name:
-        return {"error": "Name is required for propose_edit", "success": False}
-    from assistant_runtime.artifacts import is_known_artifact_name
-
-    if not is_known_artifact_name(name):
-        return _unknown_artifact_error(name)
-    if not content:
-        return {"error": "Content is required for propose_edit", "success": False}
-
-    from assistant_runtime.services.database.repositories import ArtifactRepository
-
-    async with database_service.session_context() as session:
-        repo = ArtifactRepository(session)
-        row = await repo.propose(name, content, proposed_by="assistant")
-
-    logger.info("Proposed artifact edit", name=name, version=row.version)
-    return {
-        "name": row.name,
-        "version": row.version,
-        "is_active": row.is_active,
-        "message": f"Version {row.version} proposed. Requires approval to activate.",
-        "success": True,
-    }
-
-
-async def _update_scratchpad(
-    content: str,
-    database_service: Any,
-    **_kwargs: Any,
-) -> dict[str, Any]:
-    """Update scratchpad content (auto-approved)."""
-    if not content:
-        return {"error": "Content is required for update_scratchpad", "success": False}
-
-    from assistant_runtime.services.database.repositories import ArtifactRepository
-
-    async with database_service.session_context() as session:
-        repo = ArtifactRepository(session)
-        row = await repo.update_scratchpad(content, proposed_by="assistant")
-
-    logger.info("Updated scratchpad", version=row.version)
-    return {
-        "name": row.name,
-        "version": row.version,
-        "is_active": True,
-        "message": "Scratchpad updated and activated.",
-        "success": True,
-    }
-
-
-async def _approve_artifact(
-    name: str,
-    version: int,
-    database_service: Any,
-    **_kwargs: Any,
-) -> dict[str, Any]:
-    """Activate a specific version of an artifact."""
-    if not name:
-        return {"error": "Name is required for approve", "success": False}
-    from assistant_runtime.artifacts import is_known_artifact_name
-
-    if not is_known_artifact_name(name):
-        return _unknown_artifact_error(name)
-    if not version:
-        return {"error": "Version is required for approve", "success": False}
-
-    from assistant_runtime.services.database.repositories import ArtifactRepository
-
-    async with database_service.session_context() as session:
-        repo = ArtifactRepository(session)
-        row = await repo.approve(name, version)
-
-    if row is None:
+        definition = artifacts.profile.get(name)
+        assert definition is not None  # get_active validated the name
         return {
-            "error": f"No version {version} found for artifact '{name}'",
-            "success": False,
+            "name": name,
+            "version": None,
+            "content": definition.default,
+            "source": "default",
+            "success": True,
         }
-
-    logger.info("Approved artifact version", name=name, version=version)
-    return {
-        "name": row.name,
-        "version": row.version,
-        "is_active": row.is_active,
-        "message": f"Version {version} of '{name}' is now active.",
-        "success": True,
-    }
+    return {**_version_dict(row, content=True), "source": "store", "success": True}
 
 
-async def _artifact_history(
-    name: str,
-    database_service: Any,
-    **_kwargs: Any,
-) -> dict[str, Any]:
-    """Return version history for an artifact."""
-    if not name:
-        return {"error": "Name is required for history", "success": False}
-    from assistant_runtime.artifacts import is_known_artifact_name
-
-    if not is_known_artifact_name(name):
-        return _unknown_artifact_error(name)
-
-    from assistant_runtime.services.database.repositories import ArtifactRepository
-
-    async with database_service.session_context() as session:
-        repo = ArtifactRepository(session)
-        rows = await repo.get_history(name)
-
+async def _history(artifacts: ArtifactService, name: str) -> dict[str, Any]:
+    rows = await artifacts.history(name)
     return {
         "name": name,
-        "versions": [
-            {
-                "version": row.version,
-                "is_active": row.is_active,
-                "proposed_by": row.proposed_by,
-                "char_count": len(row.content),
-                "created_at": row.created_at.isoformat() if row.created_at else None,
-            }
-            for row in rows
-        ],
+        "versions": [_version_dict(row) for row in rows],
         "count": len(rows),
         "success": True,
     }
 
 
-def register_artifact_tools(registry: ToolRegistry, database_service: Any | None) -> None:
-    """Register the artifact management tool, bound to the database service."""
-    from assistant_runtime.artifacts import (
-        artifact_role_boundaries_text,
-        known_artifact_names_text,
-    )
+def register_artifact_tools(registry: ToolRegistry, artifacts: ArtifactService | None) -> None:
+    """Register the artifact management tool, described from the profile."""
+    if artifacts is not None:
+        profile = artifacts.profile
+        lines = [
+            f"{a.name} ({a.role or 'no role given'}; you may "
+            f"{', '.join(artifacts.allowed_actions(a.name, 'assistant')) or 'only read'})"
+            for a in profile.artifacts
+        ]
+        catalog = "Artifacts: " + "; ".join(lines) + ". "
+        names = profile.names_text()
+    else:
+        catalog = ""
+        names = ""
 
     registry.register_backend_tool(
         ToolDefinition(
             name="manage_artifacts",
             description=(
-                "Manage versioned prompt artifacts "
-                f"({known_artifact_names_text()}). "
-                f"Role boundaries: {artifact_role_boundaries_text()}. "
-                "Actions: list (all active), view (active content), propose_edit (create pending "
-                "version — requires approval), update_scratchpad (auto-approved), history (list all "
-                "versions with active status), approve (activate a specific version). "
-                "Use history then approve to surface and activate pending edits. "
-                "Use update_scratchpad to persist observations, patterns, and operational notes "
-                "that should influence your behavior across conversations."
+                "Read and evolve the versioned prompt artifacts that shape your behavior. "
+                + catalog
+                + "Actions: list (every artifact with its live version and what you may do), "
+                "view (active content), history (all versions), propose (new inactive version "
+                "for review), update (write and activate at once, only where allowed), "
+                "activate (make a version live, only where allowed). Pass expected_version to "
+                "fail instead of overwriting a change you have not seen."
             ),
             parameters_schema={
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": [
-                            "list",
-                            "view",
-                            "propose_edit",
-                            "update_scratchpad",
-                            "approve",
-                            "history",
-                        ],
+                        "enum": list(ACTIONS),
                         "description": "The action to perform",
                     },
                     "name": {
                         "type": "string",
-                        "description": (
-                            "Artifact name (required for view/propose_edit/approve/history). "
-                            f"Known artifacts: {known_artifact_names_text()}"
-                        ),
+                        "description": "Artifact name (required for every action but list)"
+                        + (f". Known artifacts: {names}" if names else ""),
                     },
                     "content": {
                         "type": "string",
-                        "description": "New content (required for propose_edit and update_scratchpad)",
+                        "description": "New content (required for propose and update)",
                     },
                     "version": {
                         "type": "integer",
-                        "description": "Version number (required for approve)",
+                        "description": "Version number (required for activate)",
+                    },
+                    "expected_version": {
+                        "type": "integer",
+                        "description": (
+                            "The active version you based the change on; the write is "
+                            "rejected if another version is active by then (0 = none)"
+                        ),
                     },
                 },
                 "required": ["action"],
             },
             category=ToolCategory.BACKEND,
         ),
-        build_manage_artifacts(database_service),
+        build_manage_artifacts(artifacts),
     )
 
     logger.info("Registered artifact management tool")

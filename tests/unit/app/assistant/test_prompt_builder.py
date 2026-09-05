@@ -1,5 +1,7 @@
 """Tests for the system prompt builder."""
 
+from functools import partial
+
 import pytest
 
 from assistant_runtime.app.assistant._prompt_builder import (
@@ -8,10 +10,17 @@ from assistant_runtime.app.assistant._prompt_builder import (
     _mcp_connections_fragment,
     _render_state,
     _working_memory_fragment,
-    build_system_prompt,
+)
+from assistant_runtime.app.assistant._prompt_builder import (
+    build_system_prompt as _build_system_prompt,
 )
 from assistant_runtime.app.assistant.models import PromptResult
-from assistant_runtime.artifacts import REQUIRED_ARTIFACT_NAMES
+from assistant_runtime.artifacts import (
+    ArtifactDefinition,
+    AssistantProfile,
+    neutral_profile,
+    technical_operator_profile,
+)
 from assistant_runtime.services.history.models import WorkingMemory
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
@@ -21,6 +30,62 @@ REQUIRED_ARTIFACTS = {
     "communication_protocol": "Messages may arrive with envelope tags.",
     "ecosystem": "Agents: Leo, Ike, Feynman.",
 }
+# Most cases below describe the example technical profile's artifact set.
+build_system_prompt = partial(_build_system_prompt, profile=technical_operator_profile())
+
+
+class TestProfiles:
+    def test_default_profile_is_neutral(self):
+        result = _build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts=neutral_profile().defaults,
+        )
+        names = [f["name"] for f in result.fragments]
+        assert names == ["instructions", "datetime"]
+        assert "soul" not in names
+
+    def test_profile_order_is_the_prompt_order(self):
+        profile = AssistantProfile(
+            name="support",
+            artifacts=(
+                ArtifactDefinition(name="policies", required=True, default="p"),
+                ArtifactDefinition(name="tone", required=True, default="t"),
+                ArtifactDefinition(name="notes"),
+            ),
+        )
+        result = _build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"notes": "n", "tone": "Be kind", "policies": "Refund within 30 days"},
+            profile=profile,
+        )
+        assert [f["name"] for f in result.fragments] == ["policies", "tone", "notes", "datetime"]
+        assert result.content.startswith("Refund within 30 days\n\nBe kind\n\nn")
+
+    def test_optional_artifact_without_text_is_omitted(self):
+        profile = AssistantProfile(
+            artifacts=(
+                ArtifactDefinition(name="instructions", required=True, default="i"),
+                ArtifactDefinition(name="notes"),
+            )
+        )
+        result = _build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"instructions": "Help", "notes": "  "},
+            profile=profile,
+        )
+        assert [f["name"] for f in result.fragments] == ["instructions", "datetime"]
+
+    def test_missing_required_artifact_of_a_custom_profile_raises(self):
+        profile = AssistantProfile(
+            artifacts=(ArtifactDefinition(name="policies", required=True, default="p"),)
+        )
+        with pytest.raises(ValueError, match="Missing required artifact: policies"):
+            _build_system_prompt(
+                available_tools=ToolSet(), session_context={}, artifacts={}, profile=profile
+            )
 
 
 class TestDatetimeFragment:
@@ -534,8 +599,10 @@ class TestBuildSystemPrompt:
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
-        fragment_names = [f["name"] for f in result.fragments[: len(REQUIRED_ARTIFACT_NAMES)]]
-        assert fragment_names == list(REQUIRED_ARTIFACT_NAMES)
+        fragment_names = [
+            f["name"] for f in result.fragments[: len(technical_operator_profile().required_names)]
+        ]
+        assert fragment_names == list(technical_operator_profile().required_names)
 
 
 class TestArtifactIntegration:

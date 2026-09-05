@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
@@ -18,30 +18,19 @@ from pydantic_ai.run import AgentRunResultEvent
 from assistant_runtime.app.assistant.interface import AssistantService
 from assistant_runtime.app.settings import RuntimeSettings
 from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.artifacts import technical_operator_profile
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.config import AppSettings
+from assistant_runtime.services.artifacts.config import ArtifactsConfig
+from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.history.interface import HistoryService
 from assistant_runtime.services.llm.interface import LlmService
 from assistant_runtime.services.tools.interface import ToolService
 
-# Required artifacts for integration tests (no DB available)
-_INTEGRATION_ARTIFACTS = {
-    "soul": "The assistant exists to increase the operator's leverage inside a live operating environment.",
-    "persona": "You are the assistant, the operational assistant for your environment.",
-    "communication_protocol": "Messages may arrive with envelope tags indicating their source.",
-    "ecosystem": "Agents: Leo, Ike, Feynman.",
-}
 
-
-@pytest.fixture(autouse=True)
-def _mock_artifact_loading():
-    """Patch artifact loading for all integration tests — no DB available."""
-    with patch.object(
-        AssistantService,
-        "_load_active_artifacts",
-        new=AsyncMock(return_value=_INTEGRATION_ARTIFACTS),
-    ):
-        yield
+def make_artifact_service() -> ArtifactService:
+    """The example profile on an in-memory store — no DB available."""
+    return ArtifactService(ArtifactsConfig(), technical_operator_profile())
 
 
 def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
@@ -126,18 +115,23 @@ async def wired_services(monkeypatch):
 
     llm_service = LlmService(config=settings.llm)
     history_service = HistoryService(config=settings.history, llm_service=llm_service)
-    tool_service = ToolService(config=settings.tools)
+    artifact_service = make_artifact_service()
+
+    tool_service = ToolService(config=settings.tools, artifact_service=artifact_service)
     assistant_service = AssistantService(
         config=settings.assistant,
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
+        artifact_service=artifact_service,
         runtime_settings=runtime_settings,
     )
 
     # Register all
     await lm.register("llm_service", llm_service)
     await lm.register("history_service", history_service)
+
+    await lm.register("artifact_service", artifact_service)
     await lm.register("tool_service", tool_service)
     await lm.register("assistant_service", assistant_service)
 

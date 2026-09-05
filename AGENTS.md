@@ -120,17 +120,18 @@ execution, history, serialization, or the upstream dependency; see
   `exceptions.py`, and optionally `models.py`. Files starting with `_` are
   private to their module; other modules use the interface class only.
 - **Startup order is registration order** (`main.py:lifespan`): database,
-  oauth, llm, history, media, mcp, tools, assistant, streaming, ingress,
-  heartbeat.
+  oauth, llm, history, media, mcp, artifacts, tools, assistant, streaming,
+  ingress, heartbeat.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
 - **Layering, bottom up.** `base` (lifecycle, protocols, resilience,
-  exceptions), `artifacts` (the prompt artifact catalog) and
+  exceptions), `artifacts` (assistant profiles: the artifact schema, the
+  built-in `neutral` and `technical_operator` profiles, TOML loading) and
   `model_catalog` (providers, their key variables, fallback defaults and
   the model list) are leaves. `services/*` import `base`, `config` and the
-  `services/tracing` helpers; `services/tools` may import `services/media`;
-  no service imports `app`. `app/assistant` (prompt, sessions, per-request
+  `services/tracing` helpers; `services/tools` may import `services/media`
+  and `services/artifacts`; no service imports `app`. `app/assistant` (prompt, sessions, per-request
   agent setup) imports services; `app/streaming` (the turn pipeline) imports
   `app/assistant`; `app/ingress` (messages from other systems delivered
   into sessions) imports `app/streaming`, and `app/heartbeat` imports
@@ -173,8 +174,8 @@ execution, history, serialization, or the upstream dependency; see
 - **Capabilities are separate from providers.** `services/tools/builtin/`
   holds the tools that are part of the runtime itself (time, screen,
   artifacts, subagents, media); they are registered when their own
-  service exists (artifacts need Postgres, media a provider key) and
-  report a structured error otherwise. Everything else is a *capability*
+  service exists (media needs a provider key) and report a structured
+  error otherwise. Everything else is a *capability*
   (`services/tools/capabilities/<name>.py`: the tool schemas plus a
   Protocol) served by a *provider* (`services/tools/providers/`: one
   package per integration, enabled by its own environment variables in
@@ -211,12 +212,16 @@ execution, history, serialization, or the upstream dependency; see
   events by `_EVENT_TYPE_MAP` in `app/socketio_server.py`;
   `agent_status: completed` is the terminal event. A new event type means
   a `make_*` function, a map entry, and a test in `test_event_builder.py`.
-- **The system prompt is assembled from artifacts**, in this order: soul,
-  persona, communication_protocol, ecosystem, scratchpad, then MCP
-  connections, the current time, the host context and working memory.
-  Stable fragments come first so provider prompt caching works; dynamic
-  fragments go last. Defaults ship in `app/assistant/defaults/` and the
-  database overrides them per name.
+- **The system prompt is assembled from the profile's artifacts**, in the
+  profile's order, then MCP connections, the current time, the host context
+  and working memory. Stable fragments come first so provider prompt
+  caching works; dynamic fragments go last. The profile comes from
+  `AssistantDefinition.profile`, else `ASSISTANT__PROFILE` (a built-in name
+  or a TOML path), else the neutral built-in; the example texts ship in
+  `profiles/technical_operator/`. `services/artifacts` owns versions and
+  enforces each artifact's `ArtifactPolicy` in code for the `assistant`
+  and `host` actors (Postgres when reachable, process memory otherwise,
+  scoped by profile name); the tool and the routes never bypass it.
 - **Model ids are `provider:name`** and are validated in
   `services/llm/_settings.py`, which also derives provider-specific
   settings (adaptive thinking and effort for current Claude models, no

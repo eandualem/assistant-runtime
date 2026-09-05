@@ -133,23 +133,41 @@ The page name also selects tools: `TOOLS__PAGE_SCOPES` maps a page name to
 the backend tools allowed while the host shows it. Pages that are not
 listed get every tool.
 
-## Prompt artifacts
+## Prompt artifacts and profiles
 
-The system prompt is assembled from named texts called artifacts:
+The system prompt starts with named texts called artifacts. Which
+artifacts exist, in what order, with what default text and who may change
+them is an **assistant profile**:
 
-| Artifact | Role |
-|---|---|
-| `soul` | enduring purpose, values, non-negotiables |
-| `persona` | style, stance, voice |
-| `communication_protocol` | how to answer on each channel |
-| `ecosystem` | the agents and systems the assistant works with |
-| `scratchpad` | short-lived operational memory, editable by the model |
+- `AssistantDefinition(profile=...)` in host code (`AssistantProfile`,
+  `ArtifactDefinition`, `ArtifactPolicy` from `assistant_runtime.artifacts`);
+- else `ASSISTANT__PROFILE`, a built-in name or the path of a TOML file
+  (the shape is documented on `load_profile_file`);
+- else the built-in `neutral` profile: one required `instructions`
+  artifact with a short neutral default, and an autonomous `scratchpad`.
 
-Default texts ship with the package. With Postgres, each artifact is
-versioned: a new version is proposed, approved, or rolled back through
-`/api/artifacts`, and the active version overrides the default. The
-`ecosystem` artifact is the one to edit first; it is where you describe
-your own environment.
+The original technical-operator assistant (`soul`, `persona`,
+`communication_protocol`, `ecosystem`, `scratchpad`) ships as the
+`technical_operator` example profile; set `ASSISTANT__PROFILE=technical_operator`
+to keep it on an existing installation. Its `ecosystem` text is the one to
+edit first: it describes your own environment.
+
+Each artifact has a policy, enforced in code (never by the artifact's own
+text): `assistant_edit` is `none`, `propose` (new versions wait for an
+authorized actor) or `autonomous` (the assistant's writes go live at once);
+`assistant_activate` lets the assistant approve or roll back versions;
+`host_edit` covers the HTTP routes. Every artifact is versioned: a new
+version is proposed, activated or rolled back through `/api/artifacts` or
+the `manage_artifacts` tool, and the active version replaces the default in
+the next prompt (a short cache is invalidated on every mutation). Writers
+can pass `expected_version` to fail instead of overwriting a change they
+have not seen; writing content identical to the active version records
+nothing. Versions live in Postgres when it is reachable and in process
+memory otherwise; every mutation result and `GET /api/artifacts/profile`
+report `durable`. Stored versions are scoped by the profile's `name`, so
+two assistants never share artifacts; the built-ins are `neutral` and
+`technical_operator`, and versions stored before profiles existed belong
+to `technical_operator`.
 
 After the artifacts come the connected MCP servers, the current time, the
 host context and the session's **working memory**: a small structured

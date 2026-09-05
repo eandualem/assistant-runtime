@@ -66,6 +66,16 @@ sampling parameters are not sent a temperature.
 | `max_turns` | `10` | agent loop iterations per request |
 | `enable_working_memory` | `true` | extract working memory after each turn |
 | `session_ttl_hours` | `24` | sessions older than this are cleaned up |
+| `profile` | unset (neutral) | `neutral`, `technical_operator`, or the path of a TOML profile file; `AssistantDefinition.profile` takes precedence |
+
+### Artifacts (`ARTIFACTS__*`)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `cache_ttl_seconds` | `5` | how long prompts reuse active texts read from the store; mutations invalidate at once |
+| `history_limit` | `20` | versions returned by history reads |
+
+The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 
 ### History (`HISTORY__*`)
 

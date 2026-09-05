@@ -10,6 +10,7 @@ from pydantic_ai.tools import Tool, ToolFuncEither
 from pydantic_ai.toolsets import AbstractToolset
 
 from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.artifacts import AssistantProfile
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -21,6 +22,10 @@ class AssistantDefinition[DepsT]:
     host code; payload fields are not an authentication mechanism. Resources
     returned by the factory remain owned by the host application.
 
+    ``profile`` names the prompt artifacts of this assistant, their order,
+    defaults and mutation policies; it takes precedence over the
+    ``ASSISTANT__PROFILE`` setting.
+
     These tools and toolsets keep Pydantic AI's schemas, metadata and error
     semantics. Runtime provider-tool scoping does not filter native extensions;
     use a native tool ``prepare`` callback or ``PrepareTools`` for those.
@@ -31,6 +36,7 @@ class AssistantDefinition[DepsT]:
     capabilities: Sequence[AgentCapability[DepsT]] = ()
     deps_type: type[DepsT] = type(None)
     deps_factory: Callable[[AssistantRequest], DepsT | Awaitable[DepsT]] | None = None
+    profile: AssistantProfile | None = None
 
     def __post_init__(self) -> None:
         # Snapshot containers, while keeping the native extension objects intact.
