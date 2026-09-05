@@ -136,19 +136,25 @@ action produced (any JSON), and `content` empty. The model resumes.
 | `GET /api/oauth/openai/status` | connection status |
 | `DELETE /api/oauth/openai` | disconnect |
 
-## Prompt artifacts (Postgres)
+## Prompt artifacts
+
+Versions are durable with Postgres and kept in memory otherwise; every
+mutation response and the profile carry `durable`. The routes act as the
+profile's `host` actor: a policy denial is `403`, an unknown name `422`, a
+stale `expected_version` `409`, a missing version `404`.
 
 | Route | Purpose |
 |---|---|
-| `GET /api/artifacts` | active version of every artifact |
-| `GET /api/artifacts/{name}` | one active artifact |
-| `GET /api/artifacts/{name}/history` | all versions |
-| `POST /api/artifacts/{name}/propose` `{"content", "proposed_by"?}` | new inactive version |
+| `GET /api/artifacts` | active version of every artifact, in prompt order |
+| `GET /api/artifacts/profile` | the profile: artifacts, roles, policies, live versions |
+| `GET /api/artifacts/{name}` | the active version, or the default text (`source: "default"`) |
+| `GET /api/artifacts/{name}/history` | all versions, newest first |
+| `POST /api/artifacts/{name}/propose` `{"content", "proposed_by"?, "expected_version"?}` | new inactive version |
+| `PATCH /api/artifacts/{name}` `{"content", "expected_version"?}` | new version, active at once |
 | `POST /api/artifacts/{name}/approve/{version}` | activate a version |
 | `POST /api/artifacts/{name}/rollback/{version}` | reactivate an older version |
-| `POST /api/artifacts/{name}/actions` `{"action": "propose"\|"approve"\|"rollback", ...}` | the three above behind one endpoint |
-| `PATCH /api/artifacts/scratchpad` `{"content"}` | direct, auto-approved scratchpad update |
-| `DELETE /api/artifacts/{name}` | delete every version |
+| `POST /api/artifacts/{name}/actions` `{"action": "propose"\|"update"\|"approve"\|"rollback", ...}` | the four above behind one endpoint |
+| `DELETE /api/artifacts/{name}` | delete every version; the default applies again |
 
 Names are `soul`, `persona`, `communication_protocol`, `ecosystem`,
 `scratchpad`.

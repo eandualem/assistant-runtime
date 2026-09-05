@@ -28,6 +28,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.capabilities import PrepareTools
 from pydantic_ai.tools import ToolDefinition
 
+from assistant_runtime.artifacts import ArtifactDefinition, ArtifactPolicy, AssistantProfile
 from assistant_runtime.config import AppSettings
 from assistant_runtime.main import AssistantDefinition, create_asgi_app
 from assistant_runtime.services.tools.config import ToolConfig
@@ -59,11 +60,35 @@ def available_tools(
     ]
 
 
+profile = AssistantProfile(
+    name="store",
+    artifacts=[
+        ArtifactDefinition(
+            name="instructions",
+            role="what the assistant is for",
+            required=True,
+            default="You help customers of the store find and compare products.",
+        ),
+        ArtifactDefinition(
+            name="tone",
+            role="voice and style",
+            default="Friendly and brief.",
+            policy=ArtifactPolicy(assistant_edit="propose"),
+        ),
+        ArtifactDefinition(
+            name="scratchpad",
+            role="notes the assistant keeps for itself",
+            policy=ArtifactPolicy(assistant_edit="autonomous"),
+        ),
+    ],
+)
+
 assistant = AssistantDefinition(
     tools=[product_details],
     capabilities=[PrepareTools(available_tools)],
     deps_type=StoreDeps,
     deps_factory=dependencies,
+    profile=profile,
 )
 settings = AppSettings(
     tools=ToolConfig(builtin_tools=frozenset(), provider_capabilities=frozenset()),
@@ -104,6 +129,21 @@ turn pipeline. Follow-up requests use the returned assistant message ID as
 `parent_id`; host-tool continuations use the existing matching call-ID
 contract. The context manager shuts services down if host code raises or
 startup is interrupted.
+
+## The assistant's artifacts
+
+`profile` defines the prompt's leading fragments: their names, order,
+default text and mutation policy. It replaces the neutral built-in and the
+`ASSISTANT__PROFILE` setting. The same profile can be a TOML file instead
+(see `load_profile_file` in `assistant_runtime.artifacts`). Two hosts with
+different profile names never share stored versions, and a host that
+wants the original technical-operator assistant uses
+`technical_operator_profile()`.
+
+Policies are enforced by the runtime, so the example above lets the model
+rewrite its `scratchpad` immediately, propose a new `tone` for the host to
+approve through `/api/artifacts`, and only read `instructions` until the
+host changes it. See [concepts](concepts.md#prompt-artifacts-and-profiles).
 
 ## Cancelling a turn
 

@@ -15,7 +15,6 @@ from loguru import logger
 from pydantic_ai import DeferredToolRequests
 from pydantic_ai.usage import UsageLimits
 
-from assistant_runtime.app.assistant._defaults import load_default_artifacts
 from assistant_runtime.app.assistant._prompt_builder import build_system_prompt
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.config import AssistantConfig
@@ -26,12 +25,11 @@ from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_co
 from assistant_runtime.services.tracing import create_span
 
 if TYPE_CHECKING:
+    from assistant_runtime.services.artifacts.interface import ArtifactService
     from assistant_runtime.services.database.interface import DatabaseService
     from assistant_runtime.services.history.interface import HistoryService
     from assistant_runtime.services.llm.interface import LlmService
     from assistant_runtime.services.tools.interface import ToolService
-
-_ARTIFACT_CACHE_TTL_SECONDS = 5.0
 
 
 class AssistantService:
@@ -43,6 +41,7 @@ class AssistantService:
         llm_service: LlmService,
         history_service: HistoryService,
         tool_service: ToolService,
+        artifact_service: ArtifactService,
         runtime_settings: RuntimeSettings | None = None,
         database_service: DatabaseService | None = None,
         definition: AssistantDefinition | None = None,
@@ -51,13 +50,11 @@ class AssistantService:
         self._llm = llm_service
         self._history = history_service
         self._tools = tool_service
+        self._artifacts = artifact_service
         self._runtime_settings = runtime_settings
         self._database_service: DatabaseService | None = database_service
         self._definition = definition
         self._sessions: SessionStore | None = None
-        self._active_artifacts_cache: dict[str, str] | None = None
-        self._active_artifacts_cached_at = 0.0
-        self._active_artifacts_lock = asyncio.Lock()
         self._started = False
 
     async def start(self) -> None:
@@ -73,8 +70,6 @@ class AssistantService:
     async def stop(self) -> None:
         """Shutdown the assistant service."""
         self._sessions = None
-        self._active_artifacts_cache = None
-        self._active_artifacts_cached_at = 0.0
         self._started = False
         logger.info("Assistant service stopped")
 
@@ -136,7 +131,7 @@ class AssistantService:
 
         warm_results = await asyncio.gather(
             self._tools.get_mcp_summary(),
-            self._load_active_artifacts(),
+            self._artifacts.active_texts(),
             return_exceptions=True,
         )
 
@@ -203,7 +198,7 @@ class AssistantService:
                         deps = await deps
 
             mcp_summary_task = asyncio.create_task(self._tools.get_mcp_summary())
-            artifacts_task = asyncio.create_task(self._load_active_artifacts())
+            artifacts_task = asyncio.create_task(self._artifacts.active_texts())
 
             # 2. Config resolution can run while prompt inputs load.
             effective = resolve_effective_config(
@@ -221,6 +216,7 @@ class AssistantService:
                 host_context=host_context,
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
+                profile=self._artifacts.profile,
             )
 
             # 4. Build agent — use union output type when host tools are registered
@@ -290,44 +286,6 @@ class AssistantService:
         if db is None or not getattr(db, "healthy", False):
             return None
         return db
-
-    async def _load_active_artifacts(self) -> dict[str, str]:
-        """Active prompt artifacts: bundled defaults overlaid with the database rows.
-
-        Without a reachable database, or for any name the database has no
-        active row for, the bundled default text is used, so the runtime can
-        build a system prompt with nothing configured beyond a provider key.
-        """
-        defaults = load_default_artifacts()
-        if self._usable_database() is None:
-            return defaults
-        now = time.monotonic()
-        if (
-            self._active_artifacts_cache is not None
-            and (now - self._active_artifacts_cached_at) < _ARTIFACT_CACHE_TTL_SECONDS
-        ):
-            return dict(self._active_artifacts_cache)
-        try:
-            async with self._active_artifacts_lock:
-                now = time.monotonic()
-                if (
-                    self._active_artifacts_cache is not None
-                    and (now - self._active_artifacts_cached_at) < _ARTIFACT_CACHE_TTL_SECONDS
-                ):
-                    return dict(self._active_artifacts_cache)
-
-                from assistant_runtime.services.database.repositories import ArtifactRepository
-
-                async with self._database_service.session_context() as session:
-                    repo = ArtifactRepository(session)
-                    rows = await repo.get_all_active()
-                    artifacts = {**defaults, **{row.name: row.content for row in rows}}
-                    self._active_artifacts_cache = artifacts
-                    self._active_artifacts_cached_at = time.monotonic()
-                    return dict(artifacts)
-        except Exception as e:
-            logger.warning("Failed to load artifacts from DB, using defaults", error=str(e))
-            return defaults
 
     def _ensure_started(self) -> None:
         """Guard: raise if service not started."""

@@ -190,11 +190,16 @@ class ArtifactORM(Base):
 
     __tablename__ = "artifacts"
     __table_args__ = (
-        UniqueConstraint("name", "version", name="uq_artifacts_name_version"),
-        Index("ix_artifacts_name_is_active", "name", "is_active"),
+        UniqueConstraint(
+            "assistant", "name", "version", name="uq_artifacts_assistant_name_version"
+        ),
+        Index("ix_artifacts_assistant_name_is_active", "assistant", "name", "is_active"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    assistant: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=text("'default'")
+    )
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))

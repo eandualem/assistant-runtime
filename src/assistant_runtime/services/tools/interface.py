@@ -24,7 +24,7 @@ class ToolService:
         media_service: Any | None = None,
         llm_service: Any | None = None,
         mcp_service: Any | None = None,
-        database_service: Any | None = None,
+        artifact_service: Any | None = None,
         providers: dict[str, Any] | None = None,
     ) -> None:
         self._config = config
@@ -32,7 +32,7 @@ class ToolService:
         self._media_service = media_service
         self._llm_service = llm_service
         self._mcp_service = mcp_service
-        self._database_service = database_service
+        self._artifact_service = artifact_service
         self._runtime_settings: object | None = None
         self._registry: ToolRegistry | None = None
         self._started = False
@@ -132,7 +132,7 @@ class ToolService:
         """Built-in tools, host tools, then one capability per configured provider."""
         register_builtin_tools(
             self._registry,
-            database_service=self._database_service,
+            artifact_service=self._artifact_service,
             llm_service=self._llm_service,
             media_service=self._media_service,
             backend_toolsets=self._registry.build_subagent_toolset,

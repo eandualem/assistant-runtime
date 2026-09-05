@@ -459,59 +459,62 @@ class InboxRepository:
 
 
 class ArtifactRepository:
-    """CRUD operations for versioned prompt artifacts. Uses flush() — caller owns commit."""
+    """CRUD operations for versioned prompt artifacts. Uses flush() — caller owns commit.
+
+    Every method takes the profile ``scope`` first: rows of different
+    assistants never mix, even when artifact names coincide.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get_active(self, name: str) -> ArtifactORM | None:
+    async def get_active(self, scope: str, name: str) -> ArtifactORM | None:
         """Get the active version of an artifact by name."""
         result = await self._session.execute(
             select(ArtifactORM).where(
+                ArtifactORM.assistant == scope,
                 ArtifactORM.name == name,
                 ArtifactORM.is_active.is_(True),
             )
         )
         return result.scalar_one_or_none()
 
-    async def get_all_active(self) -> list[ArtifactORM]:
-        """Get all active artifacts, ordered by name.
-
-        Excludes artifacts with ``debug_`` prefix (test probes).
-        """
+    async def get_all_active(self, scope: str) -> list[ArtifactORM]:
+        """Get all active artifacts of the scope, ordered by name."""
         result = await self._session.execute(
             select(ArtifactORM)
-            .where(
-                ArtifactORM.is_active.is_(True),
-                ~ArtifactORM.name.startswith("debug_"),
-            )
+            .where(ArtifactORM.assistant == scope, ArtifactORM.is_active.is_(True))
             .order_by(ArtifactORM.name)
         )
         return list(result.scalars().all())
 
-    async def delete_by_name(self, name: str) -> int:
+    async def delete_by_name(self, scope: str, name: str) -> int:
         """Delete all versions of an artifact by name. Returns count deleted."""
-        result = await self._session.execute(delete(ArtifactORM).where(ArtifactORM.name == name))
+        result = await self._session.execute(
+            delete(ArtifactORM).where(ArtifactORM.assistant == scope, ArtifactORM.name == name)
+        )
         await self._session.flush()
         return result.rowcount or 0
 
-    async def get_history(self, name: str, limit: int = 20) -> list[ArtifactORM]:
+    async def get_history(self, scope: str, name: str, limit: int = 20) -> list[ArtifactORM]:
         """Get version history for an artifact, newest first."""
         result = await self._session.execute(
             select(ArtifactORM)
-            .where(ArtifactORM.name == name)
+            .where(ArtifactORM.assistant == scope, ArtifactORM.name == name)
             .order_by(ArtifactORM.version.desc())
             .limit(limit)
         )
         return list(result.scalars().all())
 
-    async def propose(self, name: str, content: str, proposed_by: str) -> ArtifactORM:
+    async def propose(self, scope: str, name: str, content: str, proposed_by: str) -> ArtifactORM:
         """Create a new version of an artifact (inactive until approved).
 
         Auto-increments version based on MAX(version) for this name.
         """
         max_result = await self._session.execute(
-            select(func.max(ArtifactORM.version)).where(ArtifactORM.name == name)
+            select(func.max(ArtifactORM.version)).where(
+                ArtifactORM.assistant == scope, ArtifactORM.name == name
+            )
         )
         current_max = max_result.scalar_one_or_none() or 0
         next_version = current_max + 1
@@ -519,6 +522,7 @@ class ArtifactRepository:
         result = await self._session.execute(
             insert(ArtifactORM)
             .values(
+                assistant=scope,
                 name=name,
                 content=content,
                 version=next_version,
@@ -530,13 +534,14 @@ class ArtifactRepository:
         await self._session.flush()
         return result.scalar_one()
 
-    async def approve(self, name: str, version: int) -> ArtifactORM | None:
+    async def approve(self, scope: str, name: str, version: int) -> ArtifactORM | None:
         """Approve a version: deactivate current active, activate target.
 
         Returns None if the target version doesn't exist.
         """
         result = await self._session.execute(
             select(ArtifactORM.id).where(
+                ArtifactORM.assistant == scope,
                 ArtifactORM.name == name,
                 ArtifactORM.version == version,
             )
@@ -547,39 +552,17 @@ class ArtifactRepository:
 
         await self._session.execute(
             update(ArtifactORM)
-            .where(ArtifactORM.name == name, ArtifactORM.is_active.is_(True))
-            .values(is_active=False)
-        )
-
-        result = await self._session.execute(
-            update(ArtifactORM)
-            .where(ArtifactORM.id == target_id)
-            .values(is_active=True)
-            .returning(ArtifactORM)
-        )
-        await self._session.flush()
-        return result.scalar_one()
-
-    async def rollback(self, name: str, version: int) -> ArtifactORM | None:
-        """Rollback to a previous version — same mechanics as approve."""
-        return await self.approve(name, version)
-
-    async def update_scratchpad(self, content: str, proposed_by: str = "assistant") -> ArtifactORM:
-        """Propose and auto-approve a scratchpad update in one step."""
-        row = await self.propose("scratchpad", content, proposed_by)
-        await self._session.execute(
-            update(ArtifactORM)
             .where(
-                ArtifactORM.name == "scratchpad",
+                ArtifactORM.assistant == scope,
+                ArtifactORM.name == name,
                 ArtifactORM.is_active.is_(True),
-                ArtifactORM.id != row.id,
             )
             .values(is_active=False)
         )
 
         result = await self._session.execute(
             update(ArtifactORM)
-            .where(ArtifactORM.id == row.id)
+            .where(ArtifactORM.id == target_id)
             .values(is_active=True)
             .returning(ArtifactORM)
         )
