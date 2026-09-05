@@ -115,7 +115,9 @@ session holds at most one pending call.
 
 ## Versioning
 
-`version` is the contract version. Additive changes (new optional fields,
-new enum values) stay within version 1; a change that alters the meaning
-of an existing field bumps it, and a runtime rejects versions it does not
-speak. Clients should send the version they were written against.
+`version` is the contract version. Adding an optional field stays within
+version 1. Everything else — a new value for `host.kind`, `attachments[].kind`
+or `attachments[].purpose` (the validators reject unknown values), a changed
+meaning of an existing field, a removed field — bumps the version, and a
+runtime rejects versions it does not speak. Clients should send the version
+they were written against.

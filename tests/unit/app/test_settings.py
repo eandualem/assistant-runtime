@@ -599,3 +599,48 @@ class TestOneDefinition:
         effective = resolve_effective_config(AssistantConfig())
         assert isinstance(effective.max_turns, int)
         assert isinstance(effective.enable_working_memory, bool)
+
+
+class TestRequestCeilings:
+    """Untrusted request overrides can only narrow the host's cost-bearing values."""
+
+    def test_request_cannot_raise_a_ceiling(self):
+        from assistant_runtime.app.assistant.config import AssistantConfig, TunableOverrides
+        from assistant_runtime.app.settings import resolve_effective_config
+
+        frozen = AssistantConfig(max_turns=5, thinking_budget=2000)
+        effective = resolve_effective_config(
+            frozen, None, TunableOverrides(max_turns=50, thinking_budget=90000, temperature=0.2)
+        )
+        assert effective.max_turns == 5
+        assert effective.thinking_budget == 2000
+        assert effective.temperature == 0.2  # not a ceiling field
+
+    def test_request_can_lower_a_ceiling(self):
+        from assistant_runtime.app.assistant.config import AssistantConfig, TunableOverrides
+        from assistant_runtime.app.settings import resolve_effective_config
+
+        effective = resolve_effective_config(
+            AssistantConfig(max_turns=5), None, TunableOverrides(max_turns=2)
+        )
+        assert effective.max_turns == 2
+
+    def test_request_cannot_enable_a_disabled_budget(self):
+        from assistant_runtime.app.assistant.config import AssistantConfig, TunableOverrides
+        from assistant_runtime.app.settings import resolve_effective_config
+
+        effective = resolve_effective_config(
+            AssistantConfig(thinking_budget=None), None, TunableOverrides(thinking_budget=100000)
+        )
+        assert effective.thinking_budget is None
+
+    async def test_runtime_overlay_is_the_trusted_ceiling(self):
+        from assistant_runtime.app.assistant.config import AssistantConfig, TunableOverrides
+        from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
+
+        runtime = RuntimeSettings(frozen_config=AssistantConfig(max_turns=5))
+        await runtime.update(max_turns=8)
+        effective = resolve_effective_config(
+            runtime._frozen, runtime, TunableOverrides(max_turns=20)
+        )
+        assert effective.max_turns == 8

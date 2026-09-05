@@ -99,7 +99,9 @@ class TestExtractMemoryDelta:
         result = await service.extract_memory_delta(wm, messages, turn_number=5)
 
         assert result.active_goal == "Updated"
-        service._manager._summarizer.extract_memory_delta.assert_called_once_with(wm, messages, 5)
+        service._manager._summarizer.extract_memory_delta.assert_called_once_with(
+            wm, messages, 5, usage=None
+        )
 
 
 class TestProcessor:

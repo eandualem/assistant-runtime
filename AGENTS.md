@@ -152,6 +152,13 @@ execution, history, serialization, or the upstream dependency; see
   `EffectiveConfig` has one attribute per tunable (a test enforces it). A
   new tunable is a field there, an attribute on `EffectiveConfig`, a column
   on `user_settings` (migration) and a line in `docs/configuration.md`.
+  The request tier is untrusted: `CEILING_FIELDS` (`max_turns`, the
+  thinking budgets) can only be lowered by a request. Per-turn native
+  `UsageLimits` come from `ASSISTANT__BUDGET__*` merged with
+  `AssistantDefinition.usage_limits` (`app/assistant/_budget.py`); a
+  breach ends the turn with a saved partial message and a `usage_limit`
+  error, and auxiliary model work (summarisation, working memory) is
+  recorded under `usage.auxiliary`.
   Secrets (provider keys, tokens) come from the environment only and are
   never persisted except through the encrypted provider-key store.
 - **Postgres is optional and every request path must work without it.**

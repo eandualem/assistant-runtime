@@ -30,9 +30,10 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from pydantic_ai import DeferredToolRequests
-from pydantic_ai.exceptions import RunCancelled
+from pydantic_ai import DeferredToolRequests, capture_run_messages
+from pydantic_ai.exceptions import RunCancelled, UsageLimitExceeded
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolCallPart, ToolReturnPart
+from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.app.assistant._serialization import (
     build_assistant_message_content,
@@ -54,7 +55,12 @@ from assistant_runtime.app.streaming._event_builder import (
     make_error_event,
 )
 from assistant_runtime.app.streaming._host_tool import store_pending_call
-from assistant_runtime.app.streaming._usage import cache_counts, merge_usage, usage_dict
+from assistant_runtime.app.streaming._usage import (
+    cache_counts,
+    merge_usage,
+    usage_dict,
+    with_auxiliary,
+)
 from assistant_runtime.app.streaming.exceptions import StreamingError
 from assistant_runtime.services.llm.exceptions import LLMCallError, classify_llm_error
 from assistant_runtime.services.tools._request_context import (
@@ -118,6 +124,8 @@ class _RunState:
     persisted: bool = False
     cancelled: bool = False
     history: HistoryProcessor | None = None
+    # The usage written on the assistant row: the run's own plus auxiliary work.
+    stored_usage: dict[str, Any] | None = None
 
 
 class TurnRunner:
@@ -218,7 +226,7 @@ class TurnRunner:
                 user_prompt=plan.user_prompt,
                 message_history=plan.history,
                 deferred_tool_results=plan.deferred_tool_results,
-                usage=None,
+                usage=RunUsage(),
             ):
                 yield event
             if emit_debug:
@@ -238,7 +246,7 @@ class TurnRunner:
                 resolved_model,
                 session_id=session_id,
                 message_id=plan.assistant_message_id,
-                usage=state.usage,
+                usage=state.stored_usage or state.usage,
                 pending_tool_call=state.pending_tool_call,
             )
             if final:
@@ -288,6 +296,42 @@ class TurnRunner:
                     )
             for event in events:
                 yield event
+        except UsageLimitExceeded as exc:
+            # Native limits stop the run before the request that would exceed
+            # them; the work done so far was captured by _run_agent.
+            control.accepting_cancel = False
+            try:
+                await self._persist_cancelled(plan, state, interrupted=False)
+            except Exception as persist_exc:
+                logger.exception("Usage-limited turn could not be saved", session_id=session_id)
+                events = self._terminal_error_events(
+                    coordinator,
+                    session_id=session_id,
+                    message=f"Usage-limited turn could not be saved: {persist_exc}",
+                    error_type="persistence_error",
+                    retry_allowed=False,
+                    trace_id=trace_id,
+                    model=resolved_model,
+                    phase=phase,
+                    emit_debug=emit_debug,
+                )
+            else:
+                state.cancelled = False
+                logger.info(
+                    "[STREAM] Turn stopped by usage limit", session_id=session_id, error=str(exc)
+                )
+                events = self._exhausted_events(
+                    coordinator,
+                    plan,
+                    state,
+                    message=str(exc),
+                    model=resolved_model,
+                    trace_id=trace_id,
+                    phase=phase,
+                    emit_debug=emit_debug,
+                )
+            for event in events:
+                yield event
         except StreamingError:
             raise
         except Exception as exc:
@@ -322,9 +366,17 @@ class TurnRunner:
                 and ctx is not None
                 and ctx.effective_config.enable_working_memory
             ):
-                await self._assistant.update_working_memory(
+                memory_usage = await self._assistant.update_working_memory(
                     session_id, session_context, plan.turn_number
                 )
+                if memory_usage is not None:
+                    state.stored_usage = with_auxiliary(
+                        state.stored_usage, "working_memory", memory_usage
+                    )
+                    with contextlib.suppress(Exception):
+                        await self._sessions.update_message(
+                            session_id, plan.assistant_message_id, usage=state.stored_usage
+                        )
             if emit_debug:
                 coordinator.flush_thinking()
                 if coordinator.accumulated_response:
@@ -359,9 +411,11 @@ class TurnRunner:
         for key in ("pending_tool_call_id", "pending_tool_name", "pending_assistant_message_id"):
             plan.session_context.pop(key, None)
 
-    async def _persist_cancelled(self, plan: TurnPlan, state: _RunState) -> None:
+    async def _persist_cancelled(
+        self, plan: TurnPlan, state: _RunState, *, interrupted: bool = True
+    ) -> None:
         """Retain native work and explicitly mark unresolved calls interrupted."""
-        state.cancelled = True
+        state.cancelled = interrupted
         returned = {
             part.tool_call_id
             for message in state.assistant_messages
@@ -383,6 +437,54 @@ class TurnRunner:
             state.assistant_messages.append(ModelRequest(parts=interrupted))
         await self._persist(plan, state)
         self._clear_pending(plan)
+
+    @staticmethod
+    def _exhausted_events(
+        coordinator: EventCoordinator,
+        plan: TurnPlan,
+        state: _RunState,
+        *,
+        message: str,
+        model: str,
+        trace_id: str,
+        phase: str,
+        emit_debug: bool,
+    ) -> list[dict[str, Any]]:
+        """A turn stopped by a usage limit: saved work, one final/error/completed lifecycle."""
+        final = coordinator.try_final_response(
+            "",
+            model,
+            session_id=plan.session_id,
+            message_id=plan.assistant_message_id,
+            trace_id=trace_id,
+            error=True,
+            error_type="usage_limit",
+            usage=state.stored_usage,
+        )
+        debug = make_debug_error_event(
+            message,
+            error_type="usage_limit",
+            retry_allowed=False,
+            trace_id=trace_id,
+            model=model,
+            phase=phase,
+        )
+        coordinator.track_debug(debug)
+        events = [debug] if emit_debug else []
+        if final:
+            events.append(final)
+        events.append(
+            coordinator.track(
+                make_error_event(
+                    format_error_message(message, trace_id),
+                    error_type="usage_limit",
+                    trace_id=trace_id,
+                    terminal=True,
+                    retry_allowed=False,
+                )
+            )
+        )
+        return events
 
     @staticmethod
     def _cancelled_events(
@@ -452,8 +554,11 @@ class TurnRunner:
         control.check_cancelled()
         try:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
-                with assistant_request_context(
-                    session_id, screenshot=plan.screenshot, principal=plan.principal
+                with (
+                    assistant_request_context(
+                        session_id, screenshot=plan.screenshot, principal=plan.principal
+                    ),
+                    capture_run_messages() as captured,
                 ):
                     try:
                         async with ctx.agent.run_stream_events(
@@ -482,6 +587,11 @@ class TurnRunner:
                     finally:
                         telegram_chat_id = get_current_telegram_chat_binding()
             self._capture_result(plan, state, run.result)
+        except UsageLimitExceeded:
+            # Core raises before the request that would exceed the limit; the
+            # messages it captured are complete (tools already returned).
+            self._capture_result(plan, state, _LimitedRun(captured, usage))
+            raise
         except (RunCancelled, asyncio.CancelledError, TimeoutError) as exc:
             snapshot = RunCancelled.from_cancellation(exc)
             if snapshot is not None:
@@ -526,6 +636,14 @@ class TurnRunner:
         """Create or extend the assistant row with everything run so far."""
         content, segments, timestamp = build_assistant_message_content(state.assistant_messages)
         state.assistant_segments = segments
+        # The history policy's summarisation calls are this turn's auxiliary
+        # model work; state.usage stays the run's own so this is idempotent.
+        summarisation = (
+            usage_dict(state.history.usage)
+            if state.history is not None and state.history.usage.has_values()
+            else None
+        )
+        state.stored_usage = with_auxiliary(state.usage, "summarization", summarisation)
         if plan.assistant_parent_id is not None and not state.persisted:
             await self._sessions.register_assistant_message(
                 plan.session_id,
@@ -533,7 +651,7 @@ class TurnRunner:
                 parent_id=plan.assistant_parent_id,
                 content=content,
                 segments=segments,
-                usage=state.usage,
+                usage=state.stored_usage,
                 created_at=timestamp,
             )
         else:
@@ -542,7 +660,7 @@ class TurnRunner:
                 plan.assistant_message_id,
                 content=content,
                 segments=segments,
-                usage=state.usage,
+                usage=state.stored_usage,
             )
         state.persisted = True
 
@@ -741,6 +859,26 @@ class TurnRunner:
                 )
         except Exception as e:
             logger.warning("Failed to persist trace", session_id=session_id, error=str(e))
+
+
+class _LimitedRun:
+    """The result-like view of a run core stopped at a usage limit."""
+
+    output = None
+
+    def __init__(self, captured: list[ModelMessage], usage: Any) -> None:
+        self._messages = list(captured)
+        self.usage = usage
+
+    def all_messages(self) -> list[ModelMessage]:
+        return list(self._messages)
+
+    def new_messages(self) -> list[ModelMessage]:
+        # Everything this run added carries its run id, like new_messages() itself.
+        run_id = getattr(self._messages[-1], "run_id", None) if self._messages else None
+        if run_id is None:
+            return []
+        return [m for m in self._messages if getattr(m, "run_id", None) == run_id]
 
 
 def _host_tool_names(ctx: AgentSetupContext) -> set[str]:

@@ -190,6 +190,34 @@ itself. Set `HISTORY__COMPACTION_ENABLED=false` to replace the policy with
 one supplied through `AssistantDefinition.capabilities`, for example a
 Harness compaction strategy.
 
+## Usage and budgets
+
+Every assistant message stores the usage of the turn that produced it:
+`input_tokens`, `output_tokens`, `total_tokens`, `requests`,
+`tool_calls`, `cost_usd` (null unless the provider reports a price — a
+missing price is never read as free) and, under `auxiliary`, the model
+work the runtime did on the side: `summarization` (history compaction)
+and `working_memory` (the extraction after the turn). Subagent runs
+count towards the parent turn's own numbers. The same shape travels on
+`final_response.usage` (working memory is extracted after that event, so
+it appears on the stored message only).
+
+Limits are native `UsageLimits`: `max_turns` is the request limit;
+`ASSISTANT__BUDGET__*` or `AssistantDefinition.usage_limits` add tool
+call, token and cost ceilings (the stricter wins). A request's `config`
+may lower `max_turns` and the thinking budgets but never raise them past
+what the host set. Reaching a limit ends the turn with a saved partial
+message and a terminal `usage_limit` error.
+
+A predictable worst case for one turn, with `max_turns=3`,
+`ASSISTANT__BUDGET__TOOL_CALLS=4`, `ASSISTANT__BUDGET__OUTPUT_TOKENS=2000`
+and `THINKING_BUDGET=1000`: at most three model requests, four tool
+executions and 2,000 output tokens (plus the thinking tokens the provider
+bills), on top of the prompt and history the runtime sends — which the
+history budget (`HISTORY__TOKEN_BUDGET`) keeps bounded. Summarisation and
+working-memory calls are separate, smaller requests reported under
+`auxiliary`; disable the latter with `enable_working_memory=false`.
+
 ## Envelopes
 
 Messages that arrive from somewhere other than the host carry a

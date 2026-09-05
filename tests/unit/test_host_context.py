@@ -93,6 +93,19 @@ class TestAdapters:
         assert context.captured_at == datetime(2026, 9, 5, 10, tzinfo=UTC)
         assert camel_to_snake("HTMLParser") == "html_parser"
 
+    def test_two_spellings_of_one_field_are_an_error(self):
+        with pytest.raises(ValueError, match="'captured_at' under two spellings"):
+            HostContext.from_payload(
+                {"capturedAt": "2026-09-05T10:00:00Z", "captured_at": "2026-09-05T11:00:00Z"}
+            )
+
+    def test_new_enum_values_need_a_version_bump(self):
+        # The versioning rule in docs/host-contract.md: unknown enum values are rejected.
+        with pytest.raises(ValidationError, match="kind"):
+            HostContext.from_payload({"host": {"name": "x", "kind": "watch"}})
+        with pytest.raises(ValidationError, match="purpose"):
+            Attachment(data_uri="data:image/png;base64,x", purpose="thumbnail")
+
     def test_page_and_view_together_is_an_error(self):
         with pytest.raises(ValueError, match="both 'page' and 'view'"):
             HostContext.from_payload({"page": {"name": "a"}, "view": {"name": "b"}})

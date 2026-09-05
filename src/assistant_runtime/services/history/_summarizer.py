@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.services.history.config import HistoryConfig
@@ -135,8 +136,13 @@ class HistorySummarizer:
         self,
         messages: list[dict[str, Any]],
         existing_summary: str | None = None,
+        *,
+        usage: RunUsage | None = None,
     ) -> CompactionResult:
-        """Summarize messages into a structured CompactionResult using LLM."""
+        """Summarize messages into a structured CompactionResult using LLM.
+
+        ``usage`` accumulates the summary call's usage for the caller's accounting.
+        """
         if not messages:
             return CompactionResult(summary=existing_summary or "")
 
@@ -162,7 +168,7 @@ class HistorySummarizer:
                 **({"model": model} if model else {}),
             )
 
-            result = await agent.run(prompt)
+            result = await agent.run(prompt, usage=usage)
             compaction_result = result.output
 
             duration_ms = (time.time() - start_time) * 1000
@@ -182,10 +188,13 @@ class HistorySummarizer:
         current_wm: WorkingMemory,
         recent_messages: list[dict[str, Any]],
         turn_number: int,
+        *,
+        usage: RunUsage | None = None,
     ) -> WorkingMemory:
         """Extract working memory updates using delta-based approach.
 
-        On failure, returns current_wm unchanged (safe fallback).
+        On failure, returns current_wm unchanged (safe fallback). ``usage``
+        accumulates the extraction call's usage.
         """
         if not recent_messages:
             return current_wm
@@ -227,7 +236,7 @@ class HistorySummarizer:
             name="extract_memory_delta",
         )
         async def _run_extract() -> MemoryDeltaResult:
-            result = await agent.run(prompt)
+            result = await agent.run(prompt, usage=usage)
             return result.output
 
         try:

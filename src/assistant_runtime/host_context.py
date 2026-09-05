@@ -55,12 +55,19 @@ _OPAQUE_KEYS = frozenset({"data", "state", "background", "extensions", "paramete
 
 
 def _snake_keys(obj: Any) -> Any:
-    """Normalise the contract's own field names; opaque host payloads stay as sent."""
+    """Normalise the contract's own field names; opaque host payloads stay as sent.
+
+    Two spellings of one field (``capturedAt`` and ``captured_at``) are an
+    error rather than a silent overwrite.
+    """
     if isinstance(obj, dict):
-        return {
-            camel_to_snake(k): (v if camel_to_snake(k) in _OPAQUE_KEYS else _snake_keys(v))
-            for k, v in obj.items()
-        }
+        result: dict[str, Any] = {}
+        for key, value in obj.items():
+            name = camel_to_snake(key)
+            if name in result:
+                raise ValueError(f"host_context carries '{name}' under two spellings; send one")
+            result[name] = value if name in _OPAQUE_KEYS else _snake_keys(value)
+        return result
     if isinstance(obj, list):
         return [_snake_keys(item) for item in obj]
     return obj

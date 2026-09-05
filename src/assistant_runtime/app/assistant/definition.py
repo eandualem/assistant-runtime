@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pydantic_ai.capabilities import AgentCapability
 from pydantic_ai.tools import Tool, ToolFuncEither
 from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai.usage import UsageLimits
 
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.artifacts import AssistantProfile
@@ -31,6 +32,10 @@ class AssistantDefinition[DepsT]:
     ``Principal`` (or None to reject) when ``ACCESS__MODE=host``. It may be
     async. This is where an existing identity system plugs in.
 
+    ``usage_limits`` are native per-turn ceilings; where both they and the
+    ``ASSISTANT__BUDGET__*`` settings set a limit, the stricter one applies,
+    and a request's ``config`` can only narrow what the host allows.
+
     These tools and toolsets keep Pydantic AI's schemas, metadata and error
     semantics. Runtime provider-tool scoping does not filter native extensions;
     use a native tool ``prepare`` callback or ``PrepareTools`` for those.
@@ -45,6 +50,7 @@ class AssistantDefinition[DepsT]:
     authenticate: Callable[[Credentials], Principal | None | Awaitable[Principal | None]] | None = (
         None
     )
+    usage_limits: UsageLimits | None = None
 
     def __post_init__(self) -> None:
         # Snapshot containers, while keeping the native extension objects intact.

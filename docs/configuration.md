@@ -77,6 +77,27 @@ sampling parameters are not sent a temperature.
 | `session_ttl_hours` | `24` | sessions older than this are cleaned up |
 | `profile` | unset (neutral) | `neutral`, `technical_operator`, or the path of a TOML profile file; `AssistantDefinition.profile` takes precedence |
 
+`max_turns`, `thinking_budget` and `subagent_thinking_budget` are ceilings:
+the runtime overlay (`PATCH /api/settings`, administration) may change
+them, a request's `config` can only lower them.
+
+### Per-turn budget (`ASSISTANT__BUDGET__*`)
+
+Native Pydantic AI usage limits for one turn; unset means no limit of
+that kind. `AssistantDefinition.usage_limits` sets the same limits from
+host code, and where both set one the stricter applies.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `tool_calls` | unset | tool calls per turn |
+| `input_tokens`, `output_tokens`, `total_tokens` | unset | tokens per turn |
+| `cost_usd` | unset | reported cost per turn; only enforced when the provider prices the model |
+
+When a limit is reached the turn ends with a `final_response` /
+`error` of type `usage_limit` (not retryable); the text and completed
+tool results so far are saved on the assistant message. See
+[concepts](concepts.md#usage-and-budgets).
+
 ### Artifacts (`ARTIFACTS__*`)
 
 | Setting | Default | Meaning |
