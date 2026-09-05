@@ -128,6 +128,10 @@ class SessionStore:
                 ctx["owner_id"] = owner_id
             elif ctx["message_count"] > 0:
                 raise ValueError("Only the first message in a session may have parent_id = null")
+            elif ctx.get("owner_id") is None:
+                # A context created ahead of the first message (a join warm-up,
+                # a history read) belongs to whoever sends that message.
+                ctx["owner_id"] = owner_id
         else:
             if ctx is None:
                 raise LookupError("Session not found")
@@ -405,9 +409,10 @@ class SessionStore:
         ctx = await self.get_context_if_exists_async(session_id)
         if ctx is None:
             raise LookupError("Session not found")
-        ctx["owner_id"] = owner_id
+        # Persist first: a failed write must not leave memory and the row disagreeing.
         if self._db is not None:
             await self._db.set_owner(session_id, owner_id)
+        ctx["owner_id"] = owner_id
 
     async def delete_session(self, session_id: str) -> None:
         if self._db is not None:

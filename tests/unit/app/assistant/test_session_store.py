@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from assistant_runtime.app.assistant._session_store import SessionStore
@@ -306,3 +308,44 @@ class TestSingleflightHydration:
         assert ctx is not None
         assert ctx["turn_number"] == 3
         assert store._db.load.await_count == 1
+
+
+class TestOwnership:
+    async def test_first_message_owns_a_context_created_ahead_of_it(self):
+        store = SessionStore()
+        store.get_context("sess-1")  # a join warm-up or history read
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        assert [s["session_id"] for s in await store.list_sessions(owner_id="alice")] == ["sess-1"]
+        assert await store.list_sessions(owner_id="bob") == []
+
+    async def test_existing_owner_is_kept_by_later_messages(self):
+        store = SessionStore()
+        first = AssistantRequest(id="user-1", session_id="sess-1", content="Hi")
+        await store.register_user_message(first, owner_id="alice")
+        await store.register_assistant_message(
+            "sess-1", message_id="a-1", parent_id="user-1", content="Yes", segments=[], usage=None
+        )
+        await store.register_user_message(
+            AssistantRequest(id="user-2", session_id="sess-1", parent_id="a-1", content="More"),
+            owner_id="root",
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+
+    async def test_set_owner_persists_before_publishing(self):
+        store = SessionStore()
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+        )
+        db = AsyncMock()
+        db.set_owner = AsyncMock(side_effect=RuntimeError("db down"))
+        store._db = db
+        with pytest.raises(RuntimeError):
+            await store.set_owner("sess-1", "bob")
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        db.set_owner = AsyncMock()
+        await store.set_owner("sess-1", "bob")
+        assert store.get_context("sess-1")["owner_id"] == "bob"
+        db.set_owner.assert_awaited_once_with("sess-1", "bob")
