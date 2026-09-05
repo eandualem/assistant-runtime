@@ -24,3 +24,6 @@ mcp_servers.json
 
 # Local analysis and implementation plans
 /planning/
+
+# Shared local agent memory and swarm worktrees
+/.backbone/
