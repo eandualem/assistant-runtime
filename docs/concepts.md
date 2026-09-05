@@ -35,17 +35,31 @@ every step.
 A turn is bounded by `max_turns` (agent loop iterations, 10 by default)
 and by the provider's own limits.
 
+Cancelling a turn preserves its partial assistant text, completed tool
+results and available usage. Calls without a result are marked interrupted;
+the runtime cannot determine whether their external effects occurred.
+The stream ends with a cancellation final/error/completed envelope. A
+Socket.IO disconnect leaves the turn running, while closing an in-process
+event iterator or shutting down the runtime cancels and drains it.
+See [turn control](api.md#turn-control) for the HTTP and socket commands.
+
 ## Message types
 
 | `message_type` | Meaning |
 |---|---|
-| `standard` | A user message. Starts a turn; a running turn on the same session is cancelled and replaced. |
+| `standard` | A user message. Cancels a running turn on the same session, waits for its persistence and cleanup, then starts the replacement. |
 | `steering` | A mid-turn nudge ("focus on X"). Queued while a turn is live and delivered to the model at its next step; promoted into a normal message when no turn is running. Never cancels anything. |
 
 A **continuation** is a `standard` message that carries `tool_call_id` and
 `tool_result`: the client has executed a host tool and is handing the
-result back (see host tools below). A continuation does not cancel the
-turn that asked for it.
+result back (see host tools below). A continuation waits for the turn that
+asked for it to finish, without cancelling it.
+
+Queued steering is acknowledged when a model request successfully finishes
+consuming it. Cancellation before that point leaves the instruction pending
+for the next turn. A partially completed request may therefore see the
+instruction again; this is a delivery policy, not a guarantee about external
+side effects.
 
 ## Tools
 

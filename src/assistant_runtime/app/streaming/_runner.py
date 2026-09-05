@@ -23,21 +23,22 @@ import asyncio
 import contextlib
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic_ai import DeferredToolRequests
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.exceptions import RunCancelled
+from pydantic_ai.messages import ModelMessage, ModelRequest, ToolCallPart, ToolReturnPart
 
 from assistant_runtime.app.assistant._serialization import (
     build_assistant_message_content,
-    build_steering_request,
 )
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.streaming._agent_run import TurnPolicy, iterate_run
+from assistant_runtime.app.streaming._control import TurnControl
 from assistant_runtime.app.streaming._coordinator import EventCoordinator
 from assistant_runtime.app.streaming._event_builder import (
     make_debug_agent_config_event,
@@ -114,6 +115,7 @@ class _RunState:
     final_output: str | None = None
     pending_tool_call: dict[str, Any] | None = None
     persisted: bool = False
+    cancelled: bool = False
 
 
 class TurnRunner:
@@ -136,8 +138,11 @@ class TurnRunner:
         self._assistant = assistant_service
         self._db = database_service
 
-    async def run(self, plan: TurnPlan) -> AsyncIterator[dict[str, Any]]:
-        """Execute ``plan``; yields the event stream, always ending in ``completed``."""
+    async def run(
+        self, plan: TurnPlan, *, control: TurnControl | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Execute a turn, persisting cancellation before its terminal envelope."""
+        control = control or TurnControl()
         coordinator = EventCoordinator(self._config.max_events_per_stream)
         emit_debug = self._config.emit_debug_events
         started_at = time.monotonic()
@@ -145,16 +150,25 @@ class TurnRunner:
         request = plan.request
         session_id = plan.session_id
         session_context = plan.session_context
-        state = _RunState(assistant_messages=list(plan.prior_assistant_messages))
+        state = _RunState(
+            assistant_messages=list(plan.prior_assistant_messages), usage=plan.prior_usage
+        )
         resolved_model = "unknown"
         trace_cm: Any = None
-
+        ctx: AgentSetupContext | None = None
+        phase = "setup"
         started = coordinator.try_started()
         if started:
             yield started
 
-        # --- setup: agent context and history, in parallel ---------------------
         try:
+            # A host has already performed this action. Save its accepted result
+            # before dependencies/model setup can be cancelled, using the same row.
+            if plan.accepted_tool_result is not None:
+                state.assistant_messages.append(plan.accepted_tool_result)
+                await self._persist(plan, state)
+                self._clear_pending(plan)
+            control.check_cancelled()
             if emit_debug:
                 yield coordinator.track_debug(
                     make_debug_request_event(
@@ -166,10 +180,10 @@ class TurnRunner:
                         image_count=len(request.images),
                     )
                 )
-            (ctx, agent_setup_ms), (history_result, history_prep_ms) = await asyncio.gather(
-                _timed(self._assistant.prepare_agent_context(request, session_context)),
+            (ctx, agent_setup_ms), (history_result, history_prep_ms) = await control.prepare(
+                _timed(lambda: self._assistant.prepare_agent_context(request, session_context)),
                 _timed(
-                    self._history.prepare_history_with_metadata(
+                    lambda: self._history.prepare_history_with_metadata(
                         plan.history,
                         session_context,
                         is_continuation=plan.history_is_continuation,
@@ -177,8 +191,9 @@ class TurnRunner:
                     )
                 ),
             )
+            control.check_cancelled()
             resolved_model = ctx.resolved_model
-            prepared_history = [*history_result.history, *plan.history_suffix]
+            prepared_history = history_result.history
             if emit_debug:
                 for event in self._setup_debug_events(ctx, history_result, session_id):
                     yield coordinator.track_debug(event)
@@ -187,15 +202,10 @@ class TurnRunner:
                 kind=plan.kind,
                 session_id=session_id,
                 model=resolved_model,
-                has_images=bool(request.images),
-                max_turns=ctx.effective_config.max_turns,
-                thinking_budget=ctx.effective_config.thinking_budget,
-                temperature=ctx.effective_config.temperature,
                 agent_setup_ms=agent_setup_ms,
                 history_prep_ms=history_prep_ms,
                 pre_stream_ms=(time.monotonic() - started_at) * 1000,
             )
-            # A generator cannot hold a `with` across yields; enter and exit by hand.
             trace_cm = create_request_trace(
                 session_id=session_id,
                 model=resolved_model,
@@ -205,43 +215,13 @@ class TurnRunner:
                 set_current_observation=False,
             )
             trace_cm.__enter__()
-        except asyncio.CancelledError:
-            session_context.pop("current_assistant_message_id", None)
-            raise
-        except Exception as e:
-            session_context.pop("current_assistant_message_id", None)
-            is_session_error = isinstance(e, SessionError)
-            logger.error(
-                "[STREAM] Turn setup failed after started",
-                kind=plan.kind,
-                session_id=session_id,
-                error_type=type(e).__name__,
-                error=str(e),
-            )
-            for event in self._terminal_error_events(
-                coordinator,
-                session_id=session_id,
-                message=f"Setup failed: {e}",
-                error_type="session_error" if is_session_error else "setup_error",
-                retry_allowed=not is_session_error,
-                trace_id=trace_id,
-                model="unknown",
-                phase="setup",
-                emit_debug=emit_debug,
-            ):
-                yield event
-            completed = coordinator.try_completed()
-            if completed:
-                yield completed
-            return
-
-        # --- the run ------------------------------------------------------------
-        try:
+            phase = "stream"
             async for event in self._run_agent(
                 plan,
                 ctx,
                 coordinator,
                 state,
+                control=control,
                 user_prompt=plan.user_prompt,
                 message_history=prepared_history,
                 deferred_tool_results=plan.deferred_tool_results,
@@ -250,15 +230,13 @@ class TurnRunner:
                 yield event
             if emit_debug:
                 yield coordinator.track_debug(self._usage_debug_event(state.run_usage))
-
+            control.check_cancelled()
             await self._persist(plan, state)
-            session_context.pop("pending_tool_call_id", None)
-            session_context.pop("pending_tool_name", None)
-
-            async for event in self._handle_output(plan, ctx, coordinator, state):
+            self._clear_pending(plan)
+            async for event in self._handle_output(plan, ctx, coordinator, state, control=control):
                 yield event
-            session_context.pop("current_assistant_message_id", None)
-
+            control.check_cancelled()
+            control.accepting_cancel = False
             final = coordinator.try_final_response(
                 None if state.pending_tool_call is not None else state.final_output,
                 resolved_model,
@@ -269,46 +247,62 @@ class TurnRunner:
             )
             if final:
                 yield final
-            logger.info(
-                "[STREAM] Turn completed",
-                kind=plan.kind,
-                session_id=session_id,
-                model=resolved_model,
-                duration_ms=(time.monotonic() - started_at) * 1000,
-                deferred_tool=(state.pending_tool_call or {}).get("tool_name"),
-            )
-        except TimeoutError:
-            timeout = self._config.stream_timeout_seconds
-            logger.error(
-                "[STREAM] Turn timed out", kind=plan.kind, session_id=session_id, timeout=timeout
-            )
-            for event in self._terminal_error_events(
-                coordinator,
-                session_id=session_id,
-                message=f"Request timed out after {timeout}s",
-                error_type="timeout",
-                retry_allowed=True,
-                trace_id=trace_id,
-                model=resolved_model,
-                phase="stream",
-                emit_debug=emit_debug,
-            ):
+        except (RunCancelled, TimeoutError) as cancellation:
+            state.cancelled = True
+            control.accepting_cancel = False
+            try:
+                await self._persist_cancelled(plan, state)
+            except Exception as exc:
+                logger.exception(
+                    "Cancelled turn snapshot could not be saved", session_id=session_id
+                )
+                events = self._terminal_error_events(
+                    coordinator,
+                    session_id=session_id,
+                    message=f"Cancelled turn could not be saved: {exc}",
+                    error_type="persistence_error",
+                    retry_allowed=False,
+                    trace_id=trace_id,
+                    model=resolved_model,
+                    phase=phase,
+                    emit_debug=emit_debug,
+                )
+            else:
+                if isinstance(cancellation, TimeoutError):
+                    events = self._terminal_error_events(
+                        coordinator,
+                        session_id=session_id,
+                        message=f"Request timed out after {self._config.stream_timeout_seconds}s",
+                        error_type="timeout",
+                        retry_allowed=True,
+                        trace_id=trace_id,
+                        model=resolved_model,
+                        phase=phase,
+                        emit_debug=emit_debug,
+                    )
+                else:
+                    events = self._cancelled_events(
+                        coordinator,
+                        plan,
+                        state,
+                        model=resolved_model,
+                        trace_id=trace_id,
+                        phase=phase,
+                        emit_debug=emit_debug,
+                    )
+            for event in events:
                 yield event
         except StreamingError:
             raise
-        except Exception as e:
-            message, error_type, retry_allowed = _describe_error(e)
-            log = logger.exception if error_type == "internal" else logger.warning
-            log(
-                "[STREAM] Turn failed",
-                kind=plan.kind,
-                session_id=session_id,
-                model=resolved_model,
-                duration_ms=(time.monotonic() - started_at) * 1000,
-                error_type=error_type if error_type != "internal" else e.__class__.__name__,
-                retry_allowed=retry_allowed,
-                error=message,
-            )
+        except Exception as exc:
+            if phase == "setup":
+                is_session_error = isinstance(exc, SessionError)
+                message = f"Setup failed: {exc}"
+                error_type = "session_error" if is_session_error else "setup_error"
+                retry_allowed = not is_session_error
+            else:
+                message, error_type, retry_allowed = _describe_error(exc)
+            logger.warning("[STREAM] Turn failed", session_id=session_id, error=message)
             for event in self._terminal_error_events(
                 coordinator,
                 session_id=session_id,
@@ -317,15 +311,19 @@ class TurnRunner:
                 retry_allowed=retry_allowed,
                 trace_id=trace_id,
                 model=resolved_model,
-                phase="stream",
+                phase=phase,
                 emit_debug=emit_debug,
             ):
                 yield event
         finally:
+            control.accepting_cancel = False
             session_context.pop("current_assistant_message_id", None)
             if (
                 state.persisted
+                and not state.cancelled
+                and not control.token.cancelled
                 and plan.update_working_memory
+                and ctx is not None
                 and ctx.effective_config.enable_working_memory
             ):
                 await self._assistant.update_working_memory(
@@ -344,8 +342,9 @@ class TurnRunner:
             duration_ms = (time.monotonic() - started_at) * 1000
             if emit_debug:
                 yield coordinator.track_debug(make_debug_completed_event(duration_ms=duration_ms))
-            with contextlib.suppress(Exception):
-                trace_cm.__exit__(None, None, None)
+            if trace_cm is not None:
+                with contextlib.suppress(Exception):
+                    trace_cm.__exit__(None, None, None)
             await self.save_trace(
                 session_id,
                 coordinator.debug_events,
@@ -358,6 +357,84 @@ class TurnRunner:
             if completed:
                 yield completed
 
+    @staticmethod
+    def _clear_pending(plan: TurnPlan) -> None:
+        """Clear only the completed turn's pending host frontier."""
+        for key in ("pending_tool_call_id", "pending_tool_name", "pending_assistant_message_id"):
+            plan.session_context.pop(key, None)
+
+    async def _persist_cancelled(self, plan: TurnPlan, state: _RunState) -> None:
+        """Retain native work and explicitly mark unresolved calls interrupted."""
+        state.cancelled = True
+        returned = {
+            part.tool_call_id
+            for message in state.assistant_messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        }
+        interrupted = [
+            ToolReturnPart(
+                tool_name=part.tool_name,
+                tool_call_id=part.tool_call_id,
+                content="[Tool execution was interrupted; its external outcome is unknown.]",
+                outcome="interrupted",
+            )
+            for message in state.assistant_messages
+            for part in message.parts
+            if isinstance(part, ToolCallPart) and part.tool_call_id not in returned
+        ]
+        if interrupted:
+            state.assistant_messages.append(ModelRequest(parts=interrupted))
+        await self._persist(plan, state)
+        self._clear_pending(plan)
+
+    @staticmethod
+    def _cancelled_events(
+        coordinator: EventCoordinator,
+        plan: TurnPlan,
+        state: _RunState,
+        *,
+        model: str,
+        trace_id: str,
+        phase: str,
+        emit_debug: bool,
+    ) -> list[dict[str, Any]]:
+        """A saved cancellation is one final/error/completed lifecycle."""
+        final = coordinator.try_final_response(
+            # Only native event middleware may decide what text reaches clients.
+            # The saved snapshot can contain deliberately suppressed content.
+            "",
+            model,
+            session_id=plan.session_id,
+            message_id=plan.assistant_message_id,
+            trace_id=trace_id,
+            error=True,
+            error_type="cancelled",
+            usage=state.usage,
+        )
+        debug = make_debug_error_event(
+            "Request cancelled",
+            error_type="cancelled",
+            retry_allowed=False,
+            trace_id=trace_id,
+            model=model,
+            phase=phase,
+        )
+        coordinator.track_debug(debug)
+        events = [debug] if emit_debug else []
+        if final:
+            events.append(final)
+        events.append(
+            make_error_event(
+                "Request cancelled",
+                error_type="cancelled",
+                trace_id=trace_id,
+                terminal=True,
+                retry_allowed=False,
+            )
+        )
+        return events
+
     # --- pieces -----------------------------------------------------------------
 
     async def _run_agent(
@@ -367,6 +444,7 @@ class TurnRunner:
         coordinator: EventCoordinator,
         state: _RunState,
         *,
+        control: TurnControl,
         user_prompt: str | None,
         message_history: list[ModelMessage],
         deferred_tool_results: Any,
@@ -375,41 +453,74 @@ class TurnRunner:
         """One native event stream; ``state`` receives its messages, usage and output."""
         session_id = plan.session_id
         telegram_chat_id: str | None = None
-        async with asyncio.timeout(self._config.stream_timeout_seconds):
-            with assistant_request_context(session_id, screenshot=plan.screenshot):
-                async with ctx.agent.run_stream_events(
-                    user_prompt,
-                    message_history=message_history or None,
-                    usage_limits=ctx.usage_limits,
-                    deferred_tool_results=deferred_tool_results,
-                    usage=usage,
-                    deps=ctx.deps,
-                    capabilities=[TurnPolicy(self._sessions, session_id, plan.session_context)],
-                ) as run:
-                    async for event in iterate_run(
-                        run,
-                        coordinator,
-                        config=self._config,
-                        tools=self._tools,
-                        emit_debug=self._config.emit_debug_events,
-                        suppress_tool_call_ids=plan.suppress_tool_call_ids,
-                    ):
-                        yield event
-                telegram_chat_id = get_current_telegram_chat_binding()
+        control.check_cancelled()
+        try:
+            async with asyncio.timeout(self._config.stream_timeout_seconds):
+                with assistant_request_context(session_id, screenshot=plan.screenshot):
+                    try:
+                        async with ctx.agent.run_stream_events(
+                            user_prompt,
+                            message_history=message_history or None,
+                            usage_limits=ctx.usage_limits,
+                            deferred_tool_results=deferred_tool_results,
+                            usage=usage,
+                            deps=ctx.deps,
+                            cancellation_token=control.token,
+                            capabilities=[
+                                TurnPolicy(self._sessions, session_id, plan.session_context)
+                            ],
+                        ) as run:
+                            async for event in iterate_run(
+                                run,
+                                coordinator,
+                                config=self._config,
+                                tools=self._tools,
+                                emit_debug=self._config.emit_debug_events,
+                                suppress_tool_call_ids=plan.suppress_tool_call_ids,
+                            ):
+                                yield event
+                    finally:
+                        telegram_chat_id = get_current_telegram_chat_binding()
+            self._capture_result(plan, state, run.result)
+        except (RunCancelled, asyncio.CancelledError, TimeoutError) as exc:
+            snapshot = RunCancelled.from_cancellation(exc)
+            if snapshot is not None:
+                self._capture_result(plan, state, snapshot)
+            raise
+        finally:
+            if telegram_chat_id:
+                plan.session_context["telegram_chat_id"] = telegram_chat_id
+                plan.session_context["telegram_bound_at"] = datetime.now(UTC)
+                try:
+                    await self._sessions.save_session_state_async(session_id)
+                except Exception:
+                    # Optional binding metadata must not mask native cancellation
+                    # or prevent the response snapshot from being persisted.
+                    logger.exception("Failed to save Telegram binding", session_id=session_id)
 
-        result = run.result
+    @staticmethod
+    def _capture_result(plan: TurnPlan, state: _RunState, result: Any) -> None:
+        """Persist native history, including snapshots attached during teardown."""
         state.all_messages = list(result.all_messages())
         # new_messages(), not index slicing: pydantic-ai may merge consecutive
         # ModelRequests while cleaning the history, shrinking the list.
-        state.assistant_messages = [*state.assistant_messages, *result.new_messages()]
+        new_messages = result.new_messages()
+        if plan.accepted_tool_result is not None and any(
+            isinstance(part, ToolReturnPart) and part.tool_call_id == plan.request.tool_call_id
+            for message in new_messages
+            for part in message.parts
+        ):
+            # The result was saved before setup; native resumption now includes it.
+            state.assistant_messages = [
+                message
+                for message in state.assistant_messages
+                if message is not plan.accepted_tool_result
+            ]
+        state.assistant_messages.extend(new_messages)
         state.run_usage = result.usage
         state.usage = merge_usage(plan.prior_usage, usage_dict(result))
-        state.output = result.output
-
-        if telegram_chat_id:
-            plan.session_context["telegram_chat_id"] = telegram_chat_id
-            plan.session_context["telegram_bound_at"] = datetime.now(UTC)
-            await self._sessions.save_session_state_async(session_id)
+        if not isinstance(result, RunCancelled):
+            state.output = result.output
 
     async def _persist(self, plan: TurnPlan, state: _RunState) -> None:
         """Create or extend the assistant row with everything run so far."""
@@ -441,26 +552,30 @@ class TurnRunner:
         ctx: AgentSetupContext,
         coordinator: EventCoordinator,
         state: _RunState,
+        *,
+        control: TurnControl,
     ) -> AsyncIterator[dict[str, Any]]:
         """Resolve the run output; deliver queued steering as follow-up runs."""
         session_context = plan.session_context
         if self._take_output(plan, state):
             return
         while session_context.get("pending_steering_ids"):
-            delivered = await self._sessions.deliver_pending_steering(plan.session_id)
-            if not delivered:
+            pending = await self._sessions.list_pending_steering(plan.session_id)
+            if not pending:
                 break
             async for event in self._run_agent(
                 plan,
                 ctx,
                 coordinator,
                 state,
+                control=control,
                 user_prompt=None,
-                message_history=[*state.all_messages, build_steering_request(delivered)],
+                message_history=state.all_messages,
                 deferred_tool_results=None,
                 usage=state.run_usage,
             ):
                 yield event
+            control.check_cancelled()
             await self._persist(plan, state)
             if self._take_output(plan, state):
                 return
@@ -622,8 +737,8 @@ class TurnRunner:
             logger.warning("Failed to persist trace", session_id=session_id, error=str(e))
 
 
-async def _timed(awaitable: Awaitable[Any]) -> tuple[Any, float]:
+async def _timed(operation: Callable[[], Awaitable[Any]]) -> tuple[Any, float]:
     """Await and return ``(result, elapsed_ms)``."""
     started = time.monotonic()
-    result = await awaitable
+    result = await operation()
     return result, (time.monotonic() - started) * 1000
