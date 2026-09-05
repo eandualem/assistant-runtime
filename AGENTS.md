@@ -11,7 +11,6 @@ This is the canonical project guide for all coding agents. Keep shared
 instructions here; `CLAUDE.md` imports this file. If a CLI does not load
 `AGENTS.md` automatically, explicitly ask it to read this file before working.
 
-Start with `git status --short` and the relevant README/docs section.
 Preserve existing work. Record durable project decisions here or in the
 repository docs so another agent can pick them up without private chat history.
 
@@ -31,6 +30,8 @@ memory lives in this checkout, shared by Claude, Codex, and other CLIs:
   `.backbone/memory/INDEX.md`, then the notes it marks as relevant.
   Runtime-specific memory is a cache at most; the shared files and current
   repository/GitHub evidence establish project state.
+- After reading shared memory, run `git status --short` and read the relevant
+  README/docs section before changing files.
 - Before stopping or handing off, rewrite `HANDOFF.md` with completed and
   unfinished work, precise commits/PRs/issues, validation and its limits,
   and the next steps in order. Update the relevant topic notes and refresh
