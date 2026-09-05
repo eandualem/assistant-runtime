@@ -67,8 +67,9 @@ Keys may be camelCase; they are normalised.
 | `content` | string | the text; may be empty on a continuation |
 | `parent_id` | string, optional | branch from this message instead of the active leaf |
 | `message_type` | `standard` (default) or `steering` | see concepts |
-| `images` | list of data URLs, optional | attached images; a top-level `screenshot` is folded in |
-| `host_context` | object, optional | what the host shows (shape in concepts) |
+| `attachments` | list, optional | images, documents or text for the model, or a `screenshot` for `look_at_screen`; shape in [the host contract](host-contract.md) |
+| `images` | list of data URLs, optional | legacy: screenshots; a top-level `screenshot` is folded in |
+| `host_context` | object, optional | what the host shows, version 1 of [the host contract](host-contract.md); invalid content is a `422` |
 | `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model` |
 | `tool_call_id`, `tool_result` | continuation only | the pending host tool's call id and its result |
 

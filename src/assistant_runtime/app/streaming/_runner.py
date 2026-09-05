@@ -474,6 +474,7 @@ class TurnRunner:
                                 tools=self._tools,
                                 emit_debug=self._config.emit_debug_events,
                                 suppress_tool_call_ids=plan.suppress_tool_call_ids,
+                                host_tool_names=_host_tool_names(ctx),
                             ):
                                 yield event
                     finally:
@@ -554,7 +555,7 @@ class TurnRunner:
     ) -> AsyncIterator[dict[str, Any]]:
         """Resolve the run output; deliver queued steering as follow-up runs."""
         session_context = plan.session_context
-        if self._take_output(plan, state):
+        if self._take_output(plan, state, ctx):
             return
         while session_context.get("pending_steering_ids"):
             pending = await self._sessions.list_pending_steering(plan.session_id)
@@ -574,10 +575,10 @@ class TurnRunner:
                 yield event
             control.check_cancelled()
             await self._persist(plan, state)
-            if self._take_output(plan, state):
+            if self._take_output(plan, state, ctx):
                 return
 
-    def _take_output(self, plan: TurnPlan, state: _RunState) -> bool:
+    def _take_output(self, plan: TurnPlan, state: _RunState, ctx: AgentSetupContext) -> bool:
         """Record the run output on ``state``; True when it is a deferred host-tool call."""
         session_context = plan.session_context
         if isinstance(state.output, DeferredToolRequests):
@@ -587,6 +588,7 @@ class TurnRunner:
                 state.output,
                 session_context,
                 assistant_segments=state.assistant_segments,
+                host_tool_names=_host_tool_names(ctx),
             )
             session_context["pending_assistant_message_id"] = plan.assistant_message_id
             state.final_output = None
@@ -737,6 +739,11 @@ class TurnRunner:
                 )
         except Exception as e:
             logger.warning("Failed to persist trace", session_id=session_id, error=str(e))
+
+
+def _host_tool_names(ctx: AgentSetupContext) -> set[str]:
+    """The host tools of this turn: configured ones plus request-declared actions."""
+    return {tool.name for tool in ctx.available_tools.host_tools}
 
 
 async def _timed(operation: Callable[[], Awaitable[Any]]) -> tuple[Any, float]:

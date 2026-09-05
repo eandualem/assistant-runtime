@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -10,56 +9,46 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from assistant_runtime.app.assistant.config import TunableOverrides
+from assistant_runtime.host_context import (
+    Attachment,
+    HostContext,
+    camel_to_snake,
+)
 
 # --- camelCase → snake_case normalization ---
 
-_CAMEL_RE_1 = re.compile(r"([A-Z]+)([A-Z][a-z])")
-_CAMEL_RE_2 = re.compile(r"([a-z0-9])([A-Z])")
+_camel_to_snake = camel_to_snake
 
 
-def _camel_to_snake(name: str) -> str:
-    """Convert a camelCase or PascalCase string to snake_case.
-
-    Handles consecutive capitals: ``eventType`` → ``event_type``,
-    ``HTMLParser`` → ``html_parser``, already-snake → unchanged.
-    """
-    s = _CAMEL_RE_1.sub(r"\1_\2", name)
-    return _CAMEL_RE_2.sub(r"\1_\2", s).lower()
-
-
-def _normalize_keys(obj: Any) -> Any:
-    """Recursively convert all dict keys from camelCase to snake_case."""
-    if isinstance(obj, dict):
-        return {_camel_to_snake(k): _normalize_keys(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_normalize_keys(item) for item in obj]
-    return obj
+def _dedupe_attachments(items: list[Any]) -> list[Any]:
+    """Keep the first of attachments that carry the same content for the same purpose."""
+    seen: set[tuple[Any, ...]] = set()
+    unique: list[Any] = []
+    for item in items:
+        if isinstance(item, dict):
+            key = (
+                item.get("purpose", "reference"),
+                item.get("data_uri"),
+                item.get("url"),
+                item.get("text"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+        unique.append(item)
+    return unique
 
 
 def normalize_host_context(raw: Any) -> dict[str, Any] | None:
-    """A host context as the runtime expects it: snake_case keys throughout.
+    """A host context in its canonical form, or None for anything that is not a mapping.
 
-    Accepts camelCase or snake_case and returns None for anything that is not
-    a mapping. Every entry point that takes a host context (the request
-    model, the Socket.IO join) goes through here so the stored
-    ``last_host_context`` is always canonical.
+    Every entry point that takes a host context (the request model, the
+    Socket.IO join) goes through ``HostContext.from_payload``, so the stored
+    ``last_host_context`` is always the validated, snake_case, versioned form.
+    Invalid content raises ``ValueError``.
     """
-    if not isinstance(raw, dict):
-        return None
-    return _normalize_keys(raw)
-
-
-_HOST_CONTEXT_PAYLOAD_KEYS = ("host_context", "hostContext")
-
-
-def host_context_from_payload(data: Any) -> dict[str, Any] | None:
-    """Pull and normalise the host context out of a raw client payload, if any."""
-    if not isinstance(data, dict):
-        return None
-    for key in _HOST_CONTEXT_PAYLOAD_KEYS:
-        if key in data:
-            return normalize_host_context(data[key])
-    return None
+    context = HostContext.from_payload(raw)
+    return context.to_dict() if context is not None else None
 
 
 @dataclass(frozen=True)
@@ -166,10 +155,26 @@ class AssistantRequest(BaseModel):
     message_type: Literal["standard", "steering"] = Field(default="standard")
     content: str
     images: list[str] = Field(default_factory=list)
+    """Legacy: data URIs treated as screenshots. Prefer ``attachments``."""
+    attachments: list[Attachment] = Field(default_factory=list)
     host_context: dict[str, Any] | None = None
+    """The canonical form of a ``HostContext`` (see ``host_context.py``)."""
     config: TunableOverrides | None = None
     tool_call_id: str | None = None
     tool_result: Any | None = None
+
+    @property
+    def screenshot(self) -> str | None:
+        """The data URI of the screenshot attachment, if the host sent one."""
+        for attachment in self.attachments:
+            if attachment.purpose == "screenshot" and attachment.data_uri:
+                return attachment.data_uri
+        return None
+
+    @property
+    def reference_attachments(self) -> list[Attachment]:
+        """Attachments that go into the model's message as native content."""
+        return [a for a in self.attachments if a.purpose == "reference"]
 
     @property
     def is_continuation(self) -> bool:
@@ -209,10 +214,32 @@ class AssistantRequest(BaseModel):
         # 1. Normalize top-level keys
         data = {_camel_to_snake(k): v for k, v in data.items()}
 
-        # 2. Deep-normalize host_context contents + legacy aliases
+        # 2. Validate host_context into its canonical form (aliases, camelCase)
         ctx = data.get("host_context")
         if isinstance(ctx, dict):
             data = {**data, "host_context": normalize_host_context(ctx)}
+
+        # 2b. Legacy screenshot fields and images[] become screenshot attachments
+        images = list(data.get("images") or []) if isinstance(data.get("images"), list) else []
+        for key in ("screenshot", "image", "image_data_uri", "data_uri"):
+            value = data.pop(key, None)
+            if isinstance(value, str) and value.startswith("data:image/"):
+                images.append(value)
+        attachments = [
+            {camel_to_snake(k): v for k, v in item.items()} if isinstance(item, dict) else item
+            for item in (data.get("attachments") or [])
+        ]
+        for image in images:
+            if isinstance(image, str) and image:
+                attachments.append({"kind": "image", "purpose": "screenshot", "data_uri": image})
+        # Attachments carried inside host_context reach the turn the same way;
+        # message-level ones come first and duplicates are dropped.
+        context = data.get("host_context")
+        if isinstance(context, dict):
+            attachments.extend(
+                item for item in context.get("attachments", []) if isinstance(item, dict)
+            )
+        data = {**data, "images": images, "attachments": _dedupe_attachments(attachments)}
 
         # 3. Normalize config keys (shallow — flat model)
         cfg = data.get("config")
@@ -220,28 +247,6 @@ class AssistantRequest(BaseModel):
             data = {**data, "config": {_camel_to_snake(k): v for k, v in cfg.items()}}
 
         return data
-
-    @model_validator(mode="before")
-    @classmethod
-    def fold_screenshot_into_images(cls, data: Any) -> Any:
-        """Capture top-level screenshot fields and fold them into images[].
-
-        If a recognized top-level key holds a data URI string, prepend it
-        to images[] so extract_screenshot_data_uri() can find it.
-        Checks both camelCase and snake_case variants since validator
-        ordering with normalize_camel_case is not guaranteed.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        for key in SCREENSHOT_KEYS:
-            value = data.get(key)
-            if isinstance(value, str) and value.startswith("data:image/"):
-                existing = data.get("images") or []
-                if not isinstance(existing, list):
-                    existing = [existing]
-                data = {**data, "images": [value, *existing]}
-                break  # first match wins
 
         return data
 

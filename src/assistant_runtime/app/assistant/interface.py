@@ -22,6 +22,7 @@ from assistant_runtime.app.assistant.definition import AssistantDefinition
 from assistant_runtime.app.assistant.exceptions import AssistantError
 from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest
 from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
+from assistant_runtime.host_context import view_name_of
 from assistant_runtime.services.tracing import create_span
 
 if TYPE_CHECKING:
@@ -151,9 +152,7 @@ class AssistantService:
         logger.debug(
             "Session warmup completed",
             session_id=session_id,
-            page=host_context.get("page", {}).get("name")
-            if isinstance(host_context, dict)
-            else None,
+            view=view_name_of(host_context) if isinstance(host_context, dict) else None,
             duration_ms=(time.monotonic() - started_at) * 1000,
         )
 
