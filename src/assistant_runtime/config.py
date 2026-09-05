@@ -3,6 +3,7 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from assistant_runtime.app.access.config import AccessConfig
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.heartbeat.config import HeartbeatConfig
 from assistant_runtime.app.streaming.config import StreamingConfig
@@ -24,6 +25,7 @@ class AppSettings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = False
 
+    access: AccessConfig = AccessConfig()
     database: DatabaseConfig = DatabaseConfig()
     artifacts: ArtifactsConfig = ArtifactsConfig()
     llm: LLMConfig = LLMConfig()

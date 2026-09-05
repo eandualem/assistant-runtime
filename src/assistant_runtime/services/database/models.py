@@ -30,9 +30,12 @@ class SessionORM(Base):
     __tablename__ = "sessions"
     __table_args__ = (
         Index("ix_sessions_telegram_chat_id_bound_at", "telegram_chat_id", "telegram_bound_at"),
+        Index("ix_sessions_owner_id", "owner_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    """The principal that created the session; NULL for rows that predate ownership."""
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     turn_number: Mapped[int] = mapped_column(Integer, default=0)
     working_memory: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

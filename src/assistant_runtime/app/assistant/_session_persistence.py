@@ -41,6 +41,7 @@ class LoadedSession:
     turn_number: int
     working_memory: Any
     title: str | None
+    owner_id: str | None
     telegram_chat_id: str | None
     telegram_bound_at: datetime | None
     messages: list[MessageRecord]
@@ -57,12 +58,23 @@ class SessionPersistence:
     def _expires_at(self) -> datetime:
         return datetime.now(UTC) + timedelta(hours=self._session_ttl_hours)
 
-    async def ensure_session(self, session_id: str, title: str | None) -> None:
+    async def ensure_session(
+        self, session_id: str, title: str | None, owner_id: str | None = None
+    ) -> None:
         """Create the session row unless it exists."""
         async with self._db.session_context() as db_session:
             repo = SessionRepository(db_session)
             if await repo.get(session_id) is None:
-                await repo.create(session_id=session_id, title=title, expires_at=self._expires_at())
+                await repo.create(
+                    session_id=session_id,
+                    title=title,
+                    expires_at=self._expires_at(),
+                    owner_id=owner_id,
+                )
+
+    async def set_owner(self, session_id: str, owner_id: str | None) -> None:
+        async with self._db.session_context() as db_session:
+            await SessionRepository(db_session).update(session_id, owner_id=owner_id)
 
     async def create_message(self, record: MessageRecord) -> None:
         async with self._db.session_context() as db_session:
@@ -126,6 +138,7 @@ class SessionPersistence:
                 telegram_chat_id=ctx.get("telegram_chat_id"),
                 telegram_bound_at=ctx.get("telegram_bound_at"),
                 expires_at=self._expires_at(),
+                owner_id=ctx.get("owner_id"),
             )
 
     async def session_for_telegram_chat(self, chat_id: str) -> str | None:
@@ -137,13 +150,18 @@ class SessionPersistence:
         async with self._db.session_context() as db_session:
             await SessionRepository(db_session).delete(session_id)
 
-    async def list_sessions(self, limit: int, offset: int) -> list[dict[str, Any]]:
+    async def list_sessions(
+        self, limit: int, offset: int, *, owner_id: str | None = None
+    ) -> list[dict[str, Any]]:
         async with self._db.session_context() as db_session:
-            rows = await SessionRepository(db_session).list_all(limit=limit, offset=offset)
+            rows = await SessionRepository(db_session).list_all(
+                limit=limit, offset=offset, owner_id=owner_id
+            )
             counts = await MessageRepository(db_session).count_by_sessions([row.id for row in rows])
             return [
                 {
                     "session_id": row.id,
+                    "owner_id": row.owner_id,
                     "title": row.title,
                     "turn_number": row.turn_number,
                     "message_count": counts.get(row.id, 0),
@@ -173,6 +191,7 @@ class SessionPersistence:
                     turn_number=row.turn_number,
                     working_memory=row.working_memory,
                     title=row.title,
+                    owner_id=row.owner_id,
                     telegram_chat_id=row.telegram_chat_id,
                     telegram_bound_at=row.telegram_bound_at,
                     messages=[

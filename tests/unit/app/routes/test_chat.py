@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
 from assistant_runtime.app.assistant.models import AssistantResult
 from assistant_runtime.main import create_app
+from assistant_runtime.principal import LOCAL_PRINCIPAL
 
 
 def _create_test_app(*, streaming_service: Any = None) -> Any:
@@ -32,7 +33,7 @@ class TestChatEndpoint:
 
         assert response.status_code == 200
         assert response.json() == {"cancel_requested": cancel_requested}
-        service.cancel_session.assert_awaited_once_with("sess-1")
+        service.cancel_session.assert_awaited_once_with("sess-1", principal=LOCAL_PRINCIPAL)
         service.run_message.assert_not_awaited()
         service.wait_for_session.assert_not_awaited()
 

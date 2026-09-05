@@ -452,7 +452,9 @@ class TurnRunner:
         control.check_cancelled()
         try:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
-                with assistant_request_context(session_id, screenshot=plan.screenshot):
+                with assistant_request_context(
+                    session_id, screenshot=plan.screenshot, principal=plan.principal
+                ):
                     try:
                         async with ctx.agent.run_stream_events(
                             user_prompt,

@@ -38,6 +38,7 @@ from pydantic_ai.messages import (
     UserContent,
 )
 
+from assistant_runtime.app.access.exceptions import AccessDeniedError
 from assistant_runtime.app.assistant._serialization import (
     assistant_record_to_flat_messages,
     path_records_to_model_history,
@@ -50,6 +51,7 @@ from assistant_runtime.app.assistant.models import (
 )
 from assistant_runtime.app.streaming._host_tool import clear_stale_pending_call
 from assistant_runtime.app.streaming.exceptions import StreamSetupError
+from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal, can_access_session
 
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant._session_store import SessionStore
@@ -68,6 +70,8 @@ class TurnPlan:
     assistant_message_id: str
     # Set when the turn creates a new assistant row (its parent); None updates an existing row.
     assistant_parent_id: str | None
+    # Who runs the turn; set by ``plan()`` and available to tools through the request context.
+    principal: Principal = LOCAL_PRINCIPAL
     # Model messages already persisted on the assistant row being extended.
     prior_assistant_messages: list[ModelMessage] = field(default_factory=list)
     prior_usage: dict[str, int] | None = None
@@ -91,15 +95,24 @@ class TurnPlanner:
     def __init__(self, sessions: SessionStore) -> None:
         self._sessions = sessions
 
-    async def plan(self, request: AssistantRequest) -> TurnPlan:
-        """Validate ``request`` against its session and describe the run."""
+    async def plan(
+        self, request: AssistantRequest, principal: Principal = LOCAL_PRINCIPAL
+    ) -> TurnPlan:
+        """Validate ``request`` against its session and describe the run.
+
+        ``principal`` owns a session it creates and must be allowed on one
+        that exists (``AccessDeniedError`` otherwise).
+        """
         try:
             if request.is_steering:
-                return await self._plan_steering(request)
-            if request.is_continuation:
-                return await self._plan_continuation(request)
-            return await self._plan_message(request)
-        except SessionError:
+                plan = await self._plan_steering(request, principal)
+            elif request.is_continuation:
+                plan = await self._plan_continuation(request, principal)
+            else:
+                plan = await self._plan_message(request, principal)
+            plan.principal = principal
+            return plan
+        except (SessionError, AccessDeniedError):
             raise
         except (LookupError, ValueError) as e:
             # The session store rejects requests that do not fit the tree
@@ -108,9 +121,18 @@ class TurnPlanner:
         except Exception as e:
             raise StreamSetupError(f"Turn setup failed: {e}") from e
 
-    async def _plan_message(self, request: AssistantRequest) -> TurnPlan:
+    def _authorize(self, session_context: dict[str, Any], principal: Principal, session_id: str):
+        if not can_access_session(principal, session_context.get("owner_id")):
+            raise AccessDeniedError(f"Session '{session_id}' belongs to another principal")
+
+    async def _plan_message(self, request: AssistantRequest, principal: Principal) -> TurnPlan:
         session_id = request.session_id
-        session_context, _user_record = await self._sessions.register_user_message(request)
+        existing = await self._sessions.get_context_if_exists_async(session_id)
+        if existing is not None:
+            self._authorize(existing, principal, session_id)
+        session_context, _user_record = await self._sessions.register_user_message(
+            request, owner_id=principal.id
+        )
         await clear_stale_pending_call(self._sessions, session_id, session_context)
         assistant_message_id = str(uuid.uuid4())
         session_context["current_assistant_message_id"] = assistant_message_id
@@ -132,11 +154,12 @@ class TurnPlanner:
             },
         )
 
-    async def _plan_continuation(self, request: AssistantRequest) -> TurnPlan:
+    async def _plan_continuation(self, request: AssistantRequest, principal: Principal) -> TurnPlan:
         session_id = request.session_id
         session_context = await self._sessions.get_context_if_exists_async(session_id)
         if session_context is None:
             raise SessionError(f"Continuation rejected: session '{session_id}' does not exist")
+        self._authorize(session_context, principal, session_id)
 
         pending_tool_call_id = session_context.get("pending_tool_call_id")
         if not pending_tool_call_id:
@@ -235,11 +258,12 @@ class TurnPlanner:
             input_message=request.content or "(continuation)",
         )
 
-    async def _plan_steering(self, request: AssistantRequest) -> TurnPlan:
+    async def _plan_steering(self, request: AssistantRequest, principal: Principal) -> TurnPlan:
         session_id = request.session_id
         session_context = await self._sessions.get_context_if_exists_async(session_id)
         if session_context is None:
             raise SessionError(f"Steering rejected: session '{session_id}' does not exist")
+        self._authorize(session_context, principal, session_id)
         active_leaf_id = session_context.get("active_leaf_id")
         active_leaf = (
             session_context["message_index"].get(active_leaf_id) if active_leaf_id else None

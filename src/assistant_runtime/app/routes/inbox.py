@@ -9,15 +9,16 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from assistant_runtime.app.access.deps import require_admin
 from assistant_runtime.app.ingress.deps import IngressServiceDep
 from assistant_runtime.services.database.deps import get_database_service
 from assistant_runtime.services.database.repositories import InboxRepository
 
-router = APIRouter(prefix="/inbox", tags=["inbox"])
+router = APIRouter(prefix="/inbox", tags=["inbox"], dependencies=[Depends(require_admin)])
 
 
 # ---------------------------------------------------------------------------

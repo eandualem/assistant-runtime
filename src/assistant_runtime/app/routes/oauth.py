@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from assistant_runtime.app.access.deps import require_admin
 from assistant_runtime.services.oauth.deps import OAuthServiceDep
 
-router = APIRouter(prefix="/oauth", tags=["oauth"])
+router = APIRouter(prefix="/oauth", tags=["oauth"], dependencies=[Depends(require_admin)])
 
 
 @router.post("/openai/device-code")

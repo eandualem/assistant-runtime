@@ -73,6 +73,7 @@ class TestListSessions:
         assert response.json() == [
             {
                 "session_id": "sess-1",
+                "owner_id": None,
                 "title": "Hello",
                 "turn_number": 3,
                 "message_count": 4,
@@ -94,6 +95,7 @@ class TestGetSession:
         assert response.status_code == 200
         assert response.json() == {
             "session_id": "sess-1",
+            "owner_id": None,
             "turn_number": 3,
             "has_pending_tool_call": False,
             "message_count": 4,

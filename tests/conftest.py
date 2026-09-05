@@ -25,3 +25,15 @@ async def client(app):
         base_url="http://test",
     ) as ac:
         yield ac
+
+
+@pytest.fixture(autouse=True)
+def trusted_local_access(monkeypatch):
+    """Route tests act as the trusted local operator unless a test says otherwise."""
+    from assistant_runtime.app.access import deps as access_deps
+    from assistant_runtime.app.access.config import AccessConfig
+    from assistant_runtime.app.access.interface import AccessService
+
+    service = AccessService(AccessConfig())
+    monkeypatch.setattr(access_deps, "get_access_service", lambda request: service)
+    return service

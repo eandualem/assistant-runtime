@@ -57,6 +57,7 @@ checkout.
 |---|---|
 | [concepts](docs/concepts.md) | sessions, turns, tools, host tools, host context, artifacts, envelopes |
 | [host contract](docs/host-contract.md) | the versioned `host_context`, attachments and action protocol a host uses |
+| [identity and access](docs/access.md) | authentication modes, session ownership, administration, CORS |
 | [getting-started](docs/getting-started.md) | install, one key, chat, server, a minimal client, Postgres, integrations |
 | [configuration](docs/configuration.md) | every setting, the three configuration tiers, secrets |
 | [api](docs/api.md) | HTTP endpoints and the Socket.IO streaming contract |
@@ -140,10 +141,17 @@ intended for multi-user hosted services.
 
 ## Security
 
-There is no authentication and CORS is open. Bind to localhost (the
-default) or put the server behind a reverse proxy that authenticates.
-Secrets are read from the environment only; the one stored secret is the
-encrypted provider-key store behind `PUT /api/providers/{provider}/api-key`.
+By default every caller is the local operator and CORS is open: bind to
+localhost (the default). To serve several people, put the server behind
+a reverse proxy that authenticates and sets `X-Assistant-Principal`
+(`ACCESS__MODE=header`), or plug your own identity system in with
+`AssistantDefinition(authenticate=...)` (`ACCESS__MODE=host`), and
+restrict `ACCESS__CORS_ORIGINS`. Sessions belong to the principal that
+created them; administration (settings, provider keys, artifact
+mutations, ingress, debugging) needs the `admin` role. See
+[identity and access](docs/access.md). Secrets are read from the
+environment only; the one stored secret is the encrypted provider-key
+store behind `PUT /api/providers/{provider}/api-key`.
 
 ## Development
 
@@ -192,6 +200,7 @@ src/assistant_runtime/
   help/          the documentation, when installed from a wheel
   artifacts.py   assistant profiles: the artifact schema, built-ins, TOML loading
   host_context.py  the host contract: versioned context, attachments, actions
+  principal.py   trusted principals, credentials, the ownership rule
   profiles/      the example technical_operator texts
   model_catalog.py  providers, key variables, fallback models, the model list
   config.py      AppSettings, composed from every module's config

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
+from assistant_runtime.app.assistant._session_persistence import LoadedSession
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.models import AssistantRequest
 
@@ -259,6 +262,7 @@ class TestListSessions:
         assert result == [
             {
                 "session_id": "sess-1",
+                "owner_id": None,
                 "title": "Hello",
                 "turn_number": 1,
                 "message_count": 2,
@@ -282,6 +286,7 @@ class TestSingleflightHydration:
             started.set()
             await release.wait()
             return LoadedSession(
+                owner_id=None,
                 turn_number=3,
                 working_memory=None,
                 title="t",
@@ -304,3 +309,92 @@ class TestSingleflightHydration:
         assert ctx is not None
         assert ctx["turn_number"] == 3
         assert store._db.load.await_count == 1
+
+
+class TestOwnership:
+    async def test_first_message_owns_a_context_created_ahead_of_it(self):
+        store = SessionStore()
+        store.get_context("sess-1")  # a join warm-up or history read
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        assert [s["session_id"] for s in await store.list_sessions(owner_id="alice")] == ["sess-1"]
+        assert await store.list_sessions(owner_id="bob") == []
+
+    async def test_owner_is_not_published_when_the_first_write_fails(self):
+        store = SessionStore()
+        store.get_context("sess-1")
+        db = AsyncMock()
+        db.load = AsyncMock(return_value=None)
+        db.ensure_session = AsyncMock(side_effect=RuntimeError("db down"))
+        store._db = db
+        with pytest.raises(RuntimeError):
+            await store.register_user_message(
+                AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+            )
+        assert store.get_context("sess-1")["owner_id"] is None
+        db.ensure_session = AsyncMock()
+        db.create_message = AsyncMock()
+        db.save_state = AsyncMock()
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        db.ensure_session.assert_awaited_once_with("sess-1", None, "alice")
+
+    async def test_empty_cached_context_is_hydrated_before_ownership_is_decided(self):
+        store = SessionStore()
+        store.get_context("sess-1")  # a warm-up cached an empty context...
+        db = AsyncMock()
+        db.load = AsyncMock(  # ...but the row already belongs to alice
+            return_value=LoadedSession(
+                owner_id="alice",
+                turn_number=0,
+                working_memory=None,
+                title=None,
+                telegram_chat_id=None,
+                telegram_bound_at=None,
+                messages=[],
+                steering=[],
+            )
+        )
+        db.update_segments = AsyncMock()
+        db.ensure_session = AsyncMock()
+        db.create_message = AsyncMock()
+        db.save_state = AsyncMock()
+        store._db = db
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="bob"
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        db.ensure_session.assert_awaited_once_with("sess-1", None, "alice")
+
+    async def test_existing_owner_is_kept_by_later_messages(self):
+        store = SessionStore()
+        first = AssistantRequest(id="user-1", session_id="sess-1", content="Hi")
+        await store.register_user_message(first, owner_id="alice")
+        await store.register_assistant_message(
+            "sess-1", message_id="a-1", parent_id="user-1", content="Yes", segments=[], usage=None
+        )
+        await store.register_user_message(
+            AssistantRequest(id="user-2", session_id="sess-1", parent_id="a-1", content="More"),
+            owner_id="root",
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+
+    async def test_set_owner_persists_before_publishing(self):
+        store = SessionStore()
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+        )
+        db = AsyncMock()
+        db.set_owner = AsyncMock(side_effect=RuntimeError("db down"))
+        store._db = db
+        with pytest.raises(RuntimeError):
+            await store.set_owner("sess-1", "bob")
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        db.set_owner = AsyncMock()
+        await store.set_owner("sess-1", "bob")
+        assert store.get_context("sess-1")["owner_id"] == "bob"
+        db.set_owner.assert_awaited_once_with("sess-1", "bob")

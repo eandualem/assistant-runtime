@@ -11,6 +11,7 @@ from pydantic_ai.toolsets import AbstractToolset
 
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.artifacts import AssistantProfile
+from assistant_runtime.principal import Credentials, Principal
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -26,6 +27,10 @@ class AssistantDefinition[DepsT]:
     defaults and mutation policies; it takes precedence over the
     ``ASSISTANT__PROFILE`` setting.
 
+    ``authenticate`` turns a transport's ``Credentials`` into a trusted
+    ``Principal`` (or None to reject) when ``ACCESS__MODE=host``. It may be
+    async. This is where an existing identity system plugs in.
+
     These tools and toolsets keep Pydantic AI's schemas, metadata and error
     semantics. Runtime provider-tool scoping does not filter native extensions;
     use a native tool ``prepare`` callback or ``PrepareTools`` for those.
@@ -37,6 +42,9 @@ class AssistantDefinition[DepsT]:
     deps_type: type[DepsT] = type(None)
     deps_factory: Callable[[AssistantRequest], DepsT | Awaitable[DepsT]] | None = None
     profile: AssistantProfile | None = None
+    authenticate: Callable[[Credentials], Principal | None | Awaitable[Principal | None]] | None = (
+        None
+    )
 
     def __post_init__(self) -> None:
         # Snapshot containers, while keeping the native extension objects intact.
