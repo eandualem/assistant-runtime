@@ -105,6 +105,35 @@ turn pipeline. Follow-up requests use the returned assistant message ID as
 contract. The context manager shuts services down if host code raises or
 startup is interrupted.
 
+## Cancelling a turn
+
+The runtime uses Pydantic AI's `CancellationToken` and `RunCancelled`
+snapshots to retain partial text, completed tool results and available usage.
+From a host stop handler, while another task consumes the turn:
+
+```python
+cancel_requested = await runtime.cancel_session("conversation-1")
+await runtime.wait_for_session("conversation-1")
+```
+
+`cancel_session` reports whether it found a cancellable turn; it also stops
+dependency setup. `wait_for_session` waits for the registered turn's
+persistence and cleanup. In-process `run_message` raises `AgentRunError`
+for a cancelled turn; `stream_message` delivers the cancellation's
+final/error/completed events. Saved partial work remains in the session.
+
+Closing or cancelling the event iterator requests cancellation and drains
+the producer. Use `contextlib.aclosing` when breaking out early. External
+`asyncio.CancelledError` still propagates to the caller. Runtime shutdown
+cancels and drains active turns before stopping their services. Socket.IO
+disconnects have a different policy: the server keeps the turn running.
+
+An unresolved tool is recorded as interrupted, with its external outcome
+unknown. Cancellation cannot undo side effects or revoke an idle host action.
+Steering is acknowledged after a successful model response consumes it; if
+that response is interrupted, the instruction stays pending for the next
+turn. This retry behavior is not an exactly-once side-effect guarantee.
+
 ## Dependencies and lifetime
 
 The dependency factory receives the validated `AssistantRequest` once per

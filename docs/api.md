@@ -24,6 +24,37 @@ when the session has no conversation yet. A failed run is a 500. Both
 carry `{"error", "type"}`. Steering messages are rejected here
 (422); use the socket.
 
+## Turn control
+
+`POST /api/chat/{session_id}/cancel` requests cancellation and returns
+`{"cancel_requested": true}` when a cancellable turn was found, or `false`
+when none was found. The response acknowledges the request; finalization
+may still be running. It also works during dependency/model setup and needs
+no Postgres. An idle pending host action is not a live turn to cancel.
+
+Cancellation saves the partial assistant text, completed tool results and
+available usage in the session. Outstanding calls are recorded as
+`outcome: "interrupted"`; their external effects may already have occurred.
+Cancellation does not undo those effects. A continuation result already
+accepted from the host is retained on the same assistant message.
+
+A connected stream receives one `final_response` with `error: true`,
+`error_type: "cancelled"` and its saved `message_id`, a terminal `error`,
+then `status: completed`. Text already streamed is not repeated in the
+final event. The original non-streaming chat request follows the existing
+run-error response; read `/api/sessions/{id}/messages` for its saved work.
+
+New ordinary messages cancel the previous turn and wait for its cleanup
+before starting. Continuations wait for the prior turn to finish without
+cancelling it. Socket.IO disconnects leave execution running; reconnecting
+does not replay missed events, so reload the session. Cancellation and
+session persistence do not provide crash recovery or exactly-once external
+actions; those remain separate recovery work.
+
+Queued steering can be consumed together. Scheduling a steering request
+already delivered by another turn returns a terminal `session_error`
+without starting another model run.
+
 ## The message body
 
 Sent to `POST /api/chat` and as the payload of `assistant:message`.
@@ -48,8 +79,8 @@ Keys may be camelCase; they are normalised.
 | Event | Payload | Effect |
 |---|---|---|
 | `assistant:join_session` | `{"session_id", "host_context"?}` | join the session room and warm it (tools, prompt inputs) |
-| `assistant:message` | the message body | start a turn; a live turn on the session is cancelled unless this is a continuation |
-| `assistant:cancel` | `{"session_id"}` | cancel the live turn |
+| `assistant:message` | the message body | start a turn after prior-turn cleanup; ordinary messages cancel a live turn, continuations wait |
+| `assistant:cancel` | `{"session_id"}` | request cancellation and snapshot persistence for the live turn |
 
 ### Server to client
 
@@ -64,8 +95,8 @@ requesting socket.
 | `assistant:tool_call` | `tool_name`, `arguments`, `call_id`, `category` (`backend` or `host`) |
 | `assistant:tool_result` | `tool_name`, `output`, `call_id`, `duration_ms`?, `invalidates`? |
 | `assistant:tool_error` | `tool_name`, `error`, `call_id` |
-| `assistant:final_response` | `content`, `model`, `streamed`, `session_id`?, `message_id`?, `trace_id`?, `usage`?, `error`?, `pending_tool_call`? (`{tool_name, call_id, arguments}`) |
-| `assistant:error` | `type` (`validation`, `session`, `cancelled`, `internal`), `message`, `terminal`, `retry_allowed` |
+| `assistant:final_response` | `content`, `model`, `streamed`, `session_id`?, `message_id`?, `trace_id`?, `usage`?, `error`?, `error_type`? (including `cancelled`), `pending_tool_call`? (`{tool_name, call_id, arguments}`) |
+| `assistant:error` | `type`, `message`, `error_type`?, `terminal`?, `retry_allowed`?; turn errors use `type: "error"` and a specific `error_type` |
 | `assistant:debug` | `type` is one of `debug_request`, `debug_system_prompt`, `debug_history`, `debug_tool_selection`, `debug_agent_config`, `debug_thinking`, `debug_final_response`, `debug_usage`, `debug_error`, `debug_completed`; off by default, on with `STREAMING__EMIT_DEBUG_EVENTS=true` |
 
 Segment metadata on deltas: `segment_id`, `segment_index`, `delta_index`,

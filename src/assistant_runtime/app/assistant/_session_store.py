@@ -294,26 +294,36 @@ class SessionStore:
 
     async def deliver_pending_steering(self, session_id: str) -> list[SteeringRecord]:
         """Mark all currently pending steering as delivered."""
+        pending = await self.list_pending_steering(session_id)
+        return await self.mark_steering_delivered(session_id, [record["id"] for record in pending])
+
+    async def mark_steering_delivered(
+        self, session_id: str, steering_ids: list[str]
+    ) -> list[SteeringRecord]:
+        """Acknowledge only the pending records consumed by a model request."""
         ctx = await self.get_context_if_exists_async(session_id)
         if ctx is None:
             raise LookupError("Session not found")
-        if not ctx["pending_steering_ids"]:
+        selected = set(steering_ids)
+        pending_ids = [sid for sid in ctx["pending_steering_ids"] if sid in selected]
+        if not pending_ids:
             return []
 
         delivered_at = datetime.now(UTC)
         updated: list[SteeringRecord] = []
-        for steering_id in list(ctx["pending_steering_ids"]):
+        for steering_id in pending_ids:
             record = dict(ctx["steering_index"][steering_id])
             record["status"] = "delivered"
             record["delivered_at"] = delivered_at
-            ctx["steering_index"][steering_id] = record
             updated.append(record)
-        ctx["pending_steering_ids"] = []
 
         if self._db is not None:
-            await self._db.mark_steering(
-                [record["id"] for record in updated], status="delivered", delivered_at=delivered_at
-            )
+            await self._db.mark_steering(pending_ids, status="delivered", delivered_at=delivered_at)
+        for record in updated:
+            ctx["steering_index"][record["id"]] = record
+        ctx["pending_steering_ids"] = [
+            sid for sid in ctx["pending_steering_ids"] if sid not in selected
+        ]
         return updated
 
     async def mark_steering_promoted(self, session_id: str, steering_id: str) -> SteeringRecord:

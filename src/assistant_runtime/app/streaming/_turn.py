@@ -25,11 +25,16 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
 from pydantic_ai import DeferredToolResults
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 
 from assistant_runtime.app.assistant._serialization import (
     assistant_record_to_flat_messages,
-    build_steering_request,
     path_records_to_model_history,
 )
 from assistant_runtime.app.assistant.exceptions import SessionError
@@ -66,8 +71,8 @@ class TurnPlan:
     history: list[ModelMessage] = field(default_factory=list)
     history_is_continuation: bool = False
     exclude_tool_call_ids: set[str] | None = None
-    history_suffix: list[ModelMessage] = field(default_factory=list)
     deferred_tool_results: DeferredToolResults | None = None
+    accepted_tool_result: ModelRequest | None = None
     suppress_tool_call_ids: set[str] = field(default_factory=set)
     screenshot: str | None = None
     # Bookkeeping.
@@ -210,6 +215,15 @@ class TurnPlanner:
             history_is_continuation=True,
             exclude_tool_call_ids={pending_tool_call_id},
             deferred_tool_results=DeferredToolResults(calls={request.tool_call_id: tool_result}),
+            accepted_tool_result=ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        tool_name=session_context.get("pending_tool_name") or "unknown",
+                        tool_call_id=pending_tool_call_id,
+                        content=tool_result,
+                    )
+                ]
+            ),
             suppress_tool_call_ids={request.tool_call_id},
             screenshot=screenshot,
             turn_number=session_context.get("turn_number", 0),
@@ -237,11 +251,9 @@ class TurnPlanner:
 
         steering_record = session_context["steering_index"].get(request.id)
         if steering_record is None:
-            steering_record = await self._sessions.queue_steering(
-                session_id, request, status="promoted", delivered_at=datetime.now(UTC)
-            )
-        elif steering_record.get("status") == "pending":
-            steering_record = await self._sessions.mark_steering_promoted(session_id, request.id)
+            await self._sessions.queue_steering(session_id, request)
+        elif steering_record.get("status") == "delivered":
+            raise SessionError(f"Steering '{request.id}' was already delivered by another turn")
 
         extends_assistant = active_leaf.get("role") == "assistant"
         assistant_message_id = active_leaf_id if extends_assistant else str(uuid.uuid4())
@@ -257,7 +269,6 @@ class TurnPlanner:
                 path_records_to_model_history([active_leaf]) if extends_assistant else []
             ),
             history=self._sessions.get_history(session_id),
-            history_suffix=[build_steering_request([steering_record])],
             turn_number=session_context.get("turn_number", 0),
             input_message=request.content,
             trace_metadata={"steering": True},

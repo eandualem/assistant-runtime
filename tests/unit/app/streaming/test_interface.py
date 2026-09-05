@@ -458,10 +458,13 @@ class TestStreamingService:
 
         record = sessions.get_context("sess-1")["steering_index"]["steering-1"]
         assert action == "promoted"
-        assert record["status"] == "promoted"
+        assert record["status"] == "pending"
+        assert record["delivered_at"] is None
 
     @pytest.mark.asyncio
-    async def test_enqueue_pending_steering_marks_pending_records_delivered(self) -> None:
+    async def test_enqueue_pending_steering_keeps_records_pending_until_model_consumption(
+        self,
+    ) -> None:
         sessions = SessionStore()
         await _seed_basic_turn(sessions)
         await sessions.queue_steering(
@@ -485,23 +488,37 @@ class TestStreamingService:
 
         run = MagicMock()
 
-        delivered = await enqueue_pending_steering(
+        enqueue_id, records = await enqueue_pending_steering(
             sessions, "sess-1", sessions.get_context("sess-1"), run=run
         )
 
-        assert [record["id"] for record in delivered] == ["steering-1", "steering-2"]
+        assert enqueue_id is run.enqueue.return_value
+        assert [record["id"] for record in records] == ["steering-1", "steering-2"]
         run.enqueue.assert_called_once()
         queued_request = run.enqueue.call_args.args[0]
         assert len(queued_request.parts) == 2
         assert "Additional user steering" in queued_request.parts[0].content
         assert run.enqueue.call_args.kwargs == {"priority": "asap"}
-        assert sessions.get_context("sess-1")["pending_steering_ids"] == []
+        assert sessions.get_context("sess-1")["pending_steering_ids"] == [
+            "steering-1",
+            "steering-2",
+        ]
 
     @pytest.mark.asyncio
     async def test_promoted_steering_updates_existing_assistant_message(self) -> None:
+        from pydantic_ai import Agent
+        from pydantic_ai.models.function import FunctionModel
+
         sessions = SessionStore()
         await _seed_basic_turn(sessions)
         service = _make_service(sessions=sessions)
+
+        async def response(messages, info):
+            yield "Hello!"
+
+        service._assistant_service.prepare_agent_context = AsyncMock(
+            return_value=_agent_context(Agent(FunctionModel(stream_function=response)))
+        )
         await service.start()
         request = _request(
             message_id="steering-1",
@@ -519,6 +536,9 @@ class TestStreamingService:
         assert final["message_id"] == "assistant-1"
         assert path[-1]["id"] == "assistant-1"
         assert path[-1]["content"].endswith("Hello!")
+        assert (
+            sessions.get_context("sess-1")["steering_index"]["steering-1"]["status"] == "delivered"
+        )
 
     @pytest.mark.asyncio
     async def test_provider_rate_limit_emits_retryable_rate_limit_error(self) -> None:

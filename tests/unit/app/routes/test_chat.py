@@ -21,6 +21,21 @@ def _create_test_app(*, streaming_service: Any = None) -> Any:
 
 
 class TestChatEndpoint:
+    @pytest.mark.parametrize("cancel_requested", [True, False], ids=["active", "idle"])
+    async def test_cancel_requests_native_session_cancellation(self, cancel_requested):
+        service = AsyncMock()
+        service.cancel_session.return_value = cancel_requested
+        app = _create_test_app(streaming_service=service)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/chat/sess-1/cancel")
+
+        assert response.status_code == 200
+        assert response.json() == {"cancel_requested": cancel_requested}
+        service.cancel_session.assert_awaited_once_with("sess-1")
+        service.run_message.assert_not_awaited()
+        service.wait_for_session.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_chat_uses_unified_request_contract(self) -> None:
         service = AsyncMock()

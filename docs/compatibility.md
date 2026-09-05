@@ -47,16 +47,16 @@ Requirements were inspected in the published
 ## Decisions supported by the cases
 
 Test names below refer to `tests/compatibility/`. The composition work in
-[#85](https://github.com/eandualem/assistant-runtime/issues/85) brings forward
-public event streaming and steering enqueue from #86: native node guards and
-middleware must wrap the model request before it executes. Cancellation
-policy and the remaining subsystem migrations are still separate work.
+[#85](https://github.com/eandualem/assistant-runtime/issues/85) adopted public
+event streaming and steering enqueue so native middleware wraps execution.
+[#86](https://github.com/eandualem/assistant-runtime/issues/86) adds native
+cancellation snapshots and application-owned finalization.
 
 | Area | Decision and public API | Executable evidence / remaining application behavior |
 |---|---|---|
 | Streaming graph traversal | **Composed** `Agent.run_stream_events()` | `test_runtime_stream_order_and_complete_tool_arguments`, `test_public_stream_has_complete_tools_and_one_trailing_result`, and native capability guard/wrapper/event-processor cases; retain event naming, segment IDs, full arguments, one final/completed envelope, and suppression of repeated final text |
-| Steering | **Composed** `RunContext.enqueue(priority="asap")` from a native node hook with the session queue | `test_runtime_delivers_mid_tool_steering_once`, `test_public_enqueue_delivers_before_next_model_request`; retain persisted delivery state, provenance, and idle-turn promotion |
-| Cancellation | **Compose** `AgentRun.cancel()` / stream `cancel()` and `RunCancelled.all_messages()` | Three cancellation cases cover model-stream teardown, tool-task draining and current runtime disconnect behavior; defining a persisted cancelled-turn outcome is application work |
+| Steering | **Composed** `RunContext.enqueue(priority="asap")` and `EnqueuedMessagesEvent` with the session queue | Same-run delivery remains once; `test_interrupted_steering_remains_pending_for_the_next_turn` verifies retry after cancellation before the model call or during a partial response. Acknowledge only after the consuming model request succeeds |
+| Cancellation | **Composed** `CancellationToken`, `RunCancelled.new_messages()` / `.usage`, and `RunCancelled.from_cancellation()` | Native cases cover partial responses and tool-task teardown; the runtime saves snapshots through the same assistant-row persistence path, including accepted host results, and completes one cancellation lifecycle |
 | Deferred host actions | **Keep composing** `ExternalToolset`, `DeferredToolRequests`, `DeferredToolResults` | Host continuation executes a backend tool once and keeps the same assistant message; batch calls resume upstream after JSON serialization, while the current host protocol rejects two pending calls |
 | Tool arguments | **Compose** `ToolCallPart.args_as_dict()` | Five serialization cases plus a real streamed host continuation cover dicts, JSON objects, malformed/non-object JSON and empty args |
 | Model-input history cleanup | **Replace overlapping repair** through the public `Agent` run pipeline; do not import cleanup helpers | `test_public_history_closes_dangling_calls_including_malformed_args`, `test_public_history_drops_orphaned_results_before_model_request`; preserve the source conversation and pending frontier semantics |
@@ -86,10 +86,22 @@ the live documentation can advance beyond the lockfile.
   dangling calls. Inspecting only its dangling-call helper understates that
   support. The tested malformed-history examples are not a guarantee that
   every provider will accept arbitrary damaged history.
-- Current runtime task cancellation clears live state and yields completed,
-  but emits no final response and does not persist partial assistant text.
-  Upstream cancellation retains a snapshot. Preserve this distinction when
-  designing #86; do not describe current disconnects as resumable turns.
+- A turn owns a fresh native cancellation token across its agent runs.
+  Cancellation retains raw native messages and usage, not reconstructed
+  display deltas; host event processors can transform that display. Partial
+  text and completed tools are saved, unresolved calls receive an interrupted
+  outcome, and accepted host results remain on the existing assistant row.
+  External task cancellation still propagates after cleanup. A timeout uses
+  upstream's attached snapshot while keeping its timeout error classification.
+- `cancel_session` also interrupts setup. Iterator closure/cancellation and
+  shutdown cancel and drain the producer; a Socket.IO disconnect leaves it
+  running. Ordinary replacement waits for cleanup, and continuations wait
+  without cancelling. These are process/session guarantees, not durable run
+  checkpoints or proof that cancelled external work had no effects.
+- Queued steering is acknowledged after a successful model response consumes
+  it. Application message segments do not retain its native `UserPromptPart`,
+  so insertion into the native queue alone is insufficient: interrupted
+  delivery stays pending and can be retried on the next turn.
 - Session reload restores message branches and queued steering. Unanswered
   host calls are marked stale because pending state is memory-only. This
   does not prove the external action failed or prevent its late execution.
@@ -105,8 +117,7 @@ the live documentation can advance beyond the lockfile.
   calls around upstream deferred-resumption behavior. Keep the real mixed
   backend/host continuation case green when changing it.
 
-No dependency upgrade is required for these supported replacements. The
-remaining cancellation, history and recovery policies are tracked by
-issues [#86](https://github.com/eandualem/assistant-runtime/issues/86),
-[#87](https://github.com/eandualem/assistant-runtime/issues/87) and
+No dependency upgrade is required for these supported replacements. Remaining
+history and recovery work is tracked by
+issues [#87](https://github.com/eandualem/assistant-runtime/issues/87) and
 [#92](https://github.com/eandualem/assistant-runtime/issues/92).

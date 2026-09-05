@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
+    EnqueuedMessagesEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
@@ -52,17 +53,50 @@ class TurnPolicy(AbstractCapability):
         self.session_id = session_id
         self.session_context = session_context
         self.pending_image_sanitize = False
+        self._enqueued_steering: dict[str, list[str]] = {}
+        self._inflight_steering: set[str] = set()
+        self._consumed_steering: set[str] = set()
+
+    async def before_node_run(self, ctx: RunContext[Any], *, node: Any) -> Any:
+        if Agent.is_user_prompt_node(node):
+            # Includes steering retained after an interrupted previous turn.
+            await self._enqueue_steering(ctx)
+        return node
+
+    async def on_event(self, ctx: RunContext[Any], *, event: Any) -> None:
+        if isinstance(event, EnqueuedMessagesEvent):
+            self._consumed_steering.update(self._enqueued_steering.pop(event.enqueue_id, []))
+
+    async def _enqueue_steering(self, ctx: RunContext[Any]) -> None:
+        enqueue_id, records = await enqueue_pending_steering(
+            self.sessions,
+            self.session_id,
+            self.session_context,
+            run=ctx,
+            exclude_ids=self._inflight_steering,
+        )
+        if enqueue_id is not None:
+            ids = [record["id"] for record in records]
+            self._enqueued_steering[enqueue_id] = ids
+            self._inflight_steering.update(ids)
 
     async def after_node_run(self, ctx: RunContext[Any], *, node: Any, result: Any) -> Any:
-        if Agent.is_model_request_node(node) and self.pending_image_sanitize:
-            # The first request after look_at_screen has consumed the image.
-            sanitize_image_tool_returns(ctx.messages)
-            self.pending_image_sanitize = False
+        if Agent.is_model_request_node(node):
+            if self.pending_image_sanitize:
+                # The first request after look_at_screen has consumed the image.
+                sanitize_image_tool_returns(ctx.messages)
+                self.pending_image_sanitize = False
+            if self._consumed_steering and Agent.is_call_tools_node(result):
+                # Native enqueue insertion alone does not prove a model request
+                # completed. Keep records pending if that request is interrupted:
+                # application message segments do not persist steering prompts.
+                await self.sessions.mark_steering_delivered(
+                    self.session_id, list(self._consumed_steering)
+                )
+                self._consumed_steering.clear()
         elif Agent.is_call_tools_node(node):
             if Agent.is_model_request_node(result):
-                await enqueue_pending_steering(
-                    self.sessions, self.session_id, self.session_context, run=ctx
-                )
+                await self._enqueue_steering(ctx)
             if any(tc.tool_name == "look_at_screen" for tc in node.model_response.tool_calls):
                 self.pending_image_sanitize = True
         return result
@@ -155,14 +189,17 @@ async def enqueue_pending_steering(
     session_context: dict[str, Any],
     *,
     run: Any,
-) -> list[SteeringRecord]:
-    """Deliver queued steering through the native pending-message queue."""
+    exclude_ids: set[str] | None = None,
+) -> tuple[str | None, list[SteeringRecord]]:
+    """Enqueue pending records; acknowledge only after their model request succeeds."""
     if not session_context.get("pending_steering_ids"):
-        return []
-    delivered = await sessions.deliver_pending_steering(session_id)
-    if delivered:
-        run.enqueue(build_steering_request(delivered), priority="asap")
-    return delivered
+        return None, []
+    pending = await sessions.list_pending_steering(session_id)
+    records = [record for record in pending if record["id"] not in (exclude_ids or set())]
+    if not records:
+        return None, []
+    enqueue_id = run.enqueue(build_steering_request(records), priority="asap")
+    return enqueue_id, records
 
 
 def _track(coordinator: EventCoordinator, event: dict[str, Any]) -> dict[str, Any]:
