@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from assistant_runtime.app.routes.agui import router as agui_router
 from assistant_runtime.app.routes.artifacts import router as artifacts_router
 from assistant_runtime.app.routes.chat import router as chat_router
 from assistant_runtime.app.routes.debug import router as debug_router
@@ -15,6 +16,7 @@ from assistant_runtime.app.routes.sessions import router as sessions_router
 from assistant_runtime.app.routes.settings import router as settings_router
 
 router = APIRouter()
+router.include_router(agui_router)
 router.include_router(artifacts_router)
 router.include_router(chat_router)
 router.include_router(debug_router)

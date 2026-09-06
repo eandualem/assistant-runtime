@@ -91,7 +91,9 @@ later turns, and media is not stored in sessions.
 
 ## Actions
 
-Two ways to declare what the host can do; both use the same protocol:
+Two ways to declare what the host can do; both use the same protocol
+(an AG-UI client's `tools` arrive as request-declared actions, see
+[api](api.md#ag-ui-post-apiagui)):
 
 - **Configured host tools** (`TOOLS__HOST_TOOLS`), available every turn.
 - **Request-declared actions** (`host_context.actions`), available for

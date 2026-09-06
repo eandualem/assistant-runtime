@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
@@ -202,12 +202,19 @@ class StreamingService:
         return "promoted"
 
     async def stream_message(
-        self, request: AssistantRequest, *, principal: Principal | None = None
+        self,
+        request: AssistantRequest,
+        *,
+        principal: Principal | None = None,
+        native_sink: Callable[[Any], None] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Run one turn and yield events through ``agent_status: completed``.
 
         ``principal`` owns a session the request creates and must be allowed
         on one that exists; without one the caller is the local operator.
+        ``native_sink`` receives every native Pydantic AI event of the turn as
+        it happens, so a protocol adapter can encode the same run without a
+        second execution path.
 
         A producer owns execution and persistence so a slow or disappearing
         consumer cannot interrupt finalization. Closing/cancelling this
@@ -224,7 +231,7 @@ class StreamingService:
             await previous.done.wait()
             if not self._started:
                 raise StreamingError("Streaming service not started")
-        turn = TurnControl()
+        turn = TurnControl(native_sink=native_sink)
         self._active_turns[request.session_id] = turn
         turn.task = asyncio.create_task(
             self._produce_turn(request, turn, principal or LOCAL_PRINCIPAL)

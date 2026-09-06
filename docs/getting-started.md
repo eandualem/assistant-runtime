@@ -117,7 +117,15 @@ mode; database-backed endpoints return 503. This is also the local
 persistent option: what survives a restart, and how a host action waiting
 for its result is recovered, is in [persistence](persistence.md).
 
-## 7. Optional: describe your host
+## 7. Optional: an AG-UI frontend
+
+Install the `ag-ui` extra (`uv sync --extra ag-ui`, or
+`pip install "assistant-runtime[ag-ui]"`) and point an AG-UI client at
+`POST /api/agui`; `examples/agui/index.html` is a dependency-free page that
+does it with `fetch`. The mapping to sessions and host actions is in
+[api](api.md#ag-ui-post-apiagui).
+
+## 8. Optional: describe your host
 
 If you are putting the runtime behind your own application, send
 `host_context` with your messages and, if the application can perform

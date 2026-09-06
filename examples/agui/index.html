@@ -1,0 +1,124 @@
+<!doctype html>
+<!--
+  Minimal AG-UI client for the runtime's POST /api/agui endpoint.
+
+  It speaks the AG-UI protocol directly with web APIs only: it posts a
+  RunAgentInput and reads the Server-Sent Events the runtime returns. A frontend
+  built on @ag-ui/client (HttpAgent pointed at the same URL) or CopilotKit
+  speaks the same protocol; this page keeps the mechanics visible.
+
+  Run the server (uv run assistant-runtime serve, with the ag-ui extra installed)
+  and open this file in a browser. ACCESS__CORS_ORIGINS must allow the page's
+  origin when it is not served from the runtime itself.
+-->
+<meta charset="utf-8" />
+<title>AG-UI example</title>
+<style>
+  body { font: 14px system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; }
+  #log { white-space: pre-wrap; border: 1px solid #ccc; padding: 1rem; min-height: 8rem; }
+  .tool { color: #555; }
+</style>
+<form id="form">
+  <input id="text" size="60" value="Highlight item 42" autofocus />
+  <button>Send</button>
+</form>
+<div id="log"></div>
+<script>
+  const endpoint = "http://127.0.0.1:7100/api/agui";
+  const threadId = crypto.randomUUID();
+  // The transcript the protocol expects the client to resend; the runtime keeps
+  // its own copy of the conversation and does not replay this into the model.
+  const messages = [];
+  // One frontend tool: the runtime calls it, this page performs it and answers.
+  const tools = [
+    {
+      name: "highlight_item",
+      description: "Highlight an item in the page.",
+      parameters: {
+        type: "object",
+        properties: { item: { type: "string" } },
+        required: ["item"],
+      },
+    },
+  ];
+  const log = document.getElementById("log");
+
+  async function run() {
+    const body = {
+      threadId,
+      runId: crypto.randomUUID(),
+      state: {},
+      messages,
+      tools,
+      context: [{ description: "page", value: "inventory" }],
+      forwardedProps: {},
+    };
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      log.textContent += `\n[${response.status}] ${await response.text()}\n`;
+      return;
+    }
+    let assistant = { id: crypto.randomUUID(), role: "assistant", content: "", toolCalls: [] };
+    let pendingCall = null;
+    for await (const event of sse(response.body)) {
+      switch (event.type) {
+        case "TEXT_MESSAGE_CONTENT":
+          assistant.content += event.delta;
+          log.textContent += event.delta;
+          break;
+        case "TOOL_CALL_START":
+          pendingCall = { id: event.toolCallId, type: "function",
+                          function: { name: event.toolCallName, arguments: "" } };
+          break;
+        case "TOOL_CALL_ARGS":
+          pendingCall.function.arguments += event.delta;
+          break;
+        case "TOOL_CALL_END":
+          assistant.toolCalls.push(pendingCall);
+          break;
+        case "RUN_ERROR":
+          log.textContent += `\n[error] ${event.message}\n`;
+          break;
+      }
+    }
+    messages.push(assistant);
+    // Perform the frontend tool the model asked for, then continue the run.
+    for (const call of assistant.toolCalls) {
+      const args = JSON.parse(call.function.arguments || "{}");
+      log.textContent += `\n[tool] ${call.function.name}(${JSON.stringify(args)})\n`;
+      messages.push({ id: crypto.randomUUID(), role: "tool", toolCallId: call.id,
+                      content: JSON.stringify({ highlighted: args.item }) });
+      await run();
+    }
+  }
+
+  async function* sse(stream) {
+    const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buffer += value;
+      let end;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        for (const line of block.split("\n")) {
+          if (line.startsWith("data: ")) yield JSON.parse(line.slice(6));
+        }
+      }
+    }
+  }
+
+  document.getElementById("form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = document.getElementById("text").value;
+    messages.push({ id: crypto.randomUUID(), role: "user", content: text });
+    log.textContent += `\n> ${text}\n`;
+    await run();
+  });
+</script>

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +22,9 @@ class TurnControl:
     setup_task: asyncio.Future[Any] | None = None
     error: BaseException | None = None
     accepting_cancel: bool = True
+    # Receives every native Pydantic AI event of the turn's runs, before the
+    # application mapping; protocol adapters build their own encoding from it.
+    native_sink: Callable[[Any], None] | None = None
 
     def cancel(self) -> bool:
         """Request native cancellation without interrupting persistence or delivery."""

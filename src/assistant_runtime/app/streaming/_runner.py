@@ -584,6 +584,7 @@ class TurnRunner:
                                 emit_debug=self._config.emit_debug_events,
                                 suppress_tool_call_ids=plan.suppress_tool_call_ids,
                                 host_tool_names=_host_tool_names(ctx),
+                                native_sink=control.native_sink,
                             ):
                                 yield event
                     finally:

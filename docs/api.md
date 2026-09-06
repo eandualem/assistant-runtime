@@ -69,6 +69,36 @@ Queued steering can be consumed together. Scheduling a steering request
 already delivered by another turn returns a terminal `session_error`
 without starting another model run.
 
+## AG-UI (`POST /api/agui`)
+
+The same turn pipeline behind the [AG-UI](https://docs.ag-ui.com) protocol,
+for frontends built on `@ag-ui/client`, CopilotKit or any AG-UI client. It
+needs the `ag-ui` extra (`pip install "assistant-runtime[ag-ui]"`); without
+it the route answers `501`. The body is an AG-UI `RunAgentInput`, the
+response is Server-Sent Events encoded by Pydantic AI's `AGUIEventStream`
+(`RUN_STARTED`, `TEXT_MESSAGE_*`, `THINKING_*`, `TOOL_CALL_*`,
+`TOOL_CALL_RESULT`, `RUN_FINISHED` or `RUN_ERROR`).
+
+| AG-UI | Runtime |
+|---|---|
+| `threadId` | the session id; ownership and administration apply as for every other route |
+| last message is a `user` message | a new message appended to the session's active leaf; its `id` is the message id |
+| last message is a `tool` message | the continuation of the session's pending host action (`toolCallId` = its `call_id`, `content` = the result, JSON when it parses); `error` set makes it `tool_outcome: "failed"` |
+| earlier messages | ignored: the server-side tree is the conversation; the resent transcript is not replayed into the model |
+| `tools` | request-declared host actions (`host_context.actions`) for the turn; the model's call ends the run with `TOOL_CALL_*` events and the client answers with a `tool` message in its next run |
+| `context` | `host_context.background` (`description` → `value`) |
+| `state` | the host context itself when it carries `version: 1`; otherwise `host_context.extensions.state` |
+| `forwardedProps.config` | the per-request tunable overrides (same fields as `config` in the message body) |
+| `image` and `document` user content (and legacy `binary`) | reference attachments for the model (data URIs or URLs); `audio` and `video` content is not mapped |
+| client disconnect | cancels the turn (partial work is saved, as for any consumer that goes away) |
+| a terminal runtime error (session error, provider error, usage limit) | `RUN_ERROR` with the message; a cancelled turn ends with `RUN_FINISHED` because AG-UI has no cancelled outcome |
+
+Not supported over AG-UI: steering, branching (`parent_id`), `resume[]`
+approvals, runtime-emitted `STATE_SNAPSHOT`/`STATE_DELTA`/`MESSAGES_SNAPSHOT`,
+and Socket.IO-only fields. Session routes (`/api/sessions/...`) work on the
+same session, so an AG-UI client can read the tree, the pending action and
+usage. A minimal browser example is in `examples/agui/index.html`.
+
 ## The message body
 
 Sent to `POST /api/chat` and as the payload of `assistant:message`.
