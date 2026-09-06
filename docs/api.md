@@ -109,7 +109,7 @@ Keys may be camelCase; they are normalised.
 | `id` | string | client-generated message id |
 | `session_id` | string | created on first use |
 | `content` | string | the text; may be empty on a continuation |
-| `parent_id` | string, optional | branch from this message instead of the active leaf |
+| `parent_id` | string, optional | the message to branch from; omitted, the message continues from the session's active leaf (the first message is the root) |
 | `message_type` | `standard` (default) or `steering` | see concepts |
 | `attachments` | list, optional | images, documents or text for the model, or a `screenshot` for `look_at_screen`; shape in [the host contract](host-contract.md) |
 | `images` | list of data URLs, optional | legacy: screenshots; a top-level `screenshot` is folded in |
