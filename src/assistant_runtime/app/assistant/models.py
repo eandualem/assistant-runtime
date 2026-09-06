@@ -191,6 +191,8 @@ class AssistantRequest(BaseModel):
     @model_validator(mode="after")
     def validate_message_shape(self) -> AssistantRequest:
         """Enforce distinct wire contracts for standard messages vs steering."""
+        if self.tool_outcome != "success" and self.tool_call_id is None:
+            raise ValueError("tool_outcome requires tool_call_id (a continuation)")
         if self.is_steering:
             if self.parent_id is not None:
                 raise ValueError("Steering requests must not include parent_id")
@@ -198,8 +200,6 @@ class AssistantRequest(BaseModel):
                 raise ValueError("Steering requests must not include tool continuation fields")
             return self
 
-        if self.tool_outcome != "success" and self.tool_call_id is None:
-            raise ValueError("tool_outcome requires tool_call_id (a continuation)")
         return self
 
     @model_validator(mode="before")

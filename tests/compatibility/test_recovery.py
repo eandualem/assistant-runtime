@@ -7,6 +7,7 @@ same rows. Execution, planning, the runner and serialization are real.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,6 +30,8 @@ class FakePersistence:
     messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     steering: dict[str, dict[str, Any]] = field(default_factory=dict)
     state_saves: list[dict[str, Any] | None] = field(default_factory=list)
+    ops: list[tuple[str, Any]] = field(default_factory=list)
+    """Every write, in order, for assertions about crash windows."""
 
     async def ensure_session(self, session_id, title, owner_id=None):
         self.sessions.setdefault(
@@ -46,9 +49,11 @@ class FakePersistence:
         self.sessions[session_id]["owner_id"] = owner_id
 
     async def create_message(self, record):
+        self.ops.append(("create_message", record["id"]))
         self.messages[record["id"]] = copy.deepcopy(record)
 
     async def update_message(self, message_id, *, content=None, segments=None, usage=None):
+        self.ops.append(("update_message", message_id))
         row = self.messages[message_id]
         if content is not None:
             row["content"] = content
@@ -81,6 +86,7 @@ class FakePersistence:
             pending_action=pending_action_from_context(ctx),
         )
         self.state_saves.append(row["pending_action"])
+        self.ops.append(("save_state", row["pending_action"]))
 
     async def session_for_telegram_chat(self, chat_id):
         return None
@@ -211,6 +217,25 @@ async def test_duplicate_continuation_cannot_reapply_a_recorded_result(runtime, 
     assert stored_tool(persisted, first["message_id"], "host-1")["output"] == {"selected": True}
 
 
+async def test_concurrent_duplicate_continuations_are_accepted_once(runtime, script, persisted):
+    """Turns on a session are serialised, so the second duplicate plans after the first persisted."""
+    first = await start_pending_action(runtime, script, persisted)
+
+    async def collect(req):
+        return [e async for e in runtime.streaming.stream_message(req)]
+
+    results = await asyncio.gather(
+        collect(continuation(id="c-1", tool_result={"selected": 1})),
+        collect(continuation(id="c-2", tool_result={"selected": 2})),
+    )
+    finals = [assert_terminal(events, error=bool(i)) for i, events in enumerate(results)]
+    assert finals[0]["message_id"] == first["message_id"]
+    assert finals[1]["error_type"] == "session_error"
+    assert any("already recorded" in e.get("message", "") for e in results[1])
+    assert len(script.requests) == 2  # the host call, then the one accepted continuation
+    assert stored_tool(persisted, first["message_id"], "host-1")["output"] == {"selected": 1}
+
+
 async def test_duplicate_continuation_is_rejected_in_process_without_persistence(runtime, script):
     script.steps = [[calls(("select_item", '{"item":"sample"}', "host-1"))], ["Selected."]]
     assert_terminal([e async for e in runtime.streaming.stream_message(request())])
@@ -301,6 +326,14 @@ async def test_new_message_before_the_continuation_records_the_action_as_superse
     assert stored["outcome"] == "interrupted"
     assert stored["status"] == "superseded"
     assert persisted.sessions["compat"]["pending_action"] is None
+    # Crash window: the action is resolved and the row cleared before the new
+    # user message exists, so a restart in between cannot revive it next to
+    # the message that superseded it.
+    ops = persisted.ops
+    assert ops.index(("update_message", first["message_id"])) < ops.index(
+        ("create_message", "user-2")
+    )
+    assert ops.index(("save_state", None)) < ops.index(("create_message", "user-2"))
     events = [e async for e in runtime.streaming.stream_message(continuation())]
     assert_terminal(events, error=True)
     assert any("already recorded (status: superseded)" in e.get("message", "") for e in events)

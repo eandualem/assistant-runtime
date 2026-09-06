@@ -15,8 +15,8 @@ tools.
 | Traces (debug) | rows | not stored |
 
 The session store is a write-through cache: every change is written to the
-row before the in-memory context is updated, so a row is never ahead of
-memory and memory is never durably ahead of a row. A session that is not in
+row before the in-memory context is updated. The row may be ahead while a
+write completes, but memory is never durably ahead of the row. A session that is not in
 the cache is loaded from its rows on first use. Sessions expire after
 `ASSISTANT__SESSION_TTL_HOURS`; expiry deletes the session with its messages,
 steering and pending action.
@@ -83,7 +83,9 @@ action had no effect. If the host knows, it says so with the continuation
   the same process or after a restart.
 - **Retries.** The runtime never re-issues a host action: the model asked
   once, the host performs it once. A host that retries on its own side
-  must make the action idempotent or report `tool_outcome: "failed"`. If
+  must make the action idempotent or reconcile an unknown first attempt
+  itself; `tool_outcome: "failed"` is for actions the host knows did not
+  occur. If
   the continuation is accepted and the model step after it fails, the
   result stays recorded and the client continues with a new message
   rather than resending the continuation.
@@ -99,11 +101,14 @@ message cancels the live turn and waits for its cleanup, a continuation
 waits without cancelling.
 
 The in-memory context is authoritative for a session while its process
-runs, and it is refreshed from the rows only on a cache miss. Two processes
-serving the same session at the same time would each cache their own copy;
-the runtime does not coordinate them. To run several processes against one
-database, route each session to one process (sticky sessions by
-`session_id`). A process that restarts, or a session that moves to another
+runs, and it is refreshed from the rows only on a cache miss. Within a
+process, turns on one session are serialised: a continuation is planned only
+after the previous turn has finished and persisted, so two continuations for
+the same call arriving together are accepted once and rejected once. Two
+processes serving the same session at the same time would each cache their
+own copy; the runtime does not coordinate them, and each could accept the
+same continuation. To run several processes against one database, route
+each session to one process (sticky sessions by `session_id`). A process that restarts, or a session that moves to another
 process after the first stopped, is the supported recovery path and is what
 `tests/compatibility/test_recovery.py` exercises: a cold cache over the same
 rows accepts the pending continuation, rejects duplicates and resolves
@@ -156,6 +161,8 @@ target, see [compatibility](compatibility.md)).
 
 Guarantees, in one place: sessions, messages, steering and the pending host
 action are durable with Postgres; a continuation is accepted after a
-restart; a recorded result is never applied twice; unanswered calls are
+restart when the matching `pending_action` row was committed, and the
+unanswered call is resolved as `unknown` otherwise; a recorded result is
+never applied twice; unanswered calls are
 distinguishable as `cancelled`, `superseded` or `unknown`; external effects
 are never assumed, never undone and never retried by the runtime.

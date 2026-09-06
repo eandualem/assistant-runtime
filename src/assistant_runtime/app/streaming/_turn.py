@@ -133,9 +133,14 @@ class TurnPlanner:
         existing = await self._sessions.get_context_if_exists_async(session_id)
         if existing is not None:
             self._authorize(existing, principal, session_id)
+            # Resolve a pending host action as superseded *before* the new user
+            # message is written: a crash in between must not leave a restored
+            # pending action next to the message that superseded it.
+            await clear_stale_pending_call(self._sessions, session_id, existing)
         session_context, _user_record = await self._sessions.register_user_message(
             request, owner_id=principal.id
         )
+        # Registration may have hydrated a stored context that this call did not see.
         await clear_stale_pending_call(self._sessions, session_id, session_context)
         assistant_message_id = str(uuid.uuid4())
         session_context["current_assistant_message_id"] = assistant_message_id

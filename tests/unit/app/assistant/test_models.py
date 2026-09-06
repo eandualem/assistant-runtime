@@ -158,9 +158,16 @@ class TestAssistantRequest:
                 tool_result={"ok": True},
             )
 
-    def test_tool_outcome_requires_a_continuation(self) -> None:
+    @pytest.mark.parametrize("message_type", ["standard", "steering"])
+    def test_tool_outcome_requires_a_continuation(self, message_type) -> None:
         with pytest.raises(ValueError, match="tool_outcome requires tool_call_id"):
-            AssistantRequest(id="user-1", session_id="sess-1", content="", tool_outcome="failed")
+            AssistantRequest(
+                id="user-1",
+                session_id="sess-1",
+                content="",
+                message_type=message_type,
+                tool_outcome="failed",
+            )
 
     def test_failed_tool_outcome_on_a_continuation(self) -> None:
         request = AssistantRequest.model_validate(
