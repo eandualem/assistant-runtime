@@ -37,7 +37,8 @@ uv run assistant-runtime chat
 
 `chat` runs the runtime in-process and streams the reply to the terminal.
 `uv run assistant-runtime serve` runs the HTTP and Socket.IO server on
-`127.0.0.1:7100`; `doctor` reports what is configured. Postgres is
+`127.0.0.1:7100`, replacing a previous runtime left on that port; `doctor`
+reports what is configured. Postgres is
 optional: without it sessions and prompt-artifact versions live in memory.
 With it (`make db-up && make db-upgrade`) sessions, artifact versions,
 settings and a host action waiting for its result persist across restarts

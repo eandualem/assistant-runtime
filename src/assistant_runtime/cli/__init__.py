@@ -1,7 +1,7 @@
 """``assistant-runtime`` command-line interface.
 
 assistant-runtime chat [--model M]    talk to the assistant in the terminal (no server, no database)
-assistant-runtime serve [--port P]    run the HTTP + Socket.IO server
+assistant-runtime serve [--port P]    run the HTTP + Socket.IO server (replaces a previous one on that port)
 assistant-runtime doctor              check provider keys, model ids, database, optional extras
 assistant-runtime docs [page]         the documentation shipped with this install
 assistant-runtime help [page]         the same pages (alias of docs)
@@ -55,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port (default: {DEFAULT_PORT})")
     p.add_argument("--reload", action="store_true", help="restart on source changes")
+    p.add_argument(
+        "--no-replace",
+        action="store_true",
+        help="fail if the port is busy instead of replacing a previous assistant-runtime there",
+    )
     p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("doctor", help="check the environment and configuration")

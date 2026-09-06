@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from assistant_runtime.cli import build_parser, main
+from assistant_runtime.cli import build_parser, main, serve
 from assistant_runtime.cli.chat import (
     MAX_HOST_TOOL_ROUNDS,
     NO_HOST_RESULT,
@@ -37,6 +37,150 @@ class TestParser:
         args = build_parser().parse_args(["serve"])
         assert args.host == "127.0.0.1"
         assert args.port == 7100
+        assert not args.no_replace
+
+
+class TestServeReplace:
+    @pytest.fixture
+    def fake_port(self, monkeypatch):
+        state = {"busy": True, "runtime": True, "pids": [4242], "killed": []}
+
+        def port_in_use(host, port):
+            return state["busy"]
+
+        def kill(pid, sig):
+            state["killed"].append((pid, int(sig)))
+            state["busy"] = False  # the previous instance exits on the first signal
+
+        monkeypatch.setattr(serve, "port_in_use", port_in_use)
+        monkeypatch.setattr(serve, "is_assistant_runtime", lambda h, p: state["runtime"])
+        monkeypatch.setattr(serve, "listener_pids", lambda h, p: state["pids"])
+        monkeypatch.setattr(serve.os, "kill", kill)
+        monkeypatch.setattr(serve.time, "sleep", lambda s: None)
+        return state
+
+    def test_free_port_needs_nothing(self, fake_port):
+        fake_port["busy"] = False
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=lambda m: None) is True
+        assert fake_port["killed"] == []
+
+    def test_previous_runtime_is_stopped_and_replaced(self, fake_port):
+        messages = []
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is True
+        assert fake_port["killed"] == [(4242, int(serve.signal.SIGTERM))]
+        assert "replaced the previous assistant-runtime" in messages[0]
+
+    def test_other_programs_are_left_alone(self, fake_port):
+        fake_port["runtime"] = False
+        messages = []
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is False
+        assert fake_port["killed"] == []
+        assert "not an assistant-runtime" in messages[0]
+
+    def test_unknown_pid_is_reported(self, fake_port):
+        fake_port["pids"] = []
+        messages = []
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is False
+        assert "could not be found" in messages[0]
+
+    def test_refused_signal_is_a_normal_failure(self, fake_port, monkeypatch):
+        def refuse(pid, sig):
+            raise PermissionError
+
+        monkeypatch.setattr(serve.os, "kill", refuse)
+        messages = []
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is False
+        assert "not allowed to stop" in messages[0]
+
+    @pytest.mark.parametrize(
+        ("host", "address"),
+        [
+            ("127.0.0.1", "-iTCP@127.0.0.1:7100"),
+            ("::1", "-iTCP@[::1]:7100"),
+            ("0.0.0.0", "-iTCP:7100"),
+            ("::", "-iTCP:7100"),
+        ],
+    )
+    def test_listener_lookup_is_scoped_to_the_bound_address(self, monkeypatch, host, address):
+        commands = []
+
+        class Result:
+            stdout = "4242\n"
+
+        monkeypatch.setattr(serve.shutil, "which", lambda name: "/usr/sbin/lsof")
+        monkeypatch.setattr(
+            serve.subprocess, "run", lambda cmd, **kw: commands.append(cmd) or Result()
+        )
+        assert serve.listener_pids(host, 7100) == [4242]
+        assert commands[0] == ["lsof", "-t", address, "-sTCP:LISTEN"]
+
+    def test_cmd_serve_skips_the_takeover_with_no_replace(self, monkeypatch):
+        import uvicorn
+
+        calls = []
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **k: calls.append(k))
+        monkeypatch.setattr(
+            serve, "replace_previous_instance", lambda *a, **k: pytest.fail("not expected")
+        )
+        args = build_parser().parse_args(["serve", "--no-replace", "--port", "7105"])
+        assert serve.cmd_serve(args) == 0
+        assert calls[0]["port"] == 7105
+
+    def test_cmd_serve_fails_when_the_port_cannot_be_freed(self, monkeypatch):
+        import uvicorn
+
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("must not start"))
+        monkeypatch.setattr(serve, "replace_previous_instance", lambda *a, **k: False)
+        assert serve.cmd_serve(build_parser().parse_args(["serve"])) == 1
+
+    def test_health_probe_recognises_the_runtime(self, monkeypatch):
+        class Response:
+            def __init__(self, body):
+                self._body = body
+
+            def read(self, limit=None):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        urls = []
+
+        def fake_urlopen(url, timeout):
+            urls.append(url)
+            return Response(b'{"healthy": false}')
+
+        monkeypatch.setattr(serve, "urlopen", fake_urlopen)
+        assert serve.is_assistant_runtime("127.0.0.1", 7100) is True
+        assert serve.is_assistant_runtime("::1", 7100) is True
+        assert urls == ["http://127.0.0.1:7100/health", "http://[::1]:7100/health"]
+        monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Response(b"<html>"))
+        assert serve.is_assistant_runtime("127.0.0.1", 7100) is False
+
+    def test_health_probe_has_a_total_deadline(self, monkeypatch):
+        import threading
+
+        release = threading.Event()
+
+        class Trickle:
+            def read(self, limit=None):
+                release.wait(5)  # a server that never finishes its body
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Trickle())
+        try:
+            assert serve.is_assistant_runtime("127.0.0.1", 7100, deadline=0.2) is False
+        finally:
+            release.set()
 
 
 class TestTurnRenderer:
