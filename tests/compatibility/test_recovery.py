@@ -355,6 +355,18 @@ async def test_parentless_message_during_a_live_turn_chains_after_it(runtime, sc
     after the cancelled turn has persisted, so an omitted parent_id resolves to that
     turn's assistant row rather than producing a sibling of the first message."""
     script.steps = [["First answer."], ["Second answer."]]
+    release = asyncio.Event()
+    original_stream = script.stream
+
+    async def holding_stream(messages, info):
+        # The first turn streams its text, then stays live until released, so the
+        # second request provably arrives while a turn is active.
+        async for frame in original_stream(messages, info):
+            yield frame
+            if not release.is_set():
+                await release.wait()
+
+    script.stream = holding_stream
     first_events: list[dict] = []
     streamed = asyncio.Event()
 
@@ -364,15 +376,26 @@ async def test_parentless_message_during_a_live_turn_chains_after_it(runtime, sc
             if event["type"] == "text_delta":
                 streamed.set()
 
+    async def collect_second():
+        return [
+            e
+            async for e in runtime.streaming.stream_message(
+                request(id="user-2", content="Two", parent_id=None)
+            )
+        ]
+
     first = asyncio.create_task(drain_first())
-    await asyncio.wait_for(streamed.wait(), 5)
-    second_events = [
-        e
-        async for e in runtime.streaming.stream_message(
-            request(id="user-2", content="Two", parent_id=None)
-        )
-    ]
-    await first
+    try:
+        await asyncio.wait_for(streamed.wait(), 5)
+        assert "compat" in runtime.streaming._active_turns  # the first turn is live
+        second = asyncio.create_task(collect_second())
+        await asyncio.sleep(0)
+        release.set()
+        second_events = await asyncio.wait_for(second, 5)
+        await asyncio.wait_for(first, 5)
+    finally:
+        release.set()
+        script.stream = original_stream
 
     assert second_events[-1]["status"] == "completed"
     first_final = next(e for e in first_events if e["type"] == "final_response")
