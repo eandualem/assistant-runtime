@@ -348,3 +348,39 @@ async def test_repair_resolves_the_pending_action_as_unknown_on_the_row(runtime,
     assert report["repaired_tools"] == [first["message_id"]]
     assert persisted.sessions["compat"]["pending_action"] is None
     assert stored_tool(persisted, first["message_id"], "host-1")["status"] == "unknown"
+
+
+async def test_parentless_message_during_a_live_turn_chains_after_it(runtime, script):
+    """Ordinary messages are serialised per session: the replacement is planned only
+    after the cancelled turn has persisted, so an omitted parent_id resolves to that
+    turn's assistant row rather than producing a sibling of the first message."""
+    script.steps = [["First answer."], ["Second answer."]]
+    first_events: list[dict] = []
+    streamed = asyncio.Event()
+
+    async def drain_first():
+        async for event in runtime.streaming.stream_message(request(id="user-1", content="One")):
+            first_events.append(event)
+            if event["type"] == "text_delta":
+                streamed.set()
+
+    first = asyncio.create_task(drain_first())
+    await asyncio.wait_for(streamed.wait(), 5)
+    second_events = [
+        e
+        async for e in runtime.streaming.stream_message(
+            request(id="user-2", content="Two", parent_id=None)
+        )
+    ]
+    await first
+
+    assert second_events[-1]["status"] == "completed"
+    first_final = next(e for e in first_events if e["type"] == "final_response")
+    ctx = runtime.sessions.get_context("compat")
+    assert ctx["children_by_parent"].get(None) == ["user-1"]  # one root
+    assert ctx["message_index"]["user-2"]["parent_id"] == first_final["message_id"]
+    assert [m["id"] for m in ctx["cached_path"]][:3] == [
+        "user-1",
+        first_final["message_id"],
+        "user-2",
+    ]
