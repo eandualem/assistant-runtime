@@ -8,6 +8,21 @@ version = "0.1.0"
 description = "Assistant backend runtime built on FastAPI, Socket.IO and pydantic-ai, with a tool system that plugs into any work environment"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+readme = "README.md"
+keywords = ["assistant", "pydantic-ai", "fastapi", "socket.io", "ag-ui", "agents", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 
 dependencies = [
     "fastapi>=0.115.0",
@@ -26,6 +41,12 @@ dependencies = [
     "alembic>=1.13",
     "asyncpg>=0.29",
 ]
+
+[project.urls]
+Homepage = "https://github.com/eandualem/assistant-runtime"
+Repository = "https://github.com/eandualem/assistant-runtime"
+Issues = "https://github.com/eandualem/assistant-runtime/issues"
+Documentation = "https://github.com/eandualem/assistant-runtime/tree/main/docs"
 
 [project.scripts]
 assistant-runtime = "assistant_runtime.cli:main"
