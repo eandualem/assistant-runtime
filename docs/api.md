@@ -186,9 +186,12 @@ with the partial message saved. See [concepts](concepts.md#usage-and-budgets).
 ### Stored messages
 
 `GET /api/sessions/{id}/messages` returns the path from the root to the
-active leaf (or to `leaf_id`), merged with the steering that was delivered
-along it, ordered by time. A session exists once its first message is
-stored, so the route is `404` before that. Three row shapes:
+active leaf (or to `leaf_id`), merged by time with the session's delivered
+and promoted steering, ordered by time. Steering is recorded per session,
+not per message, so when `leaf_id` selects another branch the same steering
+rows appear next to that path too. The route is `404` for a session the
+runtime does not know; a session that was joined but has no messages yet
+returns `[]`. Three row shapes:
 
 | `role` | Fields |
 |---|---|
