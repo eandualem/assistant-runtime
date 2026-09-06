@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from assistant_runtime.cli import build_parser, main
+from assistant_runtime.cli import build_parser, main, serve
 from assistant_runtime.cli.chat import (
     MAX_HOST_TOOL_ROUNDS,
     NO_HOST_RESULT,
@@ -37,6 +37,89 @@ class TestParser:
         args = build_parser().parse_args(["serve"])
         assert args.host == "127.0.0.1"
         assert args.port == 7100
+        assert not args.no_replace
+
+
+class TestServeReplace:
+    @pytest.fixture
+    def fake_port(self, monkeypatch):
+        state = {"busy": True, "runtime": True, "pids": [4242], "killed": []}
+
+        def port_in_use(host, port):
+            return state["busy"]
+
+        def kill(pid, sig):
+            state["killed"].append((pid, int(sig)))
+            state["busy"] = False  # the previous instance exits on the first signal
+
+        monkeypatch.setattr(serve, "port_in_use", port_in_use)
+        monkeypatch.setattr(serve, "is_assistant_runtime", lambda h, p: state["runtime"])
+        monkeypatch.setattr(serve, "listener_pids", lambda p: state["pids"])
+        monkeypatch.setattr(serve.os, "kill", kill)
+        monkeypatch.setattr(serve.time, "sleep", lambda s: None)
+        return state
+
+    def test_free_port_needs_nothing(self, fake_port):
+        fake_port["busy"] = False
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=lambda m: None) is True
+        assert fake_port["killed"] == []
+
+    def test_previous_runtime_is_stopped_and_replaced(self, fake_port):
+        messages = []
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is True
+        assert fake_port["killed"] == [(4242, int(serve.signal.SIGTERM))]
+        assert "replaced the previous assistant-runtime" in messages[0]
+
+    def test_other_programs_are_left_alone(self, fake_port):
+        fake_port["runtime"] = False
+        messages = []
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is False
+        assert fake_port["killed"] == []
+        assert "not an assistant-runtime" in messages[0]
+
+    def test_unknown_pid_is_reported(self, fake_port):
+        fake_port["pids"] = []
+        messages = []
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is False
+        assert "could not be found" in messages[0]
+
+    def test_cmd_serve_skips_the_takeover_with_no_replace(self, monkeypatch):
+        import uvicorn
+
+        calls = []
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **k: calls.append(k))
+        monkeypatch.setattr(
+            serve, "replace_previous_instance", lambda *a, **k: pytest.fail("not expected")
+        )
+        args = build_parser().parse_args(["serve", "--no-replace", "--port", "7105"])
+        assert serve.cmd_serve(args) == 0
+        assert calls[0]["port"] == 7105
+
+    def test_cmd_serve_fails_when_the_port_cannot_be_freed(self, monkeypatch):
+        import uvicorn
+
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **k: pytest.fail("must not start"))
+        monkeypatch.setattr(serve, "replace_previous_instance", lambda *a, **k: False)
+        assert serve.cmd_serve(build_parser().parse_args(["serve"])) == 1
+
+    def test_health_probe_recognises_the_runtime(self, monkeypatch):
+        class Response:
+            def __init__(self, body):
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Response(b'{"healthy": false}'))
+        assert serve.is_assistant_runtime("127.0.0.1", 7100) is True
+        monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Response(b"<html>"))
+        assert serve.is_assistant_runtime("127.0.0.1", 7100) is False
 
 
 class TestTurnRenderer:
