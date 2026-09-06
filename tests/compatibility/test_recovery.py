@@ -527,3 +527,42 @@ async def test_failed_turn_resolves_unanswered_calls_so_the_next_message_works(
     ]
     assert_terminal(events)
     assert "".join(e["content"] for e in events if e["type"] == "text_delta") == "Recovered."
+
+
+async def test_a_long_batch_is_handed_over_in_model_order(runtime, script, persisted):
+    ids = ["host-1", "host-2", "host-3", "host-4"]
+    script.steps = [
+        [calls(*(("select_item", f'{{"item":"{i}"}}', call_id) for i, call_id in enumerate(ids)))],
+        ["All four."],
+    ]
+    first = assert_terminal([e async for e in runtime.streaming.stream_message(request())])
+    assert first["pending_tool_call"]["call_id"] == "host-1"
+    assert first["pending_tool_call"]["queued"] == ["host-2", "host-3", "host-4"]
+
+    handed = ["host-1"]
+    for index, call_id in enumerate(ids[:-1]):
+        final = assert_terminal(
+            [
+                e
+                async for e in runtime.streaming.stream_message(
+                    continuation(id=f"c-{index}", tool_call_id=call_id, tool_result={"n": index})
+                )
+            ]
+        )
+        handed.append(final["pending_tool_call"]["call_id"])
+        assert final["pending_tool_call"]["queued"] == ids[index + 2 :]
+        assert persisted.sessions["compat"]["pending_action"]["batch"] == ids
+    assert handed == ids
+    assert len(script.requests) == 1
+
+    final = assert_terminal(
+        [
+            e
+            async for e in runtime.streaming.stream_message(
+                continuation(id="c-last", tool_call_id="host-4", tool_result={"n": 3})
+            )
+        ]
+    )
+    assert final.get("pending_tool_call") is None
+    assert persisted.sessions["compat"]["pending_action"] is None
+    assert len(script.requests) == 2

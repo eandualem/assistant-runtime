@@ -189,7 +189,7 @@ class TurnRunner:
                     tool_call_id=plan.next_pending["call_id"],
                     tool_name=plan.next_pending["tool_name"],
                     assistant_message_id=plan.assistant_message_id,
-                    batch=list(plan.suppress_tool_call_ids),
+                    batch=plan.pending_batch,
                 )
                 state.pending_tool_call = plan.next_pending
                 control.accepting_cancel = False

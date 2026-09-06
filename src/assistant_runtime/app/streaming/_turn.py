@@ -86,7 +86,9 @@ class TurnPlan:
     suppress_tool_call_ids: set[str] = field(default_factory=set)
     # A continuation for one call of a batch with more calls waiting: record the
     # result, hand ``next_pending`` to the host, and do not run the model yet.
+    # ``pending_batch`` keeps the model's call order; the set above is for lookups.
     next_pending: dict[str, Any] | None = None
+    pending_batch: list[str] = field(default_factory=list)
     screenshot: str | None = None
     # Bookkeeping.
     turn_number: int = 0
@@ -298,6 +300,7 @@ class TurnPlanner:
                 else DeferredToolResults(calls={request.tool_call_id: deferred_result})
             ),
             next_pending=next_pending,
+            pending_batch=batch,
             accepted_tool_result=ModelRequest(
                 parts=[
                     ToolReturnPart(

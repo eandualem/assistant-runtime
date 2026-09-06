@@ -39,9 +39,11 @@ When the batch has more than one call, each continuation records its
 result on the assistant message and moves `pending_action` to the next
 call without running the model; the last continuation resumes the model.
 
-When the continuation arrives, the accepted result is written on the same
-assistant message first, then `pending_action` is cleared, then the model
-resumes. A crash between steps 1 and 2 leaves a call without a result and no
+When a continuation arrives, the accepted result is written on the same
+assistant message first. For a batch with calls still waiting, `pending_action`
+then moves to the next call and the turn ends with that call as
+`pending_tool_call`, without a model run; only the final continuation clears
+`pending_action` and resumes the model. A crash between steps 1 and 2 leaves a call without a result and no
 pending action: it is resolved as `unknown` on the next load. A crash after
 the result is written but before the row is cleared leaves a pending action
 whose call already has a result: the load drops it, because the result is
