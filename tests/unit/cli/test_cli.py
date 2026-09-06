@@ -94,7 +94,12 @@ class TestServeReplace:
 
     @pytest.mark.parametrize(
         ("host", "address"),
-        [("127.0.0.1", "-iTCP@127.0.0.1:7100"), ("0.0.0.0", "-iTCP:7100"), ("::", "-iTCP:7100")],
+        [
+            ("127.0.0.1", "-iTCP@127.0.0.1:7100"),
+            ("::1", "-iTCP@[::1]:7100"),
+            ("0.0.0.0", "-iTCP:7100"),
+            ("::", "-iTCP:7100"),
+        ],
     )
     def test_listener_lookup_is_scoped_to_the_bound_address(self, monkeypatch, host, address):
         commands = []
@@ -133,7 +138,7 @@ class TestServeReplace:
             def __init__(self, body):
                 self._body = body
 
-            def read(self):
+            def read(self, limit=None):
                 return self._body
 
             def __enter__(self):
@@ -142,10 +147,40 @@ class TestServeReplace:
             def __exit__(self, *exc):
                 return False
 
-        monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Response(b'{"healthy": false}'))
+        urls = []
+
+        def fake_urlopen(url, timeout):
+            urls.append(url)
+            return Response(b'{"healthy": false}')
+
+        monkeypatch.setattr(serve, "urlopen", fake_urlopen)
         assert serve.is_assistant_runtime("127.0.0.1", 7100) is True
+        assert serve.is_assistant_runtime("::1", 7100) is True
+        assert urls == ["http://127.0.0.1:7100/health", "http://[::1]:7100/health"]
         monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Response(b"<html>"))
         assert serve.is_assistant_runtime("127.0.0.1", 7100) is False
+
+    def test_health_probe_has_a_total_deadline(self, monkeypatch):
+        import threading
+
+        release = threading.Event()
+
+        class Trickle:
+            def read(self, limit=None):
+                release.wait(5)  # a server that never finishes its body
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Trickle())
+        try:
+            assert serve.is_assistant_runtime("127.0.0.1", 7100, deadline=0.2) is False
+        finally:
+            release.set()
 
 
 class TestTurnRenderer:

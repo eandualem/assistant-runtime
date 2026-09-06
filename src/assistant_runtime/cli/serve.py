@@ -19,6 +19,8 @@ import socket
 import subprocess
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -100,21 +102,50 @@ def port_in_use(host: str, port: int) -> bool:
         return False
 
 
-def is_assistant_runtime(host: str, port: int) -> bool:
-    """Whether the listener answers ``/health`` like this runtime (200 or 503 with ``healthy``)."""
+HEALTH_PROBE_SECONDS = 3.0
+_HEALTH_BODY_LIMIT = 64 * 1024
+
+
+def is_assistant_runtime(host: str, port: int, *, deadline: float = HEALTH_PROBE_SECONDS) -> bool:
+    """Whether the listener answers ``/health`` like this runtime (200 or 503 with ``healthy``).
+
+    The whole probe, body read included, is bounded by ``deadline``; the
+    socket timeout alone only bounds each individual read.
+    """
+    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        with urlopen(f"http://{host}:{port}/health", timeout=2.0) as response:  # noqa: S310
-            body = response.read()
-    except HTTPError as error:
-        if error.code != 503:
-            return False
-        body = error.read()
-    except (URLError, OSError, ValueError):
+        body = pool.submit(_read_health, host, port).result(timeout=deadline)
+    except FutureTimeout:
+        return False
+    except Exception:  # noqa: BLE001 - any failure means "not ours"
+        return False
+    finally:
+        # A stuck read finishes on its own socket timeout; do not wait for it here.
+        pool.shutdown(wait=False)
+    if body is None:
         return False
     try:
-        return isinstance(json.loads(body), dict) and "healthy" in json.loads(body)
+        payload = json.loads(body)
     except ValueError:
         return False
+    return isinstance(payload, dict) and "healthy" in payload
+
+
+def _read_health(host: str, port: int) -> bytes | None:
+    try:
+        with urlopen(f"http://{_endpoint(host)}:{port}/health", timeout=2.0) as response:  # noqa: S310
+            return response.read(_HEALTH_BODY_LIMIT)
+    except HTTPError as error:
+        if error.code != 503:
+            return None
+        return error.read(_HEALTH_BODY_LIMIT)
+    except (URLError, OSError, ValueError):
+        return None
+
+
+def _endpoint(host: str) -> str:
+    """``host`` as it appears in a URL or lsof address: IPv6 literals in brackets."""
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
 
 
 _WILDCARD_HOSTS = {"", "0.0.0.0", "::", "*"}
@@ -129,7 +160,7 @@ def listener_pids(host: str, port: int) -> list[int]:
     """
     if shutil.which("lsof") is None:
         return []
-    address = f"-iTCP:{port}" if host in _WILDCARD_HOSTS else f"-iTCP@{host}:{port}"
+    address = f"-iTCP:{port}" if host in _WILDCARD_HOSTS else f"-iTCP@{_endpoint(host)}:{port}"
     try:
         output = subprocess.run(  # noqa: S603
             ["lsof", "-t", address, "-sTCP:LISTEN"],
