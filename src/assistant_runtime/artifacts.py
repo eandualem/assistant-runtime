@@ -200,6 +200,9 @@ _BUILTIN_PROFILES = {
 def load_profile_file(path: str | Path) -> AssistantProfile:
     """Read a profile from a TOML file.
 
+    ``name`` scopes the stored artifact versions and must match
+    ``[a-z][a-z0-9_]{0,63}`` (lowercase, digits, underscores; no hyphens).
+
     ::
 
         name = "support"
