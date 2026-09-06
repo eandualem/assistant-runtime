@@ -75,7 +75,7 @@ turn pipeline. See [composing an assistant](docs/composition.md) for a complete
 server and in-process example.
 
 Stop an active turn through `POST /api/chat/{session_id}/cancel`, Socket.IO
-`assistant:cancel`, or the in-process `cancel_session` method. Cancellation
+`assistant_cancel`, or the in-process `cancel_session` method. Cancellation
 saves the work completed so far and drains running tools before the next
 turn starts. A Socket.IO disconnect leaves the turn running; reconnect and
 read the session to recover its saved state. See [turn control](docs/api.md#turn-control).

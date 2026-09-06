@@ -90,8 +90,8 @@ def on_status(event):
         sio.disconnect()
 
 sio.connect("http://127.0.0.1:7100", namespaces=["/assistant"])
-sio.emit("assistant:join_session", {"session_id": "s1"}, namespace="/assistant")
-sio.emit("assistant:message",
+sio.emit("assistant_join_session", {"session_id": "s1"}, namespace="/assistant")
+sio.emit("assistant_message",
          {"id": str(uuid.uuid4()), "session_id": "s1", "content": "Hello"},
          namespace="/assistant")
 sio.wait()
