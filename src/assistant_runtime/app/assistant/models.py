@@ -162,6 +162,8 @@ class AssistantRequest(BaseModel):
     config: TunableOverrides | None = None
     tool_call_id: str | None = None
     tool_result: Any | None = None
+    tool_outcome: Literal["success", "failed"] = "success"
+    """Continuation only: whether the host completed the action or it failed."""
 
     @property
     def screenshot(self) -> str | None:
@@ -189,6 +191,10 @@ class AssistantRequest(BaseModel):
     @model_validator(mode="after")
     def validate_message_shape(self) -> AssistantRequest:
         """Enforce distinct wire contracts for standard messages vs steering."""
+        if self.tool_outcome != "success" and self.tool_call_id is None:
+            # Continuation-only. The default value stays accepted on any request
+            # because serialised requests (``model_dump()``) carry it explicitly.
+            raise ValueError("tool_outcome requires tool_call_id (a continuation)")
         if self.is_steering:
             if self.parent_id is not None:
                 raise ValueError("Steering requests must not include parent_id")

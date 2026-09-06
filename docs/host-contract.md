@@ -104,14 +104,20 @@ When the model calls one, the runtime emits `tool_call` with
 and waits. The host performs the action and sends a continuation: the
 same message body with `tool_call_id` = the pending `call_id` and
 `tool_result` = any JSON. The run resumes with that result on the same
-assistant message. Conventions for the result: an object with `error`
-tells the model the action failed; a screenshot data URI anywhere in it is
-removed from what the model reads and offered to `look_at_screen`
-instead.
+assistant message. When the host could not perform the action, it adds
+`tool_outcome: "failed"`: the model then sees a failed tool result (the
+`tool_result`, as text) and does not repeat the call. A screenshot data
+URI anywhere in the result is removed from what the model reads and
+offered to `look_at_screen` instead.
 
-Errors: a continuation for a call that is not pending (or after a newer
-message abandoned it) is rejected as a session error (`409` on HTTP); a
-session holds at most one pending call.
+The pending call is stored with the session, so a host may answer it after
+the runtime restarted (`GET /api/sessions/{id}` shows `pending_action`).
+
+Errors: a continuation for a call that is not pending is rejected as a
+session error (`409` on HTTP), with a message that says whether its result
+was already recorded and with which status (a duplicate is never applied
+twice) or whether a newer message superseded it; a session holds at most one
+pending call. Details in [persistence and recovery](persistence.md).
 
 ## Versioning
 

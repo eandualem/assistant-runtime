@@ -113,7 +113,9 @@ uv run assistant-runtime serve
 Connection settings are `DATABASE__HOST`, `DATABASE__PORT`,
 `DATABASE__USER`, `DATABASE__PASSWORD`, `DATABASE__NAME`. When Postgres is
 unreachable at startup the runtime logs a warning and runs in memory-only
-mode; database-backed endpoints return 503.
+mode; database-backed endpoints return 503. This is also the local
+persistent option: what survives a restart, and how a host action waiting
+for its result is recovered, is in [persistence](persistence.md).
 
 ## 7. Optional: describe your host
 

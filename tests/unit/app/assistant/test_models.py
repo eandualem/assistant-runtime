@@ -158,6 +158,42 @@ class TestAssistantRequest:
                 tool_result={"ok": True},
             )
 
+    @pytest.mark.parametrize("message_type", ["standard", "steering"])
+    def test_tool_outcome_requires_a_continuation(self, message_type) -> None:
+        with pytest.raises(ValueError, match="tool_outcome requires tool_call_id"):
+            AssistantRequest(
+                id="user-1",
+                session_id="sess-1",
+                content="",
+                message_type=message_type,
+                tool_outcome="failed",
+            )
+        # The default round-trips through a serialised body on any request kind.
+        request = AssistantRequest(
+            id="user-1", session_id="sess-1", content="Hi", message_type=message_type
+        )
+        body = request.model_dump()
+        assert body["tool_outcome"] == "success"
+        assert AssistantRequest.model_validate(body) == request
+
+    def test_failed_tool_outcome_on_a_continuation(self) -> None:
+        request = AssistantRequest.model_validate(
+            {
+                "id": "continuation-1",
+                "sessionId": "sess-1",
+                "content": "",
+                "toolCallId": "call-1",
+                "toolResult": {"error": "not found"},
+                "toolOutcome": "failed",
+            }
+        )
+        assert request.is_continuation
+        assert request.tool_outcome == "failed"
+        with pytest.raises(ValueError, match="tool_outcome"):
+            AssistantRequest(
+                id="c", session_id="s", content="", tool_call_id="call-1", tool_outcome="unknown"
+            )
+
     def test_screenshot_fields_fold_into_images(self) -> None:
         request = AssistantRequest.model_validate(
             {

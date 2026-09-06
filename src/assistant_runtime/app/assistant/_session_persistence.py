@@ -46,6 +46,8 @@ class LoadedSession:
     telegram_bound_at: datetime | None
     messages: list[MessageRecord]
     steering: list[SteeringRecord]
+    pending_action: dict[str, Any] | None = None
+    """The host-tool call awaiting its continuation, as stored on the row."""
 
 
 class SessionPersistence:
@@ -139,6 +141,7 @@ class SessionPersistence:
                 telegram_bound_at=ctx.get("telegram_bound_at"),
                 expires_at=self._expires_at(),
                 owner_id=ctx.get("owner_id"),
+                pending_action=pending_action_from_context(ctx),
             )
 
     async def session_for_telegram_chat(self, chat_id: str) -> str | None:
@@ -194,6 +197,7 @@ class SessionPersistence:
                     owner_id=row.owner_id,
                     telegram_chat_id=row.telegram_chat_id,
                     telegram_bound_at=row.telegram_bound_at,
+                    pending_action=row.pending_action,
                     messages=[
                         {
                             "id": m.id,
@@ -222,3 +226,15 @@ class SessionPersistence:
                 )
 
         return await _load()
+
+
+def pending_action_from_context(ctx: dict[str, Any]) -> dict[str, Any] | None:
+    """The stored form of the context's pending host-tool call, or None."""
+    tool_call_id = ctx.get("pending_tool_call_id")
+    if not tool_call_id:
+        return None
+    return {
+        "tool_call_id": tool_call_id,
+        "tool_name": ctx.get("pending_tool_name"),
+        "assistant_message_id": ctx.get("pending_assistant_message_id"),
+    }
