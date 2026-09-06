@@ -165,6 +165,7 @@ async def start_pending_action(runtime, script, fake):
         "tool_call_id": "host-1",
         "tool_name": "select_item",
         "assistant_message_id": first["message_id"],
+        "batch": ["host-1"],
     }
     assert "output" not in stored_tool(fake, first["message_id"], "host-1")
     return first
@@ -407,3 +408,161 @@ async def test_parentless_message_during_a_live_turn_chains_after_it(runtime, sc
         first_final["message_id"],
         "user-2",
     ]
+
+
+def two_host_calls():
+    return calls(
+        ("select_item", '{"item":"a"}', "host-1"), ("select_item", '{"item":"b"}', "host-2")
+    )
+
+
+async def test_two_host_calls_are_handed_over_one_at_a_time(runtime, script, persisted):
+    script.steps = [[two_host_calls()], ["Both done."]]
+
+    first = assert_terminal([e async for e in runtime.streaming.stream_message(request())])
+    assert first["pending_tool_call"] == {
+        "tool_name": "select_item",
+        "call_id": "host-1",
+        "arguments": {"item": "a"},
+        "queued": ["host-2"],
+    }
+    assert persisted.sessions["compat"]["pending_action"]["batch"] == ["host-1", "host-2"]
+
+    # The first result is recorded and the next call handed over without a model run.
+    events = [
+        e
+        async for e in runtime.streaming.stream_message(
+            continuation(id="c-1", tool_result={"selected": "a"})
+        )
+    ]
+    handover = assert_terminal(events)
+    assert handover["message_id"] == first["message_id"]
+    assert handover["pending_tool_call"] == {
+        "tool_name": "select_item",
+        "call_id": "host-2",
+        "arguments": {"item": "b"},
+        "queued": [],
+    }
+    assert not any(e["type"] == "text_delta" for e in events)
+    assert len(script.requests) == 1
+    assert stored_tool(persisted, first["message_id"], "host-1")["output"] == {"selected": "a"}
+    assert persisted.sessions["compat"]["pending_action"]["tool_call_id"] == "host-2"
+
+    # A restart in between keeps the queue.
+    restart(runtime)
+    ctx = await runtime.sessions.get_context_if_exists_async("compat")
+    assert ctx["pending_tool_call_id"] == "host-2"
+    assert ctx["pending_tool_batch"] == ["host-1", "host-2"]
+    assert "output" not in stored_tool(persisted, first["message_id"], "host-2")
+
+    # The last result resumes the model with both results in the history.
+    events = [
+        e
+        async for e in runtime.streaming.stream_message(
+            continuation(id="c-2", tool_call_id="host-2", tool_result={"selected": "b"})
+        )
+    ]
+    final = assert_terminal(events)
+    assert final["message_id"] == first["message_id"]
+    assert "".join(e["content"] for e in events if e["type"] == "text_delta") == "Both done."
+    returns = [p for m in script.requests[-1] for p in m.parts if isinstance(p, ToolReturnPart)]
+    # Both results reach the model; upstream decides their order in the resumed history.
+    assert sorted((p.tool_call_id, p.content["selected"]) for p in returns) == [
+        ("host-1", "a"),
+        ("host-2", "b"),
+    ]
+    assert persisted.sessions["compat"]["pending_action"] is None
+    assert len(await runtime.sessions.get_message_path("compat")) == 2
+
+
+async def test_new_message_supersedes_every_queued_host_call(runtime, script, persisted):
+    script.steps = [[two_host_calls()], ["Moving on."]]
+    first = assert_terminal([e async for e in runtime.streaming.stream_message(request())])
+
+    assert_terminal(
+        [
+            e
+            async for e in runtime.streaming.stream_message(
+                request(id="user-2", parent_id=first["message_id"], content="Never mind")
+            )
+        ]
+    )
+
+    for call_id in ("host-1", "host-2"):
+        stored = stored_tool(persisted, first["message_id"], call_id)
+        assert stored["outcome"] == "interrupted"
+        assert stored["status"] == "superseded"
+    assert persisted.sessions["compat"]["pending_action"] is None
+
+
+async def test_failed_turn_resolves_unanswered_calls_so_the_next_message_works(
+    runtime, script, persisted, monkeypatch
+):
+    """A turn that dies after the model issued tool calls must not block the next prompt."""
+    from assistant_runtime.app.streaming import _runner
+
+    original = _runner.pending_call_payloads
+
+    def broken(*args, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(_runner, "pending_call_payloads", broken)
+    script.steps = [[calls(("select_item", '{"item":"a"}', "host-1"))], ["Recovered."]]
+
+    events = [e async for e in runtime.streaming.stream_message(request())]
+    assert_terminal(events, error=True)
+    ctx = runtime.sessions.get_context("compat")
+    (assistant_id,) = ctx["children_by_parent"]["user-1"]
+    stored = stored_tool(persisted, assistant_id, "host-1")
+    assert stored["outcome"] == "interrupted"
+    assert stored["status"] == "cancelled"
+    assert not ctx.get("pending_tool_call_id")
+
+    monkeypatch.setattr(_runner, "pending_call_payloads", original)
+    events = [
+        e
+        async for e in runtime.streaming.stream_message(
+            request(id="user-2", parent_id=assistant_id, content="Again")
+        )
+    ]
+    assert_terminal(events)
+    assert "".join(e["content"] for e in events if e["type"] == "text_delta") == "Recovered."
+
+
+async def test_a_long_batch_is_handed_over_in_model_order(runtime, script, persisted):
+    ids = ["host-1", "host-2", "host-3", "host-4"]
+    script.steps = [
+        [calls(*(("select_item", f'{{"item":"{i}"}}', call_id) for i, call_id in enumerate(ids)))],
+        ["All four."],
+    ]
+    first = assert_terminal([e async for e in runtime.streaming.stream_message(request())])
+    assert first["pending_tool_call"]["call_id"] == "host-1"
+    assert first["pending_tool_call"]["queued"] == ["host-2", "host-3", "host-4"]
+
+    handed = ["host-1"]
+    for index, call_id in enumerate(ids[:-1]):
+        final = assert_terminal(
+            [
+                e
+                async for e in runtime.streaming.stream_message(
+                    continuation(id=f"c-{index}", tool_call_id=call_id, tool_result={"n": index})
+                )
+            ]
+        )
+        handed.append(final["pending_tool_call"]["call_id"])
+        assert final["pending_tool_call"]["queued"] == ids[index + 2 :]
+        assert persisted.sessions["compat"]["pending_action"]["batch"] == ids
+    assert handed == ids
+    assert len(script.requests) == 1
+
+    final = assert_terminal(
+        [
+            e
+            async for e in runtime.streaming.stream_message(
+                continuation(id="c-last", tool_call_id="host-4", tool_result={"n": 3})
+            )
+        ]
+    )
+    assert final.get("pending_tool_call") is None
+    assert persisted.sessions["compat"]["pending_action"] is None
+    assert len(script.requests) == 2

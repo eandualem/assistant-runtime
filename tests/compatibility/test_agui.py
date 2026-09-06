@@ -154,6 +154,45 @@ async def test_streamed_conversation_and_frontend_tool_round_trip(client, script
     assert sum("Pick sample" in str(m) for m in script.requests[-1]) == 1
 
 
+async def test_two_frontend_tool_results_in_one_run(client, script):
+    script.steps = [
+        [
+            calls(
+                ("select_item", '{"item":"a"}', "host-1"), ("select_item", '{"item":"b"}', "host-2")
+            )
+        ],
+        ["Both."],
+    ]
+    response, events = await post(client, run_input([user("Pick both")]))
+    assert response.status_code == 200
+    starts = [e for e in events if e.type.value == "TOOL_CALL_START"]
+    assert [e.tool_call_id for e in starts] == ["host-1", "host-2"]
+
+    response, events = await post(
+        client,
+        run_input(
+            [
+                user("Pick both"),
+                tool_message("host-1", '{"ok": 1}'),
+                tool_message("host-2", '{"ok": 2}', message_id="tool-2"),
+            ],
+            run="run-2",
+        ),
+    )
+    assert response.status_code == 200
+    kinds = types(events)
+    assert kinds[-1] == "RUN_FINISHED"
+    assert "RUN_ERROR" not in kinds
+    assert "".join(e.delta for e in events if e.type.value == "TEXT_MESSAGE_CONTENT") == "Both."
+    returns = [p for m in script.requests[-1] for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert [(p.tool_call_id, p.content) for p in returns] == [
+        ("host-1", {"ok": 1}),
+        ("host-2", {"ok": 2}),
+    ]
+    sessions = client.app.state.assistant_service.get_session_store()
+    assert not sessions.get_context("thread-1").get("pending_tool_call_id")
+
+
 async def test_failed_frontend_tool_and_duplicate_result(client, script):
     script.steps = [[calls(("select_item", '{"item":"x"}', "host-1"))], ["Understood."]]
     await post(client, run_input([user("Pick x")]))

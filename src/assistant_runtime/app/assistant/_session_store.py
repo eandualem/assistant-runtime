@@ -481,13 +481,24 @@ class SessionStore:
     # --- pending host action --------------------------------------------------
 
     async def set_pending_action(
-        self, session_id: str, *, tool_call_id: str, tool_name: str, assistant_message_id: str
+        self,
+        session_id: str,
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        assistant_message_id: str,
+        batch: list[str] | None = None,
     ) -> None:
-        """Record the one host-tool call the session now waits on, in memory and on the row."""
+        """Record the one host-tool call the session now waits on, in memory and on the row.
+
+        ``batch`` lists every host call of the same model response in order;
+        the calls after ``tool_call_id`` are handed to the host one at a time.
+        """
         ctx = self.get_context(session_id)
         ctx["pending_tool_call_id"] = tool_call_id
         ctx["pending_tool_name"] = tool_name
         ctx["pending_assistant_message_id"] = assistant_message_id
+        ctx["pending_tool_batch"] = list(batch) if batch else [tool_call_id]
         await self.save_session_state_async(session_id)
 
     async def clear_pending_action(self, session_id: str) -> dict[str, Any] | None:
@@ -503,8 +514,14 @@ class SessionStore:
             "tool_call_id": ctx.get("pending_tool_call_id"),
             "tool_name": ctx.get("pending_tool_name"),
             "assistant_message_id": ctx.get("pending_assistant_message_id"),
+            "batch": list(ctx.get("pending_tool_batch") or []),
         }
-        for key in ("pending_tool_call_id", "pending_tool_name", "pending_assistant_message_id"):
+        for key in (
+            "pending_tool_call_id",
+            "pending_tool_name",
+            "pending_assistant_message_id",
+            "pending_tool_batch",
+        ):
             ctx.pop(key, None)
         await self.save_session_state_async(session_id)
         return pending
@@ -589,12 +606,12 @@ class SessionStore:
             return None
         ctx = _context_from_loaded(loaded)
         pending_id = _restore_pending_action(ctx, loaded.pending_action, session_id)
-        # Only the persisted pending action can still receive its continuation.
-        # Any other tool without output was interrupted by a crash or predates
-        # persisted pending actions: its outcome is unknown.
-        repaired = repair_stale_tools_in_context(
-            ctx, keep=frozenset({pending_id}) if pending_id else frozenset()
-        )
+        # Only the persisted pending action (and the rest of its batch, handed
+        # out later) can still receive continuations. Any other tool without
+        # output was interrupted by a crash or predates persisted pending
+        # actions: its outcome is unknown.
+        keep = frozenset(ctx.get("pending_tool_batch") or ()) if pending_id else frozenset()
+        repaired = repair_stale_tools_in_context(ctx, keep=keep)
         if repaired:
             await self._db.update_segments(repaired)
             logger.info(
@@ -625,6 +642,7 @@ def _empty_context() -> dict[str, Any]:
         "pending_tool_call_id": None,
         "pending_tool_name": None,
         "pending_assistant_message_id": None,
+        "pending_tool_batch": [],
         "current_assistant_message_id": None,
         "pending_steering_ids": [],
         "steering_index": {},
@@ -679,6 +697,12 @@ def _restore_pending_action(
     ctx["pending_tool_call_id"] = str(tool_call_id)
     ctx["pending_tool_name"] = pending.get("tool_name") or str(entry.get("name", ""))
     ctx["pending_assistant_message_id"] = assistant_message_id
+    batch = [
+        str(call_id)
+        for call_id in (pending.get("batch") or [tool_call_id])
+        if find_tool_entry(record.get("segments"), str(call_id)) is not None
+    ]
+    ctx["pending_tool_batch"] = batch if str(tool_call_id) in batch else [str(tool_call_id)]
     return str(tool_call_id)
 
 
