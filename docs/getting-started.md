@@ -69,6 +69,10 @@ curl -s -X POST localhost:7100/api/chat -H 'content-type: application/json' \
 CORS is open, so keep it on localhost or put it behind your own reverse
 proxy with auth. `--host 0.0.0.0 --port 8080` changes the binding,
 `--reload` restarts on source changes (`make dev` is the same thing).
+If a previous assistant-runtime still holds the port (recognised by its
+`/health` answer), `serve` stops it and takes over, so a new configuration
+takes effect with one command; anything else on the port is left alone and
+reported. `--no-replace` turns the takeover off.
 
 ## 5. Stream from a client
 
