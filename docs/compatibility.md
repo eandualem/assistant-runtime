@@ -61,7 +61,7 @@ cancellation snapshots and application-owned finalization.
 | Tool arguments | **Compose** `ToolCallPart.args_as_dict()` | Five serialization cases plus a real streamed host continuation cover dicts, JSON objects, malformed/non-object JSON and empty args |
 | Model-input history cleanup | **Replaced** by the public `Agent` run pipeline; the runtime no longer repairs dangling calls or orphaned results itself ([#87](https://github.com/eandualem/assistant-runtime/issues/87)) | `test_public_history_closes_dangling_calls_including_malformed_args`, `test_public_history_drops_orphaned_results_before_model_request`, `test_public_continuation_closes_older_dangling_call_with_deferred_result`; the source conversation and pending frontier semantics are preserved |
 | Application history policy | **Composed** as a `ProcessHistory` capability (`HistoryService.processor()`), attached to every run of a turn | `test_runtime_clears_old_tool_results_in_model_input_only`, `test_runtime_summarizes_once_per_turn_through_native_execution`, `test_runtime_summary_failure_falls_back_without_failing_the_turn`, `test_runtime_disabled_compaction_leaves_history_to_host_capabilities`; the application owns which branch and records supply history, the budget, clearing and the structured summary |
-| Session storage and reload | **Keep** application tree/steering persistence | `test_session_reload_restores_tree_and_repairs_unfinished_host_action`; flat upstream message serialization does not encode this tree or recover its pending host-action state |
+| Session storage and reload | **Keep** application tree/steering persistence, with the pending host action on the session row | `test_session_reload_restores_tree_and_repairs_unfinished_host_action`, `test_recovery.py`; flat upstream message serialization does not encode this tree or the pending host action between runs |
 | Harness compaction / memory | **Deferred** as a core dependency; usable by applications through `AssistantDefinition.capabilities` with `HISTORY__COMPACTION_ENABLED=false` | Evaluated 2026-09-05 with `pydantic-ai-harness==0.29.0` on core 2.38.0 (see below); working memory stays a separate per-turn extraction |
 | UI protocols | **Evaluate composition** with `AGUIAdapter` / `VercelAIAdapter` | Import smoke checks only; protocol-to-session mapping remains #93 |
 | Definitions / evolving artifacts | **Keep** versioned application definitions; compose native instructions/capabilities | No replacement of definition, activation, rollback or mutation policy established; existing artifact tests remain authoritative |
@@ -103,11 +103,15 @@ the live documentation can advance beyond the lockfile.
   it. Application message segments do not retain its native `UserPromptPart`,
   so insertion into the native queue alone is insufficient: interrupted
   delivery stays pending and can be retried on the next turn.
-- Session reload restores message branches and queued steering. Unanswered
-  host calls are marked stale because pending state is memory-only. This
-  does not prove the external action failed or prevent its late execution.
+- Session reload restores message branches, queued steering and the pending
+  host action stored on the session row (`tests/compatibility/test_recovery.py`:
+  a cold cache over the same rows accepts the continuation, rejects
+  duplicates, records host-declared failures natively as `failed`). Calls
+  without a matching stored action are resolved as `unknown`; this does not
+  prove the external action failed or prevent its late execution.
   [StepPersistence](https://pydantic.dev/docs/ai/harness/step-persistence/)
-  is not a full graph checkpoint or an exactly-once side-effect guarantee.
+  and `pydantic_ai.durable_exec` were compared and deferred in
+  [persistence](persistence.md#upstream-decision).
 - A history processor's output becomes the run's history: core assigns
   `ctx.state.message_history[:] = processed` and recomputes the new-message
   index from `run_id`. The runtime therefore never transforms messages that
@@ -137,7 +141,7 @@ the live documentation can advance beyond the lockfile.
   calls around upstream deferred-resumption behavior. Keep the real mixed
   backend/host continuation case green when changing it.
 
-No dependency upgrade is required for these supported replacements. Remaining
-history and recovery work is tracked by
-issues [#87](https://github.com/eandualem/assistant-runtime/issues/87) and
-[#92](https://github.com/eandualem/assistant-runtime/issues/92).
+No dependency upgrade is required for these supported replacements. The
+history policy ([#87](https://github.com/eandualem/assistant-runtime/issues/87))
+and the recovery contract ([#92](https://github.com/eandualem/assistant-runtime/issues/92),
+[persistence](persistence.md)) are implemented on this baseline.

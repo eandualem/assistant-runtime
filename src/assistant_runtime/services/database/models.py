@@ -39,6 +39,8 @@ class SessionORM(Base):
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     turn_number: Mapped[int] = mapped_column(Integer, default=0)
     working_memory: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    pending_action: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    """The one host-tool call waiting for its continuation; NULL when none is pending."""
     telegram_chat_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     telegram_bound_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

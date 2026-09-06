@@ -98,6 +98,7 @@ class TestGetSession:
             "owner_id": None,
             "turn_number": 3,
             "has_pending_tool_call": False,
+            "pending_action": None,
             "message_count": 4,
         }
 

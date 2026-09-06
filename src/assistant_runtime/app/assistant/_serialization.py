@@ -180,8 +180,15 @@ def assistant_segments_to_text(segments: list[dict[str, Any]] | None) -> str:
 
 def build_assistant_message_content(
     messages: list[ModelMessage],
+    *,
+    interrupted_status: str = "superseded",
 ) -> tuple[str, list[dict[str, Any]], datetime | None]:
-    """Extract assistant content + canonicalized segments from a single turn's messages."""
+    """Extract assistant content + canonicalized segments from a single turn's messages.
+
+    ``interrupted_status`` is the ``status`` recorded on calls whose result is
+    an ``interrupted`` outcome: ``cancelled`` when the turn was cancelled or
+    stopped, ``superseded`` when core closed an older call.
+    """
     tool_results: dict[str, dict[str, Any]] = {}
     for message in messages:
         if not isinstance(message, ModelRequest):
@@ -190,9 +197,14 @@ def build_assistant_message_content(
             if isinstance(part, ToolReturnPart):
                 result = {"output": normalize_tool_output_for_storage(part.tool_name, part.content)}
                 # Existing records imply success. Preserve native failures and
-                # denials explicitly so reloaded history keeps their semantics.
+                # denials explicitly so reloaded history keeps their semantics;
+                # ``status`` says how a non-successful action was resolved.
                 if part.outcome != "success":
                     result["outcome"] = part.outcome
+                if part.outcome == "failed":
+                    result["status"] = "failed"
+                elif part.outcome == "interrupted":
+                    result["status"] = interrupted_status
                 tool_results[part.tool_call_id] = result
 
     segments: list[dict[str, Any]] = []

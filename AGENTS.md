@@ -210,7 +210,14 @@ execution, history, serialization, or the upstream dependency; see
   stream is live and promoted into the conversation otherwise. A host tool
   call ends the turn with `final_response.pending_tool_call`; the
   continuation must carry the matching `tool_call_id`, and a session holds
-  at most one pending call.
+  at most one pending call. The pending call is stored on the session row
+  (`pending_action`) and restored on load, so it survives a restart; it is
+  set and cleared only through `SessionStore.set_pending_action` /
+  `clear_pending_action`. A call that never gets its result is resolved
+  with `outcome: interrupted` and a `status` (`cancelled`, `superseded`,
+  `unknown`); a host-declared failure is the native `failed` outcome; a
+  continuation for a call whose result is recorded is rejected, never
+  reapplied. Docs: `docs/persistence.md`.
 - **Turn cancellation uses native snapshots.** A turn owns one Pydantic AI
   `CancellationToken`; preserve `RunCancelled.new_messages()` and usage,
   including partial text and completed tools, before releasing the session.

@@ -39,8 +39,9 @@ uv run assistant-runtime chat
 `uv run assistant-runtime serve` runs the HTTP and Socket.IO server on
 `127.0.0.1:7100`; `doctor` reports what is configured. Postgres is
 optional: without it sessions and prompt-artifact versions live in memory.
-With it (`make db-up && make db-upgrade`) sessions, artifact versions and
-settings persist. The assistant's artifacts (its instructions, what it may
+With it (`make db-up && make db-upgrade`) sessions, artifact versions,
+settings and a host action waiting for its result persist across restarts
+(see [docs/persistence.md](docs/persistence.md)). The assistant's artifacts (its instructions, what it may
 rewrite about itself) come from a profile: the neutral built-in,
 `ASSISTANT__PROFILE=technical_operator` for the example operator assistant,
 a TOML file, or `AssistantDefinition(profile=...)` in host code.
@@ -58,6 +59,7 @@ checkout.
 | [concepts](docs/concepts.md) | sessions, turns, tools, host tools, host context, artifacts, envelopes |
 | [host contract](docs/host-contract.md) | the versioned `host_context`, attachments and action protocol a host uses |
 | [identity and access](docs/access.md) | authentication modes, session ownership, administration, CORS |
+| [persistence](docs/persistence.md) | what is stored, pending host actions across restarts, action outcomes, recovery and worker topology |
 | [getting-started](docs/getting-started.md) | install, one key, chat, server, a minimal client, Postgres, integrations |
 | [configuration](docs/configuration.md) | every setting, the three configuration tiers, secrets |
 | [api](docs/api.md) | HTTP endpoints and the Socket.IO streaming contract |

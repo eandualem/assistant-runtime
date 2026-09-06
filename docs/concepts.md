@@ -20,9 +20,10 @@ leaf, and the path from the root to that leaf is what the model sees. A
 client can therefore branch from an earlier message by sending a new
 message with that message as parent.
 
-With Postgres the tree is persisted and survives restarts; without it
-sessions live in memory for the life of the process. Sessions expire after
-`ASSISTANT__SESSION_TTL_HOURS` (24 by default).
+With Postgres the tree and the pending host action are persisted and
+survive restarts; without it sessions live in memory for the life of the
+process. Sessions expire after `ASSISTANT__SESSION_TTL_HOURS` (24 by
+default). See [persistence and recovery](persistence.md).
 
 A session belongs to the principal whose message created it; other
 principals cannot read or continue it, administrators can (see
@@ -104,8 +105,12 @@ page, select an item, refresh a view. They are declared in configuration
 one, the runtime emits a `tool_call` event with `category: "host"`,
 ends the turn with `final_response.pending_tool_call`, and waits. The host
 performs the action and sends a continuation with the matching
-`tool_call_id` and a `tool_result`; the runtime resumes the model with
-that result. A session holds at most one pending host tool call.
+`tool_call_id` and a `tool_result` (and `tool_outcome: "failed"` when the
+action failed); the runtime resumes the model with that result. A session
+holds at most one pending host tool call; it is stored on the session and
+survives a restart. A call that never gets its result is recorded as
+`cancelled`, `superseded` or `unknown`, and a result is never applied
+twice. See [persistence and recovery](persistence.md).
 
 ## Host context
 

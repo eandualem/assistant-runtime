@@ -89,6 +89,10 @@ def test_persisted_native_tool_outcomes_survive_both_history_paths(outcome, cont
     content, segments, _ = build_assistant_message_content(messages)
     # Success stays implicit, preserving the schema of existing stored segments.
     assert ("outcome" in segments[0]["tools"][0]) is (outcome != "success")
+    assert segments[0]["tools"][0].get("status") == {
+        "failed": "failed",
+        "interrupted": "superseded",
+    }.get(outcome)
     record = json.loads(json.dumps({"role": "assistant", "content": content, "segments": segments}))
     restored = (
         assistant_record_to_flat_messages(record)
@@ -284,6 +288,9 @@ async def test_session_reload_restores_tree_and_repairs_unfinished_host_action(
         assert call.args_as_dict() == {"item": "sample"}
         assert call.tool_call_id == result.tool_call_id == "host-1"
         assert result.content == STALE_HOST_TOOL_OUTPUT
+        assert result.outcome == "interrupted"
+        stored = loaded["message_index"][first["message_id"]]["segments"][0]["tools"][0]
+        assert stored["status"] == "unknown"
     else:
         restored._db.update_segments.assert_not_awaited()
         assert loaded["message_count"] == 4

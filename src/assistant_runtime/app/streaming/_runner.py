@@ -38,6 +38,7 @@ from pydantic_ai.usage import RunUsage
 from assistant_runtime.app.assistant._serialization import (
     build_assistant_message_content,
 )
+from assistant_runtime.app.assistant._stale_tools import ActionStatus
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.streaming._agent_run import TurnPolicy, iterate_run
 from assistant_runtime.app.streaming._control import TurnControl
@@ -54,7 +55,7 @@ from assistant_runtime.app.streaming._event_builder import (
     make_debug_usage_event,
     make_error_event,
 )
-from assistant_runtime.app.streaming._host_tool import store_pending_call
+from assistant_runtime.app.streaming._host_tool import pending_call_payload
 from assistant_runtime.app.streaming._usage import (
     cache_counts,
     merge_usage,
@@ -123,6 +124,8 @@ class _RunState:
     pending_tool_call: dict[str, Any] | None = None
     persisted: bool = False
     cancelled: bool = False
+    # How calls left without a result by this turn are recorded (see ActionStatus).
+    interrupted_status: ActionStatus = "superseded"
     history: HistoryProcessor | None = None
     # The usage written on the assistant row: the run's own plus auxiliary work.
     stored_usage: dict[str, Any] | None = None
@@ -177,7 +180,7 @@ class TurnRunner:
             if plan.accepted_tool_result is not None:
                 state.assistant_messages.append(plan.accepted_tool_result)
                 await self._persist(plan, state)
-                self._clear_pending(plan)
+                await self._clear_pending(plan)
             control.check_cancelled()
             if emit_debug:
                 yield coordinator.track_debug(
@@ -236,7 +239,7 @@ class TurnRunner:
                 yield coordinator.track_debug(self._usage_debug_event(state.run_usage))
             control.check_cancelled()
             await self._persist(plan, state)
-            self._clear_pending(plan)
+            await self._clear_pending(plan)
             async for event in self._handle_output(plan, ctx, coordinator, state, control=control):
                 yield event
             control.check_cancelled()
@@ -405,17 +408,16 @@ class TurnRunner:
             if completed:
                 yield completed
 
-    @staticmethod
-    def _clear_pending(plan: TurnPlan) -> None:
-        """Clear only the completed turn's pending host frontier."""
-        for key in ("pending_tool_call_id", "pending_tool_name", "pending_assistant_message_id"):
-            plan.session_context.pop(key, None)
+    async def _clear_pending(self, plan: TurnPlan) -> None:
+        """Clear the turn's pending host action, in memory and on the session row."""
+        await self._sessions.clear_pending_action(plan.session_id)
 
     async def _persist_cancelled(
         self, plan: TurnPlan, state: _RunState, *, interrupted: bool = True
     ) -> None:
         """Retain native work and explicitly mark unresolved calls interrupted."""
         state.cancelled = interrupted
+        state.interrupted_status = "cancelled"
         returned = {
             part.tool_call_id
             for message in state.assistant_messages
@@ -436,7 +438,7 @@ class TurnRunner:
         if interrupted:
             state.assistant_messages.append(ModelRequest(parts=interrupted))
         await self._persist(plan, state)
-        self._clear_pending(plan)
+        await self._clear_pending(plan)
 
     @staticmethod
     def _exhausted_events(
@@ -634,7 +636,9 @@ class TurnRunner:
 
     async def _persist(self, plan: TurnPlan, state: _RunState) -> None:
         """Create or extend the assistant row with everything run so far."""
-        content, segments, timestamp = build_assistant_message_content(state.assistant_messages)
+        content, segments, timestamp = build_assistant_message_content(
+            state.assistant_messages, interrupted_status=state.interrupted_status
+        )
         state.assistant_segments = segments
         # The history policy's summarisation calls are this turn's auxiliary
         # model work; state.usage stays the run's own so this is idempotent.
@@ -675,7 +679,7 @@ class TurnRunner:
     ) -> AsyncIterator[dict[str, Any]]:
         """Resolve the run output; deliver queued steering as follow-up runs."""
         session_context = plan.session_context
-        if self._take_output(plan, state, ctx):
+        if await self._take_output(plan, state, ctx):
             return
         while session_context.get("pending_steering_ids"):
             pending = await self._sessions.list_pending_steering(plan.session_id)
@@ -695,22 +699,29 @@ class TurnRunner:
                 yield event
             control.check_cancelled()
             await self._persist(plan, state)
-            if self._take_output(plan, state, ctx):
+            if await self._take_output(plan, state, ctx):
                 return
 
-    def _take_output(self, plan: TurnPlan, state: _RunState, ctx: AgentSetupContext) -> bool:
+    async def _take_output(self, plan: TurnPlan, state: _RunState, ctx: AgentSetupContext) -> bool:
         """Record the run output on ``state``; True when it is a deferred host-tool call."""
         session_context = plan.session_context
         if isinstance(state.output, DeferredToolRequests):
-            # The tool_call event was already streamed by iterate_run.
-            state.pending_tool_call = store_pending_call(
+            # The tool_call event was already streamed by iterate_run. The
+            # assistant row holds the call already; the session row now records
+            # that it waits for this call, so a restart can still accept the result.
+            pending = pending_call_payload(
                 self._tools,
                 state.output,
-                session_context,
                 assistant_segments=state.assistant_segments,
                 host_tool_names=_host_tool_names(ctx),
             )
-            session_context["pending_assistant_message_id"] = plan.assistant_message_id
+            await self._sessions.set_pending_action(
+                plan.session_id,
+                tool_call_id=pending["call_id"],
+                tool_name=pending["tool_name"],
+                assistant_message_id=plan.assistant_message_id,
+            )
+            state.pending_tool_call = pending
             state.final_output = None
             return True
         session_context.pop("pending_assistant_message_id", None)
