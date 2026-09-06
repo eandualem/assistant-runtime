@@ -206,6 +206,8 @@ execution, history, serialization, or the upstream dependency; see
   `TOOLS__INVALIDATIONS`), all empty by default.
 - **A session is a tree of messages.** Each message has a `parent_id`; the
   session tracks the active leaf and the path to it is the model history.
+  A message without `parent_id` is the root when the session is empty and
+  continues from the active leaf otherwise.
   `message_type` is `standard` or `steering`: steering is queued while a
   stream is live and promoted into the conversation otherwise. A host tool
   call ends the turn with `final_response.pending_tool_call`; the

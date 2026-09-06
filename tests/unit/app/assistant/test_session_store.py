@@ -68,6 +68,58 @@ class TestRegisterUserMessage:
         assert [message["id"] for message in ctx["cached_path"]] == ["user-1"]
         assert ctx["title"] == "Hello"
 
+    async def test_message_without_parent_continues_from_the_active_leaf(self) -> None:
+        store = SessionStore()
+        await store.register_user_message(_request(message_id="user-1", parent_id=None))
+        await store.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Hi",
+            segments=None,
+            usage=None,
+        )
+
+        ctx, record = await store.register_user_message(
+            _request(message_id="user-2", parent_id=None, content="Next")
+        )
+
+        assert record["parent_id"] == "assistant-1"
+        assert ctx["active_leaf_id"] == "user-2"
+        assert [m["id"] for m in ctx["cached_path"]] == ["user-1", "assistant-1", "user-2"]
+
+    async def test_message_without_parent_follows_the_active_branch(self) -> None:
+        store = SessionStore()
+        await store.register_user_message(_request(message_id="user-1", parent_id=None))
+        await store.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="A",
+            segments=None,
+            usage=None,
+        )
+        await store.register_user_message(
+            _request(message_id="user-2", parent_id="assistant-1", content="Original")
+        )
+        # A variant of user-2 becomes the active branch.
+        await store.register_user_message(
+            _request(message_id="user-2v", parent_id="assistant-1", content="Variant")
+        )
+
+        ctx, record = await store.register_user_message(
+            _request(message_id="user-3", parent_id=None, content="Continue")
+        )
+
+        assert record["parent_id"] == "user-2v"
+        assert [m["id"] for m in ctx["cached_path"]] == [
+            "user-1",
+            "assistant-1",
+            "user-2v",
+            "user-3",
+        ]
+        assert ctx["children_by_parent"]["assistant-1"] == ["user-2", "user-2v"]
+
     async def test_rejects_duplicate_message_ids(self) -> None:
         store = SessionStore()
         await store.register_user_message(_request(message_id="user-1", parent_id=None))

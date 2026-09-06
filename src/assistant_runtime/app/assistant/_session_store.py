@@ -117,7 +117,10 @@ class SessionStore:
     ) -> tuple[dict[str, Any], MessageRecord]:
         """Persist a user-side message send and update the active cached path.
 
-        ``owner_id`` is recorded when this message creates the session.
+        ``owner_id`` is recorded when this message creates the session. A
+        message without ``parent_id`` is the root when the session is empty
+        and continues from the active leaf otherwise; an explicit
+        ``parent_id`` branches from that message.
         """
         if request.is_steering:
             raise ValueError("Steering messages are stored separately from the conversation tree")
@@ -127,7 +130,8 @@ class SessionStore:
 
         # The owner is decided here but published only after the row is written.
         new_owner: str | None = None
-        if request.parent_id is None:
+        parent_id = request.parent_id
+        if parent_id is None:
             if ctx is not None and ctx["message_count"] == 0 and self._db is not None:
                 # An empty cached context (a join warm-up, a history read) may
                 # shadow a persisted session; its stored owner and messages win.
@@ -139,15 +143,15 @@ class SessionStore:
                 ctx = self.get_context(session_id)
                 new_owner = owner_id
             elif ctx["message_count"] > 0:
-                raise ValueError("Only the first message in a session may have parent_id = null")
+                parent_id = ctx.get("active_leaf_id") or _latest_leaf_id(ctx)
             elif ctx.get("owner_id") is None:
                 # A context created ahead of the first message belongs to whoever sends it.
                 new_owner = owner_id
         else:
             if ctx is None:
                 raise LookupError("Session not found")
-            if request.parent_id not in ctx["message_index"]:
-                raise LookupError(f"Parent message '{request.parent_id}' not found")
+            if parent_id not in ctx["message_index"]:
+                raise LookupError(f"Parent message '{parent_id}' not found")
 
         assert ctx is not None
         if request.id in ctx["message_index"]:
@@ -156,7 +160,7 @@ class SessionStore:
         record: MessageRecord = {
             "id": request.id,
             "session_id": session_id,
-            "parent_id": request.parent_id,
+            "parent_id": parent_id,
             "role": "user",
             "message_type": request.message_type,
             "content": request.content,

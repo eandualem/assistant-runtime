@@ -17,8 +17,10 @@ one).
 A conversation with an id the client chooses. A session holds a **tree of
 messages**: every message has a `parent_id`, the session tracks its active
 leaf, and the path from the root to that leaf is what the model sees. A
-client can therefore branch from an earlier message by sending a new
-message with that message as parent.
+message sent without `parent_id` continues from the active leaf (the first
+one is the root), so a client that never branches need not retain earlier
+message ids; every message still carries its own new `id`. A client
+branches from an earlier message by naming it as the parent.
 
 With Postgres the tree and the pending host action are persisted and
 survive restarts; without it sessions live in memory for the life of the
