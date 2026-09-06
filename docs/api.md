@@ -175,7 +175,7 @@ with the partial message saved. See [concepts](concepts.md#usage-and-budgets).
 | Route | Returns |
 |---|---|
 | `GET /api/sessions?limit=50&offset=0` | `[{session_id, owner_id, title, turn_number, message_count, created_at}]`; the caller's own sessions, every session for an administrator |
-| `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `assistant_message_id`, or null) |
+| `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `arguments`, `assistant_message_id`, or null): everything a host needs to perform the waiting action and continue |
 | `GET /api/sessions/{id}/messages?leaf_id=` | the root-to-leaf path for display (see below); `leaf_id` selects another leaf's path, for branch switching |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |
@@ -244,7 +244,7 @@ stale `expected_version` `409`, a missing version `404`.
 | `GET /api/artifacts/profile` | the profile: artifacts, roles, policies, live versions |
 | `GET /api/artifacts/{name}` | the active version, or the default text (`source: "default"`) |
 | `GET /api/artifacts/{name}/history` | all versions, newest first |
-| `POST /api/artifacts/{name}/propose` `{"content", "proposed_by"?, "expected_version"?}` | new inactive version |
+| `POST /api/artifacts/{name}/propose` `{"content", "expected_version"?}` | new inactive version (`201`), attributed to the calling principal |
 | `PATCH /api/artifacts/{name}` `{"content", "expected_version"?}` | new version, active at once |
 | `POST /api/artifacts/{name}/approve/{version}` | activate a version |
 | `POST /api/artifacts/{name}/rollback/{version}` | reactivate an older version |

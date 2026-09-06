@@ -103,6 +103,42 @@ class TestGetSession:
         }
 
     @pytest.mark.asyncio
+    async def test_pending_action_carries_its_arguments(self) -> None:
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="",
+            segments=[
+                {
+                    "kind": "tool_group",
+                    "tools": [{"id": "host-1", "name": "select_item", "input": {"item": "a"}}],
+                }
+            ],
+            usage=None,
+        )
+        await sessions.set_pending_action(
+            "sess-1",
+            tool_call_id="host-1",
+            tool_name="select_item",
+            assistant_message_id="assistant-1",
+        )
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1")
+
+        assert response.status_code == 200
+        assert response.json()["has_pending_tool_call"] is True
+        assert response.json()["pending_action"] == {
+            "tool_call_id": "host-1",
+            "tool_name": "select_item",
+            "assistant_message_id": "assistant-1",
+            "arguments": {"item": "a"},
+        }
+
     async def test_missing_session_returns_404(self) -> None:
         app = _create_test_app()
 

@@ -46,8 +46,10 @@ On load, the stored pending action is restored only when its assistant
 message exists and the call still has no result. Every other call without a
 result is given a synthetic `unknown` result so the history stays consistent.
 
-`GET /api/sessions/{id}` returns `pending_action` so a host that reconnects
-or restarts can see what the runtime is waiting for.
+`GET /api/sessions/{id}` returns `pending_action` with the call id, tool
+name, arguments and assistant message id, so a host that reconnects or
+restarts can perform the waiting action and continue without reading the
+transcript.
 
 ## Action outcomes
 
