@@ -11,8 +11,8 @@ trusted identity is a separate concern.
 
 ## `host_context`
 
-Sent with a message (`POST /api/chat`, Socket.IO `assistant:message`) or
-with `assistant:join_session`. Keys may be camelCase or snake_case. The
+Sent with a message (`POST /api/chat`, Socket.IO `assistant_message`) or
+with `assistant_join_session`. Keys may be camelCase or snake_case. The
 runtime stores the validated, snake_case form on the session and reuses
 it for later messages that carry none.
 
