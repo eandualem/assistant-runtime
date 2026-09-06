@@ -160,7 +160,13 @@ def classify_llm_error(exc: Exception) -> LLMCallError:
         )
 
     # Also check for standard Python transient errors
-    if isinstance(exc, (ConnectionError, TimeoutError)):
+    if isinstance(exc, TimeoutError):
+        return LLMCallError(
+            f"LLM call failed (TIMEOUT): {exc}",
+            error_category="TIMEOUT",
+            is_retryable=True,
+        )
+    if isinstance(exc, ConnectionError):
         return LLMCallError(
             f"LLM call failed (CONNECTION_ERROR): {exc}",
             error_category="CONNECTION_ERROR",
