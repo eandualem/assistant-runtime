@@ -41,6 +41,50 @@ class TestLLMCallError:
 class TestClassifyLlmError:
     """classify_llm_error maps provider exceptions by class name."""
 
+    def test_model_api_timeout_is_a_timeout(self):
+        from pydantic_ai.exceptions import ModelAPIError
+
+        result = classify_llm_error(
+            ModelAPIError("anthropic:claude", "Request timed out or interrupted")
+        )
+        assert result.error_category == "TIMEOUT"
+        assert result.retry_allowed is True
+
+    def test_model_api_error_uses_the_chained_provider_exception(self):
+        from pydantic_ai.exceptions import ModelAPIError
+
+        class RateLimitError(Exception):
+            pass
+
+        error = ModelAPIError("anthropic:claude", "provider said no")
+        error.__cause__ = RateLimitError("429")
+        result = classify_llm_error(error)
+        assert result.error_category == "RATE_LIMIT"
+        assert result.retry_allowed is True
+
+    def test_model_api_error_with_a_native_timeout_cause_is_a_timeout(self):
+        from pydantic_ai.exceptions import ModelAPIError
+
+        error = ModelAPIError("anthropic:claude", "provider request failed")
+        error.__cause__ = TimeoutError("read timed out")
+        result = classify_llm_error(error)
+        assert result.error_category == "TIMEOUT"
+        assert result.retry_allowed is True
+
+    def test_other_model_api_errors_are_retryable_provider_errors(self):
+        from pydantic_ai.exceptions import ModelAPIError
+
+        result = classify_llm_error(ModelAPIError("anthropic:claude", "something odd"))
+        assert result.error_category == "SERVER_ERROR"
+        assert result.retry_allowed is True
+
+    def test_model_http_errors_keep_their_status_classification(self):
+        from pydantic_ai.exceptions import ModelHTTPError
+
+        result = classify_llm_error(ModelHTTPError(status_code=401, model_name="m", body=None))
+        assert result.error_category == "AUTH_ERROR"
+        assert result.retry_allowed is False
+
     # --- Stub exception classes to simulate provider SDK exceptions ---
 
     def test_rate_limit_error(self):
@@ -102,7 +146,7 @@ class TestClassifyLlmError:
 
     def test_python_timeout_error(self):
         result = classify_llm_error(TimeoutError("timed out"))
-        assert result.error_category == "CONNECTION_ERROR"
+        assert result.error_category == "TIMEOUT"
         assert result.is_retryable is True
         assert result.retry_allowed is True
 

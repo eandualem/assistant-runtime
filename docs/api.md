@@ -147,7 +147,7 @@ requesting socket.
 | `assistant:tool_result` | `tool_name`, `output`, `call_id`, `duration_ms`?, `invalidates`? |
 | `assistant:tool_error` | `tool_name`, `error`, `call_id` |
 | `assistant:final_response` | `content`, `model`, `streamed`, `session_id`?, `message_id`?, `trace_id`?, `usage`?, `error`?, `error_type`? (including `cancelled`), `pending_tool_call`? (`{tool_name, call_id, arguments}`) |
-| `assistant:error` | `type`, `message`, `error_type`?, `terminal`?, `retry_allowed`?; turn errors use `type: "error"` and a specific `error_type` |
+| `assistant:error` | `type`, `message`, `error_type`?, `terminal`?, `retry_allowed`?; turn errors use `type: "error"` and a specific `error_type`: `rate_limit`, `provider_error`, `connection_error`, `timeout`, `provider_auth`, `provider_client_error` for provider failures (a timed-out or interrupted provider request is `timeout`, retryable), `usage_limit`, `cancelled`, `session_error`, `forbidden`, `setup_error`, and `internal` only for failures inside the runtime |
 | `assistant:debug` | `type` is one of `debug_request`, `debug_system_prompt`, `debug_history`, `debug_tool_selection`, `debug_agent_config`, `debug_thinking`, `debug_final_response`, `debug_usage`, `debug_error`, `debug_completed`; off by default, on with `STREAMING__EMIT_DEBUG_EVENTS=true` |
 
 Segment metadata on deltas: `segment_id`, `segment_index`, `delta_index`,
