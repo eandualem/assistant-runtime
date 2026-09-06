@@ -101,7 +101,7 @@ usage. A minimal browser example is in `examples/agui/index.html`.
 
 ## The message body
 
-Sent to `POST /api/chat` and as the payload of `assistant:message`.
+Sent to `POST /api/chat` and as the payload of `assistant_message`.
 Keys may be camelCase; they are normalised.
 
 | Field | Type | Notes |
@@ -122,11 +122,16 @@ Keys may be camelCase; they are normalised.
 
 ### Client to server
 
+Client-to-server event names use underscores (they are dispatched to
+`on_<event>` handlers); server-to-client events use the `assistant:` prefix.
+An event the server has no handler for is ignored silently, so a misspelt
+name produces no response at all.
+
 | Event | Payload | Effect |
 |---|---|---|
-| `assistant:join_session` | `{"session_id", "host_context"?}` | join the session room and warm it (tools, prompt inputs) |
-| `assistant:message` | the message body | start a turn after prior-turn cleanup; ordinary messages cancel a live turn, continuations wait |
-| `assistant:cancel` | `{"session_id"}` | request cancellation and snapshot persistence for the live turn |
+| `assistant_join_session` | `{"session_id", "host_context"?}` | join the session room and warm it (tools, prompt inputs) |
+| `assistant_message` | the message body | start a turn after prior-turn cleanup; ordinary messages cancel a live turn, continuations wait |
+| `assistant_cancel` | `{"session_id"}` | request cancellation and snapshot persistence for the live turn |
 
 ### Server to client
 
@@ -151,7 +156,7 @@ rebuild the interleaving of thinking, text and tool groups.
 
 **Host tool flow.** `tool_call` with `category: "host"`, then
 `final_response` with `pending_tool_call`, then `status: completed`. The
-client performs the action and sends `assistant:message` with
+client performs the action and sends `assistant_message` with
 `tool_call_id` = `pending_tool_call.call_id`, `tool_result` = whatever the
 action produced (any JSON), and `content` empty. The model resumes.
 

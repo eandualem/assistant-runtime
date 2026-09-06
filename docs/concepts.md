@@ -115,7 +115,7 @@ twice. See [persistence and recovery](persistence.md).
 ## Host context
 
 What the host is showing right now, sent with a message (or with
-`assistant:join_session` to warm the session) as `host_context`. Version 1
+`assistant_join_session` to warm the session) as `host_context`. Version 1
 of the contract is a small, typed structure: descriptive `host` metadata,
 the current `view` (name, description, curated `data`, `state`),
 `navigation`, `actions` the host will perform when called, `attachments`,
