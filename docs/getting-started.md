@@ -114,6 +114,13 @@ make db-upgrade     # alembic migrations
 uv run assistant-runtime serve
 ```
 
+From an installed package there is no Makefile, so create the schema with
+the runtime itself; the migrations ship inside the wheel:
+
+```bash
+assistant-runtime migrate     # alembic upgrade head, using DATABASE__*
+```
+
 Connection settings are `DATABASE__HOST`, `DATABASE__PORT`,
 `DATABASE__USER`, `DATABASE__PASSWORD`, `DATABASE__NAME`. When Postgres is
 unreachable at startup the runtime logs a warning and runs in memory-only
@@ -137,7 +144,7 @@ actions on the model's behalf, declare them as host tools. The shape and
 the settings are in [concepts](concepts.md) and
 [configuration](configuration.md).
 
-## 8. Optional: integrations
+## 9. Optional: integrations
 
 | To use | Set |
 |---|---|
@@ -153,6 +160,7 @@ the settings are in [concepts](concepts.md) and
 
 - `.env` in the working directory: keys and settings (never committed)
 - `mcp_servers.json` in the working directory: MCP servers (gitignored)
-- `src/assistant_runtime/app/assistant/defaults/`: the default prompt artifacts
+- `src/assistant_runtime/artifacts.py`: the built-in assistant profiles
+- `src/assistant_runtime/profiles/`: the example profile texts
 - `alembic/versions/`: database migrations
 - `assistant-runtime docs <page>`: this documentation, from the installed package

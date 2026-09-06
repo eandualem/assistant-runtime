@@ -3,6 +3,7 @@
 assistant-runtime chat [--model M]    talk to the assistant in the terminal (no server, no database)
 assistant-runtime serve [--port P]    run the HTTP + Socket.IO server (replaces a previous one on that port)
 assistant-runtime doctor              check provider keys, model ids, database, optional extras
+assistant-runtime migrate             create or update the Postgres schema
 assistant-runtime docs [page]         the documentation shipped with this install
 assistant-runtime help [page]         the same pages (alias of docs)
 assistant-runtime version             print the installed version
@@ -22,6 +23,7 @@ from importlib.metadata import PackageNotFoundError, version
 from assistant_runtime.cli.chat import cmd_chat
 from assistant_runtime.cli.docs import cmd_docs
 from assistant_runtime.cli.doctor import cmd_doctor
+from assistant_runtime.cli.migrate import cmd_migrate
 from assistant_runtime.cli.serve import cmd_serve
 
 DEFAULT_PORT = 7100
@@ -64,6 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="check the environment and configuration")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("migrate", help="create or update the Postgres schema")
+    p.add_argument("--revision", default="head", help="target revision (default: head)")
+    p.set_defaults(func=cmd_migrate)
 
     for name, help_text in (
         ("docs", "print the documentation shipped with this install"),
