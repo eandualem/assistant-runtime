@@ -54,7 +54,7 @@ class TestServeReplace:
 
         monkeypatch.setattr(serve, "port_in_use", port_in_use)
         monkeypatch.setattr(serve, "is_assistant_runtime", lambda h, p: state["runtime"])
-        monkeypatch.setattr(serve, "listener_pids", lambda p: state["pids"])
+        monkeypatch.setattr(serve, "listener_pids", lambda h, p: state["pids"])
         monkeypatch.setattr(serve.os, "kill", kill)
         monkeypatch.setattr(serve.time, "sleep", lambda s: None)
         return state
@@ -82,6 +82,32 @@ class TestServeReplace:
         messages = []
         assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is False
         assert "could not be found" in messages[0]
+
+    def test_refused_signal_is_a_normal_failure(self, fake_port, monkeypatch):
+        def refuse(pid, sig):
+            raise PermissionError
+
+        monkeypatch.setattr(serve.os, "kill", refuse)
+        messages = []
+        assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is False
+        assert "not allowed to stop" in messages[0]
+
+    @pytest.mark.parametrize(
+        ("host", "address"),
+        [("127.0.0.1", "-iTCP@127.0.0.1:7100"), ("0.0.0.0", "-iTCP:7100"), ("::", "-iTCP:7100")],
+    )
+    def test_listener_lookup_is_scoped_to_the_bound_address(self, monkeypatch, host, address):
+        commands = []
+
+        class Result:
+            stdout = "4242\n"
+
+        monkeypatch.setattr(serve.shutil, "which", lambda name: "/usr/sbin/lsof")
+        monkeypatch.setattr(
+            serve.subprocess, "run", lambda cmd, **kw: commands.append(cmd) or Result()
+        )
+        assert serve.listener_pids(host, 7100) == [4242]
+        assert commands[0] == ["lsof", "-t", address, "-sTCP:LISTEN"]
 
     def test_cmd_serve_skips_the_takeover_with_no_replace(self, monkeypatch):
         import uvicorn

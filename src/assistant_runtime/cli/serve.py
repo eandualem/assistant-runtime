@@ -11,7 +11,6 @@ the takeover.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import shutil
@@ -67,15 +66,19 @@ def replace_previous_instance(
             "choose another --port or stop that program."
         )
         return False
-    pids = listener_pids(port)
+    pids = listener_pids(host, port)
     if not pids:
         log(
             f"serve: a previous assistant-runtime is listening on {host}:{port} but its process "
             "could not be found (is `lsof` installed?); stop it yourself or use another --port."
         )
         return False
-    for pid in pids:
-        _signal(pid, signal.SIGTERM)
+    if not all(_signal(pid, signal.SIGTERM) for pid in pids):
+        log(
+            f"serve: not allowed to stop the previous assistant-runtime on {host}:{port} "
+            f"(pid {pids}); stop it yourself or use another --port."
+        )
+        return False
     if _wait_until_free(host, port, timeout):
         log(f"serve: replaced the previous assistant-runtime on {host}:{port} (pid {pids})")
         return True
@@ -114,13 +117,22 @@ def is_assistant_runtime(host: str, port: int) -> bool:
         return False
 
 
-def listener_pids(port: int) -> list[int]:
-    """Process ids listening on ``port``, through ``lsof`` when it is available."""
+_WILDCARD_HOSTS = {"", "0.0.0.0", "::", "*"}
+
+
+def listener_pids(host: str, port: int) -> list[int]:
+    """Process ids listening on exactly ``host:port``, through ``lsof`` when available.
+
+    The address is part of the filter so a different program bound to the
+    same port on another interface is never signalled; a wildcard bind
+    matches any address.
+    """
     if shutil.which("lsof") is None:
         return []
+    address = f"-iTCP:{port}" if host in _WILDCARD_HOSTS else f"-iTCP@{host}:{port}"
     try:
         output = subprocess.run(  # noqa: S603
-            ["lsof", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            ["lsof", "-t", address, "-sTCP:LISTEN"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -131,9 +143,15 @@ def listener_pids(port: int) -> list[int]:
     return [int(line) for line in output.split() if line.strip().isdigit()]
 
 
-def _signal(pid: int, sig: signal.Signals) -> None:
-    with contextlib.suppress(ProcessLookupError):
+def _signal(pid: int, sig: signal.Signals) -> bool:
+    """Send ``sig``; a vanished process counts as done, a refused one as failure."""
+    try:
         os.kill(pid, sig)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return True
 
 
 def _wait_until_free(host: str, port: int, timeout: float) -> bool:
