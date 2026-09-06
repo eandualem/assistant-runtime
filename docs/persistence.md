@@ -29,10 +29,15 @@ below.
 
 A host tool call ends the turn. The runtime then:
 
-1. writes the assistant message with the call and no result;
+1. writes the assistant message with the call(s) and no result;
 2. writes `pending_action` (`tool_call_id`, `tool_name`,
-   `assistant_message_id`) on the session row;
-3. emits `final_response.pending_tool_call` and waits.
+   `assistant_message_id`, `batch`: every host call of that response in
+   order) on the session row;
+3. emits `final_response.pending_tool_call` for the first call and waits.
+
+When the batch has more than one call, each continuation records its
+result on the assistant message and moves `pending_action` to the next
+call without running the model; the last continuation resumes the model.
 
 When the continuation arrives, the accepted result is written on the same
 assistant message first, then `pending_action` is cleared, then the model

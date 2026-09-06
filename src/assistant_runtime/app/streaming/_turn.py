@@ -84,6 +84,9 @@ class TurnPlan:
     deferred_tool_results: DeferredToolResults | None = None
     accepted_tool_result: ModelRequest | None = None
     suppress_tool_call_ids: set[str] = field(default_factory=set)
+    # A continuation for one call of a batch with more calls waiting: record the
+    # result, hand ``next_pending`` to the host, and do not run the model yet.
+    next_pending: dict[str, Any] | None = None
     screenshot: str | None = None
     # Bookkeeping.
     turn_number: int = 0
@@ -248,6 +251,25 @@ class TurnPlanner:
             else request.tool_result
         )
         pending_tool_name = session_context.get("pending_tool_name") or "unknown"
+        batch = [
+            str(c) for c in (session_context.get("pending_tool_batch") or [pending_tool_call_id])
+        ]
+        remaining = [
+            call_id
+            for call_id in batch
+            if call_id != pending_tool_call_id
+            and (entry := find_tool_entry(assistant_record.get("segments"), call_id)) is not None
+            and "output" not in entry
+        ]
+        next_pending = None
+        if remaining:
+            entry = find_tool_entry(assistant_record.get("segments"), remaining[0]) or {}
+            next_pending = {
+                "tool_name": str(entry.get("name", "")),
+                "call_id": remaining[0],
+                "arguments": entry.get("input") if isinstance(entry.get("input"), dict) else {},
+                "queued": remaining[1:],
+            }
         if request.tool_outcome == "failed":
             # A host-declared failure is the native ``failed`` outcome: the model
             # sees the failure message and does not repeat the call.
@@ -270,9 +292,12 @@ class TurnPlanner:
                 *self._sessions.get_history(session_id, exclude_leaf=True),
                 *flat_assistant,
             ],
-            deferred_tool_results=DeferredToolResults(
-                calls={request.tool_call_id: deferred_result}
+            deferred_tool_results=(
+                None
+                if next_pending
+                else DeferredToolResults(calls={request.tool_call_id: deferred_result})
             ),
+            next_pending=next_pending,
             accepted_tool_result=ModelRequest(
                 parts=[
                     ToolReturnPart(
@@ -283,7 +308,7 @@ class TurnPlanner:
                     )
                 ]
             ),
-            suppress_tool_call_ids={request.tool_call_id},
+            suppress_tool_call_ids=set(batch),
             screenshot=screenshot,
             turn_number=session_context.get("turn_number", 0),
             update_working_memory=False,

@@ -137,7 +137,41 @@ class TestGetSession:
             "tool_name": "select_item",
             "assistant_message_id": "assistant-1",
             "arguments": {"item": "a"},
+            "queued": [],
         }
+
+    async def test_pending_action_lists_the_queued_calls(self) -> None:
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="",
+            segments=[
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {"id": "host-1", "name": "select_item", "input": {"item": "a"}},
+                        {"id": "host-2", "name": "select_item", "input": {"item": "b"}},
+                    ],
+                }
+            ],
+            usage=None,
+        )
+        await sessions.set_pending_action(
+            "sess-1",
+            tool_call_id="host-1",
+            tool_name="select_item",
+            assistant_message_id="assistant-1",
+            batch=["host-1", "host-2"],
+        )
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/sessions/sess-1")
+
+        assert response.json()["pending_action"]["queued"] == ["host-2"]
 
     async def test_missing_session_returns_404(self) -> None:
         app = _create_test_app()

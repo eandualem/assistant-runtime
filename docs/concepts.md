@@ -108,9 +108,12 @@ one, the runtime emits a `tool_call` event with `category: "host"`,
 ends the turn with `final_response.pending_tool_call`, and waits. The host
 performs the action and sends a continuation with the matching
 `tool_call_id` and a `tool_result` (and `tool_outcome: "failed"` when the
-action failed); the runtime resumes the model with that result. A session
-holds at most one pending host tool call; it is stored on the session and
-survives a restart. A call that never gets its result is recorded as
+action failed); the runtime resumes the model with that result. When the
+model asks for several host actions in one response, the runtime hands them
+to the host one at a time, in order: each continuation ends with the next
+`pending_tool_call` and no model run, and the model resumes once all have
+results. A session holds at most one pending host tool call; it is stored
+on the session (with the rest of its batch) and survives a restart. A call that never gets its result is recorded as
 `cancelled`, `superseded` or `unknown`, and a result is never applied
 twice. See [persistence and recovery](persistence.md).
 

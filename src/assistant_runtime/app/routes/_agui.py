@@ -67,10 +67,54 @@ def parse_run_input(body: bytes) -> RunAgentInput:
     return AGUIAdapter.build_run_input(body)
 
 
+def build_assistant_requests(
+    run_input: RunAgentInput, session_context: dict[str, Any] | None
+) -> list[AssistantRequest]:
+    """The runtime requests for this run, in order.
+
+    A trailing run of ``tool`` messages answers the host calls the previous
+    run asked for; each is a continuation and the runtime hands them to the
+    model once all are in. Otherwise the last message must be a ``user``
+    message and yields one new message.
+    """
+    if not run_input.messages:
+        raise AGUIRequestError("AG-UI run input has no messages")
+    last = run_input.messages[-1]
+    base: dict[str, Any] = {
+        "session_id": run_input.thread_id,
+        "host_context": _host_context(run_input),
+    }
+    config = _forwarded_config(run_input)
+    if config is not None:
+        base["config"] = config
+
+    if isinstance(last, ToolMessage):
+        trailing: list[ToolMessage] = []
+        for message in reversed(run_input.messages):
+            if not isinstance(message, ToolMessage):
+                break
+            trailing.append(message)
+        trailing.reverse()
+        return [
+            AssistantRequest.model_validate(
+                {
+                    **base,
+                    "id": message.id,
+                    "content": "",
+                    "tool_call_id": message.tool_call_id,
+                    "tool_result": _tool_result(message.content),
+                    "tool_outcome": "failed" if getattr(message, "error", None) else "success",
+                }
+            )
+            for message in trailing
+        ]
+    return [build_assistant_request(run_input, session_context)]
+
+
 def build_assistant_request(
     run_input: RunAgentInput, session_context: dict[str, Any] | None
 ) -> AssistantRequest:
-    """The runtime request for this run: a continuation or a new message."""
+    """The runtime request for a run that ends with a single message."""
     if not run_input.messages:
         raise AGUIRequestError("AG-UI run input has no messages")
     last = run_input.messages[-1]
@@ -112,15 +156,20 @@ def build_assistant_request(
 def agui_response(
     service: StreamingService,
     run_input: RunAgentInput,
-    request: AssistantRequest,
+    requests: list[AssistantRequest],
     *,
     principal: Principal,
     accept: str | None,
 ) -> StreamingResponse:
-    """Stream the turn as AG-UI events, encoded by upstream for the ``Accept`` header."""
+    """Stream the turn as AG-UI events, encoded by upstream for the ``Accept`` header.
+
+    ``requests`` are run in order; only the last one produces native events
+    (the earlier ones record host results and hand over the next pending
+    call without a model run).
+    """
     event_stream = AGUIEventStream(run_input, accept=accept)
     return event_stream.streaming_response(
-        event_stream.transform_stream(_native_events(service, request, principal))
+        event_stream.transform_stream(_native_events(service, requests, principal))
     )
 
 
@@ -128,7 +177,7 @@ _DONE = object()
 
 
 async def _native_events(
-    service: StreamingService, request: AssistantRequest, principal: Principal
+    service: StreamingService, requests: list[AssistantRequest], principal: Principal
 ) -> AsyncIterator[Any]:
     """The turn's native events; a terminal runtime error ends the iterator by raising.
 
@@ -143,11 +192,13 @@ async def _native_events(
 
     async def consume() -> None:
         try:
-            async for event in service.stream_message(
-                request, principal=principal, native_sink=queue.put_nowait
-            ):
-                if event.get("type") == "error" and event.get("terminal"):
-                    queue.put_nowait(_terminal_error(event))
+            for request in requests:
+                async for event in service.stream_message(
+                    request, principal=principal, native_sink=queue.put_nowait
+                ):
+                    if event.get("type") == "error" and event.get("terminal"):
+                        queue.put_nowait(_terminal_error(event))
+                        return
         except BaseException as exc:
             queue.put_nowait(exc)
         finally:
@@ -268,5 +319,6 @@ __all__ = [
     "TurnFailedError",
     "agui_response",
     "build_assistant_request",
+    "build_assistant_requests",
     "parse_run_input",
 ]

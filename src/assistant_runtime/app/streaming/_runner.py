@@ -55,7 +55,7 @@ from assistant_runtime.app.streaming._event_builder import (
     make_debug_usage_event,
     make_error_event,
 )
-from assistant_runtime.app.streaming._host_tool import pending_call_payload
+from assistant_runtime.app.streaming._host_tool import pending_call_payloads, queued_payload
 from assistant_runtime.app.streaming._usage import (
     cache_counts,
     merge_usage,
@@ -181,6 +181,29 @@ class TurnRunner:
                 state.assistant_messages.append(plan.accepted_tool_result)
                 await self._persist(plan, state)
                 await self._clear_pending(plan)
+            if plan.next_pending is not None:
+                # More host calls from the same response wait; hand the next one
+                # over and let the model resume once all results are in.
+                await self._sessions.set_pending_action(
+                    session_id,
+                    tool_call_id=plan.next_pending["call_id"],
+                    tool_name=plan.next_pending["tool_name"],
+                    assistant_message_id=plan.assistant_message_id,
+                    batch=list(plan.suppress_tool_call_ids),
+                )
+                state.pending_tool_call = plan.next_pending
+                control.accepting_cancel = False
+                final = coordinator.try_final_response(
+                    None,
+                    resolved_model,
+                    session_id=session_id,
+                    message_id=plan.assistant_message_id,
+                    usage=state.stored_usage or state.usage,
+                    pending_tool_call=plan.next_pending,
+                )
+                if final:
+                    yield final
+                return
             control.check_cancelled()
             if emit_debug:
                 yield coordinator.track_debug(
@@ -346,6 +369,10 @@ class TurnRunner:
             else:
                 message, error_type, retry_allowed = _describe_error(exc)
             logger.warning("[STREAM] Turn failed", session_id=session_id, error=message)
+            # Calls the model made but nobody answered would block every later
+            # prompt ("unprocessed tool calls"); resolve them like a cancellation.
+            with contextlib.suppress(Exception):
+                await self._resolve_unanswered_calls(plan, state)
             for event in self._terminal_error_events(
                 coordinator,
                 session_id=session_id,
@@ -418,6 +445,21 @@ class TurnRunner:
         """Retain native work and explicitly mark unresolved calls interrupted."""
         state.cancelled = interrupted
         state.interrupted_status = "cancelled"
+        self._mark_unanswered_calls(state)
+        await self._persist(plan, state)
+        await self._clear_pending(plan)
+
+    async def _resolve_unanswered_calls(self, plan: TurnPlan, state: _RunState) -> None:
+        """After a failed turn, give calls without a result a stored ``cancelled`` outcome."""
+        if not self._mark_unanswered_calls(state):
+            return
+        state.interrupted_status = "cancelled"
+        await self._persist(plan, state)
+        await self._clear_pending(plan)
+
+    @staticmethod
+    def _mark_unanswered_calls(state: _RunState) -> bool:
+        """Append interrupted returns for calls without a result; True when any were added."""
         returned = {
             part.tool_call_id
             for message in state.assistant_messages
@@ -435,10 +477,10 @@ class TurnRunner:
             for part in message.parts
             if isinstance(part, ToolCallPart) and part.tool_call_id not in returned
         ]
-        if interrupted:
-            state.assistant_messages.append(ModelRequest(parts=interrupted))
-        await self._persist(plan, state)
-        await self._clear_pending(plan)
+        if not interrupted:
+            return False
+        state.assistant_messages.append(ModelRequest(parts=interrupted))
+        return True
 
     @staticmethod
     def _exhausted_events(
@@ -710,19 +752,21 @@ class TurnRunner:
             # The tool_call event was already streamed by iterate_run. The
             # assistant row holds the call already; the session row now records
             # that it waits for this call, so a restart can still accept the result.
-            pending = pending_call_payload(
+            payloads = pending_call_payloads(
                 self._tools,
                 state.output,
                 assistant_segments=state.assistant_segments,
                 host_tool_names=_host_tool_names(ctx),
             )
+            batch = [payload["call_id"] for payload in payloads]
             await self._sessions.set_pending_action(
                 plan.session_id,
-                tool_call_id=pending["call_id"],
-                tool_name=pending["tool_name"],
+                tool_call_id=payloads[0]["call_id"],
+                tool_name=payloads[0]["tool_name"],
                 assistant_message_id=plan.assistant_message_id,
+                batch=batch,
             )
-            state.pending_tool_call = pending
+            state.pending_tool_call = queued_payload(payloads[0], batch[1:])
             state.final_output = None
             return True
         session_context.pop("pending_assistant_message_id", None)
