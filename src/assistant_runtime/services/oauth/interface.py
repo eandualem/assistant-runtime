@@ -162,10 +162,12 @@ class OAuthService:
     async def health_check(self) -> dict[str, Any]:
         """Report OAuth connection health."""
         if not self.configured:
-            return {"status": "disabled", "reason": "not_configured"}
+            # Optional integration: absent is a state, not a failure.
+            return {"healthy": True, "status": "disabled", "reason": "not_configured"}
 
         connected = self.get_codex_session() is not None
         return {
+            "healthy": True,
             "status": "connected" if connected else "disconnected",
             "email": self._email,
             "expires_at": self._expires_at if self._expires_at > 0 else None,

@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import socketio
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Load .env into os.environ before AppSettings or os.getenv() calls.
     # Pydantic Settings' env_file only populates model fields, not os.environ.
     # LLM providers use os.getenv() for API keys, so they need this.
-    load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
 
     lifecycle = LifecycleManager()
     app.state.lifecycle = lifecycle

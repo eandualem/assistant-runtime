@@ -78,16 +78,22 @@ class DatabaseService:
         logger.info("Database service stopped")
 
     async def health_check(self) -> dict:
-        """Report health status with live connectivity check."""
+        """Report reachability with a live check.
+
+        Postgres is optional: an unreachable database is reported as
+        ``reachable: false`` but does not make the runtime unhealthy, because
+        every request path works without it. A service that never started is
+        a genuine failure.
+        """
         if not self._started or self._engine is None:
-            return {"healthy": False}
+            return {"healthy": False, "reachable": False}
         try:
             async with self._engine.begin() as conn:
                 await conn.execute(text("SELECT 1"))
             self._healthy = True
         except Exception:
             self._healthy = False
-        return {"healthy": self._healthy, "host": self._config.host}
+        return {"healthy": True, "reachable": self._healthy, "host": self._config.host}
 
     @property
     def healthy(self) -> bool:

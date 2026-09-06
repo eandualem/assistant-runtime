@@ -4,7 +4,7 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -13,7 +13,7 @@ from assistant_runtime.services.database.config import DatabaseConfig
 import assistant_runtime.services.database.models  # noqa: F401 — registers ORM models with Base.metadata
 
 # Load .env so DatabaseConfig picks up env vars
-load_dotenv()
+load_dotenv(find_dotenv(usecwd=True))
 
 config = context.config
 if config.config_file_name is not None:

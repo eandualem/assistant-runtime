@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 from typing import Any
 
@@ -38,6 +39,31 @@ class TestParser:
         assert args.host == "127.0.0.1"
         assert args.port == 7100
         assert not args.no_replace
+
+
+class TestDotenvResolution:
+    """An installed console script must read the .env of the working directory.
+
+    `load_dotenv()` searches upward from the *calling module*, which is inside
+    site-packages for an installed package, so the user's .env was ignored
+    whenever the environment lived outside the working directory.
+    """
+
+    def test_doctor_loads_the_env_file_of_the_working_directory(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from assistant_runtime.cli import doctor
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("PROBE=1\n")
+        loaded: dict[str, object] = {}
+        monkeypatch.setattr(
+            doctor, "load_dotenv", lambda path=None: loaded.setdefault("path", path)
+        )
+        monkeypatch.setattr(doctor, "run_checks", lambda checks: [])
+
+        assert doctor.cmd_doctor(argparse.Namespace()) == 0
+        assert Path(str(loaded["path"])).resolve() == (tmp_path / ".env").resolve()
 
 
 class TestServeReplace:
