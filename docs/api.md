@@ -176,12 +176,42 @@ with the partial message saved. See [concepts](concepts.md#usage-and-budgets).
 |---|---|
 | `GET /api/sessions?limit=50&offset=0` | `[{session_id, owner_id, title, turn_number, message_count, created_at}]`; the caller's own sessions, every session for an administrator |
 | `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `assistant_message_id`, or null) |
-| `GET /api/sessions/{id}/messages` | the root-to-leaf path, for display |
+| `GET /api/sessions/{id}/messages?leaf_id=` | the root-to-leaf path for display (see below); `leaf_id` selects another leaf's path, for branch switching |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |
 | `POST /api/sessions/{id}/repair` | resolve the pending host action and every call without a result as `unknown`, so the session can continue |
 | `DELETE /api/sessions/{id}` | delete the session |
 | `PATCH /api/sessions/{id}/owner` `{"owner_id"}` | assign the session to a principal (administration; null makes it unowned) |
+
+### Stored messages
+
+`GET /api/sessions/{id}/messages` returns the path from the root to the
+active leaf (or to `leaf_id`), merged with the steering that was delivered
+along it, ordered by time. A session exists once its first message is
+stored, so the route is `404` before that. Three row shapes:
+
+| `role` | Fields |
+|---|---|
+| `user` | `id`, `parent_id`, `text`, `message_type` (`standard`), `timestamp` |
+| `assistant` | `id`, `parent_id`, `text` (the text segments joined), `segments`, `usage` (see [usage](#usage)), `timestamp` |
+| `steering` | `id`, `text`, `message_type: "steering"`, `status` (`delivered` or `promoted`), `timestamp`; no `parent_id`, steering is outside the tree |
+
+`segments` is the assistant message in order. Each segment carries
+`segment_id` (`segment_<n>`) and `segment_index`, and is one of:
+
+- `{"kind": "thinking", "text"}` and `{"kind": "text", "text"}`;
+- `{"kind": "tool_group", "tools": [...]}`, where each tool entry has `id`
+  (the call id), `name`, `input` (the arguments), and, once a result is
+  recorded, `output`, plus `outcome` when it is not `success` (`failed`,
+  `denied`, `interrupted`) and `status` when the action did not complete
+  (`failed`, `cancelled`, `superseded`, `unknown`; see
+  [persistence](persistence.md#action-outcomes)). An entry without `output`
+  is the pending host action. Entries do not say whether a tool is a host
+  or backend tool; the streamed `tool_call` event does (`category`), and a
+  host knows its own action names.
+
+`GET /api/sessions/{id}/tree` returns every message with `id`, `parent_id`,
+`role`, `message_type`, `content` and `created_at`, for drawing branches.
 
 ## Settings, models, providers
 
