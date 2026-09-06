@@ -238,6 +238,19 @@ async def test_unmappable_input_is_a_422(client, body, detail):
     assert detail in json.dumps(response.json())
 
 
+async def test_oversized_run_input_is_a_413(client, monkeypatch):
+    from assistant_runtime.app.routes import agui
+
+    monkeypatch.setattr(agui, "MAX_BODY_BYTES", 64)
+    response, _ = await post(client, run_input([user("x" * 200)]))
+    assert response.status_code == 413
+    response, _ = (
+        await client.post("/api/agui", content=b"{}", headers={"content-length": "100000000"}),
+        None,
+    )
+    assert response.status_code == 413
+
+
 async def test_missing_extra_is_a_501(client, monkeypatch):
     from assistant_runtime.app.routes import agui
 

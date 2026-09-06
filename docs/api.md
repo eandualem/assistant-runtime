@@ -85,7 +85,7 @@ response is Server-Sent Events encoded by Pydantic AI's `AGUIEventStream`
 | last message is a `user` message | a new message appended to the session's active leaf; its `id` is the message id |
 | last message is a `tool` message | the continuation of the session's pending host action (`toolCallId` = its `call_id`, `content` = the result, JSON when it parses); `error` set makes it `tool_outcome: "failed"` |
 | earlier messages | ignored: the server-side tree is the conversation; the resent transcript is not replayed into the model |
-| `tools` | request-declared host actions (`host_context.actions`) for the turn; the model's call ends the run with `TOOL_CALL_*` events and the client answers with a `tool` message in its next run |
+| `tools` | request-declared host actions (`host_context.actions`) for this run only: every AG-UI request carries its own host context, so a tool not sent again is not available (unlike `host_context` omitted on the message body, which reuses the session's last context); the model's call ends the run with `TOOL_CALL_*` events and the client answers with a `tool` message in its next run |
 | `context` | `host_context.background` (`description` → `value`) |
 | `state` | the host context itself when it carries `version: 1`; otherwise `host_context.extensions.state` |
 | `forwardedProps.config` | the per-request tunable overrides (same fields as `config` in the message body) |

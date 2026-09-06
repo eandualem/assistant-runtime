@@ -134,7 +134,10 @@ async def _native_events(
 
     The turn runs in its own task so the runtime finishes persistence even if
     the client goes away; closing this iterator (a disconnect) cancels the
-    turn through the same path as any other consumer.
+    turn through the same path as any other consumer. The queue is unbounded
+    like ``TurnControl.events``: a slow client must never stall the run or its
+    snapshot write, and it holds at most one turn's events, which the run's
+    usage limits and the stream timeout already cap.
     """
     queue: asyncio.Queue[Any] = asyncio.Queue()
 
@@ -174,7 +177,7 @@ def _terminal_error(event: dict[str, Any]) -> BaseException:
 # --- input mapping -----------------------------------------------------------
 
 
-def _host_context(run_input: RunAgentInput) -> dict[str, Any] | None:
+def _host_context(run_input: RunAgentInput) -> dict[str, Any]:
     state = run_input.state if isinstance(run_input.state, dict) else None
     context: dict[str, Any]
     if state and state.get("version") == HOST_CONTEXT_VERSION:
@@ -200,8 +203,8 @@ def _host_context(run_input: RunAgentInput) -> dict[str, Any] | None:
         background = dict(context.get("background") or {})
         background.update({item.description: item.value for item in run_input.context})
         context["background"] = background
-    if context == {"version": HOST_CONTEXT_VERSION}:
-        return None
+    # Always a context, even an empty one: an AG-UI run declares its own tools
+    # and state, so a previous run's host context must not carry over.
     return context
 
 

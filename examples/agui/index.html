@@ -116,9 +116,16 @@
 
   document.getElementById("form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    // One run at a time per thread: the transcript is appended in order.
+    const button = e.currentTarget.querySelector("button");
+    button.disabled = true;
     const text = document.getElementById("text").value;
     messages.push({ id: crypto.randomUUID(), role: "user", content: text });
     log.textContent += `\n> ${text}\n`;
-    await run();
+    try {
+      await run();
+    } finally {
+      button.disabled = false;
+    }
   });
 </script>

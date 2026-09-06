@@ -13,6 +13,24 @@ from assistant_runtime.principal import can_access_session
 
 router = APIRouter()
 
+MAX_BODY_BYTES = 25 * 1024 * 1024
+"""Largest accepted run input; reference attachments travel inline as data URIs."""
+
+
+async def _read_body(request: Request) -> bytes:
+    """The request body, refused with 413 before it is fully buffered when too large."""
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="AG-UI run input is too large")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="AG-UI run input is too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 def _load_bridge():
     """Import the protocol mapping lazily; the ``ag-ui`` extra is optional."""
@@ -44,7 +62,7 @@ async def agui_run(
         ) from exc
 
     try:
-        run_input = bridge.parse_run_input(await request.body())
+        run_input = bridge.parse_run_input(await _read_body(request))
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
 

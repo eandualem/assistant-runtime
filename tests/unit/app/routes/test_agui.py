@@ -34,7 +34,9 @@ class TestBuildAssistantRequest:
         assert request.session_id == "thread-1"
         assert request.parent_id == "assistant-9"
         assert request.content == "Hi"
-        assert request.host_context is None
+        # Per-request: no tools this run means no host actions this run.
+        assert request.host_context["version"] == 1
+        assert request.host_context["actions"] == []
         assert request.config is None
 
     def test_first_message_of_a_new_session_is_the_root(self):
