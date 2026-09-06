@@ -191,8 +191,9 @@ class AssistantRequest(BaseModel):
     @model_validator(mode="after")
     def validate_message_shape(self) -> AssistantRequest:
         """Enforce distinct wire contracts for standard messages vs steering."""
-        if "tool_outcome" in self.model_fields_set and self.tool_call_id is None:
-            # Continuation-only, even when the supplied value is the default.
+        if self.tool_outcome != "success" and self.tool_call_id is None:
+            # Continuation-only. The default value stays accepted on any request
+            # because serialised requests (``model_dump()``) carry it explicitly.
             raise ValueError("tool_outcome requires tool_call_id (a continuation)")
         if self.is_steering:
             if self.parent_id is not None:
