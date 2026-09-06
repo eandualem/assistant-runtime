@@ -40,7 +40,12 @@ video = [
 tracing = [
     "langfuse>=4.0.0",
 ]
+# AG-UI protocol endpoint (app/routes/agui.py imports pydantic_ai.ui.ag_ui lazily; 501 when absent)
+ag-ui = [
+    "ag-ui-protocol>=0.1.10",
+]
 dev = [
+    "ag-ui-protocol>=0.1.10",
     "pytest>=9.0.0",
     "pytest-asyncio>=1.0.0",
     "pytest-mock>=3.10.0",

@@ -233,6 +233,13 @@ execution, history, serialization, or the upstream dependency; see
   events by `_EVENT_TYPE_MAP` in `app/socketio_server.py`;
   `agent_status: completed` is the terminal event. A new event type means
   a `make_*` function, a map entry, and a test in `test_event_builder.py`.
+  Protocol adapters do not translate these dicts: they receive the turn's
+  native Pydantic AI events through `stream_message(native_sink=...)`
+  (`TurnControl.native_sink`, fed by `iterate_run`) and encode them with the
+  upstream event stream. The AG-UI endpoint (`app/routes/agui.py`,
+  `_agui.py`, optional `ag-ui` extra) is the reference; it maps the run
+  input onto sessions, continuations and host actions and never runs the
+  agent itself.
 - **The system prompt is assembled from the profile's artifacts**, in the
   profile's order, then MCP connections, the current time, the host context
   and working memory. Stable fragments come first so provider prompt
