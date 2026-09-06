@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from assistant_runtime.services.database.models import (
     MessageORM,
@@ -48,10 +49,18 @@ class TestSessionRepository:
             turn_number=3,
             working_memory={"goal": "ship tree model"},
             telegram_chat_id="123456789",
+            pending_action={"tool_call_id": "call-1", "tool_name": "navigate"},
         )
 
         mock_session.execute.assert_awaited_once()
         mock_session.flush.assert_awaited_once()
+        statement = mock_session.execute.await_args.args[0]
+        compiled = statement.compile(dialect=postgresql.dialect())
+        assert compiled.params["pending_action"] == {
+            "tool_call_id": "call-1",
+            "tool_name": "navigate",
+        }
+        assert "pending_action = excluded.pending_action" in str(compiled)
 
 
 class TestMessageRepository:

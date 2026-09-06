@@ -26,7 +26,10 @@ from assistant_runtime.app.assistant._session_persistence import (
     LoadedSession,
     SessionPersistence,
 )
-from assistant_runtime.app.assistant._stale_tools import repair_stale_tools_in_context
+from assistant_runtime.app.assistant._stale_tools import (
+    find_tool_entry,
+    repair_stale_tools_in_context,
+)
 
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant.models import AssistantRequest
@@ -471,8 +474,39 @@ class SessionStore:
             return 0
         return await self._db.cleanup_expired()
 
+    # --- pending host action --------------------------------------------------
+
+    async def set_pending_action(
+        self, session_id: str, *, tool_call_id: str, tool_name: str, assistant_message_id: str
+    ) -> None:
+        """Record the one host-tool call the session now waits on, in memory and on the row."""
+        ctx = self.get_context(session_id)
+        ctx["pending_tool_call_id"] = tool_call_id
+        ctx["pending_tool_name"] = tool_name
+        ctx["pending_assistant_message_id"] = assistant_message_id
+        await self.save_session_state_async(session_id)
+
+    async def clear_pending_action(self, session_id: str) -> dict[str, Any] | None:
+        """Forget the pending host-tool call; returns what was pending, if anything.
+
+        The row is written only when something was pending, so ordinary turns
+        do not pay for an extra write.
+        """
+        ctx = self._sessions.get(session_id)
+        if ctx is None or not ctx.get("pending_tool_call_id"):
+            return None
+        pending = {
+            "tool_call_id": ctx.get("pending_tool_call_id"),
+            "tool_name": ctx.get("pending_tool_name"),
+            "assistant_message_id": ctx.get("pending_assistant_message_id"),
+        }
+        for key in ("pending_tool_call_id", "pending_tool_name", "pending_assistant_message_id"):
+            ctx.pop(key, None)
+        await self.save_session_state_async(session_id)
+        return pending
+
     async def repair_stale_host_tools(self, session_id: str) -> dict[str, Any]:
-        """Clear the pending host-tool call and mark tools without output stale.
+        """Resolve the pending host-tool call and every tool without output as ``unknown``.
 
         Returns a report of what was repaired.
         """
@@ -485,15 +519,12 @@ class SessionStore:
         if ctx is None:
             raise LookupError(f"Session '{session_id}' not found")
 
-        cleared = ctx.get("pending_tool_call_id")
+        cleared = await self.clear_pending_action(session_id)
         if cleared:
             report["cleared_pending"] = {
-                "tool_call_id": cleared,
-                "tool_name": ctx.get("pending_tool_name"),
+                "tool_call_id": cleared["tool_call_id"],
+                "tool_name": cleared["tool_name"],
             }
-            ctx.pop("pending_tool_call_id", None)
-            ctx.pop("pending_tool_name", None)
-            ctx.pop("pending_assistant_message_id", None)
 
         repaired = repair_stale_tools_in_context(ctx)
         if repaired and self._db is not None:
@@ -553,9 +584,13 @@ class SessionStore:
         if loaded is None:
             return None
         ctx = _context_from_loaded(loaded)
-        # pending_tool_call_id is in-memory only, so after a reload no host
-        # tool without output can ever get its continuation: mark them stale.
-        repaired = repair_stale_tools_in_context(ctx)
+        pending_id = _restore_pending_action(ctx, loaded.pending_action, session_id)
+        # Only the persisted pending action can still receive its continuation.
+        # Any other tool without output was interrupted by a crash or predates
+        # persisted pending actions: its outcome is unknown.
+        repaired = repair_stale_tools_in_context(
+            ctx, keep=frozenset({pending_id}) if pending_id else frozenset()
+        )
         if repaired:
             await self._db.update_segments(repaired)
             logger.info(
@@ -563,6 +598,10 @@ class SessionStore:
                 session_id=session_id,
                 repaired_messages=len(repaired),
             )
+        if loaded.pending_action is not None and pending_id is None:
+            # The stored action no longer matches the messages (its result was
+            # recorded before the row was updated); drop it from the row too.
+            await self._db.save_state(session_id, ctx)
         return ctx
 
 
@@ -609,6 +648,34 @@ def _context_from_loaded(loaded: LoadedSession) -> dict[str, Any]:
     ctx["active_leaf_id"] = _latest_leaf_id(ctx)
     ctx["cached_path"] = _resolve_path(ctx, ctx["active_leaf_id"])
     return ctx
+
+
+def _restore_pending_action(
+    ctx: dict[str, Any], pending: dict[str, Any] | None, session_id: str
+) -> str | None:
+    """Put a stored pending action back on ``ctx`` when its messages still agree with it.
+
+    Returns the restored tool call id, or None when nothing (valid) was stored.
+    """
+    if not pending:
+        return None
+    tool_call_id = pending.get("tool_call_id")
+    assistant_message_id = pending.get("assistant_message_id")
+    record = ctx["message_index"].get(assistant_message_id) if assistant_message_id else None
+    entry = find_tool_entry(record.get("segments"), str(tool_call_id)) if record else None
+    if not tool_call_id or entry is None or "output" in entry:
+        logger.warning(
+            "[SESSION] Stored pending action does not match the session; dropping it",
+            session_id=session_id,
+            pending_call_id=tool_call_id,
+            assistant_message_id=assistant_message_id,
+            already_answered=entry is not None and "output" in entry,
+        )
+        return None
+    ctx["pending_tool_call_id"] = str(tool_call_id)
+    ctx["pending_tool_name"] = pending.get("tool_name") or str(entry.get("name", ""))
+    ctx["pending_assistant_message_id"] = assistant_message_id
+    return str(tool_call_id)
 
 
 def _add_message(ctx: dict[str, Any], record: MessageRecord) -> None:

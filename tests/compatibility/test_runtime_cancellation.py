@@ -298,6 +298,14 @@ async def test_cancel_keeps_completed_tool_and_marks_inflight_call_interrupted(r
     assert returns["inflight-1"].outcome == "interrupted"
     assert "unknown" in str(returns["inflight-1"].content)
     context = runtime.sessions.get_context("compat")
+    stored = {
+        tool["id"]: tool
+        for segment in context["message_index"][assistant_id]["segments"]
+        if segment["kind"] == "tool_group"
+        for tool in segment["tools"]
+    }
+    assert "status" not in stored["done-1"]
+    assert stored["inflight-1"]["status"] == "cancelled"
     assert not context.get("pending_tool_call_id")
     assert not context.get("current_assistant_message_id")
 

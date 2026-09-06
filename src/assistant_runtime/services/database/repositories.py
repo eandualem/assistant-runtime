@@ -142,6 +142,7 @@ class SessionRepository:
         telegram_bound_at: datetime | None = None,
         expires_at: datetime | None = None,
         owner_id: str | None = None,
+        pending_action: dict | None = None,
     ) -> None:
         """Atomic INSERT ... ON CONFLICT DO UPDATE.
 
@@ -158,6 +159,7 @@ class SessionRepository:
             "telegram_chat_id": telegram_chat_id,
             "telegram_bound_at": telegram_bound_at,
             "owner_id": owner_id,
+            "pending_action": pending_action,
         }
         if expires_at is not None:
             values["expires_at"] = expires_at
@@ -170,6 +172,7 @@ class SessionRepository:
             "working_memory": stmt.excluded.working_memory,
             "telegram_chat_id": stmt.excluded.telegram_chat_id,
             "telegram_bound_at": stmt.excluded.telegram_bound_at,
+            "pending_action": stmt.excluded.pending_action,
             "updated_at": func.now(),
         }
         if expires_at is not None:

@@ -162,6 +162,8 @@ class AssistantRequest(BaseModel):
     config: TunableOverrides | None = None
     tool_call_id: str | None = None
     tool_result: Any | None = None
+    tool_outcome: Literal["success", "failed"] = "success"
+    """Continuation only: whether the host completed the action or it failed."""
 
     @property
     def screenshot(self) -> str | None:
@@ -196,6 +198,8 @@ class AssistantRequest(BaseModel):
                 raise ValueError("Steering requests must not include tool continuation fields")
             return self
 
+        if self.tool_outcome != "success" and self.tool_call_id is None:
+            raise ValueError("tool_outcome requires tool_call_id (a continuation)")
         return self
 
     @model_validator(mode="before")

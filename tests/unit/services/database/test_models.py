@@ -15,6 +15,7 @@ class TestSessionORM:
             "title",
             "turn_number",
             "working_memory",
+            "pending_action",
             "telegram_chat_id",
             "owner_id",
             "telegram_bound_at",

@@ -72,11 +72,21 @@ async def get_session(
     """
     ctx = await _get_session_context(session_id, service.get_session_store(), principal)
 
+    pending_id = ctx.get("pending_tool_call_id")
     return {
         "session_id": session_id,
         "owner_id": ctx.get("owner_id"),
         "turn_number": ctx.get("turn_number", 0),
-        "has_pending_tool_call": bool(ctx.get("pending_tool_call_id")),
+        "has_pending_tool_call": bool(pending_id),
+        "pending_action": (
+            {
+                "tool_call_id": pending_id,
+                "tool_name": ctx.get("pending_tool_name"),
+                "assistant_message_id": ctx.get("pending_assistant_message_id"),
+            }
+            if pending_id
+            else None
+        ),
         "message_count": ctx.get("message_count", 0),
     }
 
@@ -143,10 +153,10 @@ async def set_session_owner(
 async def repair_session(
     session_id: str, service: AssistantServiceDep, principal: PrincipalDep
 ) -> dict:
-    """Repair stale host tools stuck in a session.
+    """Resolve host tools stuck in a session as ``unknown``.
 
-    Clears any in-memory pending tool call state and marks unresolved
-    host tools in message segments as stale (both in-memory and DB).
+    Clears the pending host action (in memory and on the row) and gives
+    every tool without a result a synthetic one, so the session can continue.
     """
     sessions = service.get_session_store()
     await _get_session_context(session_id, sessions, principal)

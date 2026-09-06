@@ -401,6 +401,8 @@ class TestStreamingService:
         stale_tool = stale_record["segments"][0]["tools"][0]
 
         assert stale_tool["output"] == STALE_HOST_TOOL_OUTPUT
+        assert stale_tool["outcome"] == "interrupted"
+        assert stale_tool["status"] == "superseded"
         assert final["pending_tool_call"]["call_id"] == "call-new"
         assert ctx["pending_tool_call_id"] == "call-new"
         assert ctx["pending_assistant_message_id"] == final["message_id"]

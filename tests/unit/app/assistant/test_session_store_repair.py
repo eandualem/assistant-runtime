@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from assistant_runtime.app.assistant._session_persistence import (
+    LoadedSession,
+    pending_action_from_context,
+)
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant._stale_tools import (
     STALE_HOST_TOOL_OUTPUT,
+    find_tool_entry,
     repair_stale_tool_segments,
     repair_stale_tools_in_context,
 )
@@ -476,3 +482,227 @@ class TestRepairEndpoint:
         body = response.json()
         assert body["cleared_pending"] is None
         assert body["repaired_tools"] == []
+
+
+# ---------------------------------------------------------------------------
+# Pending host action: persisted on the row and restored on load
+# ---------------------------------------------------------------------------
+
+
+def _pending_segments(call_id: str = "call-1", *, answered: bool = False) -> list[dict[str, Any]]:
+    tool: dict[str, Any] = {"id": call_id, "name": "ui_navigate", "input": {"page": "home"}}
+    if answered:
+        tool["output"] = {"ok": True}
+    return [{"kind": "tool_group", "tools": [tool]}]
+
+
+def _loaded(
+    pending_action: dict[str, Any] | None, *, answered: bool = False, call_id: str = "call-1"
+) -> LoadedSession:
+    now = datetime.now(UTC)
+    return LoadedSession(
+        turn_number=1,
+        working_memory=None,
+        title="Hello",
+        owner_id=None,
+        telegram_chat_id=None,
+        telegram_bound_at=None,
+        messages=[
+            {
+                "id": "user-1",
+                "session_id": "sess-1",
+                "parent_id": None,
+                "role": "user",
+                "message_type": "standard",
+                "content": "Hello",
+                "segments": None,
+                "usage": None,
+                "created_at": now,
+            },
+            {
+                "id": "assistant-1",
+                "session_id": "sess-1",
+                "parent_id": "user-1",
+                "role": "assistant",
+                "message_type": "standard",
+                "content": "",
+                "segments": _pending_segments(call_id, answered=answered),
+                "usage": None,
+                "created_at": now + timedelta(seconds=1),
+            },
+        ],
+        steering=[],
+        pending_action=pending_action,
+    )
+
+
+def _store_with_db(loaded: LoadedSession | None = None) -> tuple[SessionStore, AsyncMock]:
+    store = SessionStore()
+    db = AsyncMock()
+    db.load.return_value = loaded
+    store._db = db
+    return store, db
+
+
+class TestPendingActionPersistence:
+    async def test_set_pending_action_writes_the_row(self) -> None:
+        store, db = _store_with_db()
+        await _seed_basic_turn(store)
+        db.save_state.reset_mock()
+
+        await store.set_pending_action(
+            "sess-1", tool_call_id="call-1", tool_name="ui_navigate", assistant_message_id="a-1"
+        )
+
+        ctx = store.get_context("sess-1")
+        assert ctx["pending_tool_call_id"] == "call-1"
+        assert ctx["pending_tool_name"] == "ui_navigate"
+        assert ctx["pending_assistant_message_id"] == "a-1"
+        db.save_state.assert_awaited_once()
+        saved_ctx = db.save_state.await_args.args[1]
+        assert pending_action_from_context(saved_ctx) == {
+            "tool_call_id": "call-1",
+            "tool_name": "ui_navigate",
+            "assistant_message_id": "a-1",
+        }
+
+    async def test_clear_pending_action_writes_the_row_only_when_something_was_pending(
+        self,
+    ) -> None:
+        store, db = _store_with_db()
+        await _seed_basic_turn(store)
+        db.save_state.reset_mock()
+
+        assert await store.clear_pending_action("sess-1") is None
+        db.save_state.assert_not_awaited()
+
+        await store.set_pending_action(
+            "sess-1", tool_call_id="call-1", tool_name="ui_navigate", assistant_message_id="a-1"
+        )
+        cleared = await store.clear_pending_action("sess-1")
+
+        assert cleared == {
+            "tool_call_id": "call-1",
+            "tool_name": "ui_navigate",
+            "assistant_message_id": "a-1",
+        }
+        assert db.save_state.await_count == 2
+        assert pending_action_from_context(db.save_state.await_args.args[1]) is None
+        assert store.get_context("sess-1").get("pending_tool_call_id") is None
+
+    async def test_load_restores_a_stored_pending_action_and_repairs_nothing(self) -> None:
+        pending = {
+            "tool_call_id": "call-1",
+            "tool_name": "ui_navigate",
+            "assistant_message_id": "assistant-1",
+        }
+        store, db = _store_with_db(_loaded(pending))
+
+        ctx = await store.get_context_if_exists_async("sess-1")
+
+        assert ctx["pending_tool_call_id"] == "call-1"
+        assert ctx["pending_tool_name"] == "ui_navigate"
+        assert ctx["pending_assistant_message_id"] == "assistant-1"
+        assert "output" not in ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]
+        db.update_segments.assert_not_awaited()
+        db.save_state.assert_not_awaited()
+
+    async def test_load_without_a_stored_pending_action_marks_the_call_unknown(self) -> None:
+        store, db = _store_with_db(_loaded(None))
+
+        ctx = await store.get_context_if_exists_async("sess-1")
+
+        assert ctx["pending_tool_call_id"] is None
+        tool = ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]
+        assert tool["output"] == STALE_HOST_TOOL_OUTPUT
+        assert tool["outcome"] == "interrupted"
+        assert tool["status"] == "unknown"
+        db.update_segments.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "pending",
+        [
+            {"tool_call_id": "call-1", "tool_name": "ui_navigate", "assistant_message_id": "gone"},
+            {
+                "tool_call_id": "other",
+                "tool_name": "ui_navigate",
+                "assistant_message_id": "assistant-1",
+            },
+            {"tool_call_id": None, "tool_name": None, "assistant_message_id": None},
+        ],
+        ids=["unknown-message", "unknown-call", "empty"],
+    )
+    async def test_load_drops_a_stored_pending_action_that_does_not_match(self, pending) -> None:
+        store, db = _store_with_db(_loaded(pending))
+
+        ctx = await store.get_context_if_exists_async("sess-1")
+
+        assert ctx["pending_tool_call_id"] is None
+        # The mismatching call is unanswered, so it is resolved as unknown and the row cleared.
+        assert ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]["status"] == "unknown"
+        db.save_state.assert_awaited_once()
+        assert pending_action_from_context(db.save_state.await_args.args[1]) is None
+
+    async def test_load_drops_a_stored_pending_action_whose_result_is_recorded(self) -> None:
+        pending = {
+            "tool_call_id": "call-1",
+            "tool_name": "ui_navigate",
+            "assistant_message_id": "assistant-1",
+        }
+        store, db = _store_with_db(_loaded(pending, answered=True))
+
+        ctx = await store.get_context_if_exists_async("sess-1")
+
+        assert ctx["pending_tool_call_id"] is None
+        assert ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]["output"] == {
+            "ok": True
+        }
+        db.update_segments.assert_not_awaited()
+        db.save_state.assert_awaited_once()
+
+    async def test_repair_clears_the_row_and_records_unknown(self) -> None:
+        pending = {
+            "tool_call_id": "call-1",
+            "tool_name": "ui_navigate",
+            "assistant_message_id": "assistant-1",
+        }
+        store, db = _store_with_db(_loaded(pending))
+        await store.get_context_if_exists_async("sess-1")
+
+        report = await store.repair_stale_host_tools("sess-1")
+
+        assert report["cleared_pending"] == {"tool_call_id": "call-1", "tool_name": "ui_navigate"}
+        assert report["repaired_tools"] == ["assistant-1"]
+        db.save_state.assert_awaited_once()
+        db.update_segments.assert_awaited_once()
+        tool = store.get_context("sess-1")["message_index"]["assistant-1"]["segments"][0]["tools"][
+            0
+        ]
+        assert tool["status"] == "unknown"
+
+
+class TestStaleToolHelpers:
+    def test_keep_leaves_the_pending_call_unanswered(self) -> None:
+        segments = [
+            {
+                "kind": "tool_group",
+                "tools": [{"id": "keep-1", "name": "ui_navigate"}, {"id": "old-1", "name": "ui_x"}],
+            }
+        ]
+
+        repaired, ids = repair_stale_tool_segments(segments, keep=frozenset({"keep-1"}))
+
+        assert ids == ["old-1"]
+        assert "output" not in repaired[0]["tools"][0]
+        assert repaired[0]["tools"][1]["status"] == "unknown"
+        assert repaired[0]["tools"][1]["outcome"] == "interrupted"
+
+    def test_find_tool_entry(self) -> None:
+        segments = [
+            {"kind": "text", "text": "hi"},
+            {"kind": "tool_group", "tools": [{"id": "a", "name": "x"}, {"id": "b", "name": "y"}]},
+        ]
+
+        assert find_tool_entry(segments, "b") == {"id": "b", "name": "y"}
+        assert find_tool_entry(segments, "c") is None
+        assert find_tool_entry(None, "a") is None

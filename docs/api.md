@@ -60,9 +60,10 @@ run-error response; read `/api/sessions/{id}/messages` for its saved work.
 New ordinary messages cancel the previous turn and wait for its cleanup
 before starting. Continuations wait for the prior turn to finish without
 cancelling it. Socket.IO disconnects leave execution running; reconnecting
-does not replay missed events, so reload the session. Cancellation and
-session persistence do not provide crash recovery or exactly-once external
-actions; those remain separate recovery work.
+does not replay missed events, so reload the session. What survives a
+restart, how a pending host action is recovered and why duplicate
+continuations are rejected is in [persistence and recovery](persistence.md);
+none of it provides exactly-once external actions.
 
 Queued steering can be consumed together. Scheduling a steering request
 already delivered by another turn returns a terminal `session_error`
@@ -85,6 +86,7 @@ Keys may be camelCase; they are normalised.
 | `host_context` | object, optional | what the host shows, version 1 of [the host contract](host-contract.md); invalid content is a `422` |
 | `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model` |
 | `tool_call_id`, `tool_result` | continuation only | the pending host tool's call id and its result |
+| `tool_outcome` | continuation only | `success` (default) or `failed`: the host could not perform the action; `tool_result` is then the failure the model reads |
 
 ## Socket.IO, namespace `/assistant`
 
@@ -138,11 +140,11 @@ with the partial message saved. See [concepts](concepts.md#usage-and-budgets).
 | Route | Returns |
 |---|---|
 | `GET /api/sessions?limit=50&offset=0` | `[{session_id, owner_id, title, turn_number, message_count, created_at}]`; the caller's own sessions, every session for an administrator |
-| `GET /api/sessions/{id}` | turn count, message count, pending tool call |
+| `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `assistant_message_id`, or null) |
 | `GET /api/sessions/{id}/messages` | the root-to-leaf path, for display |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |
-| `POST /api/sessions/{id}/repair` | mark host tool calls that never got a result as failed, so the session can continue |
+| `POST /api/sessions/{id}/repair` | resolve the pending host action and every call without a result as `unknown`, so the session can continue |
 | `DELETE /api/sessions/{id}` | delete the session |
 | `PATCH /api/sessions/{id}/owner` `{"owner_id"}` | assign the session to a principal (administration; null makes it unowned) |
 

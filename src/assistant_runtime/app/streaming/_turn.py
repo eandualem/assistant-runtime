@@ -18,6 +18,7 @@ fault, not retryable) and anything else ``StreamSetupError``.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
 from pydantic_ai import DeferredToolResults
+from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.messages import (
     BinaryContent,
     DocumentUrl,
@@ -43,6 +45,7 @@ from assistant_runtime.app.assistant._serialization import (
     assistant_record_to_flat_messages,
     path_records_to_model_history,
 )
+from assistant_runtime.app.assistant._stale_tools import find_tool_entry
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import (
     AssistantRequest,
@@ -161,6 +164,17 @@ class TurnPlanner:
             raise SessionError(f"Continuation rejected: session '{session_id}' does not exist")
         self._authorize(session_context, principal, session_id)
 
+        recorded = _recorded_call(session_context, request.tool_call_id or "")
+        if recorded is not None and "output" in recorded:
+            # The result of this call is already on the assistant row (a
+            # duplicate continuation, or a retry after the first was accepted).
+            # It is never applied twice; the conversation continues with a new
+            # message instead.
+            raise SessionError(
+                f"Continuation rejected: the result for tool call '{request.tool_call_id}' "
+                f"was already recorded (status: {recorded.get('status', 'completed')}); "
+                "send a new message to continue"
+            )
         pending_tool_call_id = session_context.get("pending_tool_call_id")
         if not pending_tool_call_id:
             # A new message cleared the pending state while the host tool ran.
@@ -228,6 +242,16 @@ class TurnPlanner:
             if screenshot
             else request.tool_result
         )
+        pending_tool_name = session_context.get("pending_tool_name") or "unknown"
+        if request.tool_outcome == "failed":
+            # A host-declared failure is the native ``failed`` outcome: the model
+            # sees the failure message and does not repeat the call.
+            failure = _failure_message(tool_result)
+            deferred_result: Any = ToolFailed(failure)
+            accepted_content: Any = failure
+        else:
+            deferred_result = tool_result
+            accepted_content = tool_result
         return TurnPlan(
             kind="continuation",
             request=request,
@@ -241,13 +265,16 @@ class TurnPlanner:
                 *self._sessions.get_history(session_id, exclude_leaf=True),
                 *flat_assistant,
             ],
-            deferred_tool_results=DeferredToolResults(calls={request.tool_call_id: tool_result}),
+            deferred_tool_results=DeferredToolResults(
+                calls={request.tool_call_id: deferred_result}
+            ),
             accepted_tool_result=ModelRequest(
                 parts=[
                     ToolReturnPart(
-                        tool_name=session_context.get("pending_tool_name") or "unknown",
+                        tool_name=pending_tool_name,
                         tool_call_id=pending_tool_call_id,
-                        content=tool_result,
+                        content=accepted_content,
+                        outcome="failed" if request.tool_outcome == "failed" else "success",
                     )
                 ]
             ),
@@ -301,6 +328,40 @@ class TurnPlanner:
             input_message=request.content,
             trace_metadata={"steering": True},
         )
+
+
+def _recorded_call(session_context: dict[str, Any], tool_call_id: str) -> dict[str, Any] | None:
+    """The stored tool entry for ``tool_call_id`` on any assistant row of the session.
+
+    The pending and active rows are checked first; an abandoned call can sit
+    on an older row once the conversation has moved on.
+    """
+    if not tool_call_id:
+        return None
+    index = session_context["message_index"]
+    first = [
+        session_context.get("pending_assistant_message_id"),
+        session_context.get("active_leaf_id"),
+    ]
+    ordered = [index[m] for m in first if m in index] + [
+        record for record in index.values() if record["id"] not in first
+    ]
+    for record in ordered:
+        if record.get("role") != "assistant":
+            continue
+        entry = find_tool_entry(record.get("segments"), tool_call_id)
+        if entry is not None:
+            return entry
+    return None
+
+
+def _failure_message(tool_result: Any) -> str:
+    """The host's failure result as the text the model reads."""
+    if tool_result is None:
+        return "The host reported that the action failed."
+    if isinstance(tool_result, str):
+        return tool_result
+    return json.dumps(tool_result, default=str)
 
 
 def build_user_prompt(request: AssistantRequest) -> str | list[UserContent]:
