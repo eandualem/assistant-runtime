@@ -564,6 +564,7 @@ class TestPendingActionPersistence:
             "tool_call_id": "call-1",
             "tool_name": "ui_navigate",
             "assistant_message_id": "a-1",
+            "batch": ["call-1"],
         }
 
     async def test_clear_pending_action_writes_the_row_only_when_something_was_pending(
@@ -585,6 +586,7 @@ class TestPendingActionPersistence:
             "tool_call_id": "call-1",
             "tool_name": "ui_navigate",
             "assistant_message_id": "a-1",
+            "batch": ["call-1"],
         }
         assert db.save_state.await_count == 2
         assert pending_action_from_context(db.save_state.await_args.args[1]) is None
@@ -606,6 +608,28 @@ class TestPendingActionPersistence:
         assert "output" not in ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]
         db.update_segments.assert_not_awaited()
         db.save_state.assert_not_awaited()
+
+    async def test_load_restores_the_whole_batch_unanswered(self) -> None:
+        loaded = _loaded(
+            {
+                "tool_call_id": "call-1",
+                "tool_name": "ui_navigate",
+                "assistant_message_id": "assistant-1",
+                "batch": ["call-1", "call-2", "gone"],
+            }
+        )
+        loaded.messages[1]["segments"][0]["tools"].append(
+            {"id": "call-2", "name": "ui_navigate", "input": {"page": "b"}}
+        )
+        store, db = _store_with_db(loaded)
+
+        ctx = await store.get_context_if_exists_async("sess-1")
+
+        assert ctx["pending_tool_call_id"] == "call-1"
+        assert ctx["pending_tool_batch"] == ["call-1", "call-2"]  # unknown ids dropped
+        tools = ctx["message_index"]["assistant-1"]["segments"][0]["tools"]
+        assert all("output" not in tool for tool in tools)  # the queued call is kept open
+        db.update_segments.assert_not_awaited()
 
     async def test_load_without_a_stored_pending_action_marks_the_call_unknown(self) -> None:
         store, db = _store_with_db(_loaded(None))

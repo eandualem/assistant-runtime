@@ -92,12 +92,20 @@ def _pending_action(ctx: dict) -> dict | None:
     record = ctx["message_index"].get(message_id) if message_id else None
     entry = find_tool_entry(record.get("segments"), str(pending_id)) if record else None
     arguments = entry.get("input") if entry and isinstance(entry.get("input"), dict) else {}
+    batch = [str(c) for c in (ctx.get("pending_tool_batch") or [pending_id])]
     return {
         "tool_call_id": pending_id,
         "tool_name": ctx.get("pending_tool_name"),
         "assistant_message_id": message_id,
         "arguments": arguments,
+        # Host calls from the same response still to be handed over, in order.
+        "queued": [c for c in batch if c != pending_id and _unanswered(record, c)],
     }
+
+
+def _unanswered(record: dict | None, tool_call_id: str) -> bool:
+    entry = find_tool_entry(record.get("segments"), tool_call_id) if record else None
+    return entry is not None and "output" not in entry
 
 
 @router.get("/sessions/{session_id}/messages")

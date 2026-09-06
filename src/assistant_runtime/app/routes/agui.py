@@ -72,14 +72,14 @@ async def agui_run(
         raise AccessDeniedError(f"Session '{run_input.thread_id}' belongs to another principal")
 
     try:
-        assistant_request = bridge.build_assistant_request(run_input, context)
+        assistant_requests = bridge.build_assistant_requests(run_input, context)
     except (bridge.AGUIRequestError, ValidationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return bridge.agui_response(
         streaming,
         run_input,
-        assistant_request,
+        assistant_requests,
         principal=principal,
         accept=request.headers.get("accept"),
     )

@@ -162,6 +162,7 @@ async def test_runtime_host_continuation_preserves_message_and_does_not_reexecut
         "tool_name": "select_item",
         "call_id": "host-1",
         "arguments": {"item": "sample"},
+        "queued": [],
     }
     continuation = request(
         id="continuation-1",
@@ -184,7 +185,8 @@ async def test_runtime_host_continuation_preserves_message_and_does_not_reexecut
     assert not runtime.sessions.get_context("compat").get("pending_tool_call_id")
 
 
-async def test_runtime_rejects_multiple_deferred_host_calls(runtime, script):
+async def test_runtime_hands_multiple_deferred_host_calls_over_one_at_a_time(runtime, script):
+    """Several host calls in one response are not an error: the first is pending, the rest queued."""
     script.steps = [
         [
             calls(
@@ -194,11 +196,16 @@ async def test_runtime_rejects_multiple_deferred_host_calls(runtime, script):
         ]
     ]
     events = [e async for e in runtime.streaming.stream_message(request())]
-    assert_terminal(events, error=True)
-    assert any(
-        "expected exactly 1 deferred tool call, got 2" in e.get("message", "") for e in events
-    )
-    assert not runtime.sessions.get_context("compat").get("pending_tool_call_id")
+    final = assert_terminal(events)
+    assert final["pending_tool_call"] == {
+        "tool_name": "select_item",
+        "call_id": "host-1",
+        "arguments": {"item": "one"},
+        "queued": ["host-2"],
+    }
+    ctx = runtime.sessions.get_context("compat")
+    assert ctx["pending_tool_call_id"] == "host-1"
+    assert ctx["pending_tool_batch"] == ["host-1", "host-2"]
 
 
 async def test_public_deferred_calls_round_trip_as_a_batch(script, host_schema):

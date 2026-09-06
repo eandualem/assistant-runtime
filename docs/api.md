@@ -83,7 +83,7 @@ response is Server-Sent Events encoded by Pydantic AI's `AGUIEventStream`
 |---|---|
 | `threadId` | the session id; ownership and administration apply as for every other route |
 | last message is a `user` message | a new message appended to the session's active leaf; its `id` is the message id |
-| last message is a `tool` message | the continuation of the session's pending host action (`toolCallId` = its `call_id`, `content` = the result, JSON when it parses); `error` set makes it `tool_outcome: "failed"` |
+| trailing `tool` messages | continuations of the session's pending host actions, in order (`toolCallId` = the `call_id`, `content` = the result, JSON when it parses; `error` set makes it `tool_outcome: "failed"`); when a response asked for several host tools, answer them all in one run and the model resumes once |
 | earlier messages | ignored: the server-side tree is the conversation; the resent transcript is not replayed into the model |
 | `tools` | request-declared host actions (`host_context.actions`) for this run only: every AG-UI request carries its own host context, so a tool not sent again is not available (unlike `host_context` omitted on the message body, which reuses the session's last context); the model's call ends the run with `TOOL_CALL_*` events and the client answers with a `tool` message in its next run |
 | `context` | `host_context.background` (`description` → `value`) |
@@ -170,12 +170,17 @@ that reaches a usage limit ends with `final_response.error_type` and a
 terminal `error.error_type` of `usage_limit` (`retry_allowed: false`),
 with the partial message saved. See [concepts](concepts.md#usage-and-budgets).
 
+A continuation's `final_response.usage` is cumulative for its assistant
+message: it includes the requests made before the host action. Sum the
+latest `usage` of each assistant message for a session total, not every
+`final_response`.
+
 ## Sessions
 
 | Route | Returns |
 |---|---|
 | `GET /api/sessions?limit=50&offset=0` | `[{session_id, owner_id, title, turn_number, message_count, created_at}]`; the caller's own sessions, every session for an administrator |
-| `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `arguments`, `assistant_message_id`, or null): everything a host needs to perform the waiting action and continue |
+| `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `arguments`, `assistant_message_id`, `queued`: further call ids from the same response still to be handed over, or null): everything a host needs to perform the waiting action and continue |
 | `GET /api/sessions/{id}/messages?leaf_id=` | the root-to-leaf path for display (see below); `leaf_id` selects another leaf's path, for branch switching |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |

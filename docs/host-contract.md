@@ -102,8 +102,9 @@ Two ways to declare what the host can do; both use the same protocol
 
 When the model calls one, the runtime emits `tool_call` with
 `category: "host"` and a `call_id`, ends the turn with
-`final_response.pending_tool_call` (`tool_name`, `call_id`, `arguments`),
-and waits. The host performs the action and sends a continuation: the
+`final_response.pending_tool_call` (`tool_name`, `call_id`, `arguments`,
+and `queued`: the call ids of further host actions from the same response,
+handed over one at a time as each continuation arrives), and waits. The host performs the action and sends a continuation: the
 same message body with `tool_call_id` = the pending `call_id` and
 `tool_result` = any JSON. The run resumes with that result on the same
 assistant message. When the host could not perform the action, it adds

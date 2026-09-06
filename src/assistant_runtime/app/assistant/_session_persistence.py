@@ -237,4 +237,7 @@ def pending_action_from_context(ctx: dict[str, Any]) -> dict[str, Any] | None:
         "tool_call_id": tool_call_id,
         "tool_name": ctx.get("pending_tool_name"),
         "assistant_message_id": ctx.get("pending_assistant_message_id"),
+        # Every host call of the response that produced this action, in order;
+        # the ones after tool_call_id are handed to the host one at a time.
+        "batch": list(ctx.get("pending_tool_batch") or [tool_call_id]),
     }
