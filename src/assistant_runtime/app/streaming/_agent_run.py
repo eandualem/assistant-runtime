@@ -111,16 +111,20 @@ async def iterate_run(
     emit_debug: bool,
     suppress_tool_call_ids: set[str] | None = None,
     host_tool_names: set[str] | None = None,
+    native_sink: Callable[[Any], None] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Translate native events without executing or inspecting graph nodes.
 
     ``host_tool_names`` are the host tools of this turn (configured ones
     plus those the request declared); calls to them are ``category: host``.
+    ``native_sink`` receives every native event unchanged, before mapping.
     """
     suppressed = suppress_tool_call_ids or set()
     host_names = host_tool_names if host_tool_names is not None else set()
     tool_started: dict[str, float] = {}
     async for event in stream:
+        if native_sink is not None:
+            native_sink(event)
         if isinstance(event, PartStartEvent):
             if isinstance(event.part, ThinkingPart) and event.part.content:
                 async for chunk in _chunked(

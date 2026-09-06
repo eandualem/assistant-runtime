@@ -62,7 +62,7 @@ checkout.
 | [persistence](docs/persistence.md) | what is stored, pending host actions across restarts, action outcomes, recovery and worker topology |
 | [getting-started](docs/getting-started.md) | install, one key, chat, server, a minimal client, Postgres, integrations |
 | [configuration](docs/configuration.md) | every setting, the three configuration tiers, secrets |
-| [api](docs/api.md) | HTTP endpoints and the Socket.IO streaming contract |
+| [api](docs/api.md) | HTTP endpoints, the Socket.IO streaming contract and the AG-UI endpoint |
 | [composition](docs/composition.md) | native tools, capabilities and dependencies in a host-owned Python application |
 | [compatibility](docs/compatibility.md) | tested Pydantic AI versions and migration boundaries |
 
