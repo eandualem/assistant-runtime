@@ -13,6 +13,7 @@ from assistant_runtime.app.assistant._serialization import (
     merge_display_messages,
     tree_messages_to_tree,
 )
+from assistant_runtime.app.assistant._stale_tools import find_tool_entry
 from assistant_runtime.app.assistant.deps import AssistantServiceDep
 from assistant_runtime.principal import Principal, can_access_session
 
@@ -72,22 +73,30 @@ async def get_session(
     """
     ctx = await _get_session_context(session_id, service.get_session_store(), principal)
 
-    pending_id = ctx.get("pending_tool_call_id")
     return {
         "session_id": session_id,
         "owner_id": ctx.get("owner_id"),
         "turn_number": ctx.get("turn_number", 0),
-        "has_pending_tool_call": bool(pending_id),
-        "pending_action": (
-            {
-                "tool_call_id": pending_id,
-                "tool_name": ctx.get("pending_tool_name"),
-                "assistant_message_id": ctx.get("pending_assistant_message_id"),
-            }
-            if pending_id
-            else None
-        ),
+        "has_pending_tool_call": bool(ctx.get("pending_tool_call_id")),
+        "pending_action": _pending_action(ctx),
         "message_count": ctx.get("message_count", 0),
+    }
+
+
+def _pending_action(ctx: dict) -> dict | None:
+    """The pending host action with its arguments, so a host can perform it without the transcript."""
+    pending_id = ctx.get("pending_tool_call_id")
+    if not pending_id:
+        return None
+    message_id = ctx.get("pending_assistant_message_id")
+    record = ctx["message_index"].get(message_id) if message_id else None
+    entry = find_tool_entry(record.get("segments"), str(pending_id)) if record else None
+    arguments = entry.get("input") if entry and isinstance(entry.get("input"), dict) else {}
+    return {
+        "tool_call_id": pending_id,
+        "tool_name": ctx.get("pending_tool_name"),
+        "assistant_message_id": message_id,
+        "arguments": arguments,
     }
 
 

@@ -139,7 +139,9 @@ them is an **assistant profile**:
 - `AssistantDefinition(profile=...)` in host code (`AssistantProfile`,
   `ArtifactDefinition`, `ArtifactPolicy` from `assistant_runtime.artifacts`);
 - else `ASSISTANT__PROFILE`, a built-in name or the path of a TOML file
-  (the shape is documented on `load_profile_file`);
+  (the shape is documented on `load_profile_file`; the profile `name`
+  scopes stored artifact versions and must match `[a-z][a-z0-9_]{0,63}`,
+  so `design_studio`, not `design-studio`);
 - else the built-in `neutral` profile: one required `instructions`
   artifact with a short neutral default, and an autonomous `scratchpad`.
 
