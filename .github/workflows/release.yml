@@ -33,7 +33,7 @@ jobs:
           echo "releases are published from main, not ${GITHUB_REF}"
           exit 1
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
       - name: Check the requested version matches pyproject.toml
