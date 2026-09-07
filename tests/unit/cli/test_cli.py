@@ -65,19 +65,29 @@ class TestDotenvResolution:
         assert doctor.cmd_doctor(argparse.Namespace()) == 0
         assert Path(str(loaded["path"])).resolve() == (tmp_path / ".env").resolve()
 
-    def test_doctor_reports_the_env_file_it_loads_from_a_parent(self, tmp_path, monkeypatch):
-        """The report and the load must name the same file, at any depth."""
+    def test_doctor_loads_and_reports_the_same_parent_env_file(self, tmp_path, monkeypatch):
+        """The file doctor reports and the file it loads must be the same one, at any depth."""
+        from pathlib import Path
+
         from assistant_runtime.cli import doctor
 
         (tmp_path / ".env").write_text("PROBE=1\n")
         nested = tmp_path / "service" / "worker"
         nested.mkdir(parents=True)
         monkeypatch.chdir(nested)
+        loaded: dict[str, object] = {}
+        monkeypatch.setattr(
+            doctor, "load_dotenv", lambda path=None: loaded.setdefault("path", path)
+        )
+        monkeypatch.setattr(doctor, "run_checks", lambda checks: [])
 
         status, message = doctor._env_file()
+        assert doctor.cmd_doctor(argparse.Namespace()) == 0
 
+        expected = (tmp_path / ".env").resolve()
         assert status == doctor.OK
-        assert str((tmp_path / ".env").resolve()) in message
+        assert str(expected) in message
+        assert Path(str(loaded["path"])).resolve() == expected
 
 
 class TestMigrate:
@@ -110,6 +120,24 @@ class TestMigrate:
         out = capsys.readouterr().out
         assert "db.example" in out
         assert "prod_db" in out
+
+    def test_migration_url_comes_from_the_environment(self, monkeypatch):
+        """The URL alembic/env.py builds must reflect DATABASE__*.
+
+        env.py itself needs alembic's runtime context and a live server, which
+        this suite excludes; what broke was the configuration source, so that
+        is what is pinned here — for the migrate command and env.py alike.
+        """
+        from assistant_runtime.config import AppSettings
+        from assistant_runtime.services.database.config import DatabaseConfig
+
+        monkeypatch.setenv("DATABASE__HOST", "db.example")
+        monkeypatch.setenv("DATABASE__PASSWORD", "from-env")
+
+        assert "db.example" in AppSettings().database.async_url
+        assert "from-env" in AppSettings().database.async_url
+        # The trap both call sites fell into: a plain model reads no environment.
+        assert DatabaseConfig().host == "localhost"
 
     def test_migrate_without_migrations_reports_and_fails(self, monkeypatch, capsys):
         from assistant_runtime.cli import migrate as migrate_module
