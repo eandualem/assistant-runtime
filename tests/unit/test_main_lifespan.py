@@ -115,7 +115,7 @@ async def test_runtime_cleans_up_when_startup_does_not_finish(monkeypatch, stage
     ):
         monkeypatch.setattr(f"assistant_runtime.main.register_{name}", AsyncMock())
     monkeypatch.setattr("assistant_runtime.main.register_database", register_components)
-    monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda: None)
+    monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr("assistant_runtime.main.setup_logging", lambda **kwargs: None)
     monkeypatch.setattr("assistant_runtime.main.initialize_tracing", lambda: True)
     shutdown = MagicMock()

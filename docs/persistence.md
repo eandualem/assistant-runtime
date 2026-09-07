@@ -136,7 +136,9 @@ unanswered calls.
 ## Local persistent option
 
 The documented local persistent setup is Postgres in Docker:
-`make db-up && make db-upgrade` (see [getting started](getting-started.md#6-optional-postgres)).
+`make db-up && make db-upgrade` from a checkout, or `assistant-runtime migrate`
+from an installed package (the migrations ship in the wheel); see
+[getting started](getting-started.md#6-optional-postgres).
 It is the same schema and the same migrations as production. SQLite is not
 supported: the schema uses `JSONB`, `INSERT ... ON CONFLICT` through the
 Postgres dialect, Postgres server defaults and a partial unique index, and
