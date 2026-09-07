@@ -46,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Assistant Runtime: an assistant backend that plugs into any work environment.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="show INFO-level logs")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=package_version(),
+        help="print the installed version and exit",
+    )
     sub = parser.add_subparsers(dest="command", metavar="command")
 
     p = sub.add_parser("chat", help="talk to the assistant in the terminal")
