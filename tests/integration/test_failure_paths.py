@@ -6,10 +6,10 @@ from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai.messages import ModelRequest, UserPromptPart
 
-from lovely_assistant.app.assistant._session_store import SessionStore
-from lovely_assistant.services.history.interface import HistoryService
+from assistant_runtime.app.assistant._session_store import SessionStore
+from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.services.history.interface import HistoryService
 
 
 class _FailingDatabaseService:
@@ -23,16 +23,20 @@ class _FailingDatabaseService:
 
 @pytest.mark.asyncio
 async def test_session_store_persist_failure_keeps_in_memory_state():
-    """When DB persistence fails, session data remains available in memory."""
+    """When DB persistence fails during tree-message writes, the error propagates."""
     store = SessionStore(database_service=_FailingDatabaseService())
-    messages = [ModelRequest(parts=[UserPromptPart(content="hello")])]
 
-    # Should not raise even though persistence path fails.
-    await store.save_history_async("session-1", messages)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await store.register_user_message(
+            AssistantRequest(
+                id="user-1",
+                session_id="session-1",
+                parent_id=None,
+                content="hello",
+            )
+        )
 
-    history = store.get_history("session-1")
-    assert len(history) == 1
-    assert isinstance(history[0], ModelRequest)
+    assert store.has_session("session-1") is False
 
 
 @pytest.mark.asyncio
@@ -50,7 +54,7 @@ async def test_session_store_load_failure_propagates_error():
 @pytest.mark.asyncio
 async def test_history_service_runtime_settings_propagates_to_summarizer():
     """Runtime settings updates propagate to the active summarizer instance."""
-    from lovely_assistant.services.history.config import HistoryConfig
+    from assistant_runtime.services.history.config import HistoryConfig
 
     service = HistoryService(config=HistoryConfig(), llm_service=MagicMock())
     await service.start()

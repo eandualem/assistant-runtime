@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from lovely_assistant.app.assistant.interface import AssistantService
-from lovely_assistant.base.lifecycle import LifecycleManager
-from lovely_assistant.config import AppSettings
-from lovely_assistant.services.history.interface import HistoryService
-from lovely_assistant.services.llm.interface import LlmService
-from lovely_assistant.services.tools.interface import ToolService
+from assistant_runtime.app.assistant.interface import AssistantService
+from assistant_runtime.base.lifecycle import LifecycleManager
+from assistant_runtime.config import AppSettings
+from assistant_runtime.services.history.interface import HistoryService
+from assistant_runtime.services.llm.interface import LlmService
+from assistant_runtime.services.tools.interface import ToolService
+from tests.integration.conftest import make_artifact_service
 
 
 class TestFullLifecycle:
@@ -18,7 +19,7 @@ class TestFullLifecycle:
         """All services start successfully in dependency order."""
         health = await wired_services["lifecycle"].health()
         assert health["healthy"] is True
-        assert len(health["components"]) == 5
+        assert len(health["components"]) == 6
 
     @pytest.mark.asyncio
     async def test_all_components_healthy(self, wired_services):
@@ -68,6 +69,7 @@ class TestFullLifecycle:
             llm_service=llm,
             history_service=history,
             tool_service=tools,
+            artifact_service=make_artifact_service(),
         )
 
         await lm.register("llm", llm)
@@ -97,7 +99,7 @@ class TestConfigComposition:
         assert settings.history.token_budget > 0
         assert settings.tools.max_tools_per_request > 0
         assert settings.assistant.max_turns > 0
-        assert settings.streaming.debounce_seconds >= 0
+        assert settings.streaming.stream_timeout_seconds > 0
 
 
 class TestPartialFailure:

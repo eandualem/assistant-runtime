@@ -6,19 +6,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lovely_assistant.services.media._providers import (
+from assistant_runtime.services.media._providers import (
     _SIZE_TO_ASPECT_RATIO,
     generate_google,
     generate_openai,
 )
-from lovely_assistant.services.media.exceptions import (
+from assistant_runtime.services.media.exceptions import (
     ContentPolicyError,
     ProviderError,
     ProviderNotConfiguredError,
 )
-from lovely_assistant.services.media.models import GeneratedImage
+from assistant_runtime.services.media.models import GeneratedImage
 
-MODULE = "lovely_assistant.services.media._providers"
+MODULE = "assistant_runtime.services.media._providers"
 
 # Shared test data
 FAKE_PNG = b"fake-png-data"

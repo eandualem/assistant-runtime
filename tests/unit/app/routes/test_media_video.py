@@ -8,8 +8,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.media import router
-from lovely_assistant.services.media.models import VideoStatusResponse
+from assistant_runtime.app.routes.media import router
+from assistant_runtime.services.media.models import VideoStatusResponse
 
 
 def _make_app(media_service: MagicMock) -> FastAPI:

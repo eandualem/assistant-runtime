@@ -1,7 +1,7 @@
 """Shared fixtures for integration tests.
 
 Integration tests wire real services together, mocking only the LLM boundary
-(Agent.run / Agent.iter). This catches cross-module wiring issues that unit
+(Agent.run / Agent.run_stream_events). This catches cross-module wiring issues that unit
 tests miss.
 """
 
@@ -9,85 +9,79 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-from pydantic_graph.nodes import End
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.run import AgentRunResultEvent
 
-from lovely_assistant.app.assistant.interface import AssistantService
-from lovely_assistant.app.settings import RuntimeSettings
-from lovely_assistant.app.streaming.interface import StreamingService
-from lovely_assistant.base.lifecycle import LifecycleManager
-from lovely_assistant.config import AppSettings
-from lovely_assistant.services.history.interface import HistoryService
-from lovely_assistant.services.llm.interface import LlmService
-from lovely_assistant.services.tools.interface import ToolService
-
-# Required artifacts for integration tests (no DB available)
-_INTEGRATION_ARTIFACTS = {
-    "persona": "You are Jarvis, the operational assistant for the Lovely Universe.",
-    "communication_protocol": "Messages may arrive with envelope tags indicating their source.",
-    "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
-}
+from assistant_runtime.app.assistant.interface import AssistantService
+from assistant_runtime.app.settings import RuntimeSettings
+from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.artifacts import technical_operator_profile
+from assistant_runtime.base.lifecycle import LifecycleManager
+from assistant_runtime.config import AppSettings
+from assistant_runtime.services.artifacts.config import ArtifactsConfig
+from assistant_runtime.services.artifacts.interface import ArtifactService
+from assistant_runtime.services.history.interface import HistoryService
+from assistant_runtime.services.llm.interface import LlmService
+from assistant_runtime.services.tools.interface import ToolService
 
 
-@pytest.fixture(autouse=True)
-def _mock_artifact_loading():
-    """Patch artifact loading for all integration tests — no DB available."""
-    with patch.object(
-        AssistantService,
-        "_load_active_artifacts",
-        new=AsyncMock(return_value=_INTEGRATION_ARTIFACTS),
-    ):
-        yield
+def make_artifact_service() -> ArtifactService:
+    """The example profile on an in-memory store — no DB available."""
+    return ArtifactService(ArtifactsConfig(), technical_operator_profile())
 
 
 def _make_mock_agent_result(output: Any = "Test response") -> MagicMock:
     """Create a mock AgentRunResult."""
     result = MagicMock()
     result.output = output
-    result.all_messages.return_value = []
+    messages = [ModelResponse(parts=[TextPart(content=output)])] if isinstance(output, str) else []
+    result.all_messages.return_value = messages
+    result.new_messages.return_value = messages
     # Usage mock for debug events
     usage = MagicMock()
-    usage.request_tokens = 100
-    usage.response_tokens = 50
-    usage.cache_read_input_tokens = 0
-    usage.cache_creation_input_tokens = 0
+    usage.input_tokens = 100
+    usage.output_tokens = 50
+    usage.cache_read_tokens = 0
+    usage.cache_write_tokens = 0
     usage.requests = 1
     usage.total_tokens = 150
-    result.usage.return_value = usage
+    result.usage = usage
     return result
 
 
 def _make_mock_agent(output: Any = "Test response") -> MagicMock:
-    """Create a mock Agent with .run() returning a canned result."""
+    """Create a mock Agent whose event stream yields one final result."""
     agent = MagicMock()
-    mock_result = _make_mock_agent_result(output)
-    agent.run = AsyncMock(return_value=mock_result)
+    agent.run_stream_events = MagicMock(side_effect=lambda *_a, **_k: _make_mock_agent_run(output))
     return agent
 
 
-def _make_mock_agent_run(output: Any = "Test response") -> MagicMock:
-    """Create a mock agent.iter() context manager returning End immediately."""
+def _make_mock_agent_run(output: Any = "Test response") -> Any:
+    """Create an event-stream context manager yielding one final result."""
 
     class _MockRun:
         def __init__(self):
-            self.ctx = MagicMock()
             self.result = _make_mock_agent_result(output)
             self._done = False
 
         async def __aenter__(self):
+            self._done = False
             return self
 
         async def __aexit__(self, *args):
             pass
 
-        @property
-        def next_node(self):
-            return End(data=output)
+        def __aiter__(self):
+            return self
 
-        async def next(self, node):
-            return End(data=output)
+        async def __anext__(self):
+            if self._done:
+                raise StopAsyncIteration
+            self._done = True
+            return AgentRunResultEvent(self.result)
 
     return _MockRun()
 
@@ -121,18 +115,23 @@ async def wired_services(monkeypatch):
 
     llm_service = LlmService(config=settings.llm)
     history_service = HistoryService(config=settings.history, llm_service=llm_service)
-    tool_service = ToolService(config=settings.tools)
+    artifact_service = make_artifact_service()
+
+    tool_service = ToolService(config=settings.tools, artifact_service=artifact_service)
     assistant_service = AssistantService(
         config=settings.assistant,
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
+        artifact_service=artifact_service,
         runtime_settings=runtime_settings,
     )
 
     # Register all
     await lm.register("llm_service", llm_service)
     await lm.register("history_service", history_service)
+
+    await lm.register("artifact_service", artifact_service)
     await lm.register("tool_service", tool_service)
     await lm.register("assistant_service", assistant_service)
 
@@ -142,12 +141,9 @@ async def wired_services(monkeypatch):
     # Create streaming service (accesses sessions via assistant_service)
     streaming_service = StreamingService(
         config=settings.streaming,
-        llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=assistant_service,
-        runtime_settings=runtime_settings,
-        assistant_config=settings.assistant,
     )
     await lm.register("streaming_service", streaming_service)
     await streaming_service.start()

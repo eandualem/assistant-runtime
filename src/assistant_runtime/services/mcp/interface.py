@@ -1,0 +1,196 @@
+"""MCPService — MCP server lifecycle and toolset provider. Implements LifecycleAware."""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import AsyncExitStack
+from pathlib import Path
+from typing import Any
+
+from loguru import logger
+from pydantic_ai.mcp import load_mcp_toolsets
+
+
+def _server_name(server: Any) -> str:
+    """Best-effort display name for a toolset returned by load_mcp_toolsets().
+
+    The loader returns PrefixedToolset wrappers whose ``prefix`` is the server name
+    from the config file; a bare MCPToolset carries the name in ``id``.
+    """
+    for attr in ("prefix", "id", "tool_prefix"):
+        value = getattr(server, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return "unknown"
+
+
+def _tool_source(server: Any) -> Any:
+    """Return the object that can ``list_tools()``: the server itself, or the MCPToolset
+    inside a PrefixedToolset wrapper."""
+    if callable(getattr(server, "list_tools", None)):
+        return server
+    inner = getattr(server, "wrapped", None)
+    if inner is not None and callable(getattr(inner, "list_tools", None)):
+        return inner
+    return server
+
+
+class MCPService:
+    """MCP server lifecycle and toolset provider. Implements LifecycleAware.
+
+    Loads MCP server definitions from a JSON config file (Pydantic AI native format),
+    enters each server's async context manager on start(), and provides the live
+    servers as toolsets for Agent() construction.
+    """
+
+    def __init__(self, config_path: Path | None = None) -> None:
+        self._config_path = config_path
+        self._servers: list[Any] = []  # All configured MCPServer instances
+        self._live_servers: list[Any] = []  # Successfully started servers
+        self._failed: list[dict[str, str]] = []  # Name + reason for failures
+        self._exit_stack: AsyncExitStack | None = None
+        self._detailed_cache: list[dict[str, Any]] | None = None
+        self._detailed_cache_task: asyncio.Task[list[dict[str, Any]]] | None = None
+        self._detailed_cache_lock = asyncio.Lock()
+        self._started = False
+
+    async def start(self) -> None:
+        """Load and connect to configured MCP servers.
+
+        If no config file is set, the service starts with no servers (valid state).
+        Individual server failures are logged but don't prevent other servers
+        from starting.
+        """
+        if self._config_path is None:
+            logger.info("MCP service started (no config file)")
+            self._started = True
+            return
+
+        try:
+            self._servers = load_mcp_toolsets(self._config_path)
+        except Exception as e:
+            logger.error(
+                "Failed to load MCP server config", path=str(self._config_path), error=str(e)
+            )
+            self._started = True
+            return
+
+        if not self._servers:
+            logger.info("MCP service started (no servers configured)")
+            self._started = True
+            return
+
+        # Enter each server's context manager individually
+        self._exit_stack = AsyncExitStack()
+        for server in self._servers:
+            name = _server_name(server)
+            try:
+                await self._exit_stack.enter_async_context(server)
+                self._live_servers.append(server)
+                logger.info("MCP server connected", name=name)
+            except Exception as e:
+                self._failed.append({"name": name, "reason": str(e)})
+                logger.warning("MCP server failed to start", name=name, error=str(e))
+
+        self._started = True
+        logger.info(
+            "MCP service started",
+            connected=len(self._live_servers),
+            failed=len(self._failed),
+        )
+
+    async def stop(self) -> None:
+        """Close all server connections."""
+        if self._exit_stack is not None:
+            try:
+                await self._exit_stack.aclose()
+            except Exception as e:
+                logger.warning("Error closing MCP exit stack", error=str(e))
+            self._exit_stack = None
+        self._live_servers.clear()
+        self._failed.clear()
+        self._servers.clear()
+        self._detailed_cache = None
+        self._detailed_cache_task = None
+        self._started = False
+        logger.info("MCP service stopped")
+
+    async def health_check(self) -> dict[str, Any]:
+        """Report connection status."""
+        if not self._started:
+            return {"healthy": False}
+        return {
+            "healthy": True,
+            "connected": len(self._live_servers),
+            "failed": self._failed,
+            "server_names": [_server_name(s) for s in self._live_servers],
+        }
+
+    def get_toolsets(self) -> list[Any]:
+        """Return live MCP servers as Pydantic AI toolsets.
+
+        MCPServer instances ARE AbstractToolset subclasses — they can be passed
+        directly to Agent(toolsets=...).
+        """
+        return list(self._live_servers)
+
+    def get_server_summary(self) -> list[dict[str, Any]]:
+        """Compact summary of connected servers for prompt builder.
+
+        Returns a list of dicts with name and tool_prefix per live server.
+        Prefer get_detailed_summary() for richer tool-aware data.
+        """
+        summaries: list[dict[str, Any]] = []
+        for server in self._live_servers:
+            name = _server_name(server)
+            summaries.append({"name": name})
+        return summaries
+
+    async def get_detailed_summary(self) -> list[dict[str, Any]]:
+        """Query live servers for tool lists. Cached after first call.
+
+        Returns a list of dicts with name, tools (list of tool names), and
+        tool_count per live server.
+        """
+        if self._detailed_cache is not None:
+            return self._detailed_cache
+
+        created = False
+        async with self._detailed_cache_lock:
+            if self._detailed_cache is not None:
+                return self._detailed_cache
+            if self._detailed_cache_task is None:
+                self._detailed_cache_task = asyncio.create_task(self._build_detailed_summary())
+                created = True
+            task = self._detailed_cache_task
+
+        try:
+            summaries = await task
+        finally:
+            if created:
+                async with self._detailed_cache_lock:
+                    if self._detailed_cache_task is task:
+                        self._detailed_cache_task = None
+
+        self._detailed_cache = summaries
+        return summaries
+
+    async def _build_detailed_summary(self) -> list[dict[str, Any]]:
+        """Build detailed summaries for all live servers in parallel."""
+        summaries = await asyncio.gather(
+            *(self._summarize_server(server) for server in self._live_servers)
+        )
+        return list(summaries)
+
+    async def _summarize_server(self, server: Any) -> dict[str, Any]:
+        """Return the detailed tool summary for one MCP server."""
+        name = _server_name(server)
+        tools: list[str] = []
+        try:
+            # load_mcp_toolsets() wraps each MCPToolset in a PrefixedToolset; the
+            # wrapper has no list_tools(), so query the underlying server.
+            tool_defs = await _tool_source(server).list_tools()
+            tools = [t.name for t in tool_defs]
+        except Exception as e:
+            logger.warning("Failed to list tools for MCP server", name=name, error=str(e))
+        return {"name": name, "tools": tools, "tool_count": len(tools)}

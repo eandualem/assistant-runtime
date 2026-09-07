@@ -1,8 +1,10 @@
 """Tests for HistoryService lifecycle, delegation, and health_check."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -11,10 +13,14 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from lovely_assistant.services.history.config import HistoryConfig
-from lovely_assistant.services.history.exceptions import CompactionError
-from lovely_assistant.services.history.interface import HistoryService
-from lovely_assistant.services.history.models import HistoryPreparationResult, WorkingMemory
+from assistant_runtime.services.history.config import HistoryConfig
+from assistant_runtime.services.history.exceptions import CompactionError
+from assistant_runtime.services.history.interface import HistoryService
+from assistant_runtime.services.history.models import HistoryPreparationResult, WorkingMemory
+
+
+def _ctx(run_id: str = "run-1"):
+    return SimpleNamespace(run_id=run_id)
 
 
 @pytest.fixture
@@ -77,46 +83,6 @@ class TestLifecycle:
         assert service._manager._summarizer._runtime_settings is runtime
 
 
-class TestPrepareHistory:
-    async def test_raises_if_not_started(self, service):
-        with pytest.raises(CompactionError, match="not started"):
-            await service.prepare_history([], {})
-
-    async def test_delegates_to_manager(self, service):
-        await service.start()
-
-        # Mock the manager's prepare_history
-        service._manager.prepare_history = AsyncMock(return_value=([], False))
-
-        result, modified = await service.prepare_history([], {})
-        assert result == []
-        assert modified is False
-        service._manager.prepare_history.assert_called_once()
-
-    async def test_passes_is_continuation(self, service):
-        await service.start()
-        service._manager.prepare_history = AsyncMock(return_value=([], False))
-
-        await service.prepare_history([], {}, is_continuation=True)
-
-        call_kwargs = service._manager.prepare_history.call_args.kwargs
-        assert call_kwargs["is_continuation"] is True
-
-    async def test_wraps_unexpected_errors(self, service):
-        await service.start()
-        service._manager.prepare_history = AsyncMock(side_effect=RuntimeError("unexpected"))
-
-        with pytest.raises(CompactionError, match="History preparation failed"):
-            await service.prepare_history([], {})
-
-    async def test_reraises_compaction_errors(self, service):
-        await service.start()
-        service._manager.prepare_history = AsyncMock(side_effect=CompactionError("specific issue"))
-
-        with pytest.raises(CompactionError, match="specific issue"):
-            await service.prepare_history([], {})
-
-
 class TestExtractMemoryDelta:
     async def test_raises_if_not_started(self, service):
         with pytest.raises(CompactionError, match="not started"):
@@ -133,73 +99,72 @@ class TestExtractMemoryDelta:
         result = await service.extract_memory_delta(wm, messages, turn_number=5)
 
         assert result.active_goal == "Updated"
-        service._manager._summarizer.extract_memory_delta.assert_called_once_with(wm, messages, 5)
+        service._manager._summarizer.extract_memory_delta.assert_called_once_with(
+            wm, messages, 5, usage=None
+        )
 
 
-class TestPrepareHistoryWithMetadata:
+class TestProcessor:
     async def test_raises_if_not_started(self, service):
         with pytest.raises(CompactionError, match="not started"):
-            await service.prepare_history_with_metadata([], {})
+            service.processor({})
 
-    async def test_returns_history_preparation_result(self, service):
+    async def test_disabled_compaction_has_no_processor(self, mock_llm):
+        service = HistoryService(HistoryConfig(compaction_enabled=False), llm_service=mock_llm)
         await service.start()
-        service._manager.prepare_history = AsyncMock(return_value=([], False))
-        service._manager._estimate_tokens = MagicMock(return_value=0)
+        assert service.processor({}) is None
 
-        result = await service.prepare_history_with_metadata([], {})
-        assert isinstance(result, HistoryPreparationResult)
-        assert result.history == []
-        assert result.was_compacted is False
-        assert result.message_count == 0
-        assert result.estimated_tokens == 0
-        assert result.compacted_from == 0
-
-    async def test_compacted_result(self, service):
+    async def test_capability_is_native_process_history(self, service):
         await service.start()
-        # Simulate compaction: prepare_history returns was_compacted=True with fewer messages
-        service._manager.prepare_history = AsyncMock(return_value=([MagicMock()], True))
+        assert isinstance(service.processor({}).capability(), ProcessHistory)
+
+    async def test_process_records_result(self, service):
+        await service.start()
+        user_msg = ModelRequest(parts=[UserPromptPart(content="Hello")])
+        assistant_msg = ModelResponse(parts=[TextPart(content="Hi there")])
+        service._manager.prepare_history = AsyncMock(return_value=([user_msg], True))
         service._manager._estimate_tokens = MagicMock(return_value=500)
+        processor = service.processor({})
+        assert processor.result is None
 
-        # Pass 5 messages, expect compacted_from=5
-        history = [MagicMock() for _ in range(5)]
-        result = await service.prepare_history_with_metadata(history, {})
+        prepared = await processor.process(_ctx(), [user_msg, assistant_msg])
+
+        assert prepared == [user_msg]
+        result = processor.result
+        assert isinstance(result, HistoryPreparationResult)
         assert result.was_compacted is True
         assert result.message_count == 1
         assert result.estimated_tokens == 500
-        assert result.compacted_from == 5
+        assert result.compacted_from == 2
+        assert result.message_summaries[0]["content_preview"] == "Hello"
 
-    async def test_passes_is_continuation(self, service):
+    async def test_process_freezes_the_current_run(self, service):
         await service.start()
         service._manager.prepare_history = AsyncMock(return_value=([], False))
         service._manager._estimate_tokens = MagicMock(return_value=0)
+        older = ModelRequest(parts=[UserPromptPart(content="old")], run_id="run-0")
+        current = ModelRequest(parts=[UserPromptPart(content="new")], run_id="run-1")
 
-        await service.prepare_history_with_metadata([], {}, is_continuation=True)
-        call_kwargs = service._manager.prepare_history.call_args.kwargs
-        assert call_kwargs["is_continuation"] is True
+        await service.processor({}).process(_ctx("run-1"), [older, older, current])
+
+        assert service._manager.prepare_history.call_args.kwargs["frozen_from"] == 2
+
+    async def test_process_passes_session_context(self, service):
+        await service.start()
+        service._manager.prepare_history = AsyncMock(return_value=([], False))
+        service._manager._estimate_tokens = MagicMock(return_value=0)
+        context: dict = {}
+
+        await service.processor(context).process(_ctx(), [])
+
+        assert service._manager.prepare_history.call_args[0][1] is context
 
     async def test_wraps_unexpected_errors(self, service):
         await service.start()
         service._manager.prepare_history = AsyncMock(side_effect=RuntimeError("fail"))
 
         with pytest.raises(CompactionError, match="History preparation failed"):
-            await service.prepare_history_with_metadata([], {})
-
-    async def test_includes_message_summaries(self, service):
-        await service.start()
-
-        user_msg = ModelRequest(parts=[UserPromptPart(content="Hello")])
-        assistant_msg = ModelResponse(parts=[TextPart(content="Hi there")])
-        prepared = [user_msg, assistant_msg]
-
-        service._manager.prepare_history = AsyncMock(return_value=(prepared, False))
-        service._manager._estimate_tokens = MagicMock(return_value=50)
-
-        result = await service.prepare_history_with_metadata(prepared, {})
-        assert len(result.message_summaries) == 2
-        assert result.message_summaries[0]["role"] == "user"
-        assert result.message_summaries[0]["content_preview"] == "Hello"
-        assert result.message_summaries[1]["role"] == "assistant"
-        assert result.message_summaries[1]["content_preview"] == "Hi there"
+            await service.processor({}).process(_ctx(), [])
 
 
 class TestSummarizeMessages:

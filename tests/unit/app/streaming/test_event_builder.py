@@ -1,10 +1,11 @@
 """Tests for SSE event builder pure functions."""
 
-from lovely_assistant.app.streaming._event_builder import (
+from assistant_runtime.app.streaming._event_builder import (
     _truncate,
     make_agent_status_event,
     make_debug_agent_config_event,
     make_debug_completed_event,
+    make_debug_error_event,
     make_debug_final_response_event,
     make_debug_history_event,
     make_debug_request_event,
@@ -19,7 +20,6 @@ from lovely_assistant.app.streaming._event_builder import (
     make_tool_call_event,
     make_tool_error_event,
     make_tool_result_event,
-    make_tool_status_event,
 )
 
 
@@ -65,6 +65,7 @@ class TestToolCallEvent:
             "tool_name": "navigate",
             "arguments": {"message": "hi", "level": "info"},
             "call_id": "call_123",
+            "category": "backend",
         }
 
     def test_empty_arguments(self):
@@ -75,19 +76,18 @@ class TestToolCallEvent:
         )
         assert event["arguments"] == {}
 
+    def test_host_category(self):
+        event = make_tool_call_event(
+            tool_name="navigate",
+            arguments={"page": "agents"},
+            call_id="call_789",
+            category="host",
+        )
+        assert event["category"] == "host"
 
-class TestToolStatusEvent:
-    def test_started(self):
-        event = make_tool_status_event("get_time", "started")
-        assert event == {"type": "tool_status", "tool_name": "get_time", "status": "started"}
-
-    def test_completed(self):
-        event = make_tool_status_event("get_time", "completed")
-        assert event["status"] == "completed"
-
-    def test_error(self):
-        event = make_tool_status_event("get_time", "error")
-        assert event["status"] == "error"
+    def test_default_category_is_backend(self):
+        event = make_tool_call_event("tool", {}, "c1")
+        assert event["category"] == "backend"
 
 
 class TestFinalResponseEvent:
@@ -134,6 +134,10 @@ class TestFinalResponseEvent:
         event = make_final_response_event("Done!", "model")
         assert "session_id" not in event
 
+    def test_trace_id_included(self):
+        event = make_final_response_event("Done!", "model", trace_id="trace-1")
+        assert event["trace_id"] == "trace-1"
+
 
 class TestErrorEvent:
     def test_basic(self):
@@ -151,6 +155,10 @@ class TestErrorEvent:
     def test_error_type_absent(self):
         event = make_error_event("fail")
         assert "error_type" not in event
+
+    def test_trace_id_included(self):
+        event = make_error_event("fail", trace_id="trace-1")
+        assert event["trace_id"] == "trace-1"
 
 
 # --- Debug event tests ---
@@ -188,23 +196,23 @@ class TestDebugRequestEvent:
         assert event["session_id"] == "sess-1"
         assert event["message"] == "Hello"
         assert event["is_continuation"] is False
-        assert event["has_machine_state"] is True
-        assert event["machine_state"] is None
+        assert event["has_host_context"] is True
+        assert event["host_context"] is None
 
     def test_long_message_not_truncated(self):
         long_msg = "x" * 3000
         event = make_debug_request_event("sess-1", long_msg, False, False)
         assert event["message"] == long_msg
 
-    def test_with_machine_state(self):
-        state = {"active_page": {"name": "agents"}}
-        event = make_debug_request_event("sess-1", "Hi", False, True, machine_state=state)
-        assert event["machine_state"] == state
+    def test_with_host_context(self):
+        context = {"page": {"name": "agents"}}
+        event = make_debug_request_event("sess-1", "Hi", False, True, host_context=context)
+        assert event["host_context"] == context
 
     def test_continuation_flag(self):
         event = make_debug_request_event("sess-2", "cont", True, False)
         assert event["is_continuation"] is True
-        assert event["has_machine_state"] is False
+        assert event["has_host_context"] is False
 
     def test_image_count_defaults_to_zero(self):
         event = make_debug_request_event("sess-1", "Hello", False, True)
@@ -213,6 +221,27 @@ class TestDebugRequestEvent:
     def test_image_count_included(self):
         event = make_debug_request_event("sess-1", "Hello", False, True, image_count=3)
         assert event["image_count"] == 3
+
+
+class TestDebugErrorEvent:
+    def test_basic(self):
+        event = make_debug_error_event(
+            "boom",
+            error_type="provider_client_error",
+            retry_allowed=False,
+            trace_id="trace-1",
+            model="openai:gpt-5.4",
+            phase="stream",
+        )
+        assert event == {
+            "type": "debug_error",
+            "message": "boom",
+            "error_type": "provider_client_error",
+            "retry_allowed": False,
+            "trace_id": "trace-1",
+            "model": "openai:gpt-5.4",
+            "phase": "stream",
+        }
 
 
 class TestDebugSystemPromptEvent:

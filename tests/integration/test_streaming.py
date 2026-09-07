@@ -1,15 +1,27 @@
-"""Integration tests for the streaming pipeline — real wiring, mocked Agent.iter()."""
+"""Integration tests for the streaming pipeline — real wiring, mocked Agent.run_stream_events()."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic_graph.nodes import End
+from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai.run import AgentRunResultEvent
 
-from lovely_assistant.app.assistant.models import AssistantRequest
+from assistant_runtime.app.assistant.models import AssistantRequest
 
 from .conftest import _make_mock_agent_result, _make_mock_agent_run
+
+
+def _request(
+    *, message_id: str, session_id: str, parent_id: str | None, content: str
+) -> AssistantRequest:
+    return AssistantRequest(
+        id=message_id,
+        session_id=session_id,
+        parent_id=parent_id,
+        content=content,
+    )
 
 
 class TestStreamingPipeline:
@@ -20,12 +32,17 @@ class TestStreamingPipeline:
         mock_run = _make_mock_agent_run("Streamed result")
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
+        mock_agent.run_stream_events = MagicMock(return_value=mock_run)
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
             async for event in streaming.stream_message(
-                AssistantRequest(session_id="stream-1", message="Hi")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-1",
+                    parent_id=None,
+                    content="Hi",
+                )
             ):
                 events.append(event)
 
@@ -45,12 +62,17 @@ class TestStreamingPipeline:
         mock_run = _make_mock_agent_run("The answer is 42")
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
+        mock_agent.run_stream_events = MagicMock(return_value=mock_run)
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
             async for event in streaming.stream_message(
-                AssistantRequest(session_id="stream-2", message="What?")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-2",
+                    parent_id=None,
+                    content="What?",
+                )
             ):
                 events.append(event)
 
@@ -58,6 +80,7 @@ class TestStreamingPipeline:
         assert len(final) == 1
         assert final[0]["content"] == "The answer is 42"
         assert final[0]["streamed"] is False
+        assert final[0]["message_id"]
 
     @pytest.mark.asyncio
     async def test_stream_saves_history(self, wired_services):
@@ -66,12 +89,15 @@ class TestStreamingPipeline:
         assistant = wired_services["assistant_service"]
 
         mock_result = _make_mock_agent_result("Done")
-        mock_result.all_messages.return_value = [MagicMock(), MagicMock()]
+        mock_result.all_messages.return_value = [
+            ModelRequest(parts=[UserPromptPart(content="Save me")]),
+            *mock_result.new_messages.return_value,
+        ]
 
         class _MockRun:
             def __init__(self):
-                self.ctx = MagicMock()
                 self.result = mock_result
+                self._done = False
 
             async def __aenter__(self):
                 return self
@@ -79,25 +105,34 @@ class TestStreamingPipeline:
             async def __aexit__(self, *args):
                 pass
 
-            @property
-            def next_node(self):
-                return End(data="Done")
+            def __aiter__(self):
+                return self
 
-            async def next(self, node):
-                return End(data="Done")
+            async def __anext__(self):
+                if self._done:
+                    raise StopAsyncIteration
+                self._done = True
+                return AgentRunResultEvent(self.result)
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=_MockRun())
+        mock_agent.run_stream_events = MagicMock(return_value=_MockRun())
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             async for _ in streaming.stream_message(
-                AssistantRequest(session_id="stream-hist", message="Save me")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-hist",
+                    parent_id=None,
+                    content="Save me",
+                )
             ):
                 pass
 
-        # History was saved via the shared session store
-        history = assistant._sessions.get_history("stream-hist")
-        assert len(history) == 2
+        path = await assistant._sessions.get_message_path("stream-hist")
+        assert len(path) == 2
+        assert path[0]["id"] == "user-1"
+        assert path[1]["role"] == "assistant"
+        assert path[1]["content"] == "Done"
 
     @pytest.mark.asyncio
     async def test_coordinator_dedup_in_real_flow(self, wired_services):
@@ -106,12 +141,17 @@ class TestStreamingPipeline:
         mock_run = _make_mock_agent_run("OK")
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
+        mock_agent.run_stream_events = MagicMock(return_value=mock_run)
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             events = []
             async for event in streaming.stream_message(
-                AssistantRequest(session_id="stream-dedup", message="test")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-dedup",
+                    parent_id=None,
+                    content="test",
+                )
             ):
                 events.append(event)
 
@@ -132,11 +172,16 @@ class TestStreamingPipeline:
         mock_run = _make_mock_agent_run("OK")
 
         mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
+        mock_agent.run_stream_events = MagicMock(return_value=mock_run)
 
         with patch.object(wired_services["llm_service"], "build_agent", return_value=mock_agent):
             async for _ in streaming.stream_message(
-                AssistantRequest(session_id="stream-turn", message="test")
+                _request(
+                    message_id="user-1",
+                    session_id="stream-turn",
+                    parent_id=None,
+                    content="test",
+                )
             ):
                 pass
 

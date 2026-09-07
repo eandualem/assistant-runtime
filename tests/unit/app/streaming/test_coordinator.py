@@ -2,12 +2,12 @@
 
 import pytest
 
-from lovely_assistant.app.streaming._coordinator import EventCoordinator
-from lovely_assistant.app.streaming._event_builder import (
+from assistant_runtime.app.streaming._coordinator import EventCoordinator
+from assistant_runtime.app.streaming._event_builder import (
     make_text_delta_event,
     make_thinking_delta_event,
 )
-from lovely_assistant.app.streaming.exceptions import EventLimitError
+from assistant_runtime.app.streaming.exceptions import EventLimitError
 
 
 class TestEventCoordinatorInit:
@@ -109,12 +109,15 @@ class TestCoordinatorEventLimit:
         coord.track(make_text_delta_event("3"))
         assert coord.event_count == 3
 
-    def test_protocol_events_count_toward_limit(self):
+    def test_terminal_events_bypass_limit(self):
+        """try_completed() and try_final_response() bypass the event limit."""
         coord = EventCoordinator(max_events=2)
         coord.try_started()
         coord.track(make_text_delta_event("text"))
-        with pytest.raises(EventLimitError):
-            coord.try_completed()
+        # At limit — regular track would raise, but terminal events must not
+        completed = coord.try_completed()
+        assert completed is not None
+        assert completed["status"] == "completed"
 
 
 class TestCoordinatorFullProtocol:
@@ -173,6 +176,11 @@ class TestCoordinatorStreamingFlags:
         assert coord.has_streamed_text is True
         assert event["type"] == "text_delta"
         assert event["content"] == "hello"
+        assert event["segment_id"] == "segment_0"
+        assert event["segment_index"] == 0
+        assert event["delta_index"] == 0
+        assert event["segment_started"] is True
+        assert event["segment_kind"] == "text"
 
     def test_emit_text_delta_increments_count(self):
         coord = EventCoordinator(max_events=100)
@@ -185,6 +193,11 @@ class TestCoordinatorStreamingFlags:
         assert coord.has_streamed_thinking is True
         assert event["type"] == "thinking_delta"
         assert event["content"] == "reasoning"
+        assert event["segment_id"] == "segment_0"
+        assert event["segment_index"] == 0
+        assert event["delta_index"] == 0
+        assert event["segment_started"] is True
+        assert event["segment_kind"] == "thinking"
 
     def test_emit_thinking_delta_increments_count(self):
         coord = EventCoordinator(max_events=100)
@@ -193,10 +206,13 @@ class TestCoordinatorStreamingFlags:
 
     def test_flags_persist_across_multiple_emits(self):
         coord = EventCoordinator(max_events=100)
-        coord.emit_text_delta("a")
-        coord.emit_text_delta("b")
+        first = coord.emit_text_delta("a")
+        second = coord.emit_text_delta("b")
         assert coord.has_streamed_text is True
         assert coord.event_count == 2
+        assert first["segment_id"] == second["segment_id"]
+        assert second["delta_index"] == 1
+        assert second["segment_started"] is False
 
     def test_flags_are_independent(self):
         coord = EventCoordinator(max_events=100)
@@ -206,10 +222,12 @@ class TestCoordinatorStreamingFlags:
 
     def test_both_flags_set(self):
         coord = EventCoordinator(max_events=100)
-        coord.emit_thinking_delta("think")
-        coord.emit_text_delta("text")
+        thinking = coord.emit_thinking_delta("think")
+        text = coord.emit_text_delta("text")
         assert coord.has_streamed_text is True
         assert coord.has_streamed_thinking is True
+        assert thinking["segment_id"] != text["segment_id"]
+        assert text["segment_index"] == 1
 
 
 class TestCoordinatorFinalResponseStreamed:
@@ -306,16 +324,6 @@ class TestCoordinatorDebugEventsCollection:
 
 
 class TestCoordinatorAccumulation:
-    def test_accumulated_thinking_empty_initially(self):
-        coord = EventCoordinator(max_events=100)
-        assert coord.accumulated_thinking == ""
-
-    def test_accumulated_thinking_accumulates(self):
-        coord = EventCoordinator(max_events=100)
-        coord.emit_thinking_delta("first ")
-        coord.emit_thinking_delta("second")
-        assert coord.accumulated_thinking == "first second"
-
     def test_accumulated_response_empty_initially(self):
         coord = EventCoordinator(max_events=100)
         assert coord.accumulated_response == ""
@@ -325,13 +333,6 @@ class TestCoordinatorAccumulation:
         coord.emit_text_delta("Hello ")
         coord.emit_text_delta("world")
         assert coord.accumulated_response == "Hello world"
-
-    def test_buffers_independent(self):
-        coord = EventCoordinator(max_events=100)
-        coord.emit_thinking_delta("thinking")
-        coord.emit_text_delta("response")
-        assert coord.accumulated_thinking == "thinking"
-        assert coord.accumulated_response == "response"
 
 
 class TestCoordinatorFlushThinking:
@@ -381,6 +382,26 @@ class TestCoordinatorFlushThinking:
         event = coord.flush_thinking()
         assert event is not None
         assert event["content"] == "part one part two"
+
+
+class TestCoordinatorSegmentBoundaries:
+    def test_track_non_content_event_resets_segment(self):
+        coord = EventCoordinator(max_events=100)
+        first = coord.emit_thinking_delta("first")
+        coord.track({"type": "tool_call", "tool_name": "check", "arguments": {}, "call_id": "tc_1"})
+        second = coord.emit_thinking_delta("second")
+
+        assert first["segment_id"] == "segment_0"
+        assert second["segment_id"] == "segment_1"
+
+    def test_clear_content_segment_forces_new_segment(self):
+        coord = EventCoordinator(max_events=100)
+        first = coord.emit_text_delta("hello")
+        coord.clear_content_segment()
+        second = coord.emit_text_delta("world")
+
+        assert first["segment_id"] == "segment_0"
+        assert second["segment_id"] == "segment_1"
 
 
 class TestCoordinatorUsage:

@@ -7,9 +7,21 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.main import create_app
+from assistant_runtime.main import create_app
+from tests.integration.conftest import make_artifact_service
 
 from .conftest import _make_mock_agent
+
+
+def _payload(
+    *, message_id: str, session_id: str, parent_id: str | None, content: str
+) -> dict[str, object]:
+    return {
+        "id": message_id,
+        "session_id": session_id,
+        "parent_id": parent_id,
+        "content": content,
+    }
 
 
 @pytest.fixture
@@ -17,14 +29,14 @@ async def integration_client(monkeypatch):
     """Create a real app with services manually wired (ASGITransport skips lifespan)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-routes")
 
-    from lovely_assistant.app.assistant.interface import AssistantService
-    from lovely_assistant.app.settings import RuntimeSettings
-    from lovely_assistant.app.streaming.interface import StreamingService
-    from lovely_assistant.base.lifecycle import LifecycleManager
-    from lovely_assistant.config import AppSettings
-    from lovely_assistant.services.history.interface import HistoryService
-    from lovely_assistant.services.llm.interface import LlmService
-    from lovely_assistant.services.tools.interface import ToolService
+    from assistant_runtime.app.assistant.interface import AssistantService
+    from assistant_runtime.app.settings import RuntimeSettings
+    from assistant_runtime.app.streaming.interface import StreamingService
+    from assistant_runtime.base.lifecycle import LifecycleManager
+    from assistant_runtime.config import AppSettings
+    from assistant_runtime.services.history.interface import HistoryService
+    from assistant_runtime.services.llm.interface import LlmService
+    from assistant_runtime.services.tools.interface import ToolService
 
     app = create_app()
     settings = AppSettings()
@@ -38,17 +50,22 @@ async def integration_client(monkeypatch):
 
     llm_service = LlmService(config=settings.llm)
     history_service = HistoryService(config=settings.history, llm_service=llm_service)
-    tool_service = ToolService(config=settings.tools)
+    artifact_service = make_artifact_service()
+
+    tool_service = ToolService(config=settings.tools, artifact_service=artifact_service)
     assistant_service = AssistantService(
         config=settings.assistant,
         llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
+        artifact_service=artifact_service,
         runtime_settings=runtime_settings,
     )
 
     await lifecycle.register("llm_service", llm_service)
     await lifecycle.register("history_service", history_service)
+
+    await lifecycle.register("artifact_service", artifact_service)
     await lifecycle.register("tool_service", tool_service)
     await lifecycle.register("assistant_service", assistant_service)
     await lifecycle.start_all()
@@ -61,12 +78,9 @@ async def integration_client(monkeypatch):
     # Streaming service accesses sessions via assistant_service
     streaming_service = StreamingService(
         config=settings.streaming,
-        llm_service=llm_service,
         history_service=history_service,
         tool_service=tool_service,
         assistant_service=assistant_service,
-        runtime_settings=runtime_settings,
-        assistant_config=settings.assistant,
     )
     await streaming_service.start()
     app.state.streaming_service = streaming_service
@@ -97,12 +111,17 @@ class TestChatRouteIntegration:
         mock_agent = _make_mock_agent("Integration response")
 
         with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
+            "assistant_runtime.services.llm.interface.LlmService.build_agent",
             return_value=mock_agent,
         ):
             response = await client.post(
                 "/api/chat",
-                json={"session_id": "route-integ", "message": "Hello"},
+                json=_payload(
+                    message_id="user-1",
+                    session_id="route-integ",
+                    parent_id=None,
+                    content="Hello",
+                ),
             )
 
         assert response.status_code == 200
@@ -127,12 +146,17 @@ class TestSessionRouteIntegration:
         mock_agent = _make_mock_agent("First message")
 
         with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
+            "assistant_runtime.services.llm.interface.LlmService.build_agent",
             return_value=mock_agent,
         ):
             await client.post(
                 "/api/chat",
-                json={"session_id": "sess-route", "message": "Hi"},
+                json=_payload(
+                    message_id="user-1",
+                    session_id="sess-route",
+                    parent_id=None,
+                    content="Hi",
+                ),
             )
 
         response = await client.get("/api/sessions/sess-route")
@@ -148,12 +172,17 @@ class TestSessionRouteIntegration:
         mock_agent = _make_mock_agent("To be deleted")
 
         with patch(
-            "lovely_assistant.services.llm.interface.LlmService.build_agent",
+            "assistant_runtime.services.llm.interface.LlmService.build_agent",
             return_value=mock_agent,
         ):
             await client.post(
                 "/api/chat",
-                json={"session_id": "sess-delete", "message": "Hi"},
+                json=_payload(
+                    message_id="user-1",
+                    session_id="sess-delete",
+                    parent_id=None,
+                    content="Hi",
+                ),
             )
 
         # Delete

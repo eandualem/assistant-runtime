@@ -3,34 +3,75 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "lovely-assistant"
+name = "assistant-runtime"
 version = "0.1.0"
-description = "AI assistant backend for the Lovely Console operations dashboard"
+description = "Assistant backend runtime built on FastAPI, Socket.IO and pydantic-ai, with a tool system that plugs into any work environment"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+readme = "README.md"
+keywords = ["assistant", "pydantic-ai", "fastapi", "socket.io", "ag-ui", "agents", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "python-socketio>=5.11",
     "python-dotenv>=1.0.0",
-    "pydantic-ai>=1.50.0",
+    "pydantic-ai-slim[anthropic,openai,google,openrouter,mcp]>=2.38.0,<3",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "httpx>=0.27.0",
     "loguru>=0.7.0",
     "tenacity>=8.2.0",
+    "cryptography>=44.0",
     "pyyaml>=6.0",
-    "runwayml>=1.0.0",
-    "lumaai>=1.0.0",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
     "asyncpg>=0.29",
-    "langfuse>=3.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/eandualem/assistant-runtime"
+Repository = "https://github.com/eandualem/assistant-runtime"
+Issues = "https://github.com/eandualem/assistant-runtime/issues"
+Documentation = "https://github.com/eandualem/assistant-runtime/tree/main/docs"
+
+[project.scripts]
+assistant-runtime = "assistant_runtime.cli:main"
+
 [project.optional-dependencies]
+# Video generation providers (services/media/_video_providers.py imports them lazily)
+video = [
+    "runwayml>=1.0.0",
+    "lumaai>=1.0.0",
+]
+# Langfuse tracing (services/tracing.py imports it lazily; disabled when absent)
+tracing = [
+    "langfuse>=4.0.0",
+]
+# AG-UI protocol endpoint (app/routes/agui.py imports pydantic_ai.ui.ag_ui lazily; 501 when absent)
+ag-ui = [
+    "ag-ui-protocol>=0.1.10",
+]
 dev = [
+    # The suite exercises every optional integration, so the dev extra carries
+    # the SDKs the tests patch; the runtime itself still imports them lazily.
+    "ag-ui-protocol>=0.1.10",
+    "langfuse>=4.0.0",
+    "lumaai>=1.0.0",
+    "runwayml>=1.0.0",
     "pytest>=9.0.0",
     "pytest-asyncio>=1.0.0",
     "pytest-mock>=3.10.0",
@@ -101,4 +142,15 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lovely_assistant"]
+packages = ["src/assistant_runtime"]
+
+# The documentation ships inside the wheel so an installed runtime can print it
+# (`assistant-runtime docs <page>`) without a checkout of the repository.
+[tool.hatch.build.targets.wheel.force-include]
+"docs" = "assistant_runtime/help/docs"
+# The migrations ship too, so `assistant-runtime migrate` can create the
+# schema from an installed package without a checkout.
+"alembic" = "assistant_runtime/_migrations"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/assistant_runtime", "docs", "alembic", "alembic.ini", "README.md", "LICENSE"]

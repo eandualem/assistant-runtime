@@ -1,6 +1,6 @@
 """Tests for context engineering models — WorkingMemory, CompactionResult, MemoryEntry, etc."""
 
-from lovely_assistant.services.history.models import (
+from assistant_runtime.services.history.models import (
     CompactionResult,
     MemoryDelta,
     MemoryDeltaResult,

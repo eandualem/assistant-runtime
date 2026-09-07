@@ -1,0 +1,32 @@
+"""Factory for tool service lifecycle registration."""
+
+from typing import Any
+
+from loguru import logger
+
+from assistant_runtime.base.lifecycle import LifecycleManager
+from assistant_runtime.config import AppSettings
+from assistant_runtime.services.tools.interface import ToolService
+from assistant_runtime.services.tools.providers import build_providers
+
+
+async def register_tools(
+    app_state: Any, lifecycle: LifecycleManager, *, settings: AppSettings | None = None
+) -> None:
+    """Create ToolService, store on app_state, register with lifecycle."""
+    settings = settings if settings is not None else AppSettings()
+    media_service = getattr(app_state, "media_service", None)
+    llm_service = getattr(app_state, "llm_service", None)
+    mcp_service = getattr(app_state, "mcp_service", None)
+    artifact_service = getattr(app_state, "artifact_service", None)
+    service = ToolService(
+        config=settings.tools,
+        media_service=media_service,
+        llm_service=llm_service,
+        mcp_service=mcp_service,
+        artifact_service=artifact_service,
+        providers=build_providers(settings.providers),
+    )
+    app_state.tool_service = service
+    await lifecycle.register("tool_service", service)
+    logger.info("Tool module registered")

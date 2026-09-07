@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.models import router
+from assistant_runtime.app.routes.models import router
 
 
 def _make_app() -> FastAPI:
@@ -22,6 +22,88 @@ async def client():
     app = _make_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+
+
+class TestEffectiveDefaults:
+    @pytest.mark.asyncio
+    async def test_defaults_use_supplied_app_settings(self):
+        from assistant_runtime.app.assistant.config import AssistantConfig
+        from assistant_runtime.app.settings import RuntimeSettings
+        from assistant_runtime.config import AppSettings
+        from assistant_runtime.main import create_app
+        from assistant_runtime.services.history.config import HistoryConfig
+        from assistant_runtime.services.llm.config import LLMConfig
+        from assistant_runtime.services.media.config import MediaConfig
+
+        settings = AppSettings(
+            _env_file=None,
+            assistant=AssistantConfig(thinking_budget=7777),
+            llm=LLMConfig(
+                primary_model="openai:gpt-5.6-terra",
+                summarization_model="openai:gpt-5.6-luna",
+            ),
+            history=HistoryConfig(working_memory_model="openai:gpt-5.6-luna"),
+            media=MediaConfig(
+                default_image_model="google:custom-image-model",
+                default_video_model="luma:custom-video-model",
+            ),
+        )
+        app = create_app(settings=settings)
+        app.state.runtime_settings = RuntimeSettings(frozen_config=settings.assistant)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            defaults = (await c.get("/api/models")).json()["defaults"]
+            await app.state.runtime_settings.update(default_image_model="openai:runtime-image")
+            overridden = (await c.get("/api/models")).json()["defaults"]
+
+        assert defaults["primary_model"] == settings.llm.primary_model
+        assert defaults["summarization_model"] == settings.llm.summarization_model
+        assert defaults["thinking_budget"] == 7777
+        assert defaults["working_memory_model"] == settings.history.working_memory_model
+        assert defaults["default_image_model"] == settings.media.default_image_model
+        assert defaults["default_video_model"] == settings.media.default_video_model
+        assert overridden["default_image_model"] == "openai:runtime-image"
+        assert overridden["thinking_budget"] == 7777
+
+    @pytest.mark.asyncio
+    async def test_defaults_reflect_runtime_overrides_and_the_llm_service(self):
+        from unittest.mock import MagicMock
+
+        from assistant_runtime.app.assistant.config import AssistantConfig
+        from assistant_runtime.app.settings import RuntimeSettings
+
+        app = _make_app()
+        llm = MagicMock()
+        llm.effective_primary_model.return_value = "openai:gpt-5.6-terra"
+        llm.effective_summarization_model.return_value = "openai:gpt-5.6-luna"
+        app.state.llm_service = llm
+        app.state.runtime_settings = RuntimeSettings(frozen_config=AssistantConfig())
+        await app.state.runtime_settings.update(
+            summarization_model="anthropic:claude-haiku-4-5",
+            thinking_budget=2000,
+            subagent_thinking_budget=5000,
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            defaults = (await c.get("/api/models")).json()["defaults"]
+
+        assert defaults["primary_model"] == "openai:gpt-5.6-terra"
+        assert defaults["summarization_model"] == "anthropic:claude-haiku-4-5"
+        assert defaults["thinking_budget"] == 2000
+        assert defaults["subagent_thinking_budget"] == 5000
+        assert defaults["subagent_model"] is None
+
+    @pytest.mark.asyncio
+    async def test_defaults_fall_back_to_frozen_settings_without_services(self, client):
+        from assistant_runtime.config import AppSettings
+
+        settings = AppSettings()
+        defaults = (await client.get("/api/models")).json()["defaults"]
+        assert defaults["primary_model"] == settings.llm.primary_model
+        assert defaults["summarization_model"] == settings.llm.summarization_model
+        assert defaults["thinking_budget"] == settings.assistant.thinking_budget
+        assert defaults["default_image_model"] == settings.media.default_image_model
+        assert defaults["default_video_model"] == settings.media.default_video_model
+        assert defaults["subagent_model"] is None
 
 
 class TestListModels:

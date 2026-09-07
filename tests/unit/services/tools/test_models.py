@@ -1,12 +1,11 @@
-"""Tests for tool service data models — ToolCategory, ToolDefinition, ToolSet, ToolResult."""
+"""Tests for tool service data models — ToolCategory, ToolDefinition, ToolSet."""
 
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.services.tools.models import (
+from assistant_runtime.services.tools.models import (
     ToolCategory,
     ToolDefinition,
-    ToolResult,
     ToolSet,
 )
 
@@ -95,92 +94,3 @@ class TestToolSet:
         )
         ts = ToolSet(backend_tools=[b1, b2])
         assert ts.tool_names == ["backend_a", "backend_b"]
-
-
-class TestToolResult:
-    def test_creation(self):
-        result = ToolResult(
-            tool_name="get_time",
-            request_id="abc-123",
-            content="2026-02-18T12:00:00Z",
-        )
-        assert result.tool_name == "get_time"
-        assert result.request_id == "abc-123"
-        assert result.content == "2026-02-18T12:00:00Z"
-
-    def test_default_is_error(self):
-        result = ToolResult(
-            tool_name="get_time",
-            request_id="abc-123",
-            content="ok",
-        )
-        assert result.is_error is False
-
-    def test_error_result(self):
-        result = ToolResult(
-            tool_name="get_time",
-            request_id="abc-123",
-            content="Connection refused",
-            is_error=True,
-        )
-        assert result.is_error is True
-        assert result.content == "Connection refused"
-
-
-class TestToolCategoryFrontend:
-    def test_frontend_category_exists(self):
-        assert ToolCategory.FRONTEND == "frontend"
-
-    def test_frontend_tool_definition(self):
-        defn = ToolDefinition(
-            name="navigate",
-            description="Navigate to a dashboard page.",
-            parameters_schema={"type": "object", "properties": {}},
-            category=ToolCategory.FRONTEND,
-        )
-        assert defn.category == ToolCategory.FRONTEND
-        assert defn.name == "navigate"
-
-
-class TestToolSetFrontendTools:
-    def test_total_count_includes_frontend(self):
-        backend_a = ToolDefinition(
-            name="tool_a",
-            description="Backend tool A",
-            parameters_schema={},
-            category=ToolCategory.BACKEND,
-        )
-        backend_b = ToolDefinition(
-            name="tool_b",
-            description="Backend tool B",
-            parameters_schema={},
-            category=ToolCategory.BACKEND,
-        )
-        frontend_c = ToolDefinition(
-            name="tool_c",
-            description="Frontend tool C",
-            parameters_schema={},
-            category=ToolCategory.FRONTEND,
-        )
-        ts = ToolSet(backend_tools=[backend_a, backend_b], frontend_tools=[frontend_c])
-        assert ts.total_count == 3
-
-    def test_tool_names_includes_frontend(self):
-        backend = ToolDefinition(
-            name="a",
-            description="Backend tool",
-            parameters_schema={},
-            category=ToolCategory.BACKEND,
-        )
-        frontend = ToolDefinition(
-            name="b",
-            description="Frontend tool",
-            parameters_schema={},
-            category=ToolCategory.FRONTEND,
-        )
-        ts = ToolSet(backend_tools=[backend], frontend_tools=[frontend])
-        assert ts.tool_names == ["a", "b"]
-
-    def test_empty_frontend_default(self):
-        ts = ToolSet()
-        assert ts.frontend_tools == []

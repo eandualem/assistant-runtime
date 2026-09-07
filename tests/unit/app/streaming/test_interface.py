@@ -1,56 +1,89 @@
-"""Tests for StreamingService — the SSE streaming orchestrator."""
-
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic_ai._agent_graph import CallToolsNode, ModelRequestNode
-from pydantic_ai.messages import (
-    ModelRequest,
-    ModelResponse,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
-    ToolCallPart,
-    ToolReturnPart,
-)
+from pydantic_ai import DeferredToolRequests
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.run import AgentRunResultEvent
 from pydantic_ai.usage import UsageLimits
-from pydantic_graph.nodes import End
 
-from lovely_assistant.app.assistant._session_store import SessionStore
-from lovely_assistant.app.assistant.config import AssistantConfig
-from lovely_assistant.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
-from lovely_assistant.app.settings import EffectiveConfig, RuntimeSettings
-from lovely_assistant.app.streaming._coordinator import EventCoordinator
-from lovely_assistant.app.streaming.config import StreamingConfig
-from lovely_assistant.app.streaming.exceptions import (
-    StreamingError,
-    StreamSetupError,
-)
-from lovely_assistant.app.streaming.interface import StreamingService
-from lovely_assistant.services.history.models import HistoryPreparationResult
-from lovely_assistant.services.tools.models import ToolSet
-
-# --- Helpers ---
+from assistant_runtime.app.assistant._session_store import SessionStore
+from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
+from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
+from assistant_runtime.app.settings import EffectiveConfig
+from assistant_runtime.app.streaming._agent_run import enqueue_pending_steering
+from assistant_runtime.app.streaming._host_tool import STALE_HOST_TOOL_OUTPUT
+from assistant_runtime.app.streaming._runner import TurnRunner
+from assistant_runtime.app.streaming._usage import cache_counts
+from assistant_runtime.app.streaming.config import StreamingConfig
+from assistant_runtime.app.streaming.exceptions import StreamingError
+from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.services.tools._request_context import record_current_telegram_chat_binding
+from assistant_runtime.services.tools.models import ToolSet
 
 
-def _make_default_agent_context(
+def _request(
     *,
-    available_tools: ToolSet | None = None,
-    resolved_model: str = "test-model",
-    effective_config: EffectiveConfig | None = None,
-    agent: Any = None,
-) -> AgentSetupContext:
-    """Build a default AgentSetupContext for tests."""
-    tools = available_tools or ToolSet()
-    config = effective_config or EffectiveConfig(
+    message_id: str,
+    session_id: str = "sess-1",
+    parent_id: str | None = None,
+    content: str = "Hello",
+    message_type: str = "standard",
+    tool_call_id: str | None = None,
+    tool_result: Any | None = None,
+) -> AssistantRequest:
+    return AssistantRequest(
+        id=message_id,
+        session_id=session_id,
+        parent_id=parent_id,
+        content=content,
+        message_type=message_type,
+        tool_call_id=tool_call_id,
+        tool_result=tool_result,
+    )
+
+
+class _MockRun:
+    def __init__(
+        self, *, output: Any, all_messages: list[Any], new_messages: list[Any] | None = None
+    ) -> None:
+        self.result = MagicMock()
+        self.result.output = output
+        self.result.all_messages.return_value = all_messages
+        self.result.new_messages.return_value = (
+            new_messages if new_messages is not None else all_messages
+        )
+        self.result.usage = MagicMock(
+            input_tokens=5,
+            output_tokens=7,
+            total_tokens=12,
+            requests=1,
+        )
+        self._done = False
+
+    async def __aenter__(self) -> _MockRun:
+        self._done = False
+        return self
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+    def __aiter__(self) -> _MockRun:
+        return self
+
+    async def __anext__(self) -> AgentRunResultEvent:
+        if self._done:
+            raise StopAsyncIteration
+        self._done = True
+        return AgentRunResultEvent(self.result)
+
+
+def _agent_context(agent: Any) -> AgentSetupContext:
+    effective_config = EffectiveConfig(
         default_model=None,
         thinking_budget=None,
         temperature=None,
@@ -63,2057 +96,1200 @@ def _make_default_agent_context(
         subagent_model=None,
         subagent_thinking_budget=None,
     )
-    mock_agent = agent or MagicMock()
     return AgentSetupContext(
-        agent=mock_agent,
-        available_tools=tools,
+        agent=agent,
+        available_tools=ToolSet(),
         toolsets=[],
-        prompt_result=PromptResult(content="You are Jarvis.", fragments=[]),
-        resolved_model=resolved_model,
-        usage_limits=UsageLimits(request_limit=config.max_turns),
+        prompt_result=PromptResult(content="You are the assistant.", fragments=[]),
+        resolved_model="openai:gpt-5.4",
+        usage_limits=UsageLimits(request_limit=10),
         output_type=str,
-        effective_config=config,
+        effective_config=effective_config,
         mcp_summary=None,
     )
 
 
 def _make_service(
-    *,
-    streaming_config: StreamingConfig | None = None,
-    assistant_config: AssistantConfig | None = None,
-    sessions: SessionStore | None = None,
-    database_service: Any | None = None,
-    agent_context: AgentSetupContext | None = None,
+    *, sessions: SessionStore | None = None, run: _MockRun | None = None
 ) -> StreamingService:
-    """Create a StreamingService with mocked dependencies."""
-    llm_service = MagicMock()
-    llm_service._config.primary_model = "test-model"
-    llm_service.resolve_model = MagicMock(
-        side_effect=lambda model=None: (
-            model.lower().strip().replace("/", ":", 1) if model else "test-model"
-        )
+    sessions = sessions or SessionStore()
+    run = run or _MockRun(
+        output="Hello!",
+        all_messages=[
+            ModelResponse(
+                parts=[TextPart(content="Hello!")],
+                timestamp=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+            )
+        ],
     )
+    agent = MagicMock()
+    agent.run_stream_events = MagicMock(return_value=run)
 
-    history_service = AsyncMock()
-    history_service.prepare_history = AsyncMock(return_value=([], False))
-    history_service.prepare_history_with_metadata = AsyncMock(
-        return_value=HistoryPreparationResult(
-            history=[], was_compacted=False, message_count=0, estimated_tokens=0
-        )
-    )
+    history_service = MagicMock()
+    history_service.processor.return_value = None
 
-    tool_service = MagicMock()
-    tool_service.get_available_tools.return_value = ToolSet()
-    tool_service.build_toolset.return_value = []
-    tool_service.get_mcp_summary = AsyncMock(return_value=None)
+    assistant_service = MagicMock()
+    assistant_service.get_session_store.return_value = sessions
+    assistant_service.prepare_agent_context = AsyncMock(return_value=_agent_context(agent))
+    assistant_service.update_working_memory = AsyncMock()
 
-    # Mock assistant service with public session store accessor and prepare_agent_context
-    mock_assistant_service = MagicMock()
-    mock_assistant_service.get_session_store = MagicMock(return_value=sessions or SessionStore())
-    ctx = agent_context or _make_default_agent_context()
-    mock_assistant_service.prepare_agent_context = AsyncMock(return_value=ctx)
-
-    config = assistant_config or AssistantConfig()
     return StreamingService(
-        config=streaming_config or StreamingConfig(emit_debug_events=False),
-        llm_service=llm_service,
+        config=StreamingConfig(emit_debug_events=False),
         history_service=history_service,
-        tool_service=tool_service,
-        assistant_service=mock_assistant_service,
-        runtime_settings=RuntimeSettings(frozen_config=config),
-        assistant_config=config,
-        database_service=database_service,
+        tool_service=MagicMock(),
+        assistant_service=assistant_service,
+        database_service=None,
     )
 
 
-def _make_request(**kwargs) -> AssistantRequest:
-    """Create a test AssistantRequest."""
-    defaults = {
-        "session_id": "test-session",
-        "message": "Hello",
-    }
-    defaults.update(kwargs)
-    return AssistantRequest(**defaults)
+async def _seed_basic_turn(store: SessionStore) -> None:
+    await store.register_user_message(_request(message_id="user-1", parent_id=None))
+    await store.register_assistant_message(
+        "sess-1",
+        message_id="assistant-1",
+        parent_id="user-1",
+        content="Opening page",
+        segments=[{"kind": "text", "text": "Opening page"}],
+        usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+    )
 
 
-@asynccontextmanager
-async def _empty_stream():
-    """Async context manager that yields an empty async iterator."""
-
-    async def _empty_iter():
-        return
-        yield  # noqa: F541
-
-    yield _empty_iter()
-
-
-@asynccontextmanager
-async def _events_stream(events: list):
-    """Async context manager that yields events from a list."""
-
-    async def _iter():
-        for e in events:
-            yield e
-
-    yield _iter()
-
-
-def _make_call_tools_node(tool_calls: list[ToolCallPart]) -> MagicMock:
-    """Create a mock that isinstance(x, CallToolsNode) recognizes."""
-    mock_response = MagicMock(spec=ModelResponse)
-    mock_response.tool_calls = tool_calls
-
-    node = MagicMock(spec=CallToolsNode)
-    node.model_response = mock_response
-    return node
-
-
-def _make_model_request_node(parts: list) -> MagicMock:
-    """Create a mock ModelRequestNode with request parts and working stream()."""
-    mock_request = MagicMock(spec=ModelRequest)
-    mock_request.parts = parts
-
-    node = MagicMock(spec=ModelRequestNode)
-    node.request = mock_request
-    # stream() must be an async context manager yielding an async iterator
-    node.stream = MagicMock(side_effect=lambda *a, **kw: _empty_stream())
-    return node
-
-
-class _MockAgentRun:
-    """Mock agent run context manager."""
-
-    def __init__(self, nodes: list, output: Any = "Test response"):
-        self._nodes = list(nodes)
-        self._node_index = 0
-        self._output = output
-        self.ctx = MagicMock()
-
-        # Build result mock
-        self.result = MagicMock()
-        self.result.output = output
-        self.result.all_messages.return_value = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-    @property
-    def next_node(self):
-        if self._node_index < len(self._nodes):
-            return self._nodes[self._node_index]
-        return End(data=self._output)
-
-    async def next(self, node):
-        self._node_index += 1
-        if self._node_index < len(self._nodes):
-            return self._nodes[self._node_index]
-        return End(data=self._output)
-
-
-# --- Lifecycle Tests ---
-
-
-class TestStreamingServiceLifecycle:
+class TestStreamingService:
     @pytest.mark.asyncio
-    async def test_start(self):
+    async def test_stream_message_requires_start(self) -> None:
         service = _make_service()
-        await service.start()
-        assert service._started is True
 
-    @pytest.mark.asyncio
-    async def test_stop(self):
-        service = _make_service()
-        await service.start()
-        await service.stop()
-        assert service._started is False
-
-    @pytest.mark.asyncio
-    async def test_health_check_started(self):
-        service = _make_service()
-        await service.start()
-        health = await service.health_check()
-        assert health["healthy"] is True
-
-    @pytest.mark.asyncio
-    async def test_health_check_not_started(self):
-        service = _make_service()
-        health = await service.health_check()
-        assert health["healthy"] is False
-
-    async def test_sessions_accesses_assistant_public_accessor(self):
-        service = _make_service()
-        store = service._assistant_service.get_session_store.return_value
-        assert service._sessions is store
-        service._assistant_service.get_session_store.assert_called()
-
-
-class TestStreamingServiceNotStarted:
-    @pytest.mark.asyncio
-    async def test_stream_message_raises_when_not_started(self):
-        service = _make_service()
-        request = _make_request()
         with pytest.raises(StreamingError, match="not started"):
-            async for _ in service.stream_message(request):
+            async for _event in service.stream_message(_request(message_id="user-1")):
                 pass
 
-
-class TestStreamNewMessage:
     @pytest.mark.asyncio
-    async def test_emits_started_and_completed(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        types = [e["type"] for e in events]
-        assert types[0] == "agent_status"
-        assert events[0]["status"] == "started"
-        assert types[-1] == "agent_status"
-        assert events[-1]["status"] == "completed"
-
-    @pytest.mark.asyncio
-    async def test_emits_final_response(self):
-        mock_run = _MockAgentRun(nodes=[], output="Hello world")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"]
-        assert len(final) == 1
-        assert final[0]["content"] == "Hello world"
-        assert final[0]["streamed"] is False
-
-    @pytest.mark.asyncio
-    async def test_saves_history_after_run(self):
-        sessions = SessionStore()
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_run.result.all_messages.return_value = [MagicMock()]
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
-        )
-        await service.start()
-        request = _make_request()
-
-        async for _ in service.stream_message(request):
-            pass
-
-        history = sessions.get_history("test-session")
-        assert len(history) == 1
-
-    @pytest.mark.asyncio
-    async def test_increments_turn(self):
-        sessions = SessionStore()
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            sessions=sessions, agent_context=_make_default_agent_context(agent=mock_agent)
-        )
-        await service.start()
-        request = _make_request()
-
-        async for _ in service.stream_message(request):
-            pass
-
-        ctx = sessions.get_context("test-session")
-        assert ctx["turn_number"] == 1
-
-
-class TestStreamWithImages:
-    @pytest.mark.asyncio
-    async def test_images_not_auto_attached_to_prompt(self):
-        """Images are NOT auto-attached — prompt is always plain string."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-        request = _make_request(
-            message="What's here?",
-            images=["data:image/jpeg;base64,/9j/4AAQ"],
-        )
-
-        async for _ in service.stream_message(request):
-            pass
-
-        call_args = mock_agent.iter.call_args
-        user_prompt = call_args[0][0]
-        assert isinstance(user_prompt, str)
-        assert user_prompt == "What's here?"
-
-    @pytest.mark.asyncio
-    async def test_no_images_passes_plain_string(self):
-        """When no images, agent.iter() receives plain string."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-        request = _make_request(message="Hello there")
-
-        async for _ in service.stream_message(request):
-            pass
-
-        call_args = mock_agent.iter.call_args
-        assert call_args[0][0] == "Hello there"
-
-
-class TestStreamSetupErrors:
-    @pytest.mark.asyncio
-    async def test_prepare_agent_context_failure_raises_setup_error(self):
+    async def test_new_message_persists_assistant_row_and_emits_message_id(self) -> None:
         service = _make_service()
         await service.start()
+
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        assert final["message_id"]
+        path = await service._assistant_service.get_session_store().get_message_path("sess-1")
+        assert [message["id"] for message in path] == ["user-1", final["message_id"]]
+        assert path[-1]["content"] == "Hello!"
+
+    @pytest.mark.asyncio
+    async def test_deferred_host_tool_uses_same_assistant_message_id(self) -> None:
+        deferred = DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name="navigate",
+                    args={"page": "agents"},
+                    tool_call_id="call-nav-1",
+                )
+            ]
+        )
+        run = _MockRun(
+            output=deferred,
+            all_messages=[
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="navigate",
+                            args={"page": "agents"},
+                            tool_call_id="call-nav-1",
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                )
+            ],
+        )
+        service = _make_service(run=run)
+        await service.start()
+
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        ctx = service._assistant_service.get_session_store().get_context("sess-1")
+        assert final["message_id"] == ctx["pending_assistant_message_id"]
+        assert final["pending_tool_call"]["call_id"] == "call-nav-1"
+
+    @pytest.mark.asyncio
+    async def test_deferred_host_tool_prefers_history_call_id_when_output_drifts(self) -> None:
+        deferred = DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name="navigate",
+                    args={"page": "agents"},
+                    tool_call_id="call-output-id",
+                )
+            ]
+        )
+        run = _MockRun(
+            output=deferred,
+            all_messages=[
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="navigate",
+                            args={"page": "agents"},
+                            tool_call_id="call-history-id",
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                )
+            ],
+        )
+        service = _make_service(run=run)
+        await service.start()
+
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        ctx = service._assistant_service.get_session_store().get_context("sess-1")
+
+        assert final["pending_tool_call"]["call_id"] == "call-history-id"
+        assert ctx["pending_tool_call_id"] == "call-history-id"
+        assert ctx["pending_tool_name"] == "navigate"
+
+    @pytest.mark.asyncio
+    async def test_continuation_updates_existing_assistant_message(self) -> None:
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Opening page",
+            segments=[
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {"id": "call-nav-1", "name": "navigate", "input": {"page": "agents"}}
+                    ],
+                }
+            ],
+            usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        )
+        ctx = sessions.get_context("sess-1")
+        ctx["pending_tool_call_id"] = "call-nav-1"
+        ctx["pending_tool_name"] = "navigate"
+        ctx["pending_assistant_message_id"] = "assistant-1"
+        history = sessions.get_history("sess-1")
+        run = _MockRun(
+            output="Done",
+            all_messages=[
+                *history,
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="navigate",
+                            content={"ok": True},
+                            tool_call_id="call-nav-1",
+                            timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                ),
+                ModelResponse(
+                    parts=[TextPart(content="Done")],
+                    timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                ),
+            ],
+            new_messages=[
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="navigate",
+                            content={"ok": True},
+                            tool_call_id="call-nav-1",
+                            timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                ),
+                ModelResponse(
+                    parts=[TextPart(content="Done")],
+                    timestamp=datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
+                ),
+            ],
+        )
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        events = [
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="cont-1",
+                    parent_id="assistant-1",
+                    content="",
+                    tool_call_id="call-nav-1",
+                    tool_result={"ok": True},
+                )
+            )
+        ]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        path = await sessions.get_message_path("sess-1")
+        assert final["message_id"] == "assistant-1"
+        assert path[-1]["id"] == "assistant-1"
+        assert path[-1]["content"] == "Done"
+        assert sessions.get_context("sess-1").get("pending_tool_call_id") is None
+
+    @pytest.mark.asyncio
+    async def test_new_message_resolves_stale_pending_host_tool_before_new_turn(self) -> None:
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Opening page",
+            segments=[
+                {
+                    "kind": "tool_group",
+                    "tools": [{"id": "call-old", "name": "navigate", "input": {"page": "agents"}}],
+                }
+            ],
+            usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        )
+        stale_ctx = sessions.get_context("sess-1")
+        stale_ctx["pending_tool_call_id"] = "call-old"
+        stale_ctx["pending_tool_name"] = "navigate"
+        stale_ctx["pending_assistant_message_id"] = "assistant-1"
+
+        deferred = DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name="navigate",
+                    args={"page": "dashboard"},
+                    tool_call_id="call-new",
+                )
+            ]
+        )
+        run = _MockRun(
+            output=deferred,
+            all_messages=[
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="navigate",
+                            args={"page": "dashboard"},
+                            tool_call_id="call-new",
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 21, 12, 2, tzinfo=UTC),
+                )
+            ],
+        )
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        events = [
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="user-2",
+                    parent_id="assistant-1",
+                    content="Try again",
+                )
+            )
+        ]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        ctx = sessions.get_context("sess-1")
+        stale_record = ctx["message_index"]["assistant-1"]
+        stale_tool = stale_record["segments"][0]["tools"][0]
+
+        assert stale_tool["output"] == STALE_HOST_TOOL_OUTPUT
+        assert stale_tool["outcome"] == "interrupted"
+        assert stale_tool["status"] == "superseded"
+        assert final["pending_tool_call"]["call_id"] == "call-new"
+        assert ctx["pending_tool_call_id"] == "call-new"
+        assert ctx["pending_assistant_message_id"] == final["message_id"]
+
+    @pytest.mark.asyncio
+    async def test_accept_steering_queues_when_stream_is_live(self) -> None:
+        sessions = SessionStore()
+        await _seed_basic_turn(sessions)
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        action = await service.accept_steering(
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+            has_live_stream=True,
+        )
+
+        ctx = sessions.get_context("sess-1")
+        assert action == "queued"
+        assert ctx["pending_steering_ids"] == ["steering-1"]
+
+    @pytest.mark.asyncio
+    async def test_accept_steering_promotes_when_idle(self) -> None:
+        sessions = SessionStore()
+        await _seed_basic_turn(sessions)
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        action = await service.accept_steering(
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+            has_live_stream=False,
+        )
+
+        record = sessions.get_context("sess-1")["steering_index"]["steering-1"]
+        assert action == "promoted"
+        assert record["status"] == "pending"
+        assert record["delivered_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_enqueue_pending_steering_keeps_records_pending_until_model_consumption(
+        self,
+    ) -> None:
+        sessions = SessionStore()
+        await _seed_basic_turn(sessions)
+        await sessions.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+        )
+        await sessions.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-2",
+                content="Skip Ada",
+                message_type="steering",
+            ),
+        )
+        service = _make_service(sessions=sessions)
+        await service.start()
+
+        run = MagicMock()
+
+        enqueue_id, records = await enqueue_pending_steering(
+            sessions, "sess-1", sessions.get_context("sess-1"), run=run
+        )
+
+        assert enqueue_id is run.enqueue.return_value
+        assert [record["id"] for record in records] == ["steering-1", "steering-2"]
+        run.enqueue.assert_called_once()
+        queued_request = run.enqueue.call_args.args[0]
+        assert len(queued_request.parts) == 2
+        assert "Additional user steering" in queued_request.parts[0].content
+        assert run.enqueue.call_args.kwargs == {"priority": "asap"}
+        assert sessions.get_context("sess-1")["pending_steering_ids"] == [
+            "steering-1",
+            "steering-2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_promoted_steering_updates_existing_assistant_message(self) -> None:
+        from pydantic_ai import Agent
+        from pydantic_ai.models.function import FunctionModel
+
+        sessions = SessionStore()
+        await _seed_basic_turn(sessions)
+        service = _make_service(sessions=sessions)
+
+        async def response(messages, info):
+            yield "Hello!"
 
         service._assistant_service.prepare_agent_context = AsyncMock(
-            side_effect=RuntimeError("tool fail")
+            return_value=_agent_context(Agent(FunctionModel(stream_function=response)))
         )
-        request = _make_request()
+        await service.start()
+        request = _request(
+            message_id="steering-1",
+            content="Focus on Leo only",
+            message_type="steering",
+        )
 
-        with pytest.raises(StreamSetupError, match="Stream setup failed"):
-            async for _ in service.stream_message(request):
-                pass
+        action = await service.accept_steering(request, has_live_stream=False)
+        events = [event async for event in service.stream_message(request)]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        path = await sessions.get_message_path("sess-1")
+
+        assert action == "promoted"
+        assert final["message_id"] == "assistant-1"
+        assert path[-1]["id"] == "assistant-1"
+        assert path[-1]["content"].endswith("Hello!")
+        assert (
+            sessions.get_context("sess-1")["steering_index"]["steering-1"]["status"] == "delivered"
+        )
 
     @pytest.mark.asyncio
-    async def test_history_failure_raises_setup_error(self):
+    async def test_provider_rate_limit_emits_retryable_rate_limit_error(self) -> None:
+        class _FailingRun:
+            async def __aenter__(self) -> _FailingRun:
+                raise ModelHTTPError(
+                    status_code=429,
+                    model_name="claude-haiku-4-5",
+                    body={
+                        "type": "error",
+                        "error": {
+                            "type": "rate_limit_error",
+                            "message": "too many tokens",
+                        },
+                    },
+                )
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
         service = _make_service()
+        failing_agent = MagicMock()
+        failing_agent.run_stream_events = MagicMock(return_value=_FailingRun())
+        service._assistant_service.prepare_agent_context = AsyncMock(
+            return_value=_agent_context(failing_agent)
+        )
         await service.start()
 
-        service._history.prepare_history_with_metadata.side_effect = RuntimeError("history fail")
-        request = _make_request()
+        with patch.object(TurnRunner, "save_trace", new=AsyncMock()) as save_trace:
+            events = [
+                event async for event in service.stream_message(_request(message_id="user-1"))
+            ]
 
-        with pytest.raises(StreamSetupError, match="Stream setup failed"):
-            async for _ in service.stream_message(request):
-                pass
+        final = next(event for event in events if event["type"] == "final_response")
+        error = next(event for event in events if event["type"] == "error")
 
+        assert final["error"] is True
+        assert final["error_type"] == "rate_limit"
+        assert isinstance(final.get("trace_id"), str)
+        assert error["error_type"] == "rate_limit"
+        assert error["retry_allowed"] is True
+        assert "RATE_LIMIT" in error["message"]
+        assert error["trace_id"] == final["trace_id"]
+        assert final["trace_id"] in error["message"]
 
-class TestStreamExecutionErrors:
-    @pytest.mark.asyncio
-    async def test_agent_iter_failure_emits_error_event(self):
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(side_effect=RuntimeError("iter fail"))
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        types = [e["type"] for e in events]
-        assert "error" in types
-        error_event = [e for e in events if e["type"] == "error"][0]
-        assert error_event["error_type"] == "internal"
-        assert error_event["terminal"] is True
-        assert error_event["retry_allowed"] is False
-        assert types[-1] == "agent_status"
-        assert events[-1]["status"] == "completed"
-
-
-class TestStreamModelResolution:
-    @pytest.mark.asyncio
-    async def test_uses_configured_model(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        ctx = _make_default_agent_context(resolved_model="custom-model", agent=mock_agent)
-        service = _make_service(agent_context=ctx)
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"]
-        assert final[0]["model"] == "custom-model"
+        trace_args = save_trace.await_args
+        assert trace_args is not None
+        assert trace_args.kwargs["trace_id"] == final["trace_id"]
+        assert any(event["type"] == "debug_error" for event in trace_args.args[1])
 
     @pytest.mark.asyncio
-    async def test_normalizes_configured_model(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        ctx = _make_default_agent_context(
-            resolved_model="anthropic:claude-sonnet-4-6", agent=mock_agent
-        )
-        service = _make_service(agent_context=ctx)
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"]
-        assert final[0]["model"] == "anthropic:claude-sonnet-4-6"
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_primary_model(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"]
-        assert final[0]["model"] == "test-model"
-
-    @pytest.mark.asyncio
-    async def test_applies_max_turns_usage_limit(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        config = EffectiveConfig(
-            default_model=None,
-            thinking_budget=None,
-            temperature=None,
-            max_turns=6,
-            enable_working_memory=True,
-            summarization_model=None,
-            working_memory_model=None,
-            default_image_model=None,
-            default_video_model=None,
-            subagent_model=None,
-            subagent_thinking_budget=None,
-        )
-        ctx = _make_default_agent_context(effective_config=config, agent=mock_agent)
-        service = _make_service(agent_context=ctx)
-        await service.start()
-        request = _make_request()
-
-        async for _ in service.stream_message(request):
-            pass
-
-        call_kwargs = mock_agent.iter.call_args.kwargs
-        assert call_kwargs["usage_limits"].request_limit == 6
-
-
-class TestStreamDebugEvents:
-    @pytest.mark.asyncio
-    async def test_debug_events_emitted_when_enabled(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_run.result.usage.return_value = MagicMock(
-            request_tokens=100,
-            response_tokens=50,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
-            requests=1,
-            total_tokens=150,
-        )
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        types = [e["type"] for e in events]
-        assert "debug_request" in types
-        assert "debug_system_prompt" in types
-        assert "debug_tool_selection" in types
-        assert "debug_agent_config" in types
-        assert "debug_history" in types
-        assert "debug_usage" in types
-        assert "debug_completed" in types
-
-    @pytest.mark.asyncio
-    async def test_debug_events_not_emitted_when_disabled(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=False),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        debug_events = [e for e in events if e["type"].startswith("debug_")]
-        assert len(debug_events) == 0
-
-    @pytest.mark.asyncio
-    async def test_debug_request_event_content(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_run.result.usage.return_value = MagicMock(
-            request_tokens=0,
-            response_tokens=0,
-            requests=0,
-            total_tokens=0,
-        )
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request(
-            message="Test message",
-            machine_state={"active_page": {"name": "home"}},
-        )
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        debug_req = [e for e in events if e["type"] == "debug_request"][0]
-        assert debug_req["session_id"] == "test-session"
-        assert debug_req["message"] == "Test message"
-        assert debug_req["is_continuation"] is False
-        assert debug_req["has_machine_state"] is True
-        assert debug_req["machine_state"] == {"active_page": {"name": "home"}}
-
-    @pytest.mark.asyncio
-    async def test_debug_agent_config_includes_session_id(self):
-        """debug_agent_config event includes session_id when debug events enabled."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_run.result.usage.return_value = MagicMock(
-            request_tokens=0,
-            response_tokens=0,
-            requests=0,
-            total_tokens=0,
-        )
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request(session_id="sess-debug")
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        agent_config = [e for e in events if e["type"] == "debug_agent_config"][0]
-        assert agent_config["session_id"] == "sess-debug"
-
-    @pytest.mark.asyncio
-    async def test_debug_completed_has_duration(self):
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_run.result.usage.return_value = MagicMock(
-            request_tokens=0,
-            response_tokens=0,
-            requests=0,
-            total_tokens=0,
-        )
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        completed = [e for e in events if e["type"] == "debug_completed"][0]
-        assert "duration_ms" in completed
-        assert completed["duration_ms"] >= 0
-
-
-class TestStreamBackendToolCalls:
-    """Tests for backend tool call SSE event emission."""
-
-    def _make_service_with_agent(self, mock_agent, **kwargs):
-        return _make_service(agent_context=_make_default_agent_context(agent=mock_agent), **kwargs)
-
-    @pytest.mark.asyncio
-    async def test_backend_tool_emits_tool_call_event(self):
-        """Backend tool calls should emit tool_call SSE events."""
-        tc = ToolCallPart(
-            tool_name="list_agents", args={"filter": "active"}, tool_call_id="call_001"
-        )
-        call_node = _make_call_tools_node([tc])
-        tr = ToolReturnPart(
-            tool_name="list_agents",
-            content="[agent1, agent2]",
-            tool_call_id="call_001",
-            timestamp=datetime.now(UTC),
-        )
-        next_model_node = _make_model_request_node([tr])
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Here are the agents")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = self._make_service_with_agent(mock_agent)
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_call_events = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_call_events) == 1
-        assert tool_call_events[0]["tool_name"] == "list_agents"
-        assert tool_call_events[0]["arguments"] == {"filter": "active"}
-        assert tool_call_events[0]["call_id"] == "call_001"
-
-    @pytest.mark.asyncio
-    async def test_backend_tool_emits_tool_result_event(self):
-        """Backend tools should emit tool_result with the execution result."""
-        tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_002")
-        call_node = _make_call_tools_node([tc])
-        tr = ToolReturnPart(
-            tool_name="list_agents",
-            content="agent1, agent2",
-            tool_call_id="call_002",
-            timestamp=datetime.now(UTC),
-        )
-        next_model_node = _make_model_request_node([tr])
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = self._make_service_with_agent(mock_agent)
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_result_events = [e for e in events if e["type"] == "tool_result"]
-        assert len(tool_result_events) == 1
-        assert tool_result_events[0]["tool_name"] == "list_agents"
-        assert tool_result_events[0]["output"] == "agent1, agent2"
-        assert tool_result_events[0]["call_id"] == "call_002"
-
-    @pytest.mark.asyncio
-    async def test_multiple_backend_tools_emit_multiple_events(self):
-        """Multiple backend tool calls in one response should each get events."""
-        tc1 = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_a")
-        tc2 = ToolCallPart(tool_name="check_status", args={"agent": "leo"}, tool_call_id="call_b")
-        call_node = _make_call_tools_node([tc1, tc2])
-
-        tr1 = ToolReturnPart(
-            tool_name="list_agents",
-            content="[leo, ike]",
-            tool_call_id="call_a",
-            timestamp=datetime.now(UTC),
-        )
-        tr2 = ToolReturnPart(
-            tool_name="check_status",
-            content="idle",
-            tool_call_id="call_b",
-            timestamp=datetime.now(UTC),
-        )
-        next_model_node = _make_model_request_node([tr1, tr2])
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = self._make_service_with_agent(mock_agent)
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_call_events = [e for e in events if e["type"] == "tool_call"]
-        tool_result_events = [e for e in events if e["type"] == "tool_result"]
-        assert len(tool_call_events) == 2
-        assert len(tool_result_events) == 2
-        assert tool_call_events[0]["tool_name"] == "list_agents"
-        assert tool_call_events[1]["tool_name"] == "check_status"
-        assert tool_result_events[0]["output"] == "[leo, ike]"
-        assert tool_result_events[1]["output"] == "idle"
-
-    @pytest.mark.asyncio
-    async def test_tool_call_before_tool_result_ordering(self):
-        """tool_call events should appear before tool_result events."""
-        tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_ord")
-        call_node = _make_call_tools_node([tc])
-        tr = ToolReturnPart(
-            tool_name="list_agents",
-            content="ok",
-            tool_call_id="call_ord",
-            timestamp=datetime.now(UTC),
-        )
-        next_model_node = _make_model_request_node([tr])
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = self._make_service_with_agent(mock_agent)
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_types = [e["type"] for e in events if e["type"] in ("tool_call", "tool_result")]
-        assert tool_types == ["tool_call", "tool_result"]
-
-    @pytest.mark.asyncio
-    async def test_tool_result_empty_when_not_found(self):
-        """If tool return part not found, result should be empty string."""
-        tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_missing")
-        call_node = _make_call_tools_node([tc])
-        next_model_node = _make_model_request_node([])
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = self._make_service_with_agent(mock_agent)
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_result_events = [e for e in events if e["type"] == "tool_result"]
-        assert len(tool_result_events) == 1
-        assert tool_result_events[0]["output"] == ""
-
-    @pytest.mark.asyncio
-    async def test_tool_call_with_string_args(self):
-        """Tool calls with JSON string args should be parsed to dict."""
-        tc = ToolCallPart(
-            tool_name="send_message",
-            args='{"to": "leo", "msg": "hello"}',
-            tool_call_id="call_str",
-        )
-        call_node = _make_call_tools_node([tc])
-        tr = ToolReturnPart(
-            tool_name="send_message",
-            content="sent",
-            tool_call_id="call_str",
-            timestamp=datetime.now(UTC),
-        )
-        next_model_node = _make_model_request_node([tr])
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = self._make_service_with_agent(mock_agent)
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_call_events = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_call_events) == 1
-        assert tool_call_events[0]["arguments"] == {"to": "leo", "msg": "hello"}
-
-
-class TestStreamPartStartEvents:
-    """Tests for PartStartEvent handling — initial content from new parts."""
-
-    @pytest.mark.asyncio
-    async def test_text_part_start_emits_text_delta(self):
-        """PartStartEvent with TextPart should yield a text_delta event."""
-        # ModelRequestNode that streams a PartStartEvent with TextPart
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content="Hello from Google")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Hello from Google")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        text_deltas = [e for e in events if e["type"] == "text_delta"]
-        assert len(text_deltas) >= 1
-        assert text_deltas[0]["content"] == "Hello from Google"
-
-    @pytest.mark.asyncio
-    async def test_thinking_part_start_emits_thinking_delta(self):
-        """PartStartEvent with ThinkingPart should yield a thinking_delta event."""
-        stream_events = [
-            PartStartEvent(index=0, part=ThinkingPart(content="Let me reason...")),
-            PartStartEvent(index=1, part=TextPart(content="Here is the answer.")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Here is the answer.")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        thinking_deltas = [e for e in events if e["type"] == "thinking_delta"]
-        text_deltas = [e for e in events if e["type"] == "text_delta"]
-        assert len(thinking_deltas) >= 1
-        assert thinking_deltas[0]["content"] == "Let me reason..."
-        assert len(text_deltas) >= 1
-        assert text_deltas[0]["content"] == "Here is the answer."
-
-    @pytest.mark.asyncio
-    async def test_part_start_followed_by_part_delta(self):
-        """Both PartStartEvent and PartDeltaEvent should produce events."""
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content="Hello")),
-            PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" world")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Hello world")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        text_deltas = [e for e in events if e["type"] == "text_delta"]
-        assert len(text_deltas) == 2
-        assert text_deltas[0]["content"] == "Hello"
-        assert text_deltas[1]["content"] == " world"
-
-    @pytest.mark.asyncio
-    async def test_empty_part_start_content_skipped(self):
-        """PartStartEvent with empty content should not yield an event."""
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content="")),
-            PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="Actual content")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Actual content")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        text_deltas = [e for e in events if e["type"] == "text_delta"]
-        assert len(text_deltas) == 1
-        assert text_deltas[0]["content"] == "Actual content"
-
-
-class TestPartStartChunking:
-    """Tests for chunking large PartStartEvent content into smaller SSE events."""
-
-    @pytest.mark.asyncio
-    async def test_large_thinking_part_is_chunked(self):
-        """ThinkingPart content above threshold is split into multiple events."""
-        # 100-char thinking content — above 50-char threshold
-        thinking_content = "A" * 100
-        stream_events = [
-            PartStartEvent(index=0, part=ThinkingPart(content=thinking_content)),
-            PartStartEvent(index=1, part=TextPart(content="Answer")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Answer")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=50,
-                part_start_chunk_size=20,
-            ),
-            agent_context=_make_default_agent_context(agent=mock_agent),
+    async def test_provider_client_error_persists_debug_error_with_trace_id(self) -> None:
+        class _FailingRun:
+            async def __aenter__(self) -> _FailingRun:
+                raise ModelHTTPError(
+                    status_code=400,
+                    model_name="gpt-5.4",
+                    body={
+                        "message": "No tool output found for function call call_hIufoBmnNsKcS4GlaEckDtRn.",
+                        "type": "invalid_request_error",
+                        "param": "input",
+                        "code": None,
+                    },
+                )
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
+        service = _make_service()
+        failing_agent = MagicMock()
+        failing_agent.run_stream_events = MagicMock(return_value=_FailingRun())
+        service._assistant_service.prepare_agent_context = AsyncMock(
+            return_value=_agent_context(failing_agent)
         )
         await service.start()
 
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
+        with patch.object(TurnRunner, "save_trace", new=AsyncMock()) as save_trace:
+            events = [
+                event async for event in service.stream_message(_request(message_id="user-1"))
+            ]
 
-        thinking_deltas = [e for e in events if e["type"] == "thinking_delta"]
-        # 100 chars / 20 chunk_size = 5 chunks
-        assert len(thinking_deltas) == 5
-        assert all(len(e["content"]) == 20 for e in thinking_deltas)
-        assert "".join(e["content"] for e in thinking_deltas) == thinking_content
+        final = next(event for event in events if event["type"] == "final_response")
+        error = next(event for event in events if event["type"] == "error")
 
-    @pytest.mark.asyncio
-    async def test_large_text_part_is_chunked(self):
-        """TextPart content above threshold is split into multiple events."""
-        # 90-char text — above 50-char threshold, 30-char chunks → 3 events
-        text_content = "B" * 90
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content=text_content)),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
+        assert final["error"] is True
+        assert final["error_type"] == "provider_client_error"
+        assert isinstance(final.get("trace_id"), str)
+        assert error["error_type"] == "provider_client_error"
+        assert error["trace_id"] == final["trace_id"]
+        assert "No tool output found" in error["message"]
+        assert final["trace_id"] in error["message"]
 
-        mock_run = _MockAgentRun(nodes=[model_node], output=text_content)
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=50,
-                part_start_chunk_size=30,
-            ),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        text_deltas = [e for e in events if e["type"] == "text_delta"]
-        assert len(text_deltas) == 3
-        assert "".join(e["content"] for e in text_deltas) == text_content
-
-    @pytest.mark.asyncio
-    async def test_small_content_not_chunked(self):
-        """Content at or below threshold is emitted as a single event."""
-        # 150 chars — below 200-char threshold
-        text_content = "C" * 150
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content=text_content)),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output=text_content)
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=200,
-                part_start_chunk_size=100,
-            ),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        text_deltas = [e for e in events if e["type"] == "text_delta"]
-        assert len(text_deltas) == 1
-        assert text_deltas[0]["content"] == text_content
-
-    @pytest.mark.asyncio
-    async def test_exact_threshold_not_chunked(self):
-        """Content exactly at threshold is NOT chunked (uses <= check)."""
-        text_content = "D" * 100  # exactly at threshold
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content=text_content)),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output=text_content)
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=100,
-                part_start_chunk_size=50,
-            ),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        text_deltas = [e for e in events if e["type"] == "text_delta"]
-        assert len(text_deltas) == 1
-
-    @pytest.mark.asyncio
-    async def test_uneven_chunk_remainder(self):
-        """Content that doesn't divide evenly produces a shorter final chunk."""
-        text_content = "E" * 70  # 30 + 30 + 10
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content=text_content)),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output=text_content)
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(
-                part_start_chunk_threshold=50,
-                part_start_chunk_size=30,
-            ),
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        text_deltas = [e for e in events if e["type"] == "text_delta"]
-        assert len(text_deltas) == 3
-        assert len(text_deltas[0]["content"]) == 30
-        assert len(text_deltas[1]["content"]) == 30
-        assert len(text_deltas[2]["content"]) == 10
-
-
-class TestStreamTracePersistence:
-    """Tests for _save_trace — debug event collection and DB persistence."""
-
-    @pytest.mark.asyncio
-    async def test_save_trace_called_after_new_message(self):
-        """When DB and debug events are present, trace is persisted."""
-        mock_db = MagicMock()
-        mock_db_session = AsyncMock()
-        mock_db.session_context = MagicMock(return_value=mock_db_session)
-        mock_db_session.__aenter__ = AsyncMock(return_value=mock_db_session)
-        mock_db_session.__aexit__ = AsyncMock(return_value=None)
-        # Mock the repository
-        mock_db_session.add = MagicMock()
-        mock_db_session.flush = AsyncMock()
-
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_run.result.usage.return_value = MagicMock(
-            request_tokens=0,
-            response_tokens=0,
-            requests=0,
-            total_tokens=0,
-        )
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            database_service=mock_db,
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request(message="Hello trace test")
-
-        async for _ in service.stream_message(request):
-            pass
-
-        # session_context should have been called (trace persistence)
-        mock_db.session_context.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_save_trace_skipped_when_no_db(self):
-        """When no DB, _save_trace is a no-op — no error."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_run.result.usage.return_value = MagicMock(
-            request_tokens=0,
-            response_tokens=0,
-            requests=0,
-            total_tokens=0,
-        )
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            database_service=None,
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        # Should complete without error
-        types = [e["type"] for e in events]
-        assert "agent_status" in types
-
-    @pytest.mark.asyncio
-    async def test_save_trace_skipped_when_debug_disabled(self):
-        """When debug events are disabled, no trace events to save."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=False),
-            database_service=None,
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        # No DB → no trace saved, no artifact loading — completes cleanly
-        types = [e["type"] for e in events]
-        assert "agent_status" in types
-
-    @pytest.mark.asyncio
-    async def test_save_trace_failure_does_not_break_stream(self):
-        """DB failure in _save_trace is logged, not raised."""
-        mock_db = MagicMock()
-        mock_db.session_context = MagicMock(side_effect=RuntimeError("DB down"))
-
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_run.result.usage.return_value = MagicMock(
-            request_tokens=0,
-            response_tokens=0,
-            requests=0,
-            total_tokens=0,
-        )
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(
-            streaming_config=StreamingConfig(emit_debug_events=True),
-            database_service=mock_db,
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        # Stream should still complete normally (completed status present)
-        completed = [
-            e for e in events if e.get("type") == "agent_status" and e.get("status") == "completed"
-        ]
-        assert len(completed) == 1
-
-
-class TestStreamTimeout:
-    """Tests for streaming timeout enforcement via asyncio.timeout()."""
-
-    @pytest.mark.asyncio
-    async def test_timeout_emits_error_event(self):
-        """When agent.iter() hangs beyond timeout, an error event is emitted."""
-        import asyncio
-
-        config = StreamingConfig(emit_debug_events=False)
-        service = _make_service(streaming_config=config)
-        # Use a mock config with a fast timeout for testing
-        mock_config = MagicMock()
-        mock_config.stream_timeout_seconds = 0.1
-        mock_config.emit_debug_events = False
-        mock_config.max_events_per_stream = 10000
-        mock_config.part_start_chunk_threshold = 200
-        mock_config.part_start_chunk_size = 100
-        service._config = mock_config
-        await service.start()
-        request = _make_request()
-
-        # Mock agent.iter() to hang indefinitely
-        class _HangingRun:
-            def __init__(self):
-                self.ctx = MagicMock()
-                self.result = MagicMock()
-                self.result.output = "never reached"
-                self.result.all_messages.return_value = []
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                pass
-
-            @property
-            def next_node(self):
-                return MagicMock(spec=ModelRequestNode)
-
-            async def next(self, node):
-                await asyncio.sleep(10)  # Will be cancelled by timeout
-                return End(data="never reached")
-
-        hanging_run = _HangingRun()
-        # The stream() method also needs to hang
-        hanging_run.next_node.stream = MagicMock(side_effect=lambda *a, **kw: _hanging_stream())
-
-        @asynccontextmanager
-        async def _hanging_stream():
-            async def _iter():
-                await asyncio.sleep(10)  # Will be cancelled
-                yield  # never reached
-
-            yield _iter()
-
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=hanging_run)
-        service._assistant_service.prepare_agent_context.return_value = _make_default_agent_context(
-            agent=mock_agent
+        trace_args = save_trace.await_args
+        assert trace_args is not None
+        assert trace_args.kwargs["trace_id"] == final["trace_id"]
+        assert any(
+            event["type"] == "debug_error"
+            and event["trace_id"] == final["trace_id"]
+            and event["error_type"] == "provider_client_error"
+            for event in trace_args.args[1]
         )
 
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
 
-        error_events = [e for e in events if e["type"] == "error"]
-        assert len(error_events) == 1
-        assert "timed out" in error_events[0]["message"]
-        assert error_events[0]["error_type"] == "timeout"
-        assert error_events[0]["terminal"] is True
-        assert error_events[0]["retry_allowed"] is True
+class TestMultiToolContinuation:
+    """Integration tests for continuations when the assistant calls both
+    backend and host tools in the same turn.
 
-        # Should still emit completed status
-        completed = [
-            e for e in events if e.get("type") == "agent_status" and e.get("status") == "completed"
-        ]
-        assert len(completed) == 1
-
-    @pytest.mark.asyncio
-    async def test_no_timeout_when_fast_enough(self):
-        """Normal fast responses complete without timeout issues."""
-        mock_run = _MockAgentRun(nodes=[], output="Fast response")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        config = StreamingConfig(stream_timeout_seconds=10.0, emit_debug_events=False)
-        service = _make_service(
-            streaming_config=config,
-            agent_context=_make_default_agent_context(agent=mock_agent),
-        )
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        error_events = [e for e in events if e["type"] == "error"]
-        assert len(error_events) == 0
-        final = [e for e in events if e["type"] == "final_response"]
-        assert final[0]["content"] == "Fast response"
-
-
-class TestStreamToolCallTiming:
-    """Tests that tool_call events are emitted from CallToolsNode with complete
-    arguments, NOT during _stream_node (where args are still empty)."""
-
-    @pytest.mark.asyncio
-    async def test_tool_call_emitted_after_streaming_with_complete_args(self):
-        """Tool call events appear after text deltas, with full arguments."""
-        tc = ToolCallPart(tool_name="get_status", args={"agent": "leo"}, tool_call_id="call_s1")
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content="Let me check.")),
-            PartStartEvent(index=1, part=tc),
-            PartStartEvent(index=2, part=TextPart(content="Now checking Ada.")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        call_node = _make_call_tools_node([tc])
-
-        tr = ToolReturnPart(
-            tool_name="get_status",
-            content="idle",
-            tool_call_id="call_s1",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        next_model_node = _make_model_request_node([tr])
-
-        mock_run = _MockAgentRun(nodes=[model_node, call_node, next_model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        relevant = [e for e in events if e["type"] in ("text_delta", "tool_call", "tool_result")]
-        assert len(relevant) == 4
-        # Text deltas come first (from streaming)
-        assert relevant[0]["type"] == "text_delta"
-        assert relevant[0]["content"] == "Let me check."
-        assert relevant[1]["type"] == "text_delta"
-        assert relevant[1]["content"] == "Now checking Ada."
-        # tool_call after streaming with complete args (from CallToolsNode)
-        assert relevant[2]["type"] == "tool_call"
-        assert relevant[2]["tool_name"] == "get_status"
-        assert relevant[2]["arguments"] == {"agent": "leo"}
-        assert relevant[2]["call_id"] == "call_s1"
-        # tool_result last
-        assert relevant[3]["type"] == "tool_result"
-        assert relevant[3]["tool_name"] == "get_status"
-
-    @pytest.mark.asyncio
-    async def test_tool_call_not_duplicated(self):
-        """Each tool call emits exactly one tool_call event."""
-        tc = ToolCallPart(tool_name="get_status", args={"agent": "leo"}, tool_call_id="call_s1")
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content="Let me check.")),
-            PartStartEvent(index=1, part=tc),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        call_node = _make_call_tools_node([tc])
-
-        tr = ToolReturnPart(
-            tool_name="get_status",
-            content="idle",
-            tool_call_id="call_s1",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        next_model_node = _make_model_request_node([tr])
-
-        mock_run = _MockAgentRun(nodes=[model_node, call_node, next_model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        tool_call_events = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_call_events) == 1
-
-    @pytest.mark.asyncio
-    async def test_multi_tool_calls_emitted_with_complete_args(self):
-        """Multiple tool calls all get complete arguments from CallToolsNode."""
-        tc_a = ToolCallPart(tool_name="tool_a", args={"key": "val_a"}, tool_call_id="call_a1")
-        tc_b = ToolCallPart(tool_name="tool_b", args={"x": 1}, tool_call_id="call_b1")
-
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content="First")),
-            PartStartEvent(index=1, part=tc_a),
-            PartStartEvent(index=2, part=TextPart(content="Second")),
-            PartStartEvent(index=3, part=tc_b),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        call_node = _make_call_tools_node([tc_a, tc_b])
-
-        tr_a = ToolReturnPart(
-            tool_name="tool_a",
-            content="result_a",
-            tool_call_id="call_a1",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        tr_b = ToolReturnPart(
-            tool_name="tool_b",
-            content="result_b",
-            tool_call_id="call_b1",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        next_model_node = _make_model_request_node([tr_a, tr_b])
-
-        mock_run = _MockAgentRun(nodes=[model_node, call_node, next_model_node], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        relevant = [e for e in events if e["type"] in ("text_delta", "tool_call", "tool_result")]
-        assert len(relevant) == 6
-        # Text deltas from streaming
-        assert relevant[0]["type"] == "text_delta"
-        assert relevant[0]["content"] == "First"
-        assert relevant[1]["type"] == "text_delta"
-        assert relevant[1]["content"] == "Second"
-        # tool_call events from CallToolsNode with complete args
-        assert relevant[2]["type"] == "tool_call"
-        assert relevant[2]["tool_name"] == "tool_a"
-        assert relevant[2]["arguments"] == {"key": "val_a"}
-        assert relevant[3]["type"] == "tool_call"
-        assert relevant[3]["tool_name"] == "tool_b"
-        assert relevant[3]["arguments"] == {"x": 1}
-        # tool_result events
-        assert relevant[4]["type"] == "tool_result"
-        assert relevant[4]["tool_name"] == "tool_a"
-        assert relevant[4]["output"] == "result_a"
-        assert relevant[5]["type"] == "tool_result"
-        assert relevant[5]["tool_name"] == "tool_b"
-        assert relevant[5]["output"] == "result_b"
-
-        tool_call_events = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_call_events) == 2
-
-
-# --- Tool Error Detection Tests ---
-
-
-class TestToolErrorDetection:
-    """Tests for _is_tool_error and _extract_tool_result_raw static methods."""
-
-    def test_is_tool_error_detects_error_key(self):
-        is_error, msg = StreamingService._is_tool_error({"error": "Something failed"})
-        assert is_error is True
-        assert msg == "Something failed"
-
-    def test_is_tool_error_detects_error_code_key(self):
-        is_error, msg = StreamingService._is_tool_error({"error_code": "TOOL_EXECUTION_ERROR"})
-        assert is_error is True
-        assert msg == "TOOL_EXECUTION_ERROR"
-
-    def test_is_tool_error_false_for_success_dict(self):
-        is_error, msg = StreamingService._is_tool_error({"result": "ok", "count": 5})
-        assert is_error is False
-        assert msg == ""
-
-    def test_is_tool_error_false_for_string(self):
-        is_error, msg = StreamingService._is_tool_error("just a string result")
-        assert is_error is False
-        assert msg == ""
-
-    def test_is_tool_error_false_for_none(self):
-        is_error, msg = StreamingService._is_tool_error(None)
-        assert is_error is False
-        assert msg == ""
-
-    def test_extract_tool_result_raw_returns_content(self):
-        tr = ToolReturnPart(
-            tool_name="get_time",
-            content={"time": "12:00"},
-            tool_call_id="call_1",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        node = _make_model_request_node([tr])
-        result = StreamingService._extract_tool_result_raw(node, "call_1")
-        assert result == {"time": "12:00"}
-
-    def test_extract_tool_result_raw_returns_none_for_missing(self):
-        node = _make_model_request_node([])
-        result = StreamingService._extract_tool_result_raw(node, "nonexistent")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_tool_error_emitted_for_error_result(self):
-        """When a tool returns an error dict, tool_error event is emitted instead of tool_result."""
-        tc = ToolCallPart(tool_name="get_time", args={}, tool_call_id="call_err")
-        call_node = _make_call_tools_node([tc])
-
-        error_content = {"error": "API unavailable", "error_code": "SERVICE_DOWN"}
-        tr = ToolReturnPart(
-            tool_name="get_time",
-            content=error_content,
-            tool_call_id="call_err",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-        next_model_node = _make_model_request_node([tr])
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Error noted")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        events = []
-        async for event in service.stream_message(_make_request()):
-            events.append(event)
-
-        error_events = [e for e in events if e["type"] == "tool_error"]
-        assert len(error_events) == 1
-        assert error_events[0]["tool_name"] == "get_time"
-        assert error_events[0]["error"] == "API unavailable"
-
-        # tool_result also emitted (dashboard needs it to close the tool card)
-        result_events = [
-            e for e in events if e["type"] == "tool_result" and e["tool_name"] == "get_time"
-        ]
-        assert len(result_events) == 1
-        assert result_events[0]["output"] == "API unavailable"
-
-
-class TestStreamFinalResponseMetadata:
-    """Tests that final_response reflects actual streaming state."""
-
-    @pytest.mark.asyncio
-    async def test_streaming_text_deltas_clears_content(self):
-        """When text deltas are streamed, final_response has empty content and streamed=True."""
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content="Hello")),
-            PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" world")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Hello world")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"][0]
-        assert final["content"] == ""
-        assert final["streamed"] is True
-
-    @pytest.mark.asyncio
-    async def test_no_streaming_preserves_content(self):
-        """When no deltas are emitted, final_response has full content and streamed=False."""
-        mock_run = _MockAgentRun(nodes=[], output="Direct response")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"][0]
-        assert final["content"] == "Direct response"
-        assert final["streamed"] is False
-
-    @pytest.mark.asyncio
-    async def test_final_response_includes_session_id(self):
-        """final_response event includes the session_id."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request(session_id="sess-abc")
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"][0]
-        assert final["session_id"] == "sess-abc"
-
-    @pytest.mark.asyncio
-    async def test_thinking_deltas_set_thinking_streamed(self):
-        """When thinking deltas are streamed, final_response has thinking_streamed=True."""
-        stream_events = [
-            PartStartEvent(index=0, part=ThinkingPart(content="Let me think")),
-            PartStartEvent(index=1, part=TextPart(content="Answer")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Answer")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request()
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        final = [e for e in events if e["type"] == "final_response"][0]
-        assert final["thinking_streamed"] is True
-
-
-class TestLookAtScreenDeferredSanitization:
-    """Image sanitization is deferred until after the next ModelRequestNode streams.
-
-    The bug: sanitize_image_tool_returns() was called immediately after CallToolsNode,
-    stripping the image BEFORE the LLM saw it. The fix defers sanitization to after
-    the next ModelRequestNode completes streaming.
+    These tests verify that the flat message reconstruction
+    (assistant_record_to_flat_messages) produces a single ModelResponse
+    with all tool calls — matching Pydantic AI's _handle_deferred_tool_results
+    contract. The old split reconstruction would fail with:
+    "Tool call results need to be provided for all deferred tool calls."
     """
 
     @pytest.mark.asyncio
-    async def test_image_sanitized_after_model_request(self):
-        """After _iterate_run, look_at_screen images are sanitized from history."""
-        from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
+    async def test_backend_plus_host_continuation_succeeds(self) -> None:
+        """1 backend tool (resolved) + 1 host tool (pending) → continuation succeeds."""
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
 
-        tc = ToolCallPart(tool_name="look_at_screen", args={}, tool_call_id="call_screen")
-        call_node = _make_call_tools_node([tc])
-        tr = ToolReturnPart(
-            tool_name="look_at_screen",
-            content="screenshot bytes",
-            tool_call_id="call_screen",
-            timestamp=datetime.now(UTC),
+        # Assistant message with TWO tool groups:
+        # 1. Backend tool (get_agent_status) — resolved, has output
+        # 2. Host tool (ui_send_event) — pending, no output
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Checking status then sending event",
+            segments=[
+                {"kind": "text", "text": "Let me check status first."},
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-backend-1",
+                            "name": "get_agent_status",
+                            "input": {"agent": "ike"},
+                            "output": {"status": "idle", "entity": "ike"},
+                        }
+                    ],
+                },
+                {"kind": "text", "text": "Now sending the event."},
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-host-1",
+                            "name": "ui_send_event",
+                            "input": {"event": "REFRESH", "data": {}},
+                            # no "output" — pending host tool
+                        }
+                    ],
+                },
+            ],
+            usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
         )
-        next_model_node = _make_model_request_node([tr])
 
-        # Build message_history with BinaryContent (what Pydantic AI puts there)
-        image = BinaryContent(data=b"fake-png", media_type="image/png")
-        history_request = ModelRequest(
+        ctx = sessions.get_context("sess-1")
+        ctx["pending_tool_call_id"] = "call-host-1"
+        ctx["pending_tool_name"] = "ui_send_event"
+        ctx["pending_assistant_message_id"] = "assistant-1"
+
+        # Build what agent.run_stream_events would return after a successful continuation:
+        # The flat history + tool return for the host tool + LLM's final response
+        from assistant_runtime.app.assistant._serialization import assistant_record_to_flat_messages
+
+        flat_msgs = assistant_record_to_flat_messages(ctx["message_index"]["assistant-1"])
+        user_msg = ModelRequest(
             parts=[
                 ToolReturnPart(
-                    tool_name="look_at_screen",
-                    content=image,
-                    tool_call_id="call_screen",
-                    timestamp=datetime.now(UTC),
-                ),
-                UserPromptPart(content=["Reference: look_at_screen", image]),
-            ]
+                    tool_name="ui_send_event",
+                    content={"ok": True},
+                    tool_call_id="call-host-1",
+                    timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+                )
+            ],
+            timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
         )
-        message_history = [history_request]
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="I see a dashboard")
-        mock_run.ctx.state.message_history = message_history
-
-        service = _make_service()
-        await service.start()
-        coordinator = EventCoordinator(100)
-
-        _ = [e async for e in service._iterate_run(mock_run, coordinator, "test-model")]
-
-        # After _iterate_run, ToolReturnPart content should be the placeholder
-        tool_return = history_request.parts[0]
-        assert tool_return.content == "[Inspected current screen]"
-        # Synthetic UserPromptPart with BinaryContent should be removed
-        assert len(history_request.parts) == 1
-
-    @pytest.mark.asyncio
-    async def test_image_survives_until_model_streams(self):
-        """The image stays in history while ModelRequestNode streams (LLM sees it)."""
-        from unittest.mock import patch
-
-        from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
-
-        tc = ToolCallPart(tool_name="look_at_screen", args={}, tool_call_id="call_screen")
-        call_node = _make_call_tools_node([tc])
-        tr = ToolReturnPart(
-            tool_name="look_at_screen",
-            content="screenshot bytes",
-            tool_call_id="call_screen",
-            timestamp=datetime.now(UTC),
+        final_response = ModelResponse(
+            parts=[TextPart(content="Event sent successfully.")],
+            timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
         )
-        next_model_node = _make_model_request_node([tr])
 
-        image = BinaryContent(data=b"fake-png", media_type="image/png")
-        history_request = ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="look_at_screen",
-                    content=image,
-                    tool_call_id="call_screen",
-                    timestamp=datetime.now(UTC),
-                ),
-                UserPromptPart(content=["Reference: look_at_screen", image]),
-            ]
+        history_without_leaf = sessions.get_history("sess-1", exclude_leaf=True)
+        all_messages = [*history_without_leaf, *flat_msgs, user_msg, final_response]
+
+        run = _MockRun(
+            output="Event sent successfully.",
+            all_messages=all_messages,
+            new_messages=[user_msg, final_response],
         )
-        message_history = [history_request]
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="I see a dashboard")
-        mock_run.ctx.state.message_history = message_history
-
-        # Track call ordering: stream_node vs sanitize
-        call_order: list[str] = []
-        original_stream_node = StreamingService._stream_node
-
-        async def recording_stream_node(node, run, coordinator):
-            call_order.append("stream_start")
-            async for event in original_stream_node(service, node, run, coordinator):
-                yield event
-            call_order.append("stream_end")
-
-        service = _make_service()
-        await service.start()
-        coordinator = EventCoordinator(100)
-
-        with (
-            patch.object(service, "_stream_node", recording_stream_node),
-            patch(
-                "lovely_assistant.app.streaming.interface.sanitize_image_tool_returns",
-                side_effect=lambda msgs: (call_order.append("sanitize"), msgs)[1],
-            ),
-        ):
-            _ = [e async for e in service._iterate_run(mock_run, coordinator, "test-model")]
-
-        # Sanitization must happen AFTER the model streams (LLM saw the image)
-        assert call_order == ["stream_start", "stream_end", "sanitize"]
-
-    @pytest.mark.asyncio
-    async def test_no_sanitization_without_look_at_screen(self):
-        """Regular tool calls don't trigger deferred sanitization."""
-        from unittest.mock import patch
-
-        tc = ToolCallPart(tool_name="list_agents", args={}, tool_call_id="call_001")
-        call_node = _make_call_tools_node([tc])
-        tr = ToolReturnPart(
-            tool_name="list_agents",
-            content="[agent1]",
-            tool_call_id="call_001",
-            timestamp=datetime.now(UTC),
-        )
-        next_model_node = _make_model_request_node([tr])
-
-        mock_run = _MockAgentRun(nodes=[call_node, next_model_node], output="Done")
-        mock_run.ctx.state.message_history = []
-
-        service = _make_service()
-        await service.start()
-        coordinator = EventCoordinator(100)
-
-        with patch(
-            "lovely_assistant.app.streaming.interface.sanitize_image_tool_returns"
-        ) as mock_sanitize:
-            _ = [e async for e in service._iterate_run(mock_run, coordinator, "test-model")]
-
-        mock_sanitize.assert_not_called()
-
-
-class TestContinuationHistory:
-    """Verify that the continuation path passes is_continuation=True to history preparation."""
-
-    @pytest.mark.asyncio
-    async def test_continuation_passes_is_continuation_flag(self):
-        """_stream_continuation must pass is_continuation=True so dangling tool calls are preserved."""
-        mock_run = _MockAgentRun(nodes=[], output="Continued response")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
+        service = _make_service(sessions=sessions, run=run)
         await service.start()
 
-        request = _make_request(
-            message="",
-            tool_call_id="call_ui_send_event_001",
-            tool_result={"status": "ok"},
-        )
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        # Verify prepare_history_with_metadata was called with is_continuation=True
-        history_mock = service._history
-        history_mock.prepare_history_with_metadata.assert_called_once()
-        call_kwargs = history_mock.prepare_history_with_metadata.call_args
-        assert call_kwargs.kwargs.get("is_continuation") is True
-
-    @pytest.mark.asyncio
-    async def test_new_message_does_not_pass_is_continuation(self):
-        """_stream_new_message must NOT pass is_continuation=True (default False)."""
-        mock_run = _MockAgentRun(nodes=[], output="Fresh response")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        await service.start()
-
-        request = _make_request(message="Hello")
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        history_mock = service._history
-        history_mock.prepare_history_with_metadata.assert_called_once()
-        call_kwargs = history_mock.prepare_history_with_metadata.call_args
-        # Should not have is_continuation=True (either absent or False)
-        assert call_kwargs.kwargs.get("is_continuation", False) is False
-
-
-class TestStreamTraceChronologicalOrder:
-    """Verify thinking is flushed per iteration for chronological trace ordering."""
-
-    @pytest.mark.asyncio
-    async def test_thinking_flushed_per_iteration(self):
-        """Two model iterations produce two separate debug_thinking events at correct positions.
-
-        Simulates: ModelRequestNode(thinking) → CallToolsNode → ModelRequestNode(thinking + text).
-        Expected trace order: debug_thinking(iter1), tool_call, tool_result, debug_thinking(iter2).
-        """
-        # Iteration 1: ModelRequestNode with thinking
-        stream_events_1 = [
-            PartStartEvent(index=0, part=ThinkingPart(content="First thought")),
-        ]
-        model_node_1 = MagicMock(spec=ModelRequestNode)
-        model_node_1.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node_1.stream = MagicMock(
-            side_effect=lambda *a, **kw: _events_stream(stream_events_1)
-        )
-
-        # CallToolsNode
-        tc = ToolCallPart(tool_name="get_status", args={"agent": "leo"}, tool_call_id="call_1")
-        call_node = _make_call_tools_node([tc])
-
-        # Tool result node
-        tr = ToolReturnPart(
-            tool_name="get_status",
-            content="idle",
-            tool_call_id="call_1",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-        )
-
-        # Iteration 2: ModelRequestNode with thinking + text
-        stream_events_2 = [
-            PartStartEvent(index=0, part=ThinkingPart(content="Second thought")),
-            PartStartEvent(index=1, part=TextPart(content="Final answer")),
-        ]
-        model_node_2 = MagicMock(spec=ModelRequestNode)
-        model_node_2.request = MagicMock(spec=ModelRequest, parts=[tr])
-        model_node_2.stream = MagicMock(
-            side_effect=lambda *a, **kw: _events_stream(stream_events_2)
-        )
-
-        mock_run = _MockAgentRun(
-            nodes=[model_node_1, call_node, model_node_2], output="Final answer"
-        )
-        service = _make_service()
-        await service.start()
-        coordinator = EventCoordinator(1000)
-
-        # Collect all events from _iterate_run with emit_debug=True
         events = [
-            e
-            async for e in service._iterate_run(
-                mock_run, coordinator, "test-model", emit_debug=True
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="cont-1",
+                    parent_id="assistant-1",
+                    content="",
+                    tool_call_id="call-host-1",
+                    tool_result={"ok": True},
+                )
             )
         ]
 
-        # SSE events should include thinking_delta, tool_call, tool_result, text_delta
-        sse_types = [e["type"] for e in events]
-        assert "thinking_delta" in sse_types
-        assert "tool_call" in sse_types
-        assert "tool_result" in sse_types
-        assert "text_delta" in sse_types
+        # Continuation should succeed — no set-equality mismatch
+        final = next(event for event in events if event["type"] == "final_response")
+        assert final["message_id"] == "assistant-1"
+        assert not final.get("error")
 
-        # Debug events (trace) should have two separate debug_thinking events
-        debug_events = coordinator.debug_events
-        debug_thinking = [e for e in debug_events if e["type"] == "debug_thinking"]
-        assert len(debug_thinking) == 2
-        assert debug_thinking[0]["content"] == "First thought"
-        assert debug_thinking[1]["content"] == "Second thought"
+        # Verify agent.run_stream_events was called with the flat history structure
+        agent = service._assistant_service.prepare_agent_context.return_value.agent
+        stream_call = agent.run_stream_events.call_args
+        message_history = stream_call.kwargs.get("message_history") or stream_call.args[1]
 
-        # Verify chronological order in the trace:
-        # debug_thinking(iter1) should come before tool_call
-        # tool_call/tool_result should come before debug_thinking(iter2)
-        debug_types = [e["type"] for e in debug_events]
-        idx_think_1 = debug_types.index("debug_thinking")
-        idx_tool_call = debug_types.index("tool_call")
-        idx_tool_result = debug_types.index("tool_result")
-        # Find second debug_thinking
-        idx_think_2 = len(debug_types) - 1 - debug_types[::-1].index("debug_thinking")
-        assert idx_think_1 < idx_tool_call < idx_tool_result < idx_think_2
+        # The LAST ModelResponse should contain ONLY the pending host tool.
+        # Completed backend tools go in an earlier ModelResponse + ModelRequest.
+        last_model_response = None
+        for msg in reversed(message_history):
+            if isinstance(msg, ModelResponse):
+                last_model_response = msg
+                break
+
+        assert last_model_response is not None
+        tool_call_ids = {
+            part.tool_call_id
+            for part in last_model_response.parts
+            if isinstance(part, ToolCallPart)
+        }
+        assert tool_call_ids == {"call-host-1"}, (
+            f"Expected only the pending host tool in last ModelResponse, got: {tool_call_ids}"
+        )
+
+        # Verify deferred_tool_results was passed correctly
+        deferred = stream_call.kwargs.get("deferred_tool_results")
+        assert deferred is not None
+        assert "call-host-1" in deferred.calls
+
+        # Verify pending state was cleared
+        assert sessions.get_context("sess-1").get("pending_tool_call_id") is None
 
     @pytest.mark.asyncio
-    async def test_no_thinking_no_debug_event(self):
-        """When a ModelRequestNode has no thinking, no debug_thinking event is added."""
-        stream_events = [
-            PartStartEvent(index=0, part=TextPart(content="Direct answer")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
+    async def test_two_backend_plus_host_continuation_succeeds(self) -> None:
+        """2 backend tools (resolved) + 1 host tool (pending) → continuation succeeds."""
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
 
-        mock_run = _MockAgentRun(nodes=[model_node], output="Direct answer")
+        # Three tool calls: 2 backend (resolved) + 1 host (pending)
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Checking multiple things then navigating",
+            segments=[
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-backend-1",
+                            "name": "get_agent_status",
+                            "input": {"agent": "ike"},
+                            "output": {"status": "idle"},
+                        }
+                    ],
+                },
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-backend-2",
+                            "name": "get_agent_status",
+                            "input": {"agent": "bell"},
+                            "output": {"status": "processing"},
+                        }
+                    ],
+                },
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {
+                            "id": "call-host-1",
+                            "name": "navigate",
+                            "input": {"page": "agents"},
+                        }
+                    ],
+                },
+            ],
+            usage={"input_tokens": 15, "output_tokens": 25, "total_tokens": 40},
+        )
+
+        ctx = sessions.get_context("sess-1")
+        ctx["pending_tool_call_id"] = "call-host-1"
+        ctx["pending_tool_name"] = "navigate"
+        ctx["pending_assistant_message_id"] = "assistant-1"
+
+        from assistant_runtime.app.assistant._serialization import assistant_record_to_flat_messages
+
+        flat_msgs = assistant_record_to_flat_messages(ctx["message_index"]["assistant-1"])
+        user_msg = ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="navigate",
+                    content={"page": "agents", "ok": True},
+                    tool_call_id="call-host-1",
+                    timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+                )
+            ],
+            timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+        )
+        final_response = ModelResponse(
+            parts=[TextPart(content="Navigated to agents page.")],
+            timestamp=datetime(2026, 3, 22, 1, 0, tzinfo=UTC),
+        )
+
+        history_without_leaf = sessions.get_history("sess-1", exclude_leaf=True)
+        all_messages = [*history_without_leaf, *flat_msgs, user_msg, final_response]
+
+        run = _MockRun(
+            output="Navigated to agents page.",
+            all_messages=all_messages,
+            new_messages=[user_msg, final_response],
+        )
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        events = [
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="cont-1",
+                    parent_id="assistant-1",
+                    content="",
+                    tool_call_id="call-host-1",
+                    tool_result={"page": "agents", "ok": True},
+                )
+            )
+        ]
+
+        final = next(event for event in events if event["type"] == "final_response")
+        assert final["message_id"] == "assistant-1"
+        assert not final.get("error")
+
+        # The LAST ModelResponse should contain ONLY the pending host tool
+        agent = service._assistant_service.prepare_agent_context.return_value.agent
+        stream_call = agent.run_stream_events.call_args
+        message_history = stream_call.kwargs.get("message_history") or stream_call.args[1]
+
+        last_model_response = None
+        for msg in reversed(message_history):
+            if isinstance(msg, ModelResponse):
+                last_model_response = msg
+                break
+
+        assert last_model_response is not None
+        tool_call_ids = {
+            part.tool_call_id
+            for part in last_model_response.parts
+            if isinstance(part, ToolCallPart)
+        }
+        assert tool_call_ids == {"call-host-1"}, (
+            f"Expected only the pending host tool in last ModelResponse, got: {tool_call_ids}"
+        )
+
+        # Verify the ModelRequest before it has ToolReturnParts for ONLY the resolved tools
+        model_responses = [m for m in message_history if isinstance(m, ModelResponse)]
+        assert len(model_responses) >= 2, (
+            "Should have at least 2 ModelResponses (completed + pending)"
+        )
+        completed_response = model_responses[-2]
+        completed_ids = {
+            part.tool_call_id for part in completed_response.parts if isinstance(part, ToolCallPart)
+        }
+        assert completed_ids == {"call-backend-1", "call-backend-2"}, (
+            f"Completed ModelResponse should have both backend tools, got: {completed_ids}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_continuation_reconstruction_separates_completed_from_pending(self) -> None:
+        """Verify the continuation form splits completed and pending tools.
+
+        Completed tools (with output) go in one ModelResponse + ModelRequest.
+        Pending tools (no output) go in a separate trailing ModelResponse.
+        This structure ensures _handle_deferred_tool_results sees only the
+        pending tool in last_model_response and doesn't add 'skip' entries.
+        """
+        from assistant_runtime.app.assistant._serialization import (
+            assistant_record_to_flat_messages,
+            path_records_to_model_history,
+        )
+
+        record = {
+            "id": "assistant-1",
+            "role": "assistant",
+            "content": "text",
+            "segments": [
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {"id": "call-A", "name": "backend_tool", "input": {}, "output": "done"},
+                    ],
+                },
+                {
+                    "kind": "tool_group",
+                    "tools": [
+                        {"id": "call-B", "name": "host_tool", "input": {}},
+                    ],
+                },
+            ],
+            "usage": None,
+            "created_at": datetime(2026, 3, 22, tzinfo=UTC),
+        }
+
+        # Split form (path_records_to_model_history): one ModelResponse per tool_group
+        split_messages = path_records_to_model_history([record])
+        split_responses = [m for m in split_messages if isinstance(m, ModelResponse)]
+        assert len(split_responses) == 2, (
+            f"Split form should produce 2 ModelResponses, got {len(split_responses)}"
+        )
+
+        # Continuation form: 2 ModelResponses — completed + pending
+        flat_messages = assistant_record_to_flat_messages(record)
+        flat_responses = [m for m in flat_messages if isinstance(m, ModelResponse)]
+        assert len(flat_responses) == 2, (
+            f"Continuation form should produce 2 ModelResponses (completed + pending), got {len(flat_responses)}"
+        )
+
+        # First response has the completed tool
+        completed_ids = {
+            part.tool_call_id for part in flat_responses[0].parts if isinstance(part, ToolCallPart)
+        }
+        assert completed_ids == {"call-A"}, "First ModelResponse should have completed tool"
+
+        # Last response has ONLY the pending tool
+        pending_ids = {
+            part.tool_call_id for part in flat_responses[1].parts if isinstance(part, ToolCallPart)
+        }
+        assert pending_ids == {"call-B"}, "Last ModelResponse should have only the pending tool"
+
+        # ModelRequest has only the resolved tool's ToolReturnPart
+        flat_requests = [m for m in flat_messages if isinstance(m, ModelRequest)]
+        assert len(flat_requests) == 1
+        return_ids = {
+            part.tool_call_id for part in flat_requests[0].parts if isinstance(part, ToolReturnPart)
+        }
+        assert return_ids == {"call-A"}, "Only the resolved tool should have a ToolReturnPart"
+
+
+class TestNewMessagesMergeResilience:
+    """Verify that using new_messages() handles Pydantic AI's _clean_message_history merging."""
+
+    @pytest.mark.asyncio
+    async def test_new_message_uses_new_messages_not_index_slicing(self) -> None:
+        """When _clean_message_history merges consecutive ModelRequests,
+        new_messages() still returns the correct new messages — unlike
+        all_messages[len(prepared_history):] which would return [].
+        """
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        # First assistant turn has a host tool call (no output = pending)
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Let me open that",
+            segments=[
+                {"kind": "text", "text": "Let me open that"},
+                {
+                    "kind": "tool_group",
+                    "tools": [{"id": "call-old", "name": "navigate", "input": {"page": "agents"}}],
+                },
+            ],
+            usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        )
+        # Mark the host tool as abandoned (user sends new message instead)
+        ctx = sessions.get_context("sess-1")
+        ctx.pop("pending_tool_call_id", None)
+        ctx.pop("pending_tool_name", None)
+
+        # User sends a new message — this will trigger _resolve_dangling_tool_calls
+        # which inserts a SYNTHETIC ModelRequest(ToolReturnPart) before the user prompt.
+        # Pydantic AI's _clean_message_history then merges the two consecutive ModelRequests.
+        #
+        # Simulate: prepared_history has 3 messages (history + synthetic + user),
+        # but after merge, all_messages has 2 (history + merged) + 1 new = 3.
+        # all_messages[3:] = [] — BUG. new_messages() = [new_response] — CORRECT.
+
+        new_response = ModelResponse(
+            parts=[
+                TextPart(content="Here's the info"),
+                ToolCallPart(tool_name="ui_navigate", args={}, tool_call_id="call-new"),
+            ],
+            timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
+        )
+
+        # The mock simulates: prepared_history had 3 items, but _clean_message_history
+        # merged 2 ModelRequests into 1, so all_messages has 3 total (not 4).
+        # new_messages() correctly returns only the new response.
+        run = _MockRun(
+            output="Here's the info",
+            all_messages=[
+                # After merge: original history (1 msg) + merged request + new response
+                ModelResponse(
+                    parts=[
+                        TextPart(content="Let me open that"),
+                        ToolCallPart(tool_name="navigate", args={}, tool_call_id="call-old"),
+                    ],
+                    timestamp=datetime(2026, 3, 24, 11, 0, tzinfo=UTC),
+                ),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="navigate",
+                            content="[abandoned]",
+                            tool_call_id="call-old",
+                            timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
+                        ),
+                        # Merged: user prompt is in the same ModelRequest
+                    ],
+                    timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
+                ),
+                new_response,
+            ],
+            new_messages=[new_response],
+        )
+
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        # Consume the stream — we're testing that segments are persisted correctly
+        async for _ in service.stream_message(
+            _request(message_id="user-2", parent_id="assistant-1", content="Show me agent status")
+        ):
+            pass
+
+        # The key assertion: the assistant message should have segments with the tool call,
+        # NOT empty segments (which is what the old index-slicing bug produced).
+        path = await sessions.get_message_path("sess-1")
+        assistant_msg = path[-1]
+        assert assistant_msg["role"] == "assistant"
+        segments = assistant_msg.get("segments") or []
+        tool_groups = [s for s in segments if s.get("kind") == "tool_group"]
+        assert len(tool_groups) > 0, (
+            "Segments must contain the tool call — empty segments means new_messages() fix is not working"
+        )
+
+    @pytest.mark.asyncio
+    async def test_continuation_with_empty_segments_synthesizes_model_response(self) -> None:
+        """When an assistant record has empty segments (corrupt DB from prior bug),
+        the continuation path should synthesize a minimal ModelResponse from
+        pending tool state rather than failing.
+        """
+        sessions = SessionStore()
+        await sessions.register_user_message(_request(message_id="user-1", parent_id=None))
+        # Register assistant with EMPTY segments — simulates the corrupt state
+        await sessions.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="",
+            segments=[],
+            usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+        )
+        ctx = sessions.get_context("sess-1")
+        ctx["pending_tool_call_id"] = "call-pending"
+        ctx["pending_tool_name"] = "ui_navigate"
+        ctx["pending_assistant_message_id"] = "assistant-1"
+
+        run = _MockRun(
+            output="Navigation complete",
+            all_messages=[
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(tool_name="ui_navigate", args={}, tool_call_id="call-pending")
+                    ],
+                    timestamp=datetime(2026, 3, 24, 12, 0, tzinfo=UTC),
+                ),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="ui_navigate",
+                            content={"ok": True},
+                            tool_call_id="call-pending",
+                            timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                ),
+                ModelResponse(
+                    parts=[TextPart(content="Navigation complete")],
+                    timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                ),
+            ],
+            new_messages=[
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="ui_navigate",
+                            content={"ok": True},
+                            tool_call_id="call-pending",
+                            timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                        )
+                    ],
+                    timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                ),
+                ModelResponse(
+                    parts=[TextPart(content="Navigation complete")],
+                    timestamp=datetime(2026, 3, 24, 12, 1, tzinfo=UTC),
+                ),
+            ],
+        )
+        service = _make_service(sessions=sessions, run=run)
+        await service.start()
+
+        events = [
+            event
+            async for event in service.stream_message(
+                _request(
+                    message_id="cont-1",
+                    parent_id="assistant-1",
+                    content="",
+                    tool_call_id="call-pending",
+                    tool_result={"ok": True},
+                )
+            )
+        ]
+
+        # Should succeed — not raise a set-equality mismatch
+        final = next(event for event in events if event["type"] == "final_response")
+        assert final["message_id"] == "assistant-1"
+        path = await sessions.get_message_path("sess-1")
+        assert path[-1]["content"] == "Navigation complete"
+
+
+class TestUsageCacheCounts:
+    """RunUsage (pydantic-ai 2) exposes cache_read_tokens / cache_write_tokens."""
+
+    def test_reads_run_usage_field_names(self):
+        from pydantic_ai.usage import RunUsage
+
+        usage = RunUsage(
+            input_tokens=10, output_tokens=5, cache_read_tokens=7, cache_write_tokens=3
+        )
+        assert cache_counts(usage) == (7, 3)
+
+    def test_missing_fields_default_to_zero(self):
+        assert cache_counts(object()) == (0, 0)
+
+
+class TestRunMessage:
+    """``run_message`` is the same pipeline collected into one ``AssistantResult``."""
+
+    @pytest.mark.asyncio
+    async def test_returns_final_answer_and_persists_the_turn(self) -> None:
         service = _make_service()
         await service.start()
-        coordinator = EventCoordinator(100)
 
-        _ = [
-            e
-            async for e in service._iterate_run(
-                mock_run, coordinator, "test-model", emit_debug=True
-            )
-        ]
+        result = await service.run_message(_request(message_id="user-1"))
 
-        debug_thinking = [e for e in coordinator.debug_events if e["type"] == "debug_thinking"]
-        assert len(debug_thinking) == 0
+        assert result.content == "Hello!"
+        assert result.model == "openai:gpt-5.4"
+        assert result.turn_number == 1
+        path = await service._assistant_service.get_session_store().get_message_path("sess-1")
+        assert [message["id"] for message in path] == ["user-1", result.message_id]
+        assert path[-1]["content"] == "Hello!"
+        service._assistant_service.update_working_memory.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_emit_debug_false_skips_flush(self):
-        """When emit_debug=False, flush_thinking is not called (backward compat)."""
-        stream_events = [
-            PartStartEvent(index=0, part=ThinkingPart(content="Some reasoning")),
-            PartStartEvent(index=1, part=TextPart(content="Answer")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
+    async def test_persists_telegram_binding_recorded_by_a_tool(self) -> None:
+        class _BindingRun(_MockRun):
+            async def __aenter__(self) -> _BindingRun:
+                record_current_telegram_chat_binding("123456789")
+                return self
 
-        mock_run = _MockAgentRun(nodes=[model_node], output="Answer")
+        run = _BindingRun(
+            output="Sent",
+            all_messages=[
+                ModelResponse(
+                    parts=[TextPart(content="Sent")],
+                    timestamp=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+                )
+            ],
+        )
+        service = _make_service(run=run)
+        await service.start()
+
+        await service.run_message(_request(message_id="user-1"))
+
+        ctx = service._assistant_service.get_session_store().get_context("sess-1")
+        assert ctx["telegram_chat_id"] == "123456789"
+        assert ctx["telegram_bound_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_run_failure_raises_agent_run_error(self) -> None:
+        class _FailingRun:
+            async def __aenter__(self) -> _FailingRun:
+                raise RuntimeError("boom")
+
+            async def __aexit__(self, *_args: Any) -> None:
+                return None
+
+        service = _make_service()
+        agent = MagicMock()
+        agent.run_stream_events = MagicMock(return_value=_FailingRun())
+        service._assistant_service.prepare_agent_context = AsyncMock(
+            return_value=_agent_context(agent)
+        )
+        await service.start()
+
+        with pytest.raises(AgentRunError, match="boom"):
+            await service.run_message(_request(message_id="user-1"))
+
+    @pytest.mark.asyncio
+    async def test_unknown_parent_raises_session_error(self) -> None:
         service = _make_service()
         await service.start()
-        coordinator = EventCoordinator(100)
 
-        _ = [
-            e
-            async for e in service._iterate_run(
-                mock_run, coordinator, "test-model", emit_debug=False
-            )
-        ]
+        with pytest.raises(SessionError, match="not found"):
+            await service.run_message(_request(message_id="user-2", parent_id="missing"))
 
-        # No debug events should be in the trace
-        debug_thinking = [e for e in coordinator.debug_events if e["type"] == "debug_thinking"]
-        assert len(debug_thinking) == 0
-        # With emit_debug=False, flush_thinking() is NOT called, so buffer retains content
-        assert coordinator.accumulated_thinking == "Some reasoning"
 
+class TestIngressHook:
     @pytest.mark.asyncio
-    async def test_thinking_deltas_accumulated_across_chunks(self):
-        """Multiple thinking deltas within one iteration are concatenated in the flush."""
-        stream_events = [
-            PartStartEvent(index=0, part=ThinkingPart(content="Start ")),
-            PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta="middle ")),
-            PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta="end")),
-            PartStartEvent(index=1, part=TextPart(content="Answer")),
-        ]
-        model_node = MagicMock(spec=ModelRequestNode)
-        model_node.request = MagicMock(spec=ModelRequest, parts=[])
-        model_node.stream = MagicMock(side_effect=lambda *a, **kw: _events_stream(stream_events))
-
-        mock_run = _MockAgentRun(nodes=[model_node], output="Answer")
+    async def test_message_turns_drain_the_ingress_first(self) -> None:
         service = _make_service()
         await service.start()
-        coordinator = EventCoordinator(100)
+        ingress = MagicMock()
+        ingress.drain = AsyncMock(return_value=0)
+        service.attach_ingress(ingress)
 
-        _ = [
-            e
-            async for e in service._iterate_run(
-                mock_run, coordinator, "test-model", emit_debug=True
-            )
-        ]
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
 
-        debug_thinking = [e for e in coordinator.debug_events if e["type"] == "debug_thinking"]
-        assert len(debug_thinking) == 1
-        assert debug_thinking[0]["content"] == "Start middle end"
-
-
-# --- Working memory in streaming path tests ---
-
-
-class TestStreamingWorkingMemory:
-    @pytest.mark.asyncio
-    async def test_working_memory_called_after_stream(self):
-        """_update_working_memory is called in the finally block of _stream_new_message."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        service._assistant_service._update_working_memory = AsyncMock()
-        await service.start()
-        request = _make_request()
-
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
-
-        service._assistant_service._update_working_memory.assert_called_once()
-        call_args = service._assistant_service._update_working_memory.call_args
-        assert call_args[0][0] == "test-session"  # session_id
-        assert isinstance(call_args[0][1], dict)  # session_context
-        assert isinstance(call_args[0][2], int)  # turn_number
+        ingress.drain.assert_awaited_once_with("sess-1")
+        assert events[-1]["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_working_memory_skipped_when_disabled(self):
-        """_update_working_memory is NOT called when enable_working_memory=False."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        config = EffectiveConfig(
-            default_model=None,
-            thinking_budget=None,
-            temperature=None,
-            max_turns=10,
-            enable_working_memory=False,
-            summarization_model=None,
-            working_memory_model=None,
-            default_image_model=None,
-            default_video_model=None,
-            subagent_model=None,
-            subagent_thinking_budget=None,
-        )
-        service = _make_service(
-            agent_context=_make_default_agent_context(agent=mock_agent, effective_config=config)
-        )
-        service._assistant_service._update_working_memory = AsyncMock()
+    async def test_drain_runs_once_the_session_exists(self) -> None:
+        service = _make_service()
         await service.start()
-        request = _make_request()
+        seen: list[bool] = []
+        sessions = service._assistant_service.get_session_store()
 
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
+        async def _drain(session_id: str) -> int:
+            seen.append(sessions.has_session(session_id))
+            return 0
 
-        service._assistant_service._update_working_memory.assert_not_called()
+        ingress = MagicMock()
+        ingress.drain = AsyncMock(side_effect=_drain)
+        service.attach_ingress(ingress)
 
-    @pytest.mark.asyncio
-    async def test_working_memory_failure_does_not_break_stream(self):
-        """_update_working_memory failure is best-effort — stream still completes."""
-        mock_run = _MockAgentRun(nodes=[], output="Done")
-        mock_agent = MagicMock()
-        mock_agent.iter = MagicMock(return_value=mock_run)
-        service = _make_service(agent_context=_make_default_agent_context(agent=mock_agent))
-        service._assistant_service._update_working_memory = AsyncMock(
-            side_effect=RuntimeError("memory extraction boom")
-        )
+        async for _ in service.stream_message(_request(message_id="user-1")):
+            pass
+
+        assert seen == [True]
+
+    async def test_a_failing_drain_does_not_stop_the_turn(self) -> None:
+        service = _make_service()
         await service.start()
-        request = _make_request()
+        ingress = MagicMock()
+        ingress.drain = AsyncMock(side_effect=RuntimeError("inbox down"))
+        service.attach_ingress(ingress)
 
-        events = []
-        async for event in service.stream_message(request):
-            events.append(event)
+        events = [event async for event in service.stream_message(_request(message_id="user-1"))]
 
-        # Stream should still complete normally
-        types = [e["type"] for e in events]
-        assert "agent_status" in types
-        assert "final_response" in types
+        final = next(e for e in events if e["type"] == "final_response")
+        assert final["content"] == "Hello!"

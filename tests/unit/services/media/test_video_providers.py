@@ -6,20 +6,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from lovely_assistant.services.media._video_providers import (
+from assistant_runtime.services.media._video_providers import (
     VideoStatus,
     poll_luma,
     poll_runway,
     submit_luma,
     submit_runway,
 )
-from lovely_assistant.services.media.exceptions import (
+from assistant_runtime.services.media.exceptions import (
     ProviderError,
     ProviderNotConfiguredError,
     VideoJobError,
 )
 
-MODULE = "lovely_assistant.services.media._video_providers"
+MODULE = "assistant_runtime.services.media._video_providers"
 
 
 class TestSubmitRunway:

@@ -1,348 +1,252 @@
-"""Tests for assistant module request/response models."""
+from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from lovely_assistant.app.assistant.models import (
+from assistant_runtime.app.assistant.config import TunableOverrides
+from assistant_runtime.app.assistant.models import (
     AssistantRequest,
     AssistantResult,
-    RequestConfigOverride,
-    _build_user_prompt,
-    _camel_to_snake,
-    _normalize_keys,
+    normalize_host_context,
 )
+from assistant_runtime.host_context import camel_to_snake, host_context_from_payload
 
 
-class TestCamelToSnake:
-    def test_simple_camel(self):
-        assert _camel_to_snake("eventType") == "event_type"
+class TestHelpers:
+    def test_camel_to_snake(self) -> None:
+        assert camel_to_snake("eventType") == "event_type"
+        assert camel_to_snake("HTMLParser") == "html_parser"
 
-    def test_already_snake(self):
-        assert _camel_to_snake("event_type") == "event_type"
-
-    def test_consecutive_caps(self):
-        assert _camel_to_snake("HTMLParser") == "html_parser"
-
-    def test_single_word(self):
-        assert _camel_to_snake("name") == "name"
-
-    def test_pascal_case(self):
-        assert _camel_to_snake("ActivePage") == "active_page"
-
-
-class TestNormalizeKeys:
-    def test_flat_dict(self):
-        result = _normalize_keys({"activePage": "tasks", "sessionId": "s1"})
-        assert result == {"active_page": "tasks", "session_id": "s1"}
-
-    def test_nested_dict(self):
-        result = _normalize_keys({"activePage": {"pageName": "tasks"}})
-        assert result == {"active_page": {"page_name": "tasks"}}
-
-    def test_list_of_dicts(self):
-        result = _normalize_keys([{"eventType": "NAV"}, {"eventType": "REFRESH"}])
-        assert result == [{"event_type": "NAV"}, {"event_type": "REFRESH"}]
-
-    def test_dict_with_list(self):
-        result = _normalize_keys({"availableActions": [{"eventType": "NAV"}]})
-        assert result == {"available_actions": [{"event_type": "NAV"}]}
-
-    def test_already_snake(self):
-        data = {"active_page": {"name": "tasks"}}
-        assert _normalize_keys(data) == data
-
-    def test_non_dict_passthrough(self):
-        assert _normalize_keys("hello") == "hello"
-        assert _normalize_keys(42) == 42
-        assert _normalize_keys(None) is None
-
-    def test_empty_dict(self):
-        assert _normalize_keys({}) == {}
-
-
-class TestMachineStateNormalization:
-    """Tests that AssistantRequest.model_validator normalizes machine_state."""
-
-    def test_top_level_keys_normalized(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="hi",
-            machine_state={"activePage": {"name": "tasks", "data": {}}, "availableActions": []},
+    def test_contract_keys_normalize_but_host_payloads_do_not(self) -> None:
+        context = normalize_host_context(
+            {"view": {"name": "agents", "state": {"listMode": 1}}, "capturedAt": None}
         )
-        assert "active_page" in req.machine_state
-        assert "available_actions" in req.machine_state
-        assert "activePage" not in req.machine_state
+        assert context["view"]["state"] == {"listMode": 1}
+        assert "captured_at" not in context  # None values are dropped from the canonical form
 
-    def test_nested_keys_normalized(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="hi",
-            machine_state={
-                "active_page": {
-                    "name": "tasks",
-                    "data": {"selectedIssue": {"commentCount": 3}},
-                }
-            },
+    def test_host_context_attachments_join_the_request(self) -> None:
+        request = AssistantRequest.model_validate(
+            {
+                "id": "user-1",
+                "session_id": "sess-1",
+                "content": "Look",
+                "attachments": [{"kind": "text", "text": "same"}],
+                "host_context": {
+                    "attachments": [
+                        {
+                            "kind": "image",
+                            "purpose": "screenshot",
+                            "dataUri": "data:image/png;base64,s",
+                        },
+                        {"kind": "text", "text": "same"},
+                        {"kind": "text", "text": "other"},
+                    ]
+                },
+            }
         )
-        data = req.machine_state["active_page"]["data"]
-        assert "selected_issue" in data
-        assert "comment_count" in data["selected_issue"]
-
-    def test_snake_case_passthrough(self):
-        original = {
-            "active_page": {"name": "tasks", "data": {"issues": []}},
-            "available_actions": [],
-        }
-        req = AssistantRequest(session_id="s1", message="hi", machine_state=original)
-        assert req.machine_state["active_page"]["name"] == "tasks"
-        assert req.machine_state["available_actions"] == []
-
-    def test_none_passthrough(self):
-        req = AssistantRequest(session_id="s1", message="hi", machine_state=None)
-        assert req.machine_state is None
-
-    def test_entities_aliased_to_sessions_on_agents_page(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="hi",
-            machine_state={
-                "active_page": {
-                    "name": "agents",
-                    "data": {"entities": [{"name": "leo", "state": "idle"}]},
-                }
-            },
-        )
-        data = req.machine_state["active_page"]["data"]
-        assert "sessions" in data
-        assert "entities" not in data
-        assert data["sessions"][0]["name"] == "leo"
-
-    def test_coding_agents_aliased_to_sessions_on_agents_page(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="hi",
-            machine_state={
-                "activePage": {
-                    "name": "agents",
-                    "data": {"codingAgents": [{"name": "platform-api", "state": "idle"}]},
-                }
-            },
-        )
-        data = req.machine_state["active_page"]["data"]
-        assert "sessions" in data
-        assert "coding_agents" not in data
-        assert data["sessions"][0]["name"] == "platform-api"
-
-    def test_filters_aliased_to_active_filters_on_tasks_page(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="hi",
-            machine_state={
-                "active_page": {
-                    "name": "tasks",
-                    "data": {"filters": {"for": "ike"}},
-                }
-            },
-        )
-        data = req.machine_state["active_page"]["data"]
-        assert "active_filters" in data
-        assert "filters" not in data
-
-    def test_list_items_normalized(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="hi",
-            machine_state={
-                "available_actions": [
-                    {"eventType": "NAVIGATE", "label": "Go"},
-                    {"eventType": "REFRESH"},
-                ]
-            },
-        )
-        actions = req.machine_state["available_actions"]
-        assert actions[0]["event_type"] == "NAVIGATE"
-        assert actions[1]["event_type"] == "REFRESH"
-
-    def test_event_type_normalized_in_actions(self):
-        """Full round-trip: camelCase actions from frontend → snake_case for prompt builder."""
-        req = AssistantRequest(
-            session_id="s1",
-            message="hi",
-            machine_state={
-                "activePage": {"name": "tasks", "data": {}},
-                "availableActions": [{"eventType": "NAVIGATE", "label": "Go"}],
-            },
-        )
-        action = req.machine_state["available_actions"][0]
-        assert action["event_type"] == "NAVIGATE"
-        assert action["label"] == "Go"
+        assert request.screenshot == "data:image/png;base64,s"
+        assert [a.text for a in request.reference_attachments] == ["same", "other"]
+        assert len(request.host_context["attachments"]) == 3
 
 
 class TestAssistantRequest:
-    def test_minimal(self):
-        req = AssistantRequest(session_id="s1", message="hello")
-        assert req.session_id == "s1"
-        assert req.message == "hello"
-        assert req.machine_state is None
-
-    def test_with_machine_state(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="hello",
-            machine_state={"current_state": "dashboard"},
+    def test_requires_unified_message_contract(self) -> None:
+        request = AssistantRequest(
+            id="user-1",
+            session_id="sess-1",
+            parent_id=None,
+            content="Hello",
         )
-        assert req.machine_state == {"current_state": "dashboard"}
 
+        assert request.id == "user-1"
+        assert request.content == "Hello"
+        assert request.is_continuation is False
+        assert request.is_steering is False
 
-class TestAssistantRequestContinuation:
-    def test_is_continuation_when_tool_call_id_present(self):
-        req = AssistantRequest(session_id="s", message="", tool_call_id="call_1")
-        assert req.is_continuation is True
-
-    def test_is_not_continuation_without_tool_call_id(self):
-        req = AssistantRequest(session_id="s", message="hi")
-        assert req.is_continuation is False
-
-    def test_tool_result_field_accepted(self):
-        req = AssistantRequest(
-            session_id="s",
-            message="",
-            tool_call_id="call_1",
-            tool_result={"success": True},
-        )
-        assert req.tool_result == {"success": True}
-
-    def test_camel_case_normalization_for_continuation(self):
-        req = AssistantRequest(
-            **{"sessionId": "s", "message": "", "toolCallId": "c1", "toolResult": 42}
-        )
-        assert req.tool_call_id == "c1"
-        assert req.tool_result == 42
-
-
-class TestTopLevelCamelCaseNormalization:
-    """Tests that the model_validator normalizes camelCase top-level keys."""
-
-    def test_camel_case_top_level_keys(self):
-        """Frontend sends sessionId/machineState — should be normalized."""
-        req = AssistantRequest.model_validate(
-            {"sessionId": "s1", "message": "hi", "machineState": {"activePage": {"name": "home"}}}
-        )
-        assert req.session_id == "s1"
-        assert req.machine_state is not None
-        assert "active_page" in req.machine_state
-
-    def test_snake_case_passthrough(self):
-        """Snake_case keys still work (idempotent normalization)."""
-        req = AssistantRequest(session_id="s1", message="hi")
-        assert req.session_id == "s1"
-
-
-class TestConfigCamelCaseNormalization:
-    """Tests that camelCase config keys are normalized before RequestConfigOverride validates."""
-
-    def test_camel_case_config_keys(self):
-        req = AssistantRequest.model_validate(
+    def test_normalizes_camel_case_host_context(self) -> None:
+        request = AssistantRequest.model_validate(
             {
-                "sessionId": "s1",
-                "message": "hi",
-                "config": {"defaultModel": "anthropic:claude-haiku-4-5", "thinkingBudget": 5000},
+                "id": "user-1",
+                "sessionId": "sess-1",
+                "parentId": None,
+                "content": "Check agents",
+                "hostContext": {
+                    "page": {"name": "agents", "data": {"entities": [{"name": "leo"}]}}
+                },
+                "config": {"defaultModel": "openai/gpt-5.4"},
             }
         )
-        assert req.config is not None
-        assert req.config.default_model == "anthropic:claude-haiku-4-5"
-        assert req.config.thinking_budget == 5000
 
-    def test_mixed_case_config_keys(self):
-        req = AssistantRequest.model_validate(
+        assert request.session_id == "sess-1"
+        # Canonical form: version 1, ``page`` becomes ``view``, empty fields dropped.
+        assert request.host_context == {
+            "version": 1,
+            "view": {
+                "name": "agents",
+                "description": "",
+                "data": {"entities": [{"name": "leo"}]},
+                "state": {},
+            },
+            "navigation": [],
+            "background": {},
+            "actions": [],
+            "attachments": [],
+            "extensions": {},
+        }
+        assert request.config == TunableOverrides(default_model="openai/gpt-5.4")
+
+    def test_invalid_host_context_is_a_validation_error(self) -> None:
+        with pytest.raises(ValueError, match="surprise"):
+            AssistantRequest.model_validate(
+                {
+                    "id": "user-1",
+                    "session_id": "sess-1",
+                    "content": "x",
+                    "host_context": {"surprise": True},
+                }
+            )
+
+    def test_normalize_host_context_rejects_non_mappings(self) -> None:
+        assert normalize_host_context(None) is None
+        assert normalize_host_context("x") is None
+        assert normalize_host_context([1]) is None
+
+    def test_host_context_from_payload_accepts_both_spellings(self) -> None:
+        payload = {"hostContext": {"page": {"name": "a"}}}
+        assert host_context_from_payload(payload)["view"]["name"] == "a"
+        assert (
+            host_context_from_payload({"host_context": {"view": {"name": "b"}}})["view"]["name"]
+            == "b"
+        )
+        assert host_context_from_payload({"session_id": "s"}) is None
+        assert host_context_from_payload("nope") is None
+
+    def test_host_context_none_by_default(self) -> None:
+        request = AssistantRequest(id="u", session_id="s", content="hi")
+        assert request.host_context is None
+
+    def test_steering_has_distinct_shape(self) -> None:
+        request = AssistantRequest(
+            id="steering-1",
+            session_id="sess-1",
+            content="Focus on Leo",
+            message_type="steering",
+        )
+
+        assert request.is_steering is True
+        assert request.is_continuation is False
+        assert request.parent_id is None
+
+    def test_steering_rejects_parent_id(self) -> None:
+        with pytest.raises(ValueError, match="must not include parent_id"):
+            AssistantRequest(
+                id="steering-1",
+                session_id="sess-1",
+                parent_id="assistant-1",
+                content="Focus on Leo",
+                message_type="steering",
+            )
+
+    def test_steering_rejects_tool_continuation_fields(self) -> None:
+        with pytest.raises(ValueError, match="must not include tool continuation fields"):
+            AssistantRequest(
+                id="steering-1",
+                session_id="sess-1",
+                content="Focus on Leo",
+                message_type="steering",
+                tool_call_id="call-1",
+                tool_result={"ok": True},
+            )
+
+    @pytest.mark.parametrize("message_type", ["standard", "steering"])
+    def test_tool_outcome_requires_a_continuation(self, message_type) -> None:
+        with pytest.raises(ValueError, match="tool_outcome requires tool_call_id"):
+            AssistantRequest(
+                id="user-1",
+                session_id="sess-1",
+                content="",
+                message_type=message_type,
+                tool_outcome="failed",
+            )
+        # The default round-trips through a serialised body on any request kind.
+        request = AssistantRequest(
+            id="user-1", session_id="sess-1", content="Hi", message_type=message_type
+        )
+        body = request.model_dump()
+        assert body["tool_outcome"] == "success"
+        assert AssistantRequest.model_validate(body) == request
+
+    def test_failed_tool_outcome_on_a_continuation(self) -> None:
+        request = AssistantRequest.model_validate(
             {
-                "session_id": "s1",
-                "message": "hi",
-                "config": {"default_model": "openai:gpt-4o", "enableWorkingMemory": True},
+                "id": "continuation-1",
+                "sessionId": "sess-1",
+                "content": "",
+                "toolCallId": "call-1",
+                "toolResult": {"error": "not found"},
+                "toolOutcome": "failed",
             }
         )
-        assert req.config.default_model == "openai:gpt-4o"
-        assert req.config.enable_working_memory is True
+        assert request.is_continuation
+        assert request.tool_outcome == "failed"
+        with pytest.raises(ValueError, match="tool_outcome"):
+            AssistantRequest(
+                id="c", session_id="s", content="", tool_call_id="call-1", tool_outcome="unknown"
+            )
 
-    def test_config_none_passthrough(self):
-        req = AssistantRequest(session_id="s1", message="hi", config=None)
-        assert req.config is None
+    def test_screenshot_fields_fold_into_images(self) -> None:
+        request = AssistantRequest.model_validate(
+            {
+                "id": "user-1",
+                "session_id": "sess-1",
+                "parent_id": None,
+                "content": "Look",
+                "imageDataUri": "data:image/png;base64,abc123",
+            }
+        )
+
+        assert request.images == ["data:image/png;base64,abc123"]
+        assert request.screenshot == "data:image/png;base64,abc123"
+        assert [a.purpose for a in request.attachments] == ["screenshot"]
+        assert request.reference_attachments == []
+
+    def test_reference_attachments_are_separate_from_the_screenshot(self) -> None:
+        request = AssistantRequest.model_validate(
+            {
+                "id": "user-1",
+                "session_id": "sess-1",
+                "content": "Compare",
+                "images": ["data:image/png;base64,shot"],
+                "attachments": [
+                    {"kind": "image", "dataUri": "data:image/jpeg;base64,ref"},
+                    {"kind": "text", "text": "notes", "name": "notes.txt"},
+                ],
+            }
+        )
+        assert request.screenshot == "data:image/png;base64,shot"
+        assert [a.kind for a in request.reference_attachments] == ["image", "text"]
+
+    def test_missing_id_is_validation_error(self) -> None:
+        with pytest.raises(ValidationError):
+            AssistantRequest.model_validate(
+                {"session_id": "sess-1", "parent_id": None, "content": "Hello"}
+            )
 
 
 class TestAssistantResult:
-    def test_text_result(self):
+    def test_serializes(self) -> None:
         result = AssistantResult(
-            content="Hello!",
-            model="anthropic:claude-sonnet-4-6",
-            session_id="s1",
+            content="Done",
+            model="openai:gpt-5.4",
+            session_id="sess-1",
             turn_number=1,
         )
-        assert result.content == "Hello!"
 
-    def test_serialization(self):
-        result = AssistantResult(
-            content="test",
-            model="anthropic:claude-sonnet-4-6",
-            session_id="s1",
-            turn_number=1,
-        )
-        data = result.model_dump()
-        assert data["content"] == "test"
-        assert data["model"] == "anthropic:claude-sonnet-4-6"
-
-
-class TestRequestConfigOverride:
-    def test_all_none_default(self):
-        override = RequestConfigOverride()
-        assert override.default_model is None
-        assert override.thinking_budget is None
-        assert override.temperature is None
-        assert override.max_turns is None
-        assert override.enable_working_memory is None
-
-    def test_model_only(self):
-        override = RequestConfigOverride(default_model="anthropic:claude-haiku-4-5")
-        assert override.default_model == "anthropic:claude-haiku-4-5"
-        assert override.temperature is None
-
-    def test_temperature_bounds_valid(self):
-        override = RequestConfigOverride(temperature=0.0)
-        assert override.temperature == 0.0
-        override = RequestConfigOverride(temperature=2.0)
-        assert override.temperature == 2.0
-
-    def test_temperature_bounds_invalid(self):
-        with pytest.raises(ValueError, match="less than or equal to 2"):
-            RequestConfigOverride(temperature=2.5)
-        with pytest.raises(ValueError, match="greater than or equal to 0"):
-            RequestConfigOverride(temperature=-0.1)
-
-    def test_assistant_request_with_config(self):
-        req = AssistantRequest(
-            session_id="s1",
-            message="hi",
-            config={"temperature": 0.5, "max_turns": 5},
-        )
-        assert req.config is not None
-        assert req.config.temperature == 0.5
-        assert req.config.max_turns == 5
-
-    def test_config_none_default(self):
-        req = AssistantRequest(session_id="s1", message="hi")
-        assert req.config is None
-
-
-class TestBuildUserPrompt:
-    """Tests for _build_user_prompt — returns message string (images handled by look_at_screen tool)."""
-
-    def test_returns_message_string(self):
-        result = _build_user_prompt("hello")
-        assert result == "hello"
-        assert isinstance(result, str)
-
-    def test_empty_message(self):
-        result = _build_user_prompt("")
-        assert result == ""
-
-    def test_images_field_defaults_empty(self):
-        req = AssistantRequest(session_id="s1", message="hi")
-        assert req.images == []
+        assert result.model_dump() == {
+            "content": "Done",
+            "model": "openai:gpt-5.4",
+            "session_id": "sess-1",
+            "turn_number": 1,
+            "message_id": None,
+            "pending_tool_call": None,
+        }

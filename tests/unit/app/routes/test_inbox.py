@@ -10,8 +10,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lovely_assistant.app.routes.inbox import router
-from lovely_assistant.services.database.models import InboxItemORM
+from assistant_runtime.app.routes.inbox import router
+from assistant_runtime.services.database.models import InboxItemORM
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -71,105 +71,64 @@ def _make_mock_db(repo_mock: MagicMock | None = None) -> MagicMock:
 
 
 class TestPostInbox:
+    """POST /inbox delivers the note through the ingress."""
+
+    def _app_with_ingress(self, result):
+        app = _make_app(db_service=_make_mock_db())
+        ingress = MagicMock()
+        ingress.deliver = AsyncMock(return_value=result)
+        app.state.ingress_service = ingress
+        return app, ingress
+
     @pytest.mark.asyncio
-    async def test_creates_item_returns_201(self):
-        mock_row = _make_inbox_row()
-        mock_db = _make_mock_db()
-
-        app = _make_app(db_service=mock_db)
-        with pytest.MonkeyPatch.context() as mp:
-            mock_repo_cls = MagicMock()
-            mock_repo_inst = MagicMock()
-            mock_repo_inst.create = AsyncMock(return_value=mock_row)
-            mock_repo_cls.return_value = mock_repo_inst
-            mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
-                mock_repo_cls,
-            )
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                response = await c.post(
-                    "/inbox",
-                    json={"from": "leo", "message": "Hello from Leo"},
-                )
-
+    async def test_delivers_and_returns_201(self):
+        app, ingress = self._app_with_ingress(
+            {"status": "delivered", "session_id": "s1", "delivery": "queued"}
+        )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post("/inbox", json={"from": "leo", "message": "Hello from Leo"})
         assert response.status_code == 201
-        data = response.json()
-        assert data["id"] == "item-1"
-        assert data["from_agent"] == "leo"
-        assert data["message"] == "Hello from Leo"
-        assert data["severity"] == "info"
-        assert data["surfaced"] is False
+        assert response.json()["status"] == "delivered"
+        assert ingress.deliver.await_args.kwargs == {
+            "from_agent": "leo",
+            "via": "inbox",
+            "message": "Hello from Leo",
+            "session_id": None,
+            "severity": "info",
+        }
+
+    @pytest.mark.asyncio
+    async def test_context_can_name_the_session_and_channel(self):
+        app, ingress = self._app_with_ingress({"status": "queued", "inbox_id": "i"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.post(
+                "/inbox",
+                json={
+                    "from": "leo",
+                    "message": "Urgent",
+                    "severity": "urgent",
+                    "context": {"session_id": "s9", "via": "tmux"},
+                },
+            )
+        assert response.status_code == 201
+        kwargs = ingress.deliver.await_args.kwargs
+        assert kwargs["session_id"] == "s9"
+        assert kwargs["via"] == "tmux"
+        assert kwargs["severity"] == "urgent"
 
     @pytest.mark.asyncio
     async def test_validates_required_fields(self):
-        mock_db = _make_mock_db()
-        app = _make_app(db_service=mock_db)
-
+        app, _ = self._app_with_ingress({})
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            # Missing 'message'
             response = await c.post("/inbox", json={"from": "leo"})
-
         assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_validates_empty_from(self):
-        mock_db = _make_mock_db()
-        app = _make_app(db_service=mock_db)
-
+        app, _ = self._app_with_ingress({})
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.post("/inbox", json={"from": "", "message": "Hello"})
-
         assert response.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_no_db_returns_503(self):
-        app = _make_app(db_service=None)
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.post(
-                "/inbox",
-                json={"from": "leo", "message": "Hello"},
-            )
-
-        assert response.status_code == 503
-
-    @pytest.mark.asyncio
-    async def test_accepts_severity_and_context(self):
-        mock_row = _make_inbox_row(severity="urgent", context={"issue": 42})
-        mock_db = _make_mock_db()
-
-        app = _make_app(db_service=mock_db)
-        with pytest.MonkeyPatch.context() as mp:
-            mock_repo_cls = MagicMock()
-            mock_repo_inst = MagicMock()
-            mock_repo_inst.create = AsyncMock(return_value=mock_row)
-            mock_repo_cls.return_value = mock_repo_inst
-            mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
-                mock_repo_cls,
-            )
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                response = await c.post(
-                    "/inbox",
-                    json={
-                        "from": "leo",
-                        "message": "Urgent!",
-                        "severity": "urgent",
-                        "context": {"issue": 42},
-                    },
-                )
-
-        assert response.status_code == 201
-        data = response.json()
-        assert data["severity"] == "urgent"
-        assert data["context"] == {"issue": 42}
-
-
-# ---------------------------------------------------------------------------
-# GET /inbox
-# ---------------------------------------------------------------------------
 
 
 class TestGetInbox:
@@ -185,7 +144,7 @@ class TestGetInbox:
             mock_repo_inst.list_unsurfaced = AsyncMock(return_value=rows)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -209,7 +168,7 @@ class TestGetInbox:
             mock_repo_inst.list_all = AsyncMock(return_value=rows)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -267,7 +226,7 @@ class TestPatchSurfaced:
             mock_repo_inst.mark_surfaced = AsyncMock(return_value=mock_row)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 
@@ -289,7 +248,7 @@ class TestPatchSurfaced:
             mock_repo_inst.mark_surfaced = AsyncMock(return_value=None)
             mock_repo_cls.return_value = mock_repo_inst
             mp.setattr(
-                "lovely_assistant.app.routes.inbox.InboxRepository",
+                "assistant_runtime.app.routes.inbox.InboxRepository",
                 mock_repo_cls,
             )
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from lovely_assistant.base.instrument import instrument
+from assistant_runtime.base.instrument import instrument
 
 
 async def test_instrument_returns_result():

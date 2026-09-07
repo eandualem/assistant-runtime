@@ -3,7 +3,7 @@
 from sqlalchemy import MetaData
 from sqlalchemy.orm import DeclarativeBase
 
-from lovely_assistant.services.database.base import Base, convention
+from assistant_runtime.services.database.base import Base, convention
 
 
 class TestBase:
