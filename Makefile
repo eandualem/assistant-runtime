@@ -3,7 +3,7 @@
 .DEFAULT_GOAL := help
 
 # --- Directories ---
-SRC_DIR := src/lovely_assistant
+SRC_DIR := src/assistant_runtime
 TESTS_DIR := tests
 
 # --- Color Codes ---
@@ -23,7 +23,7 @@ install:
 # --- Development ---
 dev:
 	@echo "${CYAN}Starting dev server...${RESET}"
-	uv run uvicorn lovely_assistant.main:app --reload --host 0.0.0.0 --port $${PORT:-7100}
+	uv run uvicorn assistant_runtime.main:app --reload --host 0.0.0.0 --port $${PORT:-7100}
 
 # --- Code Quality ---
 lint:
@@ -90,7 +90,7 @@ db-upgrade:
 
 # --- Help ---
 help:
-	@echo "${BOLD}${CYAN}Lovely Assistant - Development Commands${RESET}"
+	@echo "${BOLD}${CYAN}Assistant Runtime - Development Commands${RESET}"
 	@echo ""
 	@echo "  ${GREEN}make install${RESET}            Install dependencies (uv sync)"
 	@echo "  ${GREEN}make dev${RESET}                Start dev server (uvicorn --reload)"

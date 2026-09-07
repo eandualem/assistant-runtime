@@ -12,13 +12,14 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from lovely_assistant.services.history._manager import (
+from assistant_runtime.services.history._manager import (
+    COMPACTION_CACHE_KEY,
     SUMMARY_MARKER,
     TOOL_RESULT_PLACEHOLDER,
     HistoryManager,
 )
-from lovely_assistant.services.history.config import HistoryConfig
-from lovely_assistant.services.history.models import CompactionResult, WorkingMemory
+from assistant_runtime.services.history.config import HistoryConfig
+from assistant_runtime.services.history.models import CompactionResult
 
 
 @pytest.fixture
@@ -30,10 +31,7 @@ def config():
 def mock_summarizer():
     summarizer = MagicMock()
     summarizer.summarize_structured = AsyncMock(
-        return_value=CompactionResult(
-            summary="Test summary",
-            working_memory=WorkingMemory(active_goal="Test goal"),
-        )
+        return_value=CompactionResult(summary="Test summary")
     )
     return summarizer
 
@@ -58,7 +56,10 @@ def _make_tool_call_msg(tool_name: str = "test_tool", args: str = "{}") -> Model
 
 
 def _make_tool_result_msg(
-    tool_name: str = "test_tool", content: str = "result", tool_call_id: str | None = None
+    tool_name: str = "test_tool",
+    content: str = "result",
+    tool_call_id: str | None = None,
+    **part_kwargs,
 ) -> ModelRequest:
     return ModelRequest(
         parts=[
@@ -66,9 +67,24 @@ def _make_tool_result_msg(
                 tool_name=tool_name,
                 content=content,
                 tool_call_id=tool_call_id or f"call_{tool_name}",
+                **part_kwargs,
             )
         ]
     )
+
+
+def _summary_messages(messages) -> list[ModelRequest]:
+    return [
+        m
+        for m in messages
+        if isinstance(m, ModelRequest)
+        and any(
+            isinstance(p, UserPromptPart)
+            and isinstance(p.content, str)
+            and SUMMARY_MARKER in p.content
+            for p in m.parts
+        )
+    ]
 
 
 class TestEstimateTokens:
@@ -116,8 +132,7 @@ class TestTieredToolClearing:
             _make_tool_result_msg(content="important data"),
         ]
         result = manager._apply_tiered_tool_clearing(history)
-        # Content should be unchanged
-        assert result[1].parts[0].content == "important data"
+        assert result is history
 
     def test_clears_older_preserves_recent(self, manager):
         """With protect_count=1, clears first tool result, keeps second."""
@@ -128,18 +143,14 @@ class TestTieredToolClearing:
         ]
         result = manager._apply_tiered_tool_clearing(history)
 
-        # First tool result should be cleared
         assert result[0].parts[0].content == TOOL_RESULT_PLACEHOLDER
         assert result[0].parts[0].tool_name == "tool_a"
-        # User message unchanged
         assert result[1].parts[0].content == "middle"
-        # Second tool result preserved
         assert result[2].parts[0].content == "new data"
 
     def test_protect_zero_clears_all(self):
         config = HistoryConfig(protect_recent_tool_results=0)
-        summarizer = MagicMock()
-        manager = HistoryManager(config, summarizer)
+        manager = HistoryManager(config, MagicMock())
 
         history = [
             _make_tool_result_msg(content="data1"),
@@ -150,77 +161,86 @@ class TestTieredToolClearing:
         for msg in result:
             assert msg.parts[0].content == TOOL_RESULT_PLACEHOLDER
 
+    def test_counts_individual_results_across_multi_tool_requests(self):
+        """Protection counts tool results, not the messages that carry them."""
+        config = HistoryConfig(protect_recent_tool_results=2)
+        manager = HistoryManager(config, MagicMock())
+        history = [
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(tool_name="a", content="first", tool_call_id="a"),
+                    ToolReturnPart(tool_name="b", content="second", tool_call_id="b"),
+                ]
+            ),
+            _make_tool_result_msg(tool_name="c", content="third"),
+        ]
+        result = manager._apply_tiered_tool_clearing(history)
+        assert [p.content for p in result[0].parts] == [TOOL_RESULT_PLACEHOLDER, "second"]
+        assert result[1].parts[0].content == "third"
+
+    def test_preserves_outcome_metadata_and_identity(self, manager):
+        """Clearing replaces the content only; native fields survive."""
+        history = [
+            _make_tool_result_msg(
+                tool_name="lookup",
+                content="old data",
+                outcome="interrupted",
+                metadata={"provider": "x"},
+            ),
+            _make_tool_result_msg(tool_name="recent", content="new data"),
+        ]
+        result = manager._apply_tiered_tool_clearing(history)
+        cleared = result[0].parts[0]
+        original = history[0].parts[0]
+        assert cleared.content == TOOL_RESULT_PLACEHOLDER
+        assert cleared.outcome == "interrupted"
+        assert cleared.metadata == {"provider": "x"}
+        assert cleared.tool_call_id == original.tool_call_id
+        assert cleared.timestamp == original.timestamp
+
     def test_does_not_mutate_original(self, manager):
         history = [
-            _make_tool_result_msg(content="original"),
-            _make_tool_result_msg(content="keep"),
+            _make_tool_result_msg(tool_name="old", content="original"),
+            _make_tool_result_msg(tool_name="new", content="keep"),
         ]
-        manager._apply_tiered_tool_clearing(history)
-        # Original should be unchanged
+        result = manager._apply_tiered_tool_clearing(history)
         assert history[0].parts[0].content == "original"
+        assert result[1] is history[1]
 
 
-class TestResolveDanglingToolCalls:
-    def test_no_history(self):
-        result = HistoryManager._resolve_dangling_tool_calls([])
-        assert result == []
+class TestFrozenTail:
+    async def test_frozen_results_are_never_cleared(self):
+        config = HistoryConfig(protect_recent_tool_results=0)
+        manager = HistoryManager(config, MagicMock())
+        history = [
+            _make_tool_result_msg(tool_name="old", content="old data"),
+            _make_tool_result_msg(tool_name="current", content="current data"),
+        ]
+        result = manager._apply_tiered_tool_clearing(history, frozen_from=1)
+        assert result[0].parts[0].content == TOOL_RESULT_PLACEHOLDER
+        assert result[1] is history[1]
 
-    def test_last_message_not_response(self):
-        history = [_make_user_msg("hello")]
-        result = HistoryManager._resolve_dangling_tool_calls(history)
-        assert len(result) == 1
+    async def test_frozen_messages_are_retained_verbatim_by_compaction(self, mock_summarizer):
+        config = HistoryConfig(token_budget=5000, retain_recent=1)
+        manager = HistoryManager(config, mock_summarizer)
+        history = [
+            _make_user_msg("first"),
+            _make_assistant_msg("a" * 100),
+            _make_user_msg("current"),
+            _make_tool_call_msg("lookup"),
+            _make_tool_result_msg("lookup"),
+        ]
+        result = await manager._compact(history, {}, config, frozen_from=2)
+        assert result[-3:] == history[-3:]
+        assert len(_summary_messages(result)) == 1
 
-    def test_response_without_tool_calls(self):
-        history = [_make_assistant_msg("just text")]
-        result = HistoryManager._resolve_dangling_tool_calls(history)
-        assert len(result) == 1
-
-    def test_adds_synthetic_result(self):
-        history = [_make_tool_call_msg("check_status")]
-        result = HistoryManager._resolve_dangling_tool_calls(history)
-
-        assert len(result) == 2
-        synthetic = result[1]
-        assert isinstance(synthetic, ModelRequest)
-        assert isinstance(synthetic.parts[0], ToolReturnPart)
-        assert synthetic.parts[0].tool_name == "check_status"
-        assert "interrupted" in synthetic.parts[0].content
-
-    def test_handles_multiple_tool_calls(self):
-        response = ModelResponse(
-            parts=[
-                ToolCallPart(tool_name="tool_a", args="{}", tool_call_id="a"),
-                ToolCallPart(tool_name="tool_b", args="{}", tool_call_id="b"),
-            ]
-        )
-        history = [response]
-        result = HistoryManager._resolve_dangling_tool_calls(history)
-
-        assert len(result) == 2
-        synthetic = result[1]
-        assert len(synthetic.parts) == 2
-        assert synthetic.parts[0].tool_name == "tool_a"
-        assert synthetic.parts[1].tool_name == "tool_b"
-
-    def test_does_not_mutate_original(self):
-        history = [_make_tool_call_msg("test")]
-        original_len = len(history)
-        HistoryManager._resolve_dangling_tool_calls(history)
-        assert len(history) == original_len
-
-
-class TestIsSummaryMessage:
-    def test_summary_message(self):
-        msg = _make_user_msg(f"{SUMMARY_MARKER}\nSome summary content")
-        assert HistoryManager._is_summary_message(msg) is True
-
-    def test_regular_user_message(self):
-        msg = _make_user_msg("How are the agents doing?")
-        assert HistoryManager._is_summary_message(msg) is False
-
-    def test_assistant_response(self):
-        msg = _make_assistant_msg("some response")
-        assert HistoryManager._is_summary_message(msg) is False
+    async def test_nothing_before_the_current_run_returns_history(self, mock_summarizer):
+        config = HistoryConfig(token_budget=5000, retain_recent=1)
+        manager = HistoryManager(config, mock_summarizer)
+        history = [_make_user_msg("current"), _make_assistant_msg("a" * 100)]
+        result = await manager._compact(history, {}, config, frozen_from=0)
+        assert result is history
+        mock_summarizer.summarize_structured.assert_not_called()
 
 
 class TestFormatTypedToDicts:
@@ -269,11 +289,16 @@ class TestPrepareHistory:
         assert result == []
         assert modified is False
 
-    async def test_within_budget_no_changes(self, manager):
+    async def test_within_budget_returns_same_list(self, manager):
         history = [_make_user_msg("short"), _make_assistant_msg("brief")]
         result, modified = await manager.prepare_history(history, {})
         assert modified is False
-        assert len(result) == 2
+        assert result is history
+
+    async def test_dangling_calls_are_left_to_the_native_pipeline(self, manager):
+        history = [_make_user_msg("start"), _make_tool_call_msg("check_status")]
+        result, _ = await manager.prepare_history(history, {})
+        assert result is history
 
     async def test_over_budget_triggers_clearing(self):
         """With a tight budget but clearing brings it under."""
@@ -293,10 +318,9 @@ class TestPrepareHistory:
         ]
 
         result, modified = await manager.prepare_history(history, {})
-        # After clearing, the tool result is replaced with short placeholder
-        # Should fit within budget now
         assert modified is False  # Clearing alone was enough
         assert result[0].parts[0].content == TOOL_RESULT_PLACEHOLDER
+        summarizer.summarize_structured.assert_not_called()
 
     async def test_over_budget_triggers_compaction(self, mock_summarizer):
         """When clearing isn't enough, triggers full compaction."""
@@ -307,7 +331,6 @@ class TestPrepareHistory:
         )
         manager = HistoryManager(config, mock_summarizer)
 
-        # Create history large enough that even after clearing we're over budget
         # 5000 tokens * 4 = 20000 chars, so we need > 20000 chars of non-tool content
         history = [
             _make_user_msg("x" * 8000),
@@ -320,32 +343,12 @@ class TestPrepareHistory:
         result, modified = await manager.prepare_history(history, session_context)
 
         assert modified is True
-        # Summarizer should have been called
         mock_summarizer.summarize_structured.assert_called_once()
-        # Working memory should be set in session context
-        assert "working_memory" in session_context
-
-    async def test_continuation_skips_dangling_resolution(self, manager):
-        """is_continuation=True skips dangling tool call resolution."""
-        history = [
-            _make_user_msg("start"),
-            _make_tool_call_msg("ui_navigate"),  # Dangling — will be resolved by frontend
-        ]
-        result, _ = await manager.prepare_history(history, {}, is_continuation=True)
-        # Should NOT have added a synthetic tool result
-        assert len(result) == 2
-
-    async def test_non_continuation_resolves_dangling(self, manager):
-        """Without is_continuation, dangling tool calls get synthetic results."""
-        history = [
-            _make_user_msg("start"),
-            _make_tool_call_msg("check_status"),
-        ]
-        result, _ = await manager.prepare_history(history, {})
-        # Should have added synthetic tool result
-        assert len(result) == 3
-        assert isinstance(result[2], ModelRequest)
-        assert isinstance(result[2].parts[0], ToolReturnPart)
+        # Compaction describes the model input only; working memory is a
+        # separate per-turn extraction.
+        assert "working_memory" not in session_context
+        assert session_context[COMPACTION_CACHE_KEY]["prefix_count"] == 3
+        assert len(_summary_messages(result)) == 1
 
 
 class TestCompact:
@@ -363,11 +366,12 @@ class TestCompact:
 
         result = await manager._compact(history, {}, config)
 
-        # First message should be preserved
         assert isinstance(result[0], ModelRequest)
         assert result[0].parts[0].content == "What is the system status?"
-        # Second should be summary
         assert SUMMARY_MARKER in result[1].parts[0].content
+        # The head message is kept verbatim, so it is not summarized.
+        summarized = mock_summarizer.summarize_structured.call_args[0][0]
+        assert all("system status" not in m["content"] for m in summarized)
 
     async def test_summary_marker_present(self, mock_summarizer):
         config = HistoryConfig(token_budget=5000, retain_recent=1)
@@ -380,10 +384,7 @@ class TestCompact:
         ]
 
         result = await manager._compact(history, {}, config)
-
-        # Find the summary message
-        summary_msgs = [m for m in result if HistoryManager._is_summary_message(m)]
-        assert len(summary_msgs) == 1
+        assert len(_summary_messages(result)) == 1
 
     async def test_retain_recent_respected(self, mock_summarizer):
         config = HistoryConfig(token_budget=5000, retain_recent=2)
@@ -398,25 +399,8 @@ class TestCompact:
 
         result = await manager._compact(history, {}, config)
 
-        # Last two messages should be preserved verbatim
         assert result[-2].parts[0].content == "recent1"
         assert result[-1].parts[0].content == "recent2"
-
-    async def test_working_memory_set_in_context(self, mock_summarizer):
-        config = HistoryConfig(token_budget=5000, retain_recent=1)
-        manager = HistoryManager(config, mock_summarizer)
-
-        history = [
-            _make_user_msg("first"),
-            _make_assistant_msg("response"),
-            _make_user_msg("second"),
-        ]
-
-        session_context: dict = {}
-        await manager._compact(history, session_context, config)
-
-        assert "working_memory" in session_context
-        assert session_context["working_memory"]["active_goal"] == "Test goal"
 
     async def test_retain_all_returns_unchanged(self, mock_summarizer):
         """When retain_recent >= len(history), no compaction."""
@@ -426,22 +410,97 @@ class TestCompact:
         history = [_make_user_msg("only"), _make_assistant_msg("two")]
         result = await manager._compact(history, {}, config)
 
-        assert result == history
+        assert result is history
 
-    async def test_existing_summary_passed_to_summarizer(self, mock_summarizer):
-        config = HistoryConfig(token_budget=5000, retain_recent=1)
+    async def test_compaction_boundary_skips_orphaned_tool_result(self, mock_summarizer):
+        """When retain boundary lands on a tool result, shift it to avoid orphaning."""
+        config = HistoryConfig(token_budget=5000, retain_recent=2)
         manager = HistoryManager(config, mock_summarizer)
 
-        summary_msg = _make_user_msg(f"{SUMMARY_MARKER}\nPrevious summary content")
         history = [
-            summary_msg,
-            _make_user_msg("new question"),
-            _make_assistant_msg("answer"),
-            _make_user_msg("follow up"),
+            _make_user_msg("old question"),
+            _make_tool_call_msg("check_status"),
+            _make_tool_result_msg("check_status"),
+            _make_assistant_msg("Here are the results"),
         ]
 
-        await manager._compact(history, {}, config)
+        result = await manager._compact(history, {}, config)
 
-        # Verify existing summary was passed
-        call_args = mock_summarizer.summarize_structured.call_args
-        assert call_args[0][1] == "Previous summary content"
+        for idx, msg in enumerate(result):
+            if not isinstance(msg, ModelRequest):
+                continue
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
+                    has_matching_call = any(
+                        isinstance(p, ToolCallPart) and p.tool_call_id == part.tool_call_id
+                        for m in result[:idx]
+                        if isinstance(m, ModelResponse)
+                        for p in m.parts
+                    )
+                    assert has_matching_call, f"Orphaned ToolReturnPart({part.tool_call_id})"
+
+    async def test_cached_summary_is_reused_while_within_budget(self, mock_summarizer):
+        config = HistoryConfig(token_budget=5000, retain_recent=1)
+        manager = HistoryManager(config, mock_summarizer)
+        history = [
+            _make_user_msg("first"),
+            _make_assistant_msg("a" * 100),
+            _make_user_msg("second"),
+            _make_assistant_msg("b" * 100),
+        ]
+        session_context: dict = {}
+        first = await manager._compact(history, session_context, config)
+        assert mock_summarizer.summarize_structured.call_count == 1
+
+        # The next model request of the same turn has two more messages.
+        longer = [*history, _make_tool_call_msg("lookup"), _make_tool_result_msg("lookup")]
+        second = await manager._compact(longer, session_context, config)
+
+        assert mock_summarizer.summarize_structured.call_count == 1
+        assert _summary_messages(second)[0].parts[0].content == (
+            _summary_messages(first)[0].parts[0].content
+        )
+        # Everything after the summarized prefix stays verbatim.
+        assert second[-3:] == longer[-3:]
+
+    async def test_cached_summary_is_extended_when_over_budget(self, mock_summarizer):
+        config = HistoryConfig(token_budget=5000, retain_recent=1)
+        manager = HistoryManager(config, mock_summarizer)
+        history = [
+            _make_user_msg("first"),
+            _make_assistant_msg("a" * 100),
+            _make_user_msg("second"),
+        ]
+        session_context: dict = {}
+        await manager._compact(history, session_context, config)
+
+        longer = [*history, _make_assistant_msg("b" * 21000), _make_user_msg("third")]
+        await manager._compact(longer, session_context, config)
+
+        assert mock_summarizer.summarize_structured.call_count == 2
+        messages, existing_summary = mock_summarizer.summarize_structured.call_args[0]
+        assert existing_summary == "Test summary"
+        # Only the messages that left the retained window are summarized again.
+        assert [m["content"][:6] for m in messages] == ["second", "bbbbbb"]
+        assert session_context[COMPACTION_CACHE_KEY]["prefix_count"] == 4
+
+    async def test_cached_summary_is_ignored_on_another_branch(self, mock_summarizer):
+        config = HistoryConfig(token_budget=5000, retain_recent=1)
+        manager = HistoryManager(config, mock_summarizer)
+        history = [
+            _make_user_msg("first"),
+            _make_assistant_msg("a" * 100),
+            _make_user_msg("second"),
+        ]
+        session_context: dict = {}
+        await manager._compact(history, session_context, config)
+
+        branch = [
+            _make_user_msg("first"),
+            _make_assistant_msg("a completely different answer"),
+            _make_user_msg("second"),
+        ]
+        await manager._compact(branch, session_context, config)
+
+        assert mock_summarizer.summarize_structured.call_count == 2
+        assert mock_summarizer.summarize_structured.call_args[0][1] is None

@@ -1,778 +1,452 @@
-"""Tests for the session store — in-memory and DB persistence paths."""
-
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
-from pydantic_ai.messages import ModelRequest, UserPromptPart
 
-from lovely_assistant.app.assistant._session_store import (
-    _MAX_MEMORY_SESSIONS,
-    SessionStore,
-)
+from assistant_runtime.app.assistant._session_persistence import LoadedSession
+from assistant_runtime.app.assistant._session_store import SessionStore
+from assistant_runtime.app.assistant.models import AssistantRequest
 
 
-class TestSessionStore:
-    def test_get_context_creates_new(self):
-        store = SessionStore()
-        ctx = store.get_context("s1")
+def _request(
+    *,
+    message_id: str,
+    session_id: str = "sess-1",
+    parent_id: str | None = None,
+    content: str = "Hello",
+    message_type: str = "standard",
+) -> AssistantRequest:
+    return AssistantRequest(
+        id=message_id,
+        session_id=session_id,
+        parent_id=parent_id,
+        content=content,
+        message_type=message_type,
+    )
+
+
+async def _seed_basic_turn(store: SessionStore) -> tuple[dict, dict, dict]:
+    ctx, user = await store.register_user_message(_request(message_id="user-1", parent_id=None))
+    assistant = await store.register_assistant_message(
+        "sess-1",
+        message_id="assistant-1",
+        parent_id="user-1",
+        content="Hi there",
+        segments=[{"kind": "text", "text": "Hi there"}],
+        usage={"input_tokens": 1, "output_tokens": 2},
+    )
+    return ctx, user, assistant
+
+
+class TestSessionStoreBasics:
+    def test_get_context_initializes_tree_and_steering_state(self) -> None:
+        ctx = SessionStore().get_context("sess-1")
+
         assert ctx["turn_number"] == 0
-        assert ctx["working_memory"] is None
-        assert ctx["message_history"] == []
+        assert ctx["message_count"] == 0
+        assert ctx["cached_path"] == []
+        assert ctx["active_leaf_id"] is None
+        assert ctx["pending_steering_ids"] == []
+        assert ctx["steering_index"] == {}
+        assert ctx["steering_order"] == []
 
-    def test_get_context_returns_existing(self):
+
+class TestRegisterUserMessage:
+    async def test_registers_first_root_message(self) -> None:
         store = SessionStore()
-        ctx1 = store.get_context("s1")
-        ctx1["turn_number"] = 5
-        ctx2 = store.get_context("s1")
-        assert ctx2["turn_number"] == 5
 
-    def test_has_session(self):
+        ctx, record = await store.register_user_message(
+            _request(message_id="user-1", parent_id=None)
+        )
+
+        assert record["id"] == "user-1"
+        assert record["role"] == "user"
+        assert ctx["turn_number"] == 1
+        assert ctx["message_count"] == 1
+        assert ctx["active_leaf_id"] == "user-1"
+        assert [message["id"] for message in ctx["cached_path"]] == ["user-1"]
+        assert ctx["title"] == "Hello"
+
+    async def test_message_without_parent_continues_from_the_active_leaf(self) -> None:
         store = SessionStore()
-        assert store.has_session("s1") is False
-        store.get_context("s1")
-        assert store.has_session("s1") is True
+        await store.register_user_message(_request(message_id="user-1", parent_id=None))
+        await store.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Hi",
+            segments=None,
+            usage=None,
+        )
 
-    def test_session_count(self):
+        ctx, record = await store.register_user_message(
+            _request(message_id="user-2", parent_id=None, content="Next")
+        )
+
+        assert record["parent_id"] == "assistant-1"
+        assert ctx["active_leaf_id"] == "user-2"
+        assert [m["id"] for m in ctx["cached_path"]] == ["user-1", "assistant-1", "user-2"]
+
+    async def test_message_without_parent_follows_the_active_branch(self) -> None:
         store = SessionStore()
-        assert store.session_count() == 0
-        store.get_context("s1")
-        store.get_context("s2")
-        assert store.session_count() == 2
+        await store.register_user_message(_request(message_id="user-1", parent_id=None))
+        await store.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="A",
+            segments=None,
+            usage=None,
+        )
+        await store.register_user_message(
+            _request(message_id="user-2", parent_id="assistant-1", content="Original")
+        )
+        # A variant of user-2 becomes the active branch.
+        await store.register_user_message(
+            _request(message_id="user-2v", parent_id="assistant-1", content="Variant")
+        )
 
-    def test_increment_turn(self):
-        store = SessionStore()
-        assert store.increment_turn("s1") == 1
-        assert store.increment_turn("s1") == 2
-        assert store.increment_turn("s1") == 3
+        ctx, record = await store.register_user_message(
+            _request(message_id="user-3", parent_id=None, content="Continue")
+        )
 
-    def test_get_history_empty(self):
-        store = SessionStore()
-        assert store.get_history("s1") == []
-
-    def test_save_and_get_history(self):
-        store = SessionStore()
-        messages = [{"role": "user", "content": "hi"}]
-        store.save_history("s1", messages)
-        assert store.get_history("s1") == messages
-
-
-# --- Helpers for DB tests ---
-
-
-def _make_mock_db(*, healthy: bool = True) -> MagicMock:
-    """Create a mock DatabaseService with configurable health."""
-    mock_db = MagicMock()
-    mock_db._healthy = healthy
-    return mock_db
-
-
-def _attach_session_context(mock_db: MagicMock, mock_async_session: AsyncMock) -> None:
-    """Attach a working session_context async context manager to a mock DB."""
-
-    @asynccontextmanager
-    async def _session_context():
-        yield mock_async_session
-
-    mock_db.session_context = _session_context
-
-
-# --- DB Persistence Tests ---
-
-
-class TestSessionStoreWithDb:
-    """Tests for async methods that interact with the DB persistence layer."""
-
-    # --- get_context_async ---
-
-    async def test_get_context_async_returns_from_memory_if_cached(self):
-        """If session is already in memory, DB is not consulted."""
-        mock_db = _make_mock_db()
-        store = SessionStore(database_service=mock_db)
-
-        # Pre-populate in-memory
-        store.get_context("s1")["turn_number"] = 7
-
-        ctx = await store.get_context_async("s1")
-        assert ctx["turn_number"] == 7
-
-    async def test_get_context_async_loads_from_db_on_miss(self):
-        """On cache miss, _load_session_from_db is called and result is cached."""
-        mock_db = _make_mock_db()
-        store = SessionStore(database_service=mock_db)
-
-        db_session_data = {
-            "turn_number": 3,
-            "working_memory": "some memory",
-            "message_history": [],
-        }
-        store._load_session_from_db = AsyncMock(return_value=db_session_data)
-
-        ctx = await store.get_context_async("s1")
-
-        store._load_session_from_db.assert_awaited_once_with("s1")
-        assert ctx["turn_number"] == 3
-        assert ctx["working_memory"] == "some memory"
-        # Should now be cached in memory
-        assert store.has_session("s1") is True
-
-    async def test_get_context_async_creates_new_if_not_in_db(self):
-        """If DB returns None, a fresh session context is created."""
-        mock_db = _make_mock_db()
-        store = SessionStore(database_service=mock_db)
-        store._load_session_from_db = AsyncMock(return_value=None)
-
-        ctx = await store.get_context_async("s1")
-
-        store._load_session_from_db.assert_awaited_once_with("s1")
-        assert ctx["turn_number"] == 0
-        assert ctx["message_history"] == []
-
-    async def test_get_context_async_attempts_db_even_when_unhealthy(self):
-        """DB load is attempted regardless of _healthy flag — exception handling is the gate."""
-        mock_db = _make_mock_db(healthy=False)
-        store = SessionStore(database_service=mock_db)
-        store._load_session_from_db = AsyncMock(return_value=None)
-
-        ctx = await store.get_context_async("s1")
-
-        # DB load IS called — _healthy is not a gate
-        store._load_session_from_db.assert_awaited_once_with("s1")
-        assert ctx["turn_number"] == 0
-
-    # --- save_history_async ---
-
-    async def test_save_history_async_calls_persist(self):
-        """save_history_async persists to DB after saving in memory."""
-        mock_db = _make_mock_db()
-        store = SessionStore(database_service=mock_db)
-        store._persist_to_db = AsyncMock()
-
-        messages = [MagicMock()]
-        await store.save_history_async("s1", messages)
-
-        # In-memory history should be set
-        assert store.get_history("s1") == messages
-        # DB persist should be called
-        store._persist_to_db.assert_awaited_once_with("s1")
-
-    async def test_save_history_async_graceful_on_db_failure(self):
-        """In-memory state is saved even when DB persistence fails internally.
-
-        The real _persist_to_db catches exceptions internally (logger.warning),
-        so save_history_async always completes. We test the real _persist_to_db
-        path with a DB that raises on session_context.
-        """
-        mock_db = _make_mock_db()
-
-        @asynccontextmanager
-        async def _failing_context():
-            raise RuntimeError("DB write failed")
-            yield  # noqa: F401
-
-        mock_db.session_context = _failing_context
-
-        store = SessionStore(database_service=mock_db)
-        messages = [MagicMock()]
-
-        # Should not raise — _persist_to_db swallows the exception
-        await store.save_history_async("s1", messages)
-        # In-memory state should still be saved
-        assert store.get_history("s1") == messages
-
-    # --- save_history_async auto-title ---
-
-    async def test_save_history_async_auto_titles_from_first_user_message(self):
-        """Session title is auto-set from the first user message."""
-        store = SessionStore()
-        messages = [
-            ModelRequest(parts=[UserPromptPart(content="What agents are idle right now?")]),
+        assert record["parent_id"] == "user-2v"
+        assert [m["id"] for m in ctx["cached_path"]] == [
+            "user-1",
+            "assistant-1",
+            "user-2v",
+            "user-3",
         ]
-        await store.save_history_async("s1", messages)
+        assert ctx["children_by_parent"]["assistant-1"] == ["user-2", "user-2v"]
 
-        ctx = store.get_context("s1")
-        assert ctx["title"] == "What agents are idle right now?"
-
-    async def test_save_history_async_truncates_long_title(self):
-        """Long first messages are truncated to 50 chars with ellipsis."""
+    async def test_rejects_duplicate_message_ids(self) -> None:
         store = SessionStore()
-        long_text = "A" * 80
-        messages = [
-            ModelRequest(parts=[UserPromptPart(content=long_text)]),
-        ]
-        await store.save_history_async("s1", messages)
+        await store.register_user_message(_request(message_id="user-1", parent_id=None))
 
-        ctx = store.get_context("s1")
-        assert ctx["title"] == "A" * 50 + "..."
-        assert len(ctx["title"]) == 53
+        with pytest.raises(ValueError, match="already exists"):
+            await store.register_user_message(
+                _request(message_id="user-1", parent_id="user-1", content="Duplicate")
+            )
 
-    async def test_save_history_async_does_not_overwrite_existing_title(self):
-        """Once a title is set, subsequent saves don't overwrite it."""
+    async def test_rebuilds_cached_path_when_branching_from_ancestor(self) -> None:
         store = SessionStore()
-        ctx = store.get_context("s1")
-        ctx["title"] = "My custom title"
+        await _seed_basic_turn(store)
 
-        messages = [
-            ModelRequest(parts=[UserPromptPart(content="New first message")]),
-        ]
-        await store.save_history_async("s1", messages)
+        ctx, branch = await store.register_user_message(
+            _request(
+                message_id="user-2",
+                parent_id="user-1",
+                content="Actually, inspect Leo only",
+            )
+        )
 
-        assert ctx["title"] == "My custom title"
+        assert branch["parent_id"] == "user-1"
+        assert ctx["active_leaf_id"] == "user-2"
+        assert [message["id"] for message in ctx["cached_path"]] == ["user-1", "user-2"]
 
-    async def test_save_history_async_skips_title_for_empty_messages(self):
-        """No title is set when there are no messages."""
+    async def test_rejects_steering_for_tree_registration(self) -> None:
         store = SessionStore()
-        await store.save_history_async("s1", [])
 
-        ctx = store.get_context("s1")
-        assert ctx.get("title") is None
+        with pytest.raises(ValueError, match="stored separately"):
+            await store.register_user_message(
+                _request(
+                    message_id="steering-1",
+                    content="Focus on Leo",
+                    message_type="steering",
+                )
+            )
 
-    # --- delete_session ---
 
-    async def test_delete_session_removes_from_memory(self):
-        """delete_session removes the session from in-memory dict."""
+class TestAssistantMessages:
+    async def test_registers_assistant_message_and_history_path(self) -> None:
         store = SessionStore()
-        store.get_context("s1")
-        assert store.has_session("s1") is True
+        await store.register_user_message(_request(message_id="user-1", parent_id=None))
 
-        await store.delete_session("s1")
-        assert store.has_session("s1") is False
+        record = await store.register_assistant_message(
+            "sess-1",
+            message_id="assistant-1",
+            parent_id="user-1",
+            content="Hi there",
+            segments=[{"kind": "text", "text": "Hi there"}],
+            usage={"input_tokens": 1, "output_tokens": 2},
+        )
 
-    async def test_delete_session_removes_from_db(self):
-        """delete_session calls DB to delete when DB is healthy."""
-        mock_db = _make_mock_db()
-        mock_async_session = AsyncMock()
-        _attach_session_context(mock_db, mock_async_session)
+        assert record["role"] == "assistant"
+        assert record["parent_id"] == "user-1"
+        history = store.get_history("sess-1")
+        assert len(history) == 2
 
-        store = SessionStore(database_service=mock_db)
-        store.get_context("s1")
-
-        # Mock the repository class used via inline import inside delete_session
-        mock_repo = MagicMock()
-        mock_repo.delete = AsyncMock()
-
-        import lovely_assistant.services.database.repositories as repo_mod
-
-        original_class = getattr(repo_mod, "SessionRepository", None)
-        try:
-            repo_mod.SessionRepository = MagicMock(return_value=mock_repo)
-
-            await store.delete_session("s1")
-
-            mock_repo.delete.assert_awaited_once_with("s1")
-            assert store.has_session("s1") is False
-        finally:
-            if original_class is not None:
-                repo_mod.SessionRepository = original_class
-
-    async def test_delete_session_propagates_db_error(self):
-        """delete_session raises when DB fails — session stays in memory."""
-        mock_db = _make_mock_db()
-
-        @asynccontextmanager
-        async def _failing_context():
-            raise RuntimeError("DB connection failed")
-            yield  # noqa: F401
-
-        mock_db.session_context = _failing_context
-
-        store = SessionStore(database_service=mock_db)
-        store.get_context("s1")
-
-        with pytest.raises(RuntimeError, match="DB connection failed"):
-            await store.delete_session("s1")
-        # Memory pop only happens after DB succeeds — session is still in memory
-        assert store.has_session("s1") is True
-
-    # --- list_sessions ---
-
-    async def test_list_sessions_returns_from_db(self):
-        """list_sessions queries DB when healthy."""
-        mock_db = _make_mock_db()
-        mock_async_session = AsyncMock()
-        _attach_session_context(mock_db, mock_async_session)
-
-        store = SessionStore(database_service=mock_db)
-
-        # Mock repository and rows
-        mock_row = MagicMock()
-        mock_row.id = "s1"
-        mock_row.title = "Test Session"
-        mock_row.turn_number = 3
-        mock_row.message_history = [{"kind": "request"}]
-        mock_row.created_at = MagicMock()
-        mock_row.created_at.isoformat.return_value = "2026-02-20T10:00:00"
-
-        mock_repo = MagicMock()
-        mock_repo.list_all = AsyncMock(return_value=[mock_row])
-
-        import lovely_assistant.services.database.repositories as repo_mod
-
-        original_class = getattr(repo_mod, "SessionRepository", None)
-
-        try:
-            repo_mod.SessionRepository = MagicMock(return_value=mock_repo)
-
-            result = await store.list_sessions(limit=10, offset=0)
-
-            assert len(result) == 1
-            assert result[0]["session_id"] == "s1"
-            assert result[0]["title"] == "Test Session"
-            assert result[0]["turn_number"] == 3
-            assert result[0]["message_count"] == 1
-            assert result[0]["created_at"] == "2026-02-20T10:00:00"
-        finally:
-            if original_class is not None:
-                repo_mod.SessionRepository = original_class
-
-    async def test_list_sessions_falls_back_to_memory_when_no_db(self):
-        """list_sessions returns in-memory sessions when DB is None."""
+    async def test_update_message_rewrites_cached_record(self) -> None:
         store = SessionStore()
-        store.get_context("s1")["turn_number"] = 2
-        store.get_context("s2")["turn_number"] = 5
+        await _seed_basic_turn(store)
+
+        record = await store.update_message(
+            "sess-1",
+            "assistant-1",
+            content="Updated",
+            segments=[{"kind": "text", "text": "Updated"}],
+            usage={"input_tokens": 3, "output_tokens": 4},
+        )
+
+        assert record["content"] == "Updated"
+        path = await store.get_message_path("sess-1")
+        assert path[-1]["content"] == "Updated"
+        assert path[-1]["usage"] == {"input_tokens": 3, "output_tokens": 4}
+
+
+class TestSteeringMessages:
+    async def test_queues_steering_in_submission_order(self) -> None:
+        store = SessionStore()
+        await _seed_basic_turn(store)
+
+        await store.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+        )
+        await store.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-2",
+                content="Skip Ada",
+                message_type="steering",
+            ),
+        )
+
+        queued = await store.list_pending_steering("sess-1")
+
+        assert [message["id"] for message in queued] == ["steering-1", "steering-2"]
+        assert store.get_context("sess-1")["pending_steering_ids"] == ["steering-1", "steering-2"]
+
+    async def test_delivers_steering_without_mutating_tree(self) -> None:
+        store = SessionStore()
+        await _seed_basic_turn(store)
+        await store.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+        )
+        await store.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-2",
+                content="Skip Ada",
+                message_type="steering",
+            ),
+        )
+
+        delivered = await store.deliver_pending_steering("sess-1")
+        ctx = store.get_context("sess-1")
+        path = await store.get_message_path("sess-1")
+        display_steering = await store.get_display_steering("sess-1")
+
+        assert [record["id"] for record in delivered] == ["steering-1", "steering-2"]
+        assert all(record["status"] == "delivered" for record in delivered)
+        assert ctx["pending_steering_ids"] == []
+        assert ctx["active_leaf_id"] == "assistant-1"
+        assert [message["id"] for message in path] == ["user-1", "assistant-1"]
+        assert [record["id"] for record in display_steering] == ["steering-1", "steering-2"]
+
+    async def test_marks_steering_promoted_for_idle_delivery(self) -> None:
+        store = SessionStore()
+        await _seed_basic_turn(store)
+        await store.queue_steering(
+            "sess-1",
+            _request(
+                message_id="steering-1",
+                content="Focus on Leo only",
+                message_type="steering",
+            ),
+        )
+
+        promoted = await store.mark_steering_promoted("sess-1", "steering-1")
+
+        assert promoted["status"] == "promoted"
+        assert promoted["delivered_at"] is not None
+        assert store.get_context("sess-1")["pending_steering_ids"] == []
+
+
+class TestMessagePathResolution:
+    async def test_get_message_path_defaults_to_latest_leaf(self) -> None:
+        store = SessionStore()
+        await _seed_basic_turn(store)
+        await store.register_user_message(
+            _request(
+                message_id="user-2",
+                parent_id="assistant-1",
+                content="Show me Ada too",
+            )
+        )
+
+        path = await store.get_message_path("sess-1")
+
+        assert [message["id"] for message in path] == ["user-1", "assistant-1", "user-2"]
+
+    async def test_get_message_path_accepts_specific_leaf_id(self) -> None:
+        store = SessionStore()
+        await _seed_basic_turn(store)
+        await store.register_user_message(
+            _request(message_id="user-2", parent_id="assistant-1", content="branch one")
+        )
+        await store.register_user_message(
+            _request(message_id="user-3", parent_id="user-1", content="branch two")
+        )
+
+        path = await store.get_message_path("sess-1", leaf_id="user-2")
+
+        assert [message["id"] for message in path] == ["user-1", "assistant-1", "user-2"]
+
+
+class TestListSessions:
+    async def test_list_sessions_uses_tree_message_counts(self) -> None:
+        store = SessionStore()
+        await _seed_basic_turn(store)
 
         result = await store.list_sessions()
 
-        assert len(result) == 2
-        session_ids = {s["session_id"] for s in result}
-        assert session_ids == {"s1", "s2"}
-
-    async def test_list_sessions_propagates_db_error(self):
-        """list_sessions raises when DB is configured but broken."""
-        mock_db = _make_mock_db()
-
-        @asynccontextmanager
-        async def _failing_context():
-            raise RuntimeError("DB query failed")
-            yield  # noqa: F401
-
-        mock_db.session_context = _failing_context
-
-        store = SessionStore(database_service=mock_db)
-
-        with pytest.raises(RuntimeError, match="DB query failed"):
-            await store.list_sessions()
-
-    # --- _load_session_from_db ---
-
-    async def test_load_session_from_db_returns_none_when_no_db(self):
-        """_load_session_from_db returns None when DB is not configured."""
-        store = SessionStore()
-        result = await store._load_session_from_db("s1")
-        assert result is None
-
-    async def test_load_session_from_db_deserialization_failure_returns_empty_history(self):
-        """When message history fails to deserialize, session loads with empty history."""
-        mock_db = _make_mock_db()
-        store = SessionStore(database_service=mock_db)
-
-        mock_row = MagicMock()
-        mock_row.turn_number = 3
-        mock_row.working_memory = None
-        mock_row.message_history = [{"bad": "data", "not_a_real": "message"}]
-        mock_row.title = "Test session"
-
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_row
-
-        mock_async_session = AsyncMock()
-        mock_async_session.execute = AsyncMock(return_value=mock_result)
-
-        @asynccontextmanager
-        async def _ctx():
-            yield mock_async_session
-
-        mock_db.session_context = _ctx
-
-        result = await store._load_session_from_db("s1")
-        assert result is not None
-        assert result["turn_number"] == 3
-        assert result["title"] == "Test session"
-        assert result["message_history"] == []  # Empty — deserialization failed gracefully
-
-    # --- _persist_to_db ---
-
-    async def test_persist_to_db_noop_when_no_db(self):
-        """_persist_to_db does nothing when DB is not configured."""
-        store = SessionStore()
-        store.get_context("s1")
-        # Should not raise
-        await store._persist_to_db("s1")
-
-    async def test_persist_to_db_graceful_when_db_unhealthy(self):
-        """_persist_to_db attempts DB access but handles failure gracefully."""
-        mock_db = _make_mock_db(healthy=False)
-        store = SessionStore(database_service=mock_db)
-        store.get_context("s1")
-
-        # Should not raise — exception is caught internally
-        await store._persist_to_db("s1")
-
-
-class TestPersistToDbFullPath:
-    """Tests for _persist_to_db end-to-end: upsert-based persistence."""
-
-    async def test_persist_calls_upsert(self):
-        """_persist_to_db calls repo.upsert() with all session fields."""
-        from pydantic_ai.messages import ModelResponse, TextPart
-
-        mock_db = MagicMock()
-        mock_async_session = AsyncMock()
-
-        @asynccontextmanager
-        async def _ctx():
-            yield mock_async_session
-
-        mock_db.session_context = _ctx
-
-        store = SessionStore(database_service=mock_db)
-        # Pre-populate session
-        ctx = store.get_context("s1")
-        ctx["turn_number"] = 2
-        ctx["title"] = "Test session"
-        ctx["message_history"] = [
-            ModelRequest(parts=[UserPromptPart(content="Hello")]),
-            ModelResponse(parts=[TextPart(content="Hi!")]),
+        assert result == [
+            {
+                "session_id": "sess-1",
+                "owner_id": None,
+                "title": "Hello",
+                "turn_number": 1,
+                "message_count": 2,
+                "created_at": None,
+            }
         ]
 
-        # Mock repository
-        mock_repo = MagicMock()
-        mock_repo.upsert = AsyncMock()
 
-        import lovely_assistant.services.database.repositories as repo_mod
+class TestSingleflightHydration:
+    async def test_cancelled_waiter_does_not_cancel_the_shared_load(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
 
-        original_class = getattr(repo_mod, "SessionRepository", None)
-        try:
-            repo_mod.SessionRepository = MagicMock(return_value=mock_repo)
-            await store._persist_to_db("s1")
-        finally:
-            if original_class is not None:
-                repo_mod.SessionRepository = original_class
+        from assistant_runtime.app.assistant._session_persistence import LoadedSession
 
-        mock_repo.upsert.assert_awaited_once()
-        call_kwargs = mock_repo.upsert.call_args
-        assert call_kwargs[0][0] == "s1"
-        assert call_kwargs[1]["title"] == "Test session"
-        assert call_kwargs[1]["turn_number"] == 2
-        assert "expires_at" in call_kwargs[1]
-        assert isinstance(call_kwargs[1]["message_history"], list)
-        assert len(call_kwargs[1]["message_history"]) == 2
-        # get() and create() should NOT be called
-        assert not hasattr(mock_repo, "get") or not mock_repo.get.called
-        assert not hasattr(mock_repo, "create") or not mock_repo.create.called
+        store = SessionStore(database_service=MagicMock())
+        started = asyncio.Event()
+        release = asyncio.Event()
 
-    async def test_persist_converts_pydantic_model_to_dict(self):
-        """WorkingMemory Pydantic model is converted to dict before upsert."""
-        from lovely_assistant.services.history.models import WorkingMemory
+        async def slow_load(_session_id: str) -> LoadedSession:
+            started.set()
+            await release.wait()
+            return LoadedSession(
+                owner_id=None,
+                turn_number=3,
+                working_memory=None,
+                title="t",
+                telegram_chat_id=None,
+                telegram_bound_at=None,
+                messages=[],
+                steering=[],
+            )
 
-        mock_db = MagicMock()
-        mock_async_session = AsyncMock()
+        store._db.load = AsyncMock(side_effect=slow_load)
 
-        @asynccontextmanager
-        async def _ctx():
-            yield mock_async_session
+        first = asyncio.create_task(store.get_context_if_exists_async("sess-1"))
+        await started.wait()
+        second = asyncio.create_task(store.get_context_if_exists_async("sess-1"))
+        await asyncio.sleep(0)
+        first.cancel()
+        release.set()
 
-        mock_db.session_context = _ctx
-
-        store = SessionStore(database_service=mock_db)
-        ctx = store.get_context("s1")
-        ctx["working_memory"] = WorkingMemory(active_goal="Test goal", progress="In progress")
-
-        mock_repo = MagicMock()
-        mock_repo.upsert = AsyncMock()
-
-        import lovely_assistant.services.database.repositories as repo_mod
-
-        original_class = getattr(repo_mod, "SessionRepository", None)
-        try:
-            repo_mod.SessionRepository = MagicMock(return_value=mock_repo)
-            await store._persist_to_db("s1")
-        finally:
-            if original_class is not None:
-                repo_mod.SessionRepository = original_class
-
-        # working_memory should be a dict, not a Pydantic model
-        call_kwargs = mock_repo.upsert.call_args[1]
-        assert isinstance(call_kwargs["working_memory"], dict)
-        assert call_kwargs["working_memory"]["active_goal"] == "Test goal"
+        ctx = await second
+        assert ctx is not None
+        assert ctx["turn_number"] == 3
+        assert store._db.load.await_count == 1
 
 
-# --- TTL and Eviction Tests ---
-
-
-class TestSessionStoreTtl:
-    """Tests for session TTL configuration and expires_at computation."""
-
-    def test_default_ttl_is_24(self):
+class TestOwnership:
+    async def test_first_message_owns_a_context_created_ahead_of_it(self):
         store = SessionStore()
-        assert store._session_ttl_hours == 24
+        store.get_context("sess-1")  # a join warm-up or history read
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        assert [s["session_id"] for s in await store.list_sessions(owner_id="alice")] == ["sess-1"]
+        assert await store.list_sessions(owner_id="bob") == []
 
-    def test_custom_ttl(self):
-        store = SessionStore(session_ttl_hours=48)
-        assert store._session_ttl_hours == 48
-
-    async def test_persist_upserts_with_expires_at(self):
-        """_persist_to_db passes expires_at based on TTL when upserting."""
-        from datetime import UTC, datetime, timedelta
-
-        mock_db = MagicMock()
-        mock_async_session = AsyncMock()
-
-        @asynccontextmanager
-        async def _ctx():
-            yield mock_async_session
-
-        mock_db.session_context = _ctx
-
-        store = SessionStore(database_service=mock_db, session_ttl_hours=12)
-        ctx = store.get_context("s1")
-        ctx["title"] = "TTL test"
-
-        mock_repo = MagicMock()
-        mock_repo.upsert = AsyncMock()
-
-        import lovely_assistant.services.database.repositories as repo_mod
-
-        original_class = getattr(repo_mod, "SessionRepository", None)
-        try:
-            repo_mod.SessionRepository = MagicMock(return_value=mock_repo)
-
-            before = datetime.now(UTC)
-            await store._persist_to_db("s1")
-            after = datetime.now(UTC)
-        finally:
-            if original_class is not None:
-                repo_mod.SessionRepository = original_class
-
-        upsert_kwargs = mock_repo.upsert.call_args[1]
-        expires_at = upsert_kwargs["expires_at"]
-        expected_min = before + timedelta(hours=12)
-        expected_max = after + timedelta(hours=12)
-        assert expected_min <= expires_at <= expected_max
-
-
-class TestSessionStoreEviction:
-    """Tests for in-memory session eviction."""
-
-    def test_evict_if_needed_does_nothing_under_threshold(self):
+    async def test_owner_is_not_published_when_the_first_write_fails(self):
         store = SessionStore()
-        for i in range(10):
-            store.get_context(f"s{i}")
-        store._evict_if_needed()
-        assert store.session_count() == 10
+        store.get_context("sess-1")
+        db = AsyncMock()
+        db.load = AsyncMock(return_value=None)
+        db.ensure_session = AsyncMock(side_effect=RuntimeError("db down"))
+        store._db = db
+        with pytest.raises(RuntimeError):
+            await store.register_user_message(
+                AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+            )
+        assert store.get_context("sess-1")["owner_id"] is None
+        db.ensure_session = AsyncMock()
+        db.create_message = AsyncMock()
+        db.save_state = AsyncMock()
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        db.ensure_session.assert_awaited_once_with("sess-1", None, "alice")
 
-    def test_evict_if_needed_evicts_at_threshold(self):
+    async def test_empty_cached_context_is_hydrated_before_ownership_is_decided(self):
         store = SessionStore()
-        # Exceed threshold by 1
-        for i in range(_MAX_MEMORY_SESSIONS + 1):
-            store.get_context(f"s{i}")
-        assert store.session_count() == _MAX_MEMORY_SESSIONS + 1
+        store.get_context("sess-1")  # a warm-up cached an empty context...
+        db = AsyncMock()
+        db.load = AsyncMock(  # ...but the row already belongs to alice
+            return_value=LoadedSession(
+                owner_id="alice",
+                turn_number=0,
+                working_memory=None,
+                title=None,
+                telegram_chat_id=None,
+                telegram_bound_at=None,
+                messages=[],
+                steering=[],
+            )
+        )
+        db.update_segments = AsyncMock()
+        db.ensure_session = AsyncMock()
+        db.create_message = AsyncMock()
+        db.save_state = AsyncMock()
+        store._db = db
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="bob"
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        db.ensure_session.assert_awaited_once_with("sess-1", None, "alice")
 
-        store._evict_if_needed()
-
-        # Should have evicted half
-        expected = _MAX_MEMORY_SESSIONS + 1 - (_MAX_MEMORY_SESSIONS + 1) // 2
-        assert store.session_count() == expected
-
-    def test_evict_removes_oldest_sessions(self):
+    async def test_existing_owner_is_kept_by_later_messages(self):
         store = SessionStore()
-        # Create sessions in order
-        for i in range(_MAX_MEMORY_SESSIONS + 10):
-            store.get_context(f"s{i}")
+        first = AssistantRequest(id="user-1", session_id="sess-1", content="Hi")
+        await store.register_user_message(first, owner_id="alice")
+        await store.register_assistant_message(
+            "sess-1", message_id="a-1", parent_id="user-1", content="Yes", segments=[], usage=None
+        )
+        await store.register_user_message(
+            AssistantRequest(id="user-2", session_id="sess-1", parent_id="a-1", content="More"),
+            owner_id="root",
+        )
+        assert store.get_context("sess-1")["owner_id"] == "alice"
 
-        store._evict_if_needed()
-
-        # Oldest sessions (lowest indices) should be evicted
-        assert store.has_session("s0") is False
-        assert store.has_session("s1") is False
-        # Newest sessions should remain
-        assert store.has_session(f"s{_MAX_MEMORY_SESSIONS + 9}") is True
-
-    async def test_get_context_async_triggers_eviction_on_cache_miss(self):
+    async def test_set_owner_persists_before_publishing(self):
         store = SessionStore()
-        # Fill to over threshold
-        for i in range(_MAX_MEMORY_SESSIONS + 1):
-            store.get_context(f"s{i}")
-
-        # Cache miss triggers eviction
-        await store.get_context_async("new-session")
-
-        # Should have evicted + added new one
-        assert store.has_session("new-session") is True
-        assert store.session_count() <= _MAX_MEMORY_SESSIONS + 1
-
-
-class TestSessionStoreCleanupExpired:
-    """Tests for cleanup_expired delegation."""
-
-    async def test_cleanup_expired_returns_zero_without_db(self):
-        store = SessionStore()
-        result = await store.cleanup_expired()
-        assert result == 0
-
-    async def test_cleanup_expired_delegates_to_repo(self):
-        mock_db = MagicMock()
-        mock_async_session = AsyncMock()
-
-        @asynccontextmanager
-        async def _ctx():
-            yield mock_async_session
-
-        mock_db.session_context = _ctx
-
-        store = SessionStore(database_service=mock_db)
-
-        mock_repo = MagicMock()
-        mock_repo.cleanup_expired = AsyncMock(return_value=5)
-
-        import lovely_assistant.services.database.repositories as repo_mod
-
-        original_class = getattr(repo_mod, "SessionRepository", None)
-        try:
-            repo_mod.SessionRepository = MagicMock(return_value=mock_repo)
-            result = await store.cleanup_expired()
-        finally:
-            if original_class is not None:
-                repo_mod.SessionRepository = original_class
-
-        assert result == 5
-        mock_repo.cleanup_expired.assert_awaited_once()
-
-    async def test_cleanup_expired_propagates_db_error(self):
-        mock_db = MagicMock()
-
-        @asynccontextmanager
-        async def _failing_ctx():
-            raise RuntimeError("DB down")
-            yield  # noqa: F401
-
-        mock_db.session_context = _failing_ctx
-
-        store = SessionStore(database_service=mock_db)
-
-        with pytest.raises(RuntimeError, match="DB down"):
-            await store.cleanup_expired()
-
-
-class TestSessionStoreDbRetry:
-    """Tests for retry behavior on transient DB errors in _persist_to_db and _load_session_from_db."""
-
-    async def test_persist_retries_on_operational_error_then_succeeds(self):
-        """_persist_to_db retries on OperationalError and succeeds."""
-        from sqlalchemy.exc import OperationalError
-
-        mock_db = _make_mock_db()
-        call_count = 0
-        mock_async_session = AsyncMock()
-
-        @asynccontextmanager
-        async def _flaky_context():
-            nonlocal call_count
-            call_count += 1
-            if call_count < 2:
-                raise OperationalError("connection lost", None, None)
-            yield mock_async_session
-
-        mock_db.session_context = _flaky_context
-
-        store = SessionStore(database_service=mock_db)
-        ctx = store.get_context("s1")
-        ctx["title"] = "Retry test"
-
-        mock_repo = MagicMock()
-        mock_repo.upsert = AsyncMock()
-
-        import lovely_assistant.services.database.repositories as repo_mod
-
-        original_class = getattr(repo_mod, "SessionRepository", None)
-        try:
-            repo_mod.SessionRepository = MagicMock(return_value=mock_repo)
-            await store._persist_to_db("s1")
-        finally:
-            if original_class is not None:
-                repo_mod.SessionRepository = original_class
-
-        # Should have called session_context twice (1 fail + 1 success)
-        assert call_count == 2
-        mock_repo.upsert.assert_awaited_once()
-
-    async def test_persist_gives_up_after_max_retries(self):
-        """_persist_to_db logs warning after exhausting retries."""
-        from sqlalchemy.exc import OperationalError
-
-        mock_db = _make_mock_db()
-
-        @asynccontextmanager
-        async def _always_fail():
-            raise OperationalError("DB down permanently", None, None)
-            yield  # noqa: F401
-
-        mock_db.session_context = _always_fail
-
-        store = SessionStore(database_service=mock_db)
-        store.get_context("s1")
-
-        # Should not raise — _persist_to_db catches the exception after retries
-        await store._persist_to_db("s1")
-
-    async def test_load_retries_on_disconnection_error_then_succeeds(self):
-        """_load_session_from_db retries on DisconnectionError and succeeds."""
-        from sqlalchemy.exc import DisconnectionError
-
-        mock_db = _make_mock_db()
-        call_count = 0
-        mock_async_session = AsyncMock()
-
-        @asynccontextmanager
-        async def _flaky_context():
-            nonlocal call_count
-            call_count += 1
-            if call_count < 2:
-                raise DisconnectionError("connection dropped")
-            yield mock_async_session
-
-        mock_db.session_context = _flaky_context
-
-        store = SessionStore(database_service=mock_db)
-
-        mock_row = MagicMock()
-        mock_row.turn_number = 5
-        mock_row.working_memory = None
-        mock_row.message_history = []
-        mock_row.title = "Loaded session"
-
-        mock_repo = MagicMock()
-        mock_repo.get = AsyncMock(return_value=mock_row)
-
-        import lovely_assistant.services.database.repositories as repo_mod
-
-        original_class = getattr(repo_mod, "SessionRepository", None)
-        try:
-            repo_mod.SessionRepository = MagicMock(return_value=mock_repo)
-            result = await store._load_session_from_db("s1")
-        finally:
-            if original_class is not None:
-                repo_mod.SessionRepository = original_class
-
-        assert result is not None
-        assert result["turn_number"] == 5
-        assert call_count == 2
-
-    async def test_load_propagates_error_after_retries(self):
-        """_load_session_from_db raises after exhausting retries — no silent fallback."""
-        from sqlalchemy.exc import OperationalError
-
-        mock_db = _make_mock_db()
-
-        @asynccontextmanager
-        async def _always_fail():
-            raise OperationalError("DB gone", None, None)
-            yield  # noqa: F401
-
-        mock_db.session_context = _always_fail
-
-        store = SessionStore(database_service=mock_db)
-        with pytest.raises(OperationalError):
-            await store._load_session_from_db("s1")
+        await store.register_user_message(
+            AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
+        )
+        db = AsyncMock()
+        db.set_owner = AsyncMock(side_effect=RuntimeError("db down"))
+        store._db = db
+        with pytest.raises(RuntimeError):
+            await store.set_owner("sess-1", "bob")
+        assert store.get_context("sess-1")["owner_id"] == "alice"
+        db.set_owner = AsyncMock()
+        await store.set_owner("sess-1", "bob")
+        assert store.get_context("sess-1")["owner_id"] == "bob"
+        db.set_owner.assert_awaited_once_with("sess-1", "bob")

@@ -1,24 +1,91 @@
 """Tests for the system prompt builder."""
 
+from functools import partial
+
 import pytest
 
-from lovely_assistant.app.assistant._prompt_builder import (
-    _dashboard_context_fragment,
+from assistant_runtime.app.assistant._prompt_builder import (
     _datetime_fragment,
+    _host_context_fragment,
     _mcp_connections_fragment,
-    _smart_hints,
+    _render_state,
     _working_memory_fragment,
-    build_system_prompt,
 )
-from lovely_assistant.app.assistant.models import PromptResult
-from lovely_assistant.services.history.models import WorkingMemory
-from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from assistant_runtime.app.assistant._prompt_builder import (
+    build_system_prompt as _build_system_prompt,
+)
+from assistant_runtime.app.assistant.models import PromptResult
+from assistant_runtime.artifacts import (
+    ArtifactDefinition,
+    AssistantProfile,
+    neutral_profile,
+    technical_operator_profile,
+)
+from assistant_runtime.services.history.models import WorkingMemory
+from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 REQUIRED_ARTIFACTS = {
-    "persona": "You are Jarvis, the operational assistant.",
+    "soul": "The assistant exists to increase the operator's leverage in a live AI workbench.",
+    "persona": "You are the assistant, the operational assistant.",
     "communication_protocol": "Messages may arrive with envelope tags.",
-    "ecosystem": "The Lovely Universe agents: Leo, Ike, Feynman.",
+    "ecosystem": "Agents: Leo, Ike, Feynman.",
 }
+# Most cases below describe the example technical profile's artifact set.
+build_system_prompt = partial(_build_system_prompt, profile=technical_operator_profile())
+
+
+class TestProfiles:
+    def test_default_profile_is_neutral(self):
+        result = _build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts=neutral_profile().defaults,
+        )
+        names = [f["name"] for f in result.fragments]
+        assert names == ["instructions", "datetime"]
+        assert "soul" not in names
+
+    def test_profile_order_is_the_prompt_order(self):
+        profile = AssistantProfile(
+            name="support",
+            artifacts=(
+                ArtifactDefinition(name="policies", required=True, default="p"),
+                ArtifactDefinition(name="tone", required=True, default="t"),
+                ArtifactDefinition(name="notes"),
+            ),
+        )
+        result = _build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"notes": "n", "tone": "Be kind", "policies": "Refund within 30 days"},
+            profile=profile,
+        )
+        assert [f["name"] for f in result.fragments] == ["policies", "tone", "notes", "datetime"]
+        assert result.content.startswith("Refund within 30 days\n\nBe kind\n\nn")
+
+    def test_optional_artifact_without_text_is_omitted(self):
+        profile = AssistantProfile(
+            artifacts=(
+                ArtifactDefinition(name="instructions", required=True, default="i"),
+                ArtifactDefinition(name="notes"),
+            )
+        )
+        result = _build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"instructions": "Help", "notes": "  "},
+            profile=profile,
+        )
+        assert [f["name"] for f in result.fragments] == ["instructions", "datetime"]
+
+    def test_missing_required_artifact_of_a_custom_profile_raises(self):
+        profile = AssistantProfile(
+            artifacts=(ArtifactDefinition(name="policies", required=True, default="p"),)
+        )
+        with pytest.raises(ValueError, match="Missing required artifact: policies"):
+            _build_system_prompt(
+                available_tools=ToolSet(), session_context={}, artifacts={}, profile=profile
+            )
 
 
 class TestDatetimeFragment:
@@ -101,20 +168,50 @@ class TestMcpConnectionsFragment:
         assert "MCP tools are called directly by name" in frag
 
 
-class TestDashboardContextFragment:
-    def test_none_state(self):
-        assert _dashboard_context_fragment(None) == ""
+class TestHostContextFragment:
+    def test_none(self):
+        assert _host_context_fragment(None) == ""
 
     def test_empty_dict(self):
-        assert _dashboard_context_fragment({}) == ""
+        assert _host_context_fragment({}) == ""
 
-    def test_missing_active_page(self):
-        assert _dashboard_context_fragment({"something": "else"}) == ""
+    def test_context_without_a_view_is_fine(self):
+        assert _host_context_fragment({"version": 1}) == ""
+        frag = _host_context_fragment({"host": {"name": "billing", "kind": "service"}})
+        assert frag == "The host application is billing (service)."
 
-    def test_tasks_page_renders_issues(self):
-        """Tasks page uses generic renderer — issues rendered as structured key-value pairs."""
-        state = {
-            "active_page": {
+    def test_invalid_context_logs_a_warning_and_renders_nothing(self):
+        from io import StringIO
+
+        from loguru import logger
+
+        sink = StringIO()
+        handler_id = logger.add(sink, format="{message}", level="WARNING")
+        try:
+            assert _host_context_fragment({"something": "else"}) == ""
+            assert "could not be interpreted" in sink.getvalue()
+        finally:
+            logger.remove(handler_id)
+
+    def test_header_names_the_view(self):
+        frag = _host_context_fragment({"view": {"name": "settings"}})
+        assert frag == "The host is showing: settings."
+
+    def test_page_alias_and_description(self):
+        frag = _host_context_fragment(
+            {"page": {"name": "editor", "description": "A file is open for editing."}}
+        )
+        assert frag.startswith("The host is showing: editor. A file is open")
+
+    def test_host_identity_comes_first(self):
+        frag = _host_context_fragment(
+            {"host": {"name": "web", "kind": "browser", "version": "2.1"}, "view": {"name": "a"}}
+        )
+        assert frag.splitlines()[0] == "The host application is web (browser) version 2.1."
+
+    def test_data_renders_structured_items(self):
+        ctx = {
+            "view": {
                 "name": "tasks",
                 "data": {
                     "issues": [
@@ -124,401 +221,181 @@ class TestDashboardContextFragment:
                 },
             }
         }
-        frag = _dashboard_context_fragment(state)
-        assert "tasks page" in frag
+        frag = _host_context_fragment(ctx)
+        assert "issues:" in frag
         assert "number: 42" in frag
         assert "title: Fix bug" in frag
         assert "number: 43" in frag
-        assert "title: Add feature" in frag
 
-    def test_tasks_page_renders_selected_issue(self):
-        """Selected issue rendered generically — no custom format."""
-        state = {
-            "active_page": {
-                "name": "tasks",
-                "data": {
-                    "selected_issue": {
-                        "title": "Important bug",
-                        "body": "This needs fixing",
-                        "comment_count": 3,
+    def test_data_no_truncation(self):
+        long_title = "x" * 500
+        ctx = {"view": {"name": "tasks", "data": {"issues": [{"title": long_title}]}}}
+        assert long_title in _host_context_fragment(ctx)
+
+    def test_data_lists_as_bullets(self):
+        ctx = {"view": {"name": "home", "data": {"recent": ["a", "b"]}}}
+        frag = _host_context_fragment(ctx)
+        assert "recent:" in frag
+        assert "- a" in frag
+        assert "- b" in frag
+
+    def test_scalar_data_inline(self):
+        ctx = {"view": {"name": "home", "data": {"theme": "dark"}}}
+        assert "theme: dark" in _host_context_fragment(ctx)
+
+    def test_state_rendered_as_json(self):
+        ctx = {
+            "view": {
+                "name": "agents",
+                "data": {"sessions": [{"name": "leo", "state": "idle"}]},
+                "state": {
+                    "list": {
+                        "current": "loaded",
+                        "context": {"count": 5},
+                        "transitions": [{"event_type": "SELECT", "description": "Select"}],
                     }
                 },
             }
         }
-        frag = _dashboard_context_fragment(state)
-        assert "title: Important bug" in frag
-        assert "This needs fixing" in frag
-        assert "comment_count: 3" in frag
+        frag = _host_context_fragment(ctx)
+        assert "Page state:" in frag
+        assert '"current": "loaded"' in frag
+        assert "SELECT" in frag
 
-    def test_agents_page_renders_sessions(self):
-        """Agents page uses generic renderer — sessions as structured items."""
-        state = {
-            "active_page": {
-                "name": "agents",
-                "data": {
-                    "sessions": [
-                        {"name": "leo", "state": "idle"},
-                        {"name": "ike", "state": "processing", "context": "Working on #50"},
-                    ]
-                },
-            }
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "agents page" in frag
-        assert "name: leo" in frag
-        assert "state: idle" in frag
-        assert "name: ike" in frag
-        assert "state: processing" in frag
-        assert "Working on #50" in frag
-
-    def test_sessions_page_renders(self):
-        """Sessions page uses generic renderer."""
-        state = {
-            "active_page": {
-                "name": "sessions",
-                "data": {
-                    "sessions": [
-                        {"name": "feynman", "state": "idle"},
-                    ]
-                },
-            }
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "sessions page" in frag
-        assert "name: feynman" in frag
-
-    def test_home_page_renders(self):
-        state = {
-            "active_page": {
-                "name": "home",
-                "data": {"dashboard_version": "1.0"},
-            }
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "home page" in frag
-        assert len(frag) > 0
-
-    def test_unknown_page_renders_generically(self):
-        state = {
-            "active_page": {
-                "name": "settings",
-                "data": {"theme": "dark", "language": "en"},
-            }
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "settings page" in frag
-        assert "theme" in frag
-
-    def test_generic_renderer_no_truncation(self):
-        """Long values are NOT truncated — the dashboard curates what it sends."""
-        long_transcript = "Speaker A said something very important. " * 20  # ~820 chars
-        state = {
-            "active_page": {
-                "name": "meetings",
-                "data": {"transcript": long_transcript},
-            }
-        }
-        frag = _dashboard_context_fragment(state)
-        # The full transcript should be present, not truncated
-        assert long_transcript in frag
-        assert "..." not in frag
-
-    def test_generic_renderer_lists_as_bullets(self):
-        """Lists are rendered as bullet points, not Python repr."""
-        state = {
-            "active_page": {
-                "name": "meetings",
-                "data": {
-                    "rooms": [
-                        {"name": "standup", "participants": 3},
-                        {"name": "planning", "participants": 5},
-                    ]
-                },
-            }
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "standup" in frag
-        assert "planning" in frag
-        assert "- " in frag  # bullet point formatting
+    def test_empty_state_no_section(self):
+        frag = _host_context_fragment({"view": {"name": "agents", "state": {}}})
+        assert "Page state:" not in frag
 
     def test_background_summary(self):
-        state = {
-            "active_page": {"name": "tasks", "data": {}},
+        ctx = {
+            "view": {"name": "tasks"},
             "background": {
-                "agents": {"state": "idle", "summary": {"entityCount": 5}},
-                "sessions": {"state": "loaded", "summary": {"sessionCount": 3}},
+                "agents": {"state": "idle", "summary": {"entity_count": 5}},
+                "sessions": {"state": "loaded", "summary": {"session_count": 3}},
             },
         }
-        frag = _dashboard_context_fragment(state)
+        frag = _host_context_fragment(ctx)
         assert "Background:" in frag
         assert "agents (idle)" in frag
         assert "sessions (loaded)" in frag
-        assert "5 entityCount" in frag
-        assert "3 sessionCount" in frag
+        assert "5 entity_count" in frag
+        assert "3 session_count" in frag
 
     def test_background_flat_dict_fallback(self):
-        """Background entries without state/summary sub-structure still render."""
-        state = {
-            "active_page": {"name": "tasks", "data": {}},
-            "background": {
-                "agents": {"online": 5, "offline": 2},
-            },
-        }
-        frag = _dashboard_context_fragment(state)
+        ctx = {"view": {"name": "tasks"}, "background": {"agents": {"online": 5, "offline": 2}}}
+        frag = _host_context_fragment(ctx)
         assert "Background:" in frag
-        assert "agents" in frag
         assert "5 online" in frag
 
-    def test_available_actions(self):
-        state = {
-            "active_page": {
-                "name": "tasks",
-                "data": {},
-                "available_actions": [
-                    {"event_type": "NAVIGATE", "label": "Go to agents"},
-                    {"event_type": "REFRESH", "label": ""},
-                ],
-            },
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "Available UI actions:" in frag
-        assert "- NAVIGATE (Go to agents)" in frag
-        assert "- REFRESH" in frag
-
-    def test_available_actions_with_params(self):
-        """Actions with params render parameter names and types for the agent."""
-        state = {
-            "active_page": {
-                "name": "meetings",
-                "data": {},
-                "available_actions": [
-                    {
-                        "event_type": "user.selectRoom",
-                        "label": "Select Room",
-                        "params": [
-                            {"name": "id", "type": "string", "required": True},
-                        ],
-                    },
-                    {
-                        "event_type": "user.createRoom",
-                        "label": "Create Room",
-                        "params": [
-                            {"name": "title", "type": "string", "required": True},
-                        ],
-                    },
-                ],
-            },
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "user.selectRoom (Select Room) — params: id (string, required)" in frag
-        assert "user.createRoom (Create Room) — params: title (string, required)" in frag
-
-    def test_empty_actions(self):
-        state = {
-            "active_page": {"name": "tasks", "data": {}, "available_actions": []},
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "Available UI actions" not in frag
-
-    def test_available_actions_not_read_from_top_level(self):
-        """available_actions at top level of machine_state should be ignored."""
-        state = {
-            "active_page": {"name": "tasks", "data": {}},
-            "available_actions": [
-                {"event_type": "NAVIGATE", "label": "Go to agents"},
+    def test_actions_are_listed_as_callable_tools(self):
+        ctx = {
+            "view": {"name": "tasks"},
+            "actions": [
+                {"name": "navigate", "description": "Go to another view."},
+                {"name": "refresh", "description": "Reload the list."},
             ],
         }
-        frag = _dashboard_context_fragment(state)
-        assert "Available UI actions" not in frag
+        frag = _host_context_fragment(ctx)
+        assert "Host actions available as tools for this turn:" in frag
+        assert "- navigate: Go to another view." in frag
+        assert "- refresh: Reload the list." in frag
 
-    def test_graceful_partial_data(self):
-        state = {
-            "active_page": {
-                "name": "tasks",
-                "data": {"issues": [{"title": "No number"}]},
-            }
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "No number" in frag
-
-    def test_active_page_no_data_key(self):
-        state = {"active_page": {"name": "agents"}}
-        frag = _dashboard_context_fragment(state)
-        assert "agents page" in frag
-
-    def test_missing_active_page_logs_warning(self):
-        """machine_state present but no active_page triggers a warning log."""
-        from io import StringIO
-
-        from loguru import logger
-
-        sink = StringIO()
-        handler_id = logger.add(sink, format="{message}", level="WARNING")
-        try:
-            frag = _dashboard_context_fragment({"something": "else"})
-            assert frag == ""
-            assert "missing active_page" in sink.getvalue()
-        finally:
-            logger.remove(handler_id)
+    def test_legacy_page_actions_are_not_rendered(self):
+        ctx = {"page": {"name": "tasks", "actions": [{"event_type": "X"}]}}
+        assert _host_context_fragment(ctx) == ""
 
     def test_navigation_targets(self):
-        """Navigation entries with name and description render as bullets."""
-        state = {
-            "active_page": {"name": "home", "data": {}},
+        ctx = {
+            "view": {"name": "home"},
             "navigation": [
                 {"route": "/agents", "name": "Agents", "description": "Monitor agent sessions"},
                 {"route": "/tasks", "name": "Tasks", "description": "View GitHub issues"},
             ],
         }
-        frag = _dashboard_context_fragment(state)
+        frag = _host_context_fragment(ctx)
         assert "Navigation:" in frag
         assert "- Agents — Monitor agent sessions" in frag
         assert "- Tasks — View GitHub issues" in frag
+        assert "/agents" not in frag
 
     def test_navigation_targets_no_description(self):
-        """Navigation entries without description render name only."""
-        state = {
-            "active_page": {"name": "home", "data": {}},
-            "navigation": [
-                {"route": "/settings", "name": "Settings"},
+        ctx = {"view": {"name": "home"}, "navigation": [{"name": "Agents"}]}
+        assert "- Agents" in _host_context_fragment(ctx)
+
+    def test_attachments_and_freshness_and_extensions(self):
+        ctx = {
+            "view": {"name": "home"},
+            "attachments": [
+                {"kind": "image", "purpose": "screenshot", "data_uri": "data:image/png;base64,x"},
+                {"kind": "text", "text": "notes", "name": "notes.txt", "description": "meeting"},
             ],
+            "captured_at": "2000-01-01T00:00:00Z",
+            "extensions": {"tenant": "acme"},
         }
-        frag = _dashboard_context_fragment(state)
-        assert "Navigation:" in frag
-        assert "- Settings" in frag
-        assert "— " not in frag.split("Navigation:")[1]
+        frag = _host_context_fragment(ctx)
+        assert "- a screenshot of the current screen (call look_at_screen to see it)" in frag
+        assert "- notes.txt — meeting (attached to the message)" in frag
+        assert "treat it as stale" in frag
+        assert 'Host data:\n```json\n{\n  "tenant": "acme"\n}\n```' in frag
 
-    def test_empty_navigation_omitted(self):
-        """Empty navigation list produces no Navigation section."""
-        state = {
-            "active_page": {"name": "home", "data": {}},
-            "navigation": [],
+    def test_section_order(self):
+        ctx = {
+            "host": {"name": "web", "kind": "browser"},
+            "view": {"name": "tasks", "data": {"count": 1}, "state": {"a": 1}},
+            "navigation": [{"name": "Agents"}],
+            "actions": [{"name": "go", "description": "Go."}],
+            "background": {"agents": {"state": "idle"}},
         }
-        frag = _dashboard_context_fragment(state)
-        assert "Navigation:" not in frag
+        frag = _host_context_fragment(ctx)
+        order = [
+            frag.index("The host application is web"),
+            frag.index("The host is showing: tasks"),
+            frag.index("count: 1"),
+            frag.index("Page state:"),
+            frag.index("Navigation:"),
+            frag.index("Host actions available"),
+            frag.index("Background:"),
+        ]
+        assert order == sorted(order)
 
-    def test_no_navigation_key_omitted(self):
-        """Missing navigation key produces no Navigation section."""
-        state = {
-            "active_page": {"name": "home", "data": {}},
-        }
-        frag = _dashboard_context_fragment(state)
-        assert "Navigation:" not in frag
 
+class TestRenderState:
+    def test_empty_returns_empty(self):
+        assert _render_state({}) == ""
 
-class TestSmartHints:
-    def test_none_state(self):
-        assert _smart_hints(None) == ""
+    def test_none_returns_empty(self):
+        assert _render_state(None) == ""
 
-    def test_empty_state(self):
-        assert _smart_hints({}) == ""
+    def test_json_serialized_faithfully(self):
+        state = {"wizard": {"current": "step2", "context": {"draft": True}}}
+        result = _render_state(state)
+        assert result.startswith("Page state:\n```json\n")
+        assert '"current": "step2"' in result
+        assert '"draft": true' in result
 
-    def test_no_active_page(self):
-        assert _smart_hints({"something": "else"}) == ""
+    def test_non_serializable_values_stringified(self):
+        from datetime import date
 
-    def test_idle_agents_hint(self):
-        state = {
-            "active_page": {
-                "name": "agents",
-                "data": {
-                    "sessions": [
-                        {"name": "leo", "state": "idle"},
-                        {"name": "ike", "state": "processing"},
-                        {"name": "ada", "state": "idle"},
-                    ]
-                },
-            }
-        }
-        hints = _smart_hints(state)
-        assert "Idle agents" in hints
-        assert "leo" in hints
-        assert "ada" in hints
-        assert "ike" not in hints
-
-    def test_plan_waiting_hint(self):
-        state = {
-            "active_page": {
-                "name": "agents",
-                "data": {
-                    "sessions": [
-                        {"name": "leo", "state": "plan_waiting"},
-                        {"name": "ike", "state": "idle"},
-                    ]
-                },
-            }
-        }
-        hints = _smart_hints(state)
-        assert "plan approval" in hints
-        assert "leo" in hints
-
-    def test_no_hints_when_all_busy(self):
-        state = {
-            "active_page": {
-                "name": "agents",
-                "data": {
-                    "sessions": [
-                        {"name": "leo", "state": "processing"},
-                        {"name": "ike", "state": "processing"},
-                    ]
-                },
-            }
-        }
-        assert _smart_hints(state) == ""
-
-    def test_unfiltered_tasks_hint(self):
-        state = {
-            "active_page": {
-                "name": "tasks",
-                "data": {
-                    "issues": [{"number": i} for i in range(10)],
-                },
-            }
-        }
-        hints = _smart_hints(state)
-        assert "10 issues" in hints
-        assert "no filters" in hints
-
-    def test_no_hint_when_filtered(self):
-        state = {
-            "active_page": {
-                "name": "tasks",
-                "data": {
-                    "issues": [{"number": i} for i in range(10)],
-                    "active_filters": {"for": "ike"},
-                },
-            }
-        }
-        assert _smart_hints(state) == ""
-
-    def test_no_hint_few_issues(self):
-        state = {
-            "active_page": {
-                "name": "tasks",
-                "data": {
-                    "issues": [{"number": 1}, {"number": 2}],
-                },
-            }
-        }
-        assert _smart_hints(state) == ""
-
-    def test_unrelated_page_no_hints(self):
-        state = {
-            "active_page": {
-                "name": "flows",
-                "data": {"something": "here"},
-            }
-        }
-        assert _smart_hints(state) == ""
+        result = _render_state({"since": date(2026, 1, 2)})
+        assert "2026-01-02" in result
 
 
 class TestBuildSystemPrompt:
+    def test_contains_soul(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
+        )
+        assert "live AI workbench" in result.content
+
     def test_contains_persona(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
-        assert "Jarvis" in result.content
+        assert "The assistant" in result.content
 
     def test_contains_communication_protocol(self):
         result = build_system_prompt(
@@ -557,19 +434,34 @@ class TestBuildSystemPrompt:
         fragment_names = [f["name"] for f in result.fragments]
         assert "tools" not in fragment_names
 
-    def test_includes_machine_state(self):
+    def test_includes_host_context(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
-            machine_state={
-                "active_page": {
+            host_context={
+                "page": {
                     "name": "agents",
                     "data": {"sessions": [{"name": "leo", "state": "idle"}]},
                 },
             },
             artifacts=REQUIRED_ARTIFACTS,
         )
-        assert "agents page" in result.content
+        assert "showing: agents" in result.content
+
+    def test_includes_host_context_state(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            host_context={
+                "page": {
+                    "name": "agents",
+                    "state": {"list": {"current": "loaded", "events": ["REFRESH"]}},
+                },
+            },
+            artifacts=REQUIRED_ARTIFACTS,
+        )
+        assert "Page state:" in result.content
+        assert "REFRESH" in result.content
 
     def test_includes_working_memory(self):
         result = build_system_prompt(
@@ -578,27 +470,6 @@ class TestBuildSystemPrompt:
             artifacts=REQUIRED_ARTIFACTS,
         )
         assert "Deploy v2" in result.content
-
-    def test_includes_smart_hints(self):
-        result = build_system_prompt(
-            available_tools=ToolSet(),
-            session_context={},
-            machine_state={
-                "active_page": {
-                    "name": "agents",
-                    "data": {
-                        "sessions": [
-                            {"name": "leo", "state": "idle"},
-                            {"name": "ike", "state": "plan_waiting"},
-                        ]
-                    },
-                },
-            },
-            artifacts=REQUIRED_ARTIFACTS,
-        )
-        assert "Hints:" in result.content
-        assert "Idle agents" in result.content
-        assert "plan approval" in result.content
 
     def test_fragments_separated(self):
         result = build_system_prompt(
@@ -635,8 +506,8 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ts,
             session_context={"working_memory": WorkingMemory(active_goal="Deploy v2")},
-            machine_state={
-                "active_page": {
+            host_context={
+                "page": {
                     "name": "agents",
                     "data": {"sessions": [{"name": "leo", "state": "idle"}]},
                 },
@@ -644,10 +515,11 @@ class TestBuildSystemPrompt:
             artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
+        assert "soul" in fragment_names
         assert "persona" in fragment_names
         assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
-        assert "dashboard_context" in fragment_names
+        assert "host_context" in fragment_names
         assert "working_memory" in fragment_names
         assert "tools" not in fragment_names
         # Each fragment has name and char_count
@@ -676,15 +548,15 @@ class TestBuildSystemPrompt:
             artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
-        # Minimum: persona + communication_protocol + ecosystem + datetime (always present)
+        # Minimum: soul + persona + communication_protocol + ecosystem + datetime (always present)
+        assert "soul" in fragment_names
         assert "persona" in fragment_names
         assert "communication_protocol" in fragment_names
         assert "ecosystem" in fragment_names
         assert "datetime" in fragment_names
-        # No tools, dashboard_context, etc. when not provided
+        # No tools, host_context, etc. when not provided
         assert "tools" not in fragment_names
-        assert "dashboard_context" not in fragment_names
-        assert "smart_hints" not in fragment_names
+        assert "host_context" not in fragment_names
         assert "working_memory" not in fragment_names
 
     def test_ecosystem_included_from_artifact(self):
@@ -697,6 +569,17 @@ class TestBuildSystemPrompt:
         assert "ecosystem" in fragment_names
         assert "Leo" in result.content
 
+    def test_required_artifacts_follow_catalog_order(self):
+        result = build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts=REQUIRED_ARTIFACTS,
+        )
+        fragment_names = [
+            f["name"] for f in result.fragments[: len(technical_operator_profile().required_names)]
+        ]
+        assert fragment_names == list(technical_operator_profile().required_names)
+
 
 class TestArtifactIntegration:
     """Tests for DB artifact validation in prompt builder."""
@@ -706,30 +589,33 @@ class TestArtifactIntegration:
             available_tools=ToolSet(),
             session_context={},
             artifacts={
+                "soul": "Deeper identity guidance",
                 "persona": "I am TestBot",
                 "communication_protocol": "Custom protocol rules",
                 "ecosystem": "Test agents here",
                 "scratchpad": "Test scratchpad",
             },
         )
+        assert "Deeper identity guidance" in result.content
         assert "I am TestBot" in result.content
         assert "Custom protocol rules" in result.content
         assert "Test agents here" in result.content
         assert "Test scratchpad" in result.content
         fragment_names = [f["name"] for f in result.fragments]
+        assert "soul" in fragment_names
         assert "persona" in fragment_names
         assert "communication_protocol" in fragment_names
         assert "ecosystem" in fragment_names
         assert "scratchpad" in fragment_names
 
     def test_scratchpad_appears_when_present(self):
-        artifacts = {**REQUIRED_ARTIFACTS, "scratchpad": "Remember: Elias prefers dark mode"}
+        artifacts = {**REQUIRED_ARTIFACTS, "scratchpad": "Remember: the user prefers dark mode"}
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
             artifacts=artifacts,
         )
-        assert "Remember: Elias prefers dark mode" in result.content
+        assert "Remember: the user prefers dark mode" in result.content
         fragment_names = [f["name"] for f in result.fragments]
         assert "scratchpad" in fragment_names
 
@@ -760,6 +646,7 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "communication_protocol": "protocol",
                     "ecosystem": "ecosystem",
                 },
@@ -771,7 +658,20 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "persona",
+                    "ecosystem": "ecosystem",
+                },
+            )
+
+    def test_missing_soul_raises_error(self):
+        with pytest.raises(ValueError, match="Missing required artifact: soul"):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "persona": "persona",
+                    "communication_protocol": "protocol",
                     "ecosystem": "ecosystem",
                 },
             )
@@ -782,6 +682,7 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "persona",
                     "communication_protocol": "protocol",
                 },
@@ -793,6 +694,7 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "",
                     "communication_protocol": "protocol",
                     "ecosystem": "ecosystem",
@@ -805,8 +707,22 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "persona",
                     "communication_protocol": "",
+                    "ecosystem": "ecosystem",
+                },
+            )
+
+    def test_empty_soul_raises(self):
+        with pytest.raises(ValueError, match="Missing required artifact: soul"):
+            build_system_prompt(
+                available_tools=ToolSet(),
+                session_context={},
+                artifacts={
+                    "soul": "",
+                    "persona": "persona",
+                    "communication_protocol": "protocol",
                     "ecosystem": "ecosystem",
                 },
             )
@@ -817,6 +733,7 @@ class TestArtifactIntegration:
                 available_tools=ToolSet(),
                 session_context={},
                 artifacts={
+                    "soul": "soul",
                     "persona": "persona",
                     "communication_protocol": "protocol",
                     "ecosystem": "",

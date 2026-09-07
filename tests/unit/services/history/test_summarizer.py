@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lovely_assistant.services.history._summarizer import HistorySummarizer
-from lovely_assistant.services.history.config import HistoryConfig
-from lovely_assistant.services.history.models import (
+from assistant_runtime.services.history._summarizer import HistorySummarizer
+from assistant_runtime.services.history.config import HistoryConfig
+from assistant_runtime.services.history.models import (
     CompactionResult,
     MemoryDelta,
     MemoryDeltaResult,
@@ -54,7 +54,6 @@ class TestSummarizeStructured:
         expected = CompactionResult(
             summary="Agent checked tmux sessions.",
             user_goal="Monitor agents",
-            working_memory=WorkingMemory(active_goal="Monitor agents"),
         )
         mock_llm.build_agent.return_value = _mock_agent_run(expected)
 
@@ -107,6 +106,15 @@ class TestSummarizeStructured:
         result = await summarizer.summarize_structured(messages, existing_summary="Old summary")
 
         assert "Old summary" in result.summary
+
+    async def test_no_override_uses_llm_summarization_default(self, mock_llm):
+        mock_llm.resolve_summarization_model.return_value = "anthropic:claude-haiku-4-5"
+        summarizer = HistorySummarizer(HistoryConfig(), mock_llm)
+        mock_llm.build_agent.return_value = _mock_agent_run(CompactionResult(summary="s"))
+
+        await summarizer.summarize_structured([{"role": "user", "content": "hello"}])
+
+        assert mock_llm.build_agent.call_args.kwargs["model"] == "anthropic:claude-haiku-4-5"
 
     async def test_model_override_passed_to_build_agent(self, mock_llm):
         config = HistoryConfig(summarization_model="openai:gpt-4o-mini")

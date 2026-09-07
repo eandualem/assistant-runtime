@@ -3,10 +3,10 @@
 import pytest
 from pydantic_ai.toolsets import FunctionToolset
 
-from lovely_assistant.services.tools._registry import ToolRegistry, get_tool_invalidates
-from lovely_assistant.services.tools.config import ToolConfig
-from lovely_assistant.services.tools.exceptions import ToolValidationError
-from lovely_assistant.services.tools.models import ToolCategory, ToolDefinition, ToolSet
+from assistant_runtime.services.tools._registry import ToolRegistry
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.exceptions import ToolValidationError
+from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 
 @pytest.fixture
@@ -75,15 +75,6 @@ class TestGetAvailableTools:
     def test_returns_toolset_type(self, registry):
         result = registry.get_available_tools()
         assert isinstance(result, ToolSet)
-
-
-class TestValidateToolCall:
-    def test_registered_tool(self, registry, backend_definition, dummy_handler):
-        registry.register_backend_tool(backend_definition, dummy_handler)
-        assert registry.validate_tool_call("get_time", {}) is True
-
-    def test_unknown_tool(self, registry):
-        assert registry.validate_tool_call("nonexistent", {}) is False
 
 
 class TestMaxToolsWarning:
@@ -287,36 +278,160 @@ class TestSafetyWrapper:
         assert call_count == 1
 
 
+NAVIGATE = {
+    "navigate": {
+        "description": "Navigate the host to a page.",
+        "parameters": {"type": "object", "properties": {"page": {"type": "string"}}},
+    }
+}
+
+
 class TestToolInvalidates:
-    def test_known_tool_returns_list(self):
-        result = get_tool_invalidates("create_issue")
-        assert result == ["tasks"]
+    def test_configured_tool_returns_domains(self):
+        registry = ToolRegistry(ToolConfig(invalidations={"create_issue": ["tasks"]}))
+        assert registry.invalidates_for("create_issue") == ["tasks"]
 
-    def test_unknown_tool_returns_none(self):
-        result = get_tool_invalidates("get_time")
-        assert result is None
+    def test_unconfigured_tool_returns_none(self, registry):
+        assert registry.invalidates_for("create_issue") is None
 
-    def test_agent_tools_invalidate_agents(self):
-        result = get_tool_invalidates("start_agent")
-        assert result == ["agents"]
-
-    def test_meeting_tools_invalidate_meetings(self):
-        result = get_tool_invalidates("create_meeting_room")
-        assert result == ["meetings"]
+    def test_empty_list_returns_none(self):
+        registry = ToolRegistry(ToolConfig(invalidations={"x": []}))
+        assert registry.invalidates_for("x") is None
 
 
-class TestFrontendToolRegistration:
-    def test_register_frontend_tools(self, registry):
-        registry.register_frontend_tools()
-        assert registry.frontend_tool_count() == 2
+class TestHostToolRegistration:
+    def test_none_by_default(self, registry):
+        registry.register_host_tools()
+        assert registry.host_tool_count() == 0
+        assert registry.build_toolset() == []
 
-    def test_frontend_tools_in_available_tools(self, registry):
-        registry.register_frontend_tools()
-        result = registry.get_available_tools()
-        assert len(result.frontend_tools) == 2
+    def test_from_config(self):
+        registry = ToolRegistry(ToolConfig(host_tools=NAVIGATE))
+        registry.register_host_tools()
+        assert registry.host_tool_count() == 1
+        assert registry.is_host_tool("navigate")
+        assert not registry.is_host_tool("get_time")
 
-    def test_frontend_tools_bypass_page_filter(self, registry):
-        registry.register_frontend_tools()
-        machine_state = {"active_page": {"name": "flows"}}
-        result = registry.get_available_tools(machine_state=machine_state)
-        assert len(result.frontend_tools) == 2
+    def test_explicit_schemas(self, registry):
+        registry.register_host_tools(NAVIGATE)
+        assert [d.name for d in registry.get_available_tools().host_tools] == ["navigate"]
+
+    def test_host_tools_bypass_page_scope(self):
+        registry = ToolRegistry(ToolConfig(host_tools=NAVIGATE, page_scopes={"flows": []}))
+        registry.register_host_tools()
+        result = registry.get_available_tools({"page": {"name": "flows"}})
+        assert len(result.host_tools) == 1
+
+    def test_clash_with_backend_tool_rejected(self, registry, backend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        with pytest.raises(ToolValidationError):
+            registry.register_host_tools({"get_time": NAVIGATE["navigate"]})
+
+    def test_backend_tool_clashing_with_host_tool_rejected(self, backend_definition, dummy_handler):
+        registry = ToolRegistry(ToolConfig(host_tools={"get_time": NAVIGATE["navigate"]}))
+        registry.register_host_tools()
+        with pytest.raises(ToolValidationError):
+            registry.register_backend_tool(backend_definition, dummy_handler)
+
+    def test_toolset_includes_external_toolset(self):
+        from pydantic_ai.toolsets import ExternalToolset
+
+        registry = ToolRegistry(ToolConfig(host_tools=NAVIGATE))
+        registry.register_host_tools()
+        assert any(isinstance(t, ExternalToolset) for t in registry.build_toolset())
+
+
+class TestPageScopes:
+    @pytest.fixture
+    def scoped(self, dummy_handler):
+        registry = ToolRegistry(ToolConfig(page_scopes={"tasks": ["a"], "empty": []}))
+        for name in ("a", "b"):
+            registry.register_backend_tool(
+                ToolDefinition(
+                    name=name, description=name, parameters_schema={}, category=ToolCategory.BACKEND
+                ),
+                dummy_handler,
+            )
+        return registry
+
+    def test_no_context_all_tools(self, scoped):
+        assert {t.name for t in scoped.get_available_tools(None).backend_tools} == {"a", "b"}
+
+    def test_unlisted_page_all_tools(self, scoped):
+        result = scoped.get_available_tools({"page": {"name": "home"}})
+        assert {t.name for t in result.backend_tools} == {"a", "b"}
+        assert result.filtered_out_count == 0
+
+    def test_listed_page_scoped(self, scoped):
+        result = scoped.get_available_tools({"page": {"name": "tasks"}})
+        assert [t.name for t in result.backend_tools] == ["a"]
+        assert result.filtered_out_count == 1
+        assert result.page == "tasks"
+
+    def test_empty_scope_hides_everything(self, scoped):
+        assert scoped.get_available_tools({"page": {"name": "empty"}}).backend_tools == []
+
+    def test_context_without_page_all_tools(self, scoped):
+        result = scoped.get_available_tools({"other": 1})
+        assert {t.name for t in result.backend_tools} == {"a", "b"}
+
+    def test_scope_is_cached_per_page(self, scoped):
+        first = scoped.get_available_tools({"page": {"name": "tasks"}})
+        assert scoped.get_available_tools({"page": {"name": "tasks"}}) is first
+
+    def test_warm_host_context_populates_caches(self, scoped):
+        scoped.warm_host_context({"page": {"name": "tasks"}})
+        assert "tasks" in scoped._available_tools_cache
+        assert "tasks" in scoped._toolset_cache
+
+
+class TestRequestDeclaredActions:
+    """``host_context.actions`` become host tools for the turns that carry them."""
+
+    def _context(self, *names, view="orders"):
+        return {
+            "view": {"name": view},
+            "actions": [{"name": n, "description": f"Do {n}."} for n in names],
+        }
+
+    def test_actions_join_the_host_tools_and_toolsets(
+        self, registry, backend_definition, dummy_handler
+    ):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        available = registry.get_available_tools(self._context("open_order"))
+        assert [t.name for t in available.host_tools] == ["open_order"]
+        assert available.host_tools[0].category == ToolCategory.HOST
+        assert available.page == "orders"
+        toolsets = registry.build_toolset(self._context("open_order"))
+        assert len(toolsets) == 2  # backend FunctionToolset + ExternalToolset for the action
+        assert not registry.is_host_tool("open_order")  # per turn, not registered globally
+
+    def test_without_actions_nothing_changes(self, registry, backend_definition, dummy_handler):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        available = registry.get_available_tools({"view": {"name": "orders"}})
+        assert available.host_tools == []
+        assert len(registry.build_toolset({"view": {"name": "orders"}})) == 1
+
+    def test_contexts_with_actions_are_never_cached(self, registry):
+        plain = registry.get_available_tools(self._context())
+        with_action = registry.get_available_tools(self._context("open_order"))
+        other_action = registry.get_available_tools(self._context("close_order"))
+        assert plain.host_tools == []
+        assert [t.name for t in with_action.host_tools] == ["open_order"]
+        assert [t.name for t in other_action.host_tools] == ["close_order"]
+        assert registry.get_available_tools(self._context()) is plain
+        assert registry.get_available_tools(self._context("open_order")) is not with_action
+        registry.build_toolset(self._context("open_order"))
+        assert set(registry._toolset_cache) <= {"orders", None}
+        assert set(registry._available_tools_cache) <= {"orders", None}
+
+    def test_shadowing_a_registered_tool_is_ignored(self, backend_definition, dummy_handler):
+        registry = ToolRegistry(
+            ToolConfig(
+                host_tools={"navigate": {"description": "Go", "parameters": {"type": "object"}}}
+            )
+        )
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        registry.register_host_tools()
+        available = registry.get_available_tools(self._context("get_time", "navigate", "fresh"))
+        assert [t.name for t in available.host_tools] == ["navigate", "fresh"]

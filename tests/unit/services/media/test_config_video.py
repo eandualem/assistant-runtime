@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from lovely_assistant.services.media.config import MediaConfig
+from assistant_runtime.services.media.config import MediaConfig
 
 
 class TestVideoConfigDefaults:

@@ -1,5 +1,3 @@
-"""Tests for Socket.IO server — AssistantNamespace and create_sio()."""
-
 from __future__ import annotations
 
 import asyncio
@@ -8,366 +6,717 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import socketio
 
-from lovely_assistant.app.assistant.models import AssistantRequest
-from lovely_assistant.app.socketio_server import (
-    _EVENT_TYPE_MAP,
-    AssistantNamespace,
-    create_sio,
-)
+from assistant_runtime.app.socketio_server import _EVENT_TYPE_MAP, AssistantNamespace, create_sio
+from assistant_runtime.app.streaming.interface import StreamingService
+
+
+def _server_with_streaming_service(streaming_service: MagicMock) -> MagicMock:
+    server = MagicMock()
+    server.fastapi_app.state.streaming_service = streaming_service
+    return server
+
+
+async def _never_finishes() -> None:
+    await asyncio.Event().wait()
+
+
+def _namespace_for_stream(stream):
+    service = MagicMock()
+    service.stream_message = stream
+    service.cancel_session = AsyncMock(return_value=True)
+    service.wait_for_session = AsyncMock()
+    service.cancelled_before_start_events = StreamingService.cancelled_before_start_events
+    namespace = AssistantNamespace("/assistant")
+    namespace.server = _server_with_streaming_service(service)
+    namespace.emit = AsyncMock()
+    return namespace, service
+
+
+def _message(message_id):
+    return {"id": message_id, "session_id": "sess-1", "content": "Help"}
 
 
 class TestCreateSio:
-    def test_returns_async_server(self):
+    def test_returns_async_server_with_assistant_namespace(self) -> None:
         sio = create_sio()
+
         assert isinstance(sio, socketio.AsyncServer)
-
-    def test_namespace_registered(self):
-        sio = create_sio()
-        # The namespace handler should be registered at /assistant
-        handler = sio.namespace_handlers.get("/assistant")
-        assert handler is not None
-        assert isinstance(handler, AssistantNamespace)
+        assert isinstance(sio.namespace_handlers["/assistant"], AssistantNamespace)
 
 
-class TestEventTypeMap:
-    def test_all_protocol_events_mapped(self):
-        expected = {
-            "agent_status",
-            "thinking_delta",
-            "text_delta",
-            "tool_call",
-            "tool_result",
-            "tool_error",
-            "final_response",
-            "error",
-        }
-        assert set(_EVENT_TYPE_MAP.keys()) == expected
-
-    def test_debug_not_in_map(self):
-        # debug_* events are handled dynamically, not in the static map
-        for key in _EVENT_TYPE_MAP:
-            assert not key.startswith("debug_")
-
-    def test_all_values_prefixed(self):
-        for value in _EVENT_TYPE_MAP.values():
-            assert value.startswith("assistant:")
+class TestEventMap:
+    def test_all_events_use_assistant_prefix(self) -> None:
+        assert all(value.startswith("assistant:") for value in _EVENT_TYPE_MAP.values())
 
 
-class TestOnConnect:
+class TestAssistantNamespaceJoin:
     @pytest.mark.asyncio
-    async def test_returns_true(self):
-        ns = AssistantNamespace("/assistant")
-        result = await ns.on_connect("sid-1", {})
-        assert result is True
+    async def test_join_session_requires_session_id(self) -> None:
+        namespace = AssistantNamespace("/assistant")
+        namespace.emit = AsyncMock()
 
-    @pytest.mark.asyncio
-    async def test_with_auth(self):
-        ns = AssistantNamespace("/assistant")
-        result = await ns.on_connect("sid-1", {}, auth={"token": "abc"})
-        assert result is True
+        await namespace.on_assistant_join_session("sid-1", {})
 
-
-class TestOnDisconnect:
-    @pytest.mark.asyncio
-    async def test_logs_without_error(self):
-        ns = AssistantNamespace("/assistant")
-        # Should not raise
-        await ns.on_disconnect("sid-1")
-
-
-class TestOnJoinSession:
-    @pytest.mark.asyncio
-    async def test_enters_room(self):
-        ns = AssistantNamespace("/assistant")
-        ns.enter_room = MagicMock()
-        ns.emit = AsyncMock()
-
-        await ns.on_assistant_join_session("sid-1", {"session_id": "sess-abc"})
-
-        ns.enter_room.assert_called_once_with("sid-1", "session:sess-abc")
-
-    @pytest.mark.asyncio
-    async def test_error_on_missing_session_id(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
-
-        await ns.on_assistant_join_session("sid-1", {})
-
-        ns.emit.assert_called_once_with(
+        namespace.emit.assert_awaited_once_with(
             "assistant:error",
             {"type": "validation", "message": "Missing session_id"},
             to="sid-1",
         )
 
     @pytest.mark.asyncio
-    async def test_error_on_non_dict_data(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
+    async def test_join_session_normalises_camel_case_host_context(self) -> None:
+        streaming = MagicMock()
+        streaming.warm_session = AsyncMock()
+        namespace = AssistantNamespace("/assistant")
+        namespace.server = _server_with_streaming_service(streaming)
+        namespace.emit = AsyncMock()
+        namespace.enter_room = AsyncMock()
 
-        await ns.on_assistant_join_session("sid-1", "not-a-dict")
+        await namespace.on_assistant_join_session(
+            "sid-1",
+            {
+                "session_id": "sess-1",
+                "hostContext": {"page": {"name": "tasks", "data": {"activeFilters": []}}},
+            },
+        )
 
-        ns.emit.assert_called_once()
-        args = ns.emit.call_args
-        assert args[0][0] == "assistant:error"
-
-
-class TestOnAssistantMessage:
-    @pytest.mark.asyncio
-    async def test_starts_task(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
-
-        # Mock streaming service
-        mock_service = MagicMock()
-
-        async def mock_stream(request):
-            yield {"type": "agent_status", "status": "started"}
-            yield {"type": "text_delta", "content": "Hello"}
-            yield {"type": "agent_status", "status": "completed"}
-
-        mock_service.stream_message = mock_stream
-
-        mock_server = MagicMock()
-        mock_server.fastapi_app.state.streaming_service = mock_service
-        ns.server = mock_server
-
-        data = {"session_id": "sess-1", "message": "Hi"}
-        await ns.on_assistant_message("sid-1", data)
-
-        # Task should be created
-        assert "sess-1" in ns._active_streams
-
-        # Wait for task to complete
-        await ns._active_streams["sess-1"]
-
-        # Events were emitted via to=sid
-        assert ns.emit.call_count >= 3
+        streaming.warm_session.assert_awaited_once()
+        session_id, context = streaming.warm_session.await_args.args
+        assert session_id == "sess-1"
+        assert context["version"] == 1
+        assert context["view"] == {
+            "name": "tasks",
+            "description": "",
+            "data": {"activeFilters": []},
+            "state": {},
+        }
 
     @pytest.mark.asyncio
-    async def test_rejects_duplicate_stream(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
+    async def test_join_session_rejects_invalid_host_context(self) -> None:
+        streaming = MagicMock()
+        streaming.warm_session = AsyncMock()
+        namespace = AssistantNamespace("/assistant")
+        namespace.server = _server_with_streaming_service(streaming)
+        namespace.emit = AsyncMock()
+        namespace.enter_room = AsyncMock()
 
-        # Simulate an active stream
-        never_done = asyncio.get_event_loop().create_future()
-        ns._active_streams["sess-1"] = asyncio.ensure_future(never_done)
+        await namespace.on_assistant_join_session(
+            "sid-1", {"session_id": "sess-1", "host_context": {"surprise": 1}}
+        )
 
-        data = {"session_id": "sess-1", "message": "Second message"}
-        await ns.on_assistant_message("sid-1", data)
+        streaming.warm_session.assert_not_awaited()
+        namespace.enter_room.assert_not_awaited()
+        event, payload = namespace.emit.await_args.args
+        assert event == "assistant:error"
+        assert payload["type"] == "validation"
+        assert "surprise" in payload["message"]
 
-        ns.emit.assert_called_once_with(
+    @pytest.mark.asyncio
+    async def test_join_session_without_context_warms_with_none(self) -> None:
+        streaming = MagicMock()
+        streaming.warm_session = AsyncMock()
+        namespace = AssistantNamespace("/assistant")
+        namespace.server = _server_with_streaming_service(streaming)
+        namespace.emit = AsyncMock()
+        namespace.enter_room = AsyncMock()
+
+        await namespace.on_assistant_join_session("sid-1", {"session_id": "sess-1"})
+
+        streaming.warm_session.assert_awaited_once_with("sess-1", None, principal=None)
+
+
+class TestAssistantNamespaceMessages:
+    @pytest.mark.asyncio
+    async def test_invalid_payload_emits_validation_error(self) -> None:
+        namespace = AssistantNamespace("/assistant")
+        namespace.emit = AsyncMock()
+
+        await namespace.on_assistant_message("sid-1", "bad-payload")
+
+        namespace.emit.assert_awaited_once_with(
             "assistant:error",
-            {"type": "conflict", "message": "Stream already active for this session"},
+            {"type": "validation", "message": "Invalid assistant request payload"},
             to="sid-1",
         )
 
-        # Cleanup
-        ns._active_streams["sess-1"].cancel()
-        with pytest.raises((asyncio.CancelledError, Exception)):
-            await ns._active_streams["sess-1"]
-
     @pytest.mark.asyncio
-    async def test_validates_request_missing_fields(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
+    async def test_starts_stream_for_unified_message_contract(self) -> None:
+        namespace = AssistantNamespace("/assistant")
+        namespace.emit = AsyncMock()
 
-        await ns.on_assistant_message("sid-1", {"bad": "data"})
-
-        ns.emit.assert_called_once()
-        args = ns.emit.call_args
-        assert args[0][0] == "assistant:error"
-        assert args[0][1]["type"] == "validation"
-
-    @pytest.mark.asyncio
-    async def test_catches_pydantic_validation_error(self):
-        """Pydantic validation errors (e.g., invalid config) are caught and reported."""
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
-
-        # config with extra="forbid" should reject unknown fields
-        data = {
-            "session_id": "sess-1",
-            "message": "Hello",
-            "config": {"not_a_real_field": "boom"},
-        }
-        await ns.on_assistant_message("sid-1", data)
-
-        ns.emit.assert_called_once()
-        args = ns.emit.call_args
-        assert args[0][0] == "assistant:error"
-        assert args[0][1]["type"] == "validation"
-        assert args[1]["to"] == "sid-1"
-
-
-class TestOnAssistantCancel:
-    @pytest.mark.asyncio
-    async def test_cancels_task(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
-
-        async def long_task():
-            await asyncio.sleep(100)
-
-        task = asyncio.create_task(long_task())
-        ns._active_streams["sess-1"] = task
-
-        await ns.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
-
-        # Give the event loop a cycle to process cancellation
-        await asyncio.sleep(0)
-        assert task.cancelled()
-
-    @pytest.mark.asyncio
-    async def test_noop_on_missing_stream(self):
-        ns = AssistantNamespace("/assistant")
-        # Should not raise
-        await ns.on_assistant_cancel("sid-1", {"session_id": "no-such-session"})
-
-    @pytest.mark.asyncio
-    async def test_noop_on_missing_session_id(self):
-        ns = AssistantNamespace("/assistant")
-        await ns.on_assistant_cancel("sid-1", {})
-
-
-class TestRunStream:
-    @pytest.mark.asyncio
-    async def test_emits_events_to_sid(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
-
-        mock_service = MagicMock()
-
-        async def mock_stream(request):
+        async def _stream(_request, **_kwargs):
             yield {"type": "agent_status", "status": "started"}
-            yield {"type": "text_delta", "content": "Hi"}
-            yield {"type": "final_response", "content": "Hi", "model": "m"}
+            yield {
+                "type": "final_response",
+                "content": "Done",
+                "model": "openai:gpt-5.4",
+                "message_id": "assistant-1",
+            }
             yield {"type": "agent_status", "status": "completed"}
 
-        mock_service.stream_message = mock_stream
-        mock_server = MagicMock()
-        mock_server.fastapi_app.state.streaming_service = mock_service
-        ns.server = mock_server
+        streaming_service = MagicMock()
+        streaming_service.stream_message = _stream
+        streaming_service.accept_steering = AsyncMock()
+        streaming_service.cancel_session = AsyncMock(return_value=True)
+        streaming_service.wait_for_session = AsyncMock()
+        namespace.server = _server_with_streaming_service(streaming_service)
 
-        request = AssistantRequest(session_id="sess-1", message="Hello")
-        await ns._run_stream("sid-1", "sess-1", request)
+        await namespace.on_assistant_message(
+            "sid-1",
+            {
+                "id": "user-1",
+                "session_id": "sess-1",
+                "parent_id": None,
+                "content": "Hi",
+            },
+        )
 
-        # Verify events were emitted to sid
-        calls = ns.emit.call_args_list
-        assert len(calls) == 4
-
-        # Check event name mapping
-        assert calls[0][0][0] == "assistant:status"
-        assert calls[1][0][0] == "assistant:text_delta"
-        assert calls[2][0][0] == "assistant:final_response"
-        assert calls[3][0][0] == "assistant:status"
-
-        # Check sid targeting (to=sid, not room=room)
-        for call in calls:
-            assert call[1]["to"] == "sid-1"
-
-    @pytest.mark.asyncio
-    async def test_maps_debug_events(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
-
-        mock_service = MagicMock()
-
-        async def mock_stream(request):
-            yield {"type": "debug_request", "data": "something"}
-            yield {"type": "debug_usage", "tokens": 100}
-
-        mock_service.stream_message = mock_stream
-        mock_server = MagicMock()
-        mock_server.fastapi_app.state.streaming_service = mock_service
-        ns.server = mock_server
-
-        request = AssistantRequest(session_id="sess-1", message="Hello")
-        await ns._run_stream("sid-1", "sess-1", request)
-
-        calls = ns.emit.call_args_list
-        assert len(calls) == 2
-        assert calls[0][0][0] == "assistant:debug"
-        assert calls[1][0][0] == "assistant:debug"
+        task = namespace._active_streams["sess-1"]
+        await task
+        assert namespace.emit.await_count == 3
 
     @pytest.mark.asyncio
-    async def test_handles_cancellation(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
+    async def test_new_message_cancels_stale_stream(self) -> None:
+        namespace = AssistantNamespace("/assistant")
+        namespace.emit = AsyncMock()
 
-        mock_service = MagicMock()
+        old_task = asyncio.create_task(_never_finishes())
+        namespace._active_streams["sess-1"] = old_task
 
-        async def mock_stream(request):
+        async def _stream(_request, **_kwargs):
             yield {"type": "agent_status", "status": "started"}
-            raise asyncio.CancelledError()
-
-        mock_service.stream_message = mock_stream
-        mock_server = MagicMock()
-        mock_server.fastapi_app.state.streaming_service = mock_service
-        ns.server = mock_server
-
-        request = AssistantRequest(session_id="sess-1", message="Hello")
-        await ns._run_stream("sid-1", "sess-1", request)
-
-        # Should have emitted the start event + cancellation error
-        calls = ns.emit.call_args_list
-        assert len(calls) == 2
-        assert calls[0][0][0] == "assistant:status"
-        assert calls[1][0][0] == "assistant:error"
-        assert calls[1][0][1]["type"] == "cancelled"
-        # Error emitted to sid
-        assert calls[1][1]["to"] == "sid-1"
-
-    @pytest.mark.asyncio
-    async def test_handles_exception(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
-
-        mock_service = MagicMock()
-
-        async def mock_stream(request):
-            raise RuntimeError("LLM exploded")
-            yield  # noqa: RET504 — make it an async generator
-
-        mock_service.stream_message = mock_stream
-        mock_server = MagicMock()
-        mock_server.fastapi_app.state.streaming_service = mock_service
-        ns.server = mock_server
-
-        request = AssistantRequest(session_id="sess-1", message="Hello")
-        await ns._run_stream("sid-1", "sess-1", request)
-
-        calls = ns.emit.call_args_list
-        assert len(calls) == 1
-        assert calls[0][0][0] == "assistant:error"
-        assert calls[0][0][1]["type"] == "internal"
-        assert "LLM exploded" in calls[0][0][1]["message"]
-        # Error emitted to sid
-        assert calls[0][1]["to"] == "sid-1"
-
-    @pytest.mark.asyncio
-    async def test_cleans_up_task_reference(self):
-        ns = AssistantNamespace("/assistant")
-        ns.emit = AsyncMock()
-
-        mock_service = MagicMock()
-
-        async def mock_stream(request):
             yield {"type": "agent_status", "status": "completed"}
 
-        mock_service.stream_message = mock_stream
-        mock_server = MagicMock()
-        mock_server.fastapi_app.state.streaming_service = mock_service
-        ns.server = mock_server
+        streaming_service = MagicMock()
+        streaming_service.stream_message = _stream
+        streaming_service.accept_steering = AsyncMock()
+        streaming_service.cancel_session = AsyncMock(return_value=True)
+        streaming_service.wait_for_session = AsyncMock()
+        namespace.server = _server_with_streaming_service(streaming_service)
 
-        data = {"session_id": "sess-cleanup", "message": "Hi"}
-        await ns.on_assistant_message("sid-1", data)
+        await namespace.on_assistant_message(
+            "sid-1",
+            {
+                "id": "user-2",
+                "session_id": "sess-1",
+                "parent_id": "assistant-1",
+                "content": "Retry",
+            },
+        )
 
-        # Wait for task
-        task = ns._active_streams.get("sess-cleanup")
-        if task:
+        assert old_task.cancelling() > 0
+        assert old_task.done()
+        streaming_service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+        streaming_service.wait_for_session.assert_awaited_once_with("sess-1")
+        await namespace._active_streams["sess-1"]
+
+    @pytest.mark.asyncio
+    async def test_continuation_does_not_cancel_active_stream(self) -> None:
+        namespace = AssistantNamespace("/assistant")
+        namespace.emit = AsyncMock()
+
+        old_task = asyncio.create_task(_never_finishes())
+        namespace._active_streams["sess-1"] = old_task
+
+        async def _stream(_request, **_kwargs):
+            yield {"type": "agent_status", "status": "started"}
+            yield {"type": "agent_status", "status": "completed"}
+
+        streaming_service = MagicMock()
+        streaming_service.stream_message = _stream
+        streaming_service.accept_steering = AsyncMock()
+        namespace.server = _server_with_streaming_service(streaming_service)
+
+        await namespace.on_assistant_message(
+            "sid-1",
+            {
+                "id": "continuation-1",
+                "session_id": "sess-1",
+                "parent_id": "assistant-1",
+                "content": "",
+                "tool_call_id": "call-1",
+                "tool_result": {"ok": True},
+            },
+        )
+
+        assert old_task.cancelled() is False
+        new_task = namespace._active_streams["sess-1"]
+        assert new_task is not old_task
+        await new_task
+        old_task.cancel()
+        await asyncio.gather(old_task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_steering_is_queued_without_starting_stream(self) -> None:
+        namespace = AssistantNamespace("/assistant")
+        namespace.emit = AsyncMock()
+        streaming_service = MagicMock()
+        streaming_service.accept_steering = AsyncMock(return_value="queued")
+        streaming_service.stream_message = AsyncMock()
+        namespace.server = _server_with_streaming_service(streaming_service)
+
+        await namespace.on_assistant_message(
+            "sid-1",
+            {
+                "id": "steering-1",
+                "session_id": "sess-1",
+                "content": "Focus on Leo",
+                "message_type": "steering",
+            },
+        )
+
+        streaming_service.accept_steering.assert_awaited_once()
+        streaming_service.stream_message.assert_not_called()
+        assert namespace._active_streams == {}
+
+    @pytest.mark.asyncio
+    async def test_promoted_steering_starts_stream_immediately(self) -> None:
+        namespace = AssistantNamespace("/assistant")
+        namespace.emit = AsyncMock()
+
+        async def _stream(_request, **_kwargs):
+            yield {"type": "agent_status", "status": "started"}
+            yield {
+                "type": "final_response",
+                "content": "Done",
+                "model": "openai:gpt-5.4",
+                "message_id": "assistant-1",
+            }
+            yield {"type": "agent_status", "status": "completed"}
+
+        streaming_service = MagicMock()
+        streaming_service.accept_steering = AsyncMock(return_value="promoted")
+        streaming_service.stream_message = _stream
+        namespace.server = _server_with_streaming_service(streaming_service)
+
+        await namespace.on_assistant_message(
+            "sid-1",
+            {
+                "id": "steering-1",
+                "session_id": "sess-1",
+                "content": "Focus on Leo",
+                "message_type": "steering",
+            },
+        )
+
+        task = namespace._active_streams["sess-1"]
+        await task
+        streaming_service.accept_steering.assert_awaited_once()
+        assert namespace.emit.await_count == 3
+
+
+class TestAssistantNamespaceCancellation:
+    @pytest.mark.parametrize("waiting", [False, True], ids=["unscheduled", "waiting-predecessor"])
+    async def test_cancel_before_first_event_cannot_leave_a_scheduled_turn(self, waiting):
+        entered, predecessor_finished, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        produced = []
+
+        async def stream(_request, **_kwargs):
+            try:
+                entered.set()
+                await predecessor_finished.wait()
+                produced.append("new turn")
+                yield {"type": "agent_status", "status": "started"}
+            finally:
+                closed.set()
+
+        namespace, service = _namespace_for_stream(stream)
+        service.cancel_session.return_value = waiting
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        task = namespace._active_streams["sess-1"]
+        try:
+            async with asyncio.timeout(5):
+                if waiting:
+                    await entered.wait()
+                await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
+                await namespace._active_streams["sess-1"]
+                predecessor_finished.set()
+                assert task.done()
+                assert produced == []
+                assert closed.is_set() is waiting
+                assert namespace._active_streams == {}
+                assert namespace._stream_delivery == {}
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+                service.wait_for_session.assert_awaited_once_with("sess-1")
+                assert [call.args[1] for call in namespace.emit.await_args_list] == (
+                    StreamingService.cancelled_before_start_events("sess-1")
+                )
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_explicit_cancel_reaches_runtime_while_transport_is_emitting(self):
+        emitting, release_emit, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def stream(_request, **_kwargs):
+            yield {"type": "agent_status", "status": "started"}
+            yield {"type": "text_delta", "content": "Partial"}
+            await cancelled.wait()
+            yield {"type": "agent_status", "status": "completed"}
+
+        namespace, service = _namespace_for_stream(stream)
+
+        async def emit(name, event, **kwargs):
+            if name == "assistant:text_delta":
+                emitting.set()
+                await release_emit.wait()
+
+        async def cancel(session_id, **_kwargs):
+            cancelled.set()
+            return True
+
+        namespace.emit = AsyncMock(side_effect=emit)
+        service.cancel_session.side_effect = cancel
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        task = namespace._active_streams["sess-1"]
+        try:
+            async with asyncio.timeout(5):
+                await emitting.wait()
+                await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+                assert task.cancelling() == 0
+                assert not task.done()
+                release_emit.set()
+                await task
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_cancel_still_closes_lifecycle_when_producer_finishes_without_events(self):
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def stream(_request, **_kwargs):
+            entered.set()
+            await finish.wait()
+            return
+            yield  # pragma: no cover
+
+        namespace, service = _namespace_for_stream(stream)
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        task = namespace._active_streams["sess-1"]
+
+        async def cancel(session_id, **_kwargs):
+            finish.set()
             await task
+            return True
 
-        # After completion, done_callback should have removed it
-        # Give event loop a cycle for callback
-        await asyncio.sleep(0)
-        assert "sess-cleanup" not in ns._active_streams
+        service.cancel_session.side_effect = cancel
+        try:
+            async with asyncio.timeout(5):
+                await entered.wait()
+                await namespace.on_assistant_cancel("sid-2", {"session_id": "sess-1"})
+                await namespace._active_streams["sess-1"]
+                assert task.done()
+                assert namespace._stream_delivery == {}
+                assert [call.args[1] for call in namespace.emit.await_args_list] == (
+                    StreamingService.cancelled_before_start_events("sess-1")
+                )
+                assert all(call.kwargs["to"] == "sid-1" for call in namespace.emit.await_args_list)
+                service.wait_for_session.assert_awaited_once_with("sess-1")
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.parametrize("already_emitting", [False, True], ids=["race", "blocked"])
+    async def test_cancel_does_not_duplicate_a_started_event_in_flight(self, already_emitting):
+        start, emitting, release_emit = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def stream(_request, **_kwargs):
+            await start.wait()
+            yield {"type": "agent_status", "status": "started"}
+            await cancelled.wait()
+            for event in StreamingService.cancelled_before_start_events("sess-1")[1:]:
+                yield event
+
+        namespace, service = _namespace_for_stream(stream)
+
+        async def emit(name, event, **kwargs):
+            if event.get("status") == "started":
+                emitting.set()
+                await release_emit.wait()
+
+        async def cancel(session_id, **_kwargs):
+            start.set()
+            await emitting.wait()
+            cancelled.set()
+            return True
+
+        namespace.emit = AsyncMock(side_effect=emit)
+        service.cancel_session.side_effect = cancel
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        task = namespace._active_streams["sess-1"]
+        try:
+            async with asyncio.timeout(5):
+                if already_emitting:
+                    start.set()
+                    await emitting.wait()
+                await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
+                assert task.cancelling() == 0
+                assert not task.done()
+                release_emit.set()
+                await task
+                assert [call.args[1] for call in namespace.emit.await_args_list] == (
+                    StreamingService.cancelled_before_start_events("sess-1")
+                )
+                service.wait_for_session.assert_not_awaited()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_debug_event_does_not_count_as_started_for_cancellation(self):
+        emitted = asyncio.Event()
+
+        async def stream(_request, **_kwargs):
+            yield {"type": "debug_request", "message": "Preparing"}
+            emitted.set()
+            await asyncio.Event().wait()
+
+        namespace, _service = _namespace_for_stream(stream)
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        task = namespace._active_streams["sess-1"]
+        try:
+            async with asyncio.timeout(5):
+                await emitted.wait()
+                await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
+                await namespace._active_streams["sess-1"]
+                assert task.done()
+                assert [call.args[1] for call in namespace.emit.await_args_list[1:]] == (
+                    StreamingService.cancelled_before_start_events("sess-1")
+                )
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_blocked_early_cancellation_envelope_does_not_block_replacement(self):
+        emitting, replaced = asyncio.Event(), asyncio.Event()
+
+        async def stream(request, **_kwargs):
+            assert request.id == "user-2"
+            replaced.set()
+            yield {"type": "agent_status", "status": "started"}
+            yield {"type": "agent_status", "status": "completed"}
+
+        namespace, service = _namespace_for_stream(stream)
+
+        async def emit(name, event, **kwargs):
+            if event.get("status") == "started" and not emitting.is_set():
+                emitting.set()
+                await asyncio.Event().wait()
+
+        namespace.emit = AsyncMock(side_effect=emit)
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        original = namespace._active_streams["sess-1"]
+        fallback = None
+        try:
+            async with asyncio.timeout(5):
+                await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
+                fallback = namespace._active_streams["sess-1"]
+                assert fallback is not original
+                await emitting.wait()
+                assert not fallback.done()
+                await namespace.on_assistant_message("sid-1", _message("user-2"))
+                replacement = namespace._active_streams["sess-1"]
+                await replacement
+                assert replaced.is_set()
+                assert original.done()
+                assert fallback.done()
+                assert service.cancel_session.await_count == 2
+                assert service.wait_for_session.await_count == 2
+        finally:
+            tasks = [original, *namespace._active_streams.values()]
+            if fallback is not None:
+                tasks.append(fallback)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_explicit_cancel_also_finds_runs_released_by_the_transport(self):
+        namespace, service = _namespace_for_stream(None)
+
+        await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
+
+        service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+
+    async def test_replacement_waits_for_native_drain_before_closing_old_transport(self):
+        emitting, drain_started, drained = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        old_closed, new_started = asyncio.Event(), asyncio.Event()
+
+        async def stream(request, **_kwargs):
+            if request.id == "user-1":
+                try:
+                    yield {"type": "text_delta", "content": "Partial"}
+                    await asyncio.Event().wait()
+                finally:
+                    old_closed.set()
+            else:
+                assert drained.is_set()
+                assert old_closed.is_set()
+                new_started.set()
+                yield {"type": "agent_status", "status": "completed"}
+
+        namespace, service = _namespace_for_stream(stream)
+
+        async def emit(name, event, **kwargs):
+            if name == "assistant:text_delta":
+                emitting.set()
+                await asyncio.Event().wait()
+
+        async def wait_for_session(session_id):
+            drain_started.set()
+            await drained.wait()
+
+        namespace.emit = AsyncMock(side_effect=emit)
+        service.wait_for_session.side_effect = wait_for_session
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        old_task = namespace._active_streams["sess-1"]
+        replacement = None
+        try:
+            async with asyncio.timeout(5):
+                await emitting.wait()
+                replacement = asyncio.create_task(
+                    namespace.on_assistant_message("sid-1", _message("user-2"))
+                )
+                await drain_started.wait()
+                assert not old_closed.is_set()
+                assert not new_started.is_set()
+                assert old_task.cancelling() == 0
+                drained.set()
+                await replacement
+                await new_started.wait()
+                assert old_task.done()
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+        finally:
+            tasks = [
+                task
+                for task in (old_task, replacement, *namespace._active_streams.values())
+                if task is not None
+            ]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_concurrent_replacements_serialize_native_cancellation(self):
+        started = {name: asyncio.Event() for name in ("user-1", "user-2", "user-3")}
+        transport_tasks = {}
+        draining, release_drain = asyncio.Event(), asyncio.Event()
+        drain_count = 0
+
+        async def stream(request, **_kwargs):
+            transport_tasks[request.id] = asyncio.current_task()
+            started[request.id].set()
+            yield {"type": "agent_status", "status": "started"}
+            await asyncio.Event().wait()
+
+        namespace, service = _namespace_for_stream(stream)
+
+        async def wait_for_session(session_id):
+            nonlocal drain_count
+            drain_count += 1
+            if drain_count == 1:
+                draining.set()
+                await release_drain.wait()
+
+        service.wait_for_session.side_effect = wait_for_session
+        handlers = []
+        try:
+            async with asyncio.timeout(5):
+                await namespace.on_assistant_message("sid-1", _message("user-1"))
+                await started["user-1"].wait()
+                handlers.append(
+                    asyncio.create_task(namespace.on_assistant_message("sid-1", _message("user-2")))
+                )
+                await draining.wait()
+                handlers.append(
+                    asyncio.create_task(namespace.on_assistant_message("sid-1", _message("user-3")))
+                )
+                await asyncio.sleep(0)
+                assert service.cancel_session.await_count == 1
+                release_drain.set()
+                await asyncio.gather(*handlers)
+                await started["user-3"].wait()
+                assert service.cancel_session.await_count == 2
+                assert service.wait_for_session.await_count == 2
+                assert namespace._active_streams["sess-1"] is transport_tasks["user-3"]
+                assert transport_tasks["user-1"].done()
+        finally:
+            tasks = [*handlers, *transport_tasks.values(), *namespace._active_streams.values()]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    @pytest.mark.parametrize("ending", ["completed", "deferred", "failure"])
+    async def test_old_stream_release_keeps_new_owner(self, ending):
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def stream(_request, **_kwargs):
+            started.set()
+            await finish.wait()
+            if ending == "failure":
+                raise RuntimeError("Old transport failed")
+            if ending == "deferred":
+                yield {"type": "final_response", "pending_tool_call": {"tool_call_id": "call-1"}}
+            yield {"type": "agent_status", "status": "completed"}
+
+        namespace, _service = _namespace_for_stream(stream)
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        old_task = namespace._active_streams["sess-1"]
+        replacement = asyncio.create_task(_never_finishes())
+        try:
+            async with asyncio.timeout(5):
+                await started.wait()
+                namespace._active_streams["sess-1"] = replacement
+                finish.set()
+                await old_task
+                assert namespace._active_streams["sess-1"] is replacement
+        finally:
+            old_task.cancel()
+            replacement.cancel()
+            await asyncio.gather(old_task, replacement, return_exceptions=True)
+
+    async def test_disconnect_allows_turn_to_finish(self):
+        started, finish, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def stream(_request, **_kwargs):
+            try:
+                started.set()
+                yield {"type": "text_delta", "content": "Partial"}
+                await finish.wait()
+                yield {"type": "agent_status", "status": "completed"}
+            finally:
+                closed.set()
+
+        namespace, service = _namespace_for_stream(stream)
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+        task = namespace._active_streams["sess-1"]
+        try:
+            async with asyncio.timeout(5):
+                await started.wait()
+                await namespace.on_disconnect("sid-1")
+                assert task.cancelling() == 0
+                service.cancel_session.assert_not_awaited()
+                finish.set()
+                await task
+                assert closed.is_set()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_emit_failure_closes_service_stream_before_task_finishes(self):
+        closed = asyncio.Event()
+
+        async def stream(_request, **_kwargs):
+            try:
+                yield {"type": "text_delta", "content": "Partial"}
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+        namespace, _service = _namespace_for_stream(stream)
+        namespace.emit.side_effect = RuntimeError("Socket write failed")
+        await namespace.on_assistant_message("sid-1", _message("user-1"))
+
+        await namespace._active_streams["sess-1"]
+
+        assert closed.is_set()
+        assert namespace._active_streams == {}

@@ -3,7 +3,8 @@
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from lovely_assistant.services.llm.config import ALLOWED_PROVIDERS, LLMConfig, ProviderConfig
+from assistant_runtime.model_catalog import ALLOWED_PROVIDERS
+from assistant_runtime.services.llm.config import LLMConfig, ProviderConfig
 
 
 class TestProviderConfig:
@@ -62,7 +63,7 @@ class TestLLMConfig:
 
     def test_defaults(self):
         config = LLMConfig()
-        assert config.primary_model == "anthropic:claude-haiku-4-5"
+        assert config.primary_model == "anthropic:claude-opus-5"
         assert config.summarization_model == "anthropic:claude-haiku-4-5"
         assert config.providers_json is None
 

@@ -18,3 +18,12 @@ coverage_html/
 
 # OS
 .DS_Store
+
+# Local MCP server configuration (copy from mcp_servers.example.json)
+mcp_servers.json
+
+# Local analysis and implementation plans
+/planning/
+
+# Shared local agent memory and swarm worktrees
+/.backbone/
