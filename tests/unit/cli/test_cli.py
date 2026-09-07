@@ -34,6 +34,15 @@ class TestParser:
         assert args.session is None
         assert not args.show_thinking
 
+    def test_version_flag_prints_the_installed_version(self, capsys):
+        from assistant_runtime import __version__
+
+        with pytest.raises(SystemExit) as exit_info:
+            main(["--version"])
+
+        assert exit_info.value.code == 0
+        assert capsys.readouterr().out.strip() == __version__
+
     def test_serve_binds_loopback_by_default(self):
         args = build_parser().parse_args(["serve"])
         assert args.host == "127.0.0.1"

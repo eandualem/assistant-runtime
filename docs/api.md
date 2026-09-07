@@ -21,7 +21,12 @@ the inbox, debugging, every artifact mutation and session reassignment.
 ## Health
 
 `GET /health`: `{"healthy": bool, "components": {name: {...}}}`, status
-200 or 503. Postgres being down does not make the runtime unhealthy.
+200 or 503. The rule is whether the runtime can answer a turn: with no
+provider key configured it reports 503, because it cannot. Optional
+dependencies do not make it unhealthy — Postgres being unreachable is
+reported as `database_service: {"healthy": true, "reachable": false}` and
+sessions live in memory, and an unconfigured integration reports
+`"status": "disabled"`. A service that failed to start is unhealthy.
 
 ## Chat (non-streaming)
 
