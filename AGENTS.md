@@ -163,7 +163,7 @@ execution, history, serialization, or the upstream dependency; see
   never persisted except through the encrypted provider-key store.
 - **Postgres is optional and every request path must work without it.**
   `DatabaseService.healthy` is false when it is unreachable; then sessions
-  live in memory, prompt artifacts come from `app/assistant/defaults/`,
+  live in memory, prompt artifacts come from the built-in profiles,
   runtime settings are not persisted, and database-backed routes return
   503. Guard new database use the same way; never let it fail a chat.
 - **Tools are registered, never hardcoded into the agent.** A backend tool

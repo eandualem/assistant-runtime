@@ -11,7 +11,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from assistant_runtime.model_catalog import PROVIDER_ENV_VARS
 
@@ -27,10 +27,10 @@ def _python() -> Line:
 
 
 def _env_file() -> Line:
-    path = Path(".env")
-    if path.is_file():
-        return OK, f".env found at {path.resolve()}"
-    return WARN, "no .env in the current directory (environment variables are used as-is)"
+    found = find_dotenv(usecwd=True)
+    if found:
+        return OK, f".env found at {Path(found).resolve()}"
+    return WARN, "no .env found from the current directory (environment variables are used as-is)"
 
 
 def configured_providers(env: dict[str, str] | None = None) -> list[str]:
@@ -119,12 +119,14 @@ def _extras() -> list[Line]:
     for module, extra, purpose in (
         ("langfuse", "tracing", "Langfuse tracing"),
         ("runwayml", "video", "video generation"),
+        ("ag_ui", "ag-ui", "AG-UI endpoint"),
     ):
         installed = importlib.util.find_spec(module) is not None
+        hint = f"pip install 'assistant-runtime[{extra}]' / uv sync --extra {extra}"
         lines.append(
             (
                 OK if installed else WARN,
-                f"{purpose}: {'installed' if installed else f'not installed (uv sync --extra {extra})'}",
+                f"{purpose}: {'installed' if installed else f'not installed ({hint})'}",
             )
         )
     return lines
@@ -144,7 +146,7 @@ def run_checks(checks: list[Callable[[], Line | list[Line]]]) -> list[Line]:
 
 def cmd_doctor(_args: argparse.Namespace) -> int:
     """Print one line per check. Exit 1 when any check FAILs."""
-    load_dotenv()
+    load_dotenv(find_dotenv(usecwd=True))
     lines = run_checks([_python, _env_file, _providers, _models, _codex, _database, _extras])
     for status, message in lines:
         print(f"[{status}] {message}")

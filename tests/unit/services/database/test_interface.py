@@ -184,7 +184,9 @@ class TestDatabaseServiceHealthCheck:
             mock_engine.begin.return_value = mock_fail_cm
 
             health = await service.health_check()
-            assert health["healthy"] is False
+            # Degraded, not unhealthy: every request path works without Postgres.
+            assert health["healthy"] is True
+            assert health["reachable"] is False
 
 
 class TestDatabaseServiceSessionContext:

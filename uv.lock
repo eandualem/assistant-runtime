@@ -121,10 +121,13 @@ ag-ui = [
 ]
 dev = [
     { name = "ag-ui-protocol" },
+    { name = "langfuse" },
+    { name = "lumaai" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-mock" },
     { name = "ruff" },
+    { name = "runwayml" },
 ]
 tracing = [
     { name = "langfuse" },
@@ -143,8 +146,10 @@ requires-dist = [
     { name = "cryptography", specifier = ">=44.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "langfuse", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "langfuse", marker = "extra == 'tracing'", specifier = ">=4.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },
+    { name = "lumaai", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "lumaai", marker = "extra == 'video'", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-ai-slim", extras = ["anthropic", "openai", "google", "openrouter", "mcp"], specifier = ">=2.38.0,<3" },
@@ -156,6 +161,7 @@ requires-dist = [
     { name = "python-socketio", specifier = ">=5.11" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14.0" },
+    { name = "runwayml", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "runwayml", marker = "extra == 'video'", specifier = ">=1.0.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "tenacity", specifier = ">=8.2.0" },

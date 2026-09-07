@@ -8,6 +8,21 @@ version = "0.1.0"
 description = "Assistant backend runtime built on FastAPI, Socket.IO and pydantic-ai, with a tool system that plugs into any work environment"
 requires-python = ">=3.12"
 license = {text = "MIT"}
+readme = "README.md"
+keywords = ["assistant", "pydantic-ai", "fastapi", "socket.io", "ag-ui", "agents", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 
 dependencies = [
     "fastapi>=0.115.0",
@@ -27,6 +42,12 @@ dependencies = [
     "asyncpg>=0.29",
 ]
 
+[project.urls]
+Homepage = "https://github.com/eandualem/assistant-runtime"
+Repository = "https://github.com/eandualem/assistant-runtime"
+Issues = "https://github.com/eandualem/assistant-runtime/issues"
+Documentation = "https://github.com/eandualem/assistant-runtime/tree/main/docs"
+
 [project.scripts]
 assistant-runtime = "assistant_runtime.cli:main"
 
@@ -45,7 +66,12 @@ ag-ui = [
     "ag-ui-protocol>=0.1.10",
 ]
 dev = [
+    # The suite exercises every optional integration, so the dev extra carries
+    # the SDKs the tests patch; the runtime itself still imports them lazily.
     "ag-ui-protocol>=0.1.10",
+    "langfuse>=4.0.0",
+    "lumaai>=1.0.0",
+    "runwayml>=1.0.0",
     "pytest>=9.0.0",
     "pytest-asyncio>=1.0.0",
     "pytest-mock>=3.10.0",
@@ -122,6 +148,9 @@ packages = ["src/assistant_runtime"]
 # (`assistant-runtime docs <page>`) without a checkout of the repository.
 [tool.hatch.build.targets.wheel.force-include]
 "docs" = "assistant_runtime/help/docs"
+# The migrations ship too, so `assistant-runtime migrate` can create the
+# schema from an installed package without a checkout.
+"alembic" = "assistant_runtime/_migrations"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/assistant_runtime", "docs", "alembic", "alembic.ini", "README.md", "LICENSE"]

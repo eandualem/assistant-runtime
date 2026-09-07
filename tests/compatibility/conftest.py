@@ -45,7 +45,7 @@ def isolated_services(monkeypatch, tmp_path):
     # The model and database are the only service boundaries replaced. No
     # Agent methods, tools, factories, turn services or HTTP handlers are mocked.
     monkeypatch.setattr(DatabaseService, "start", AsyncMock())
-    monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda: None)
+    monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr("assistant_runtime.main.initialize_tracing", lambda: False)
     monkeypatch.setattr("assistant_runtime.main.setup_logging", lambda **_: None)
     monkeypatch.setenv("MCP_CONFIG_PATH", str(tmp_path / "absent-mcp.json"))
