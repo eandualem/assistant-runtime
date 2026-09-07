@@ -33,6 +33,17 @@ jobs:
           echo "releases are published from main, not ${GITHUB_REF}"
           exit 1
       - uses: actions/checkout@v4
+        with:
+          # The token must not sit in .git/config while the build and the
+          # test suite run third-party code.
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Refuse to republish a version that is already tagged
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${RELEASE_VERSION}" >/dev/null; then
+            echo "v${RELEASE_VERSION} is already tagged; bump the version in pyproject.toml"
+            exit 1
+          fi
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
@@ -49,6 +60,9 @@ jobs:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: uv publish
       - name: Tag the release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git tag "v${RELEASE_VERSION}"
-          git push origin "v${RELEASE_VERSION}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "v${RELEASE_VERSION}"

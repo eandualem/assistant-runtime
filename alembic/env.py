@@ -9,7 +9,7 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from assistant_runtime.services.database.base import Base
-from assistant_runtime.services.database.config import DatabaseConfig
+from assistant_runtime.config import AppSettings
 import assistant_runtime.services.database.models  # noqa: F401 — registers ORM models with Base.metadata
 
 # Load .env so DatabaseConfig picks up env vars
@@ -19,8 +19,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from DatabaseConfig
-db_config = DatabaseConfig()
+# Override sqlalchemy.url from settings. AppSettings, not DatabaseConfig
+# directly: only the settings model reads DATABASE__* and .env.
+db_config = AppSettings().database
 config.set_main_option("sqlalchemy.url", db_config.async_url)
 
 target_metadata = Base.metadata

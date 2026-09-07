@@ -20,6 +20,8 @@ import argparse
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
+from dotenv import find_dotenv, load_dotenv
+
 from assistant_runtime.cli.chat import cmd_chat
 from assistant_runtime.cli.docs import cmd_docs
 from assistant_runtime.cli.doctor import cmd_doctor
@@ -87,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``assistant-runtime`` console script."""
+    # Before anything reads settings: ``AppSettings`` resolves its own
+    # ``.env`` against the working directory only, so a run from a nested
+    # directory would otherwise see the provider keys but not the nested
+    # ``SECTION__FIELD`` values.
+    load_dotenv(find_dotenv(usecwd=True))
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:

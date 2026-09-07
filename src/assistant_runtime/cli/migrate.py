@@ -36,9 +36,11 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     from alembic import command
     from alembic.config import Config
 
-    from assistant_runtime.services.database.config import DatabaseConfig
+    from assistant_runtime.config import AppSettings
 
-    database = DatabaseConfig()
+    # AppSettings is the only place DATABASE__* and .env are resolved;
+    # DatabaseConfig on its own would silently return the defaults.
+    database = AppSettings().database
     config = Config()
     config.set_main_option("script_location", str(directory))
     print(f"migrate: {database.host}:{database.port}/{database.name} -> {args.revision}")

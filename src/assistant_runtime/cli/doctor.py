@@ -27,10 +27,10 @@ def _python() -> Line:
 
 
 def _env_file() -> Line:
-    path = Path(".env")
-    if path.is_file():
-        return OK, f".env found at {path.resolve()}"
-    return WARN, "no .env in the current directory (environment variables are used as-is)"
+    found = find_dotenv(usecwd=True)
+    if found:
+        return OK, f".env found at {Path(found).resolve()}"
+    return WARN, "no .env found from the current directory (environment variables are used as-is)"
 
 
 def configured_providers(env: dict[str, str] | None = None) -> list[str]:

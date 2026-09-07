@@ -65,6 +65,59 @@ class TestDotenvResolution:
         assert doctor.cmd_doctor(argparse.Namespace()) == 0
         assert Path(str(loaded["path"])).resolve() == (tmp_path / ".env").resolve()
 
+    def test_doctor_reports_the_env_file_it_loads_from_a_parent(self, tmp_path, monkeypatch):
+        """The report and the load must name the same file, at any depth."""
+        from assistant_runtime.cli import doctor
+
+        (tmp_path / ".env").write_text("PROBE=1\n")
+        nested = tmp_path / "service" / "worker"
+        nested.mkdir(parents=True)
+        monkeypatch.chdir(nested)
+
+        status, message = doctor._env_file()
+
+        assert status == doctor.OK
+        assert str((tmp_path / ".env").resolve()) in message
+
+
+class TestMigrate:
+    def test_migrate_targets_the_configured_database(self, monkeypatch, tmp_path, capsys):
+        """DATABASE__* must reach alembic.
+
+        `DatabaseConfig()` is a plain model that reads no environment at all;
+        only `AppSettings` resolves the nested variables and .env, so building
+        the config directly would silently migrate the default localhost.
+        """
+        import alembic.command
+
+        from assistant_runtime.cli import migrate as migrate_module
+
+        monkeypatch.setenv("DATABASE__HOST", "db.example")
+        monkeypatch.setenv("DATABASE__NAME", "prod_db")
+        monkeypatch.setattr(migrate_module, "migrations_dir", lambda: tmp_path)
+        called: dict[str, object] = {}
+        monkeypatch.setattr(
+            alembic.command,
+            "upgrade",
+            lambda config, revision: called.update(
+                revision=revision, location=config.get_main_option("script_location")
+            ),
+        )
+
+        assert migrate_module.cmd_migrate(argparse.Namespace(revision="head")) == 0
+
+        assert called == {"revision": "head", "location": str(tmp_path)}
+        out = capsys.readouterr().out
+        assert "db.example" in out
+        assert "prod_db" in out
+
+    def test_migrate_without_migrations_reports_and_fails(self, monkeypatch, capsys):
+        from assistant_runtime.cli import migrate as migrate_module
+
+        monkeypatch.setattr(migrate_module, "migrations_dir", lambda: None)
+        assert migrate_module.cmd_migrate(argparse.Namespace(revision="head")) == 1
+        assert "no migrations found" in capsys.readouterr().out
+
 
 class TestServeReplace:
     @pytest.fixture

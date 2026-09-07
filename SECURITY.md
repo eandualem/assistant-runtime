@@ -16,8 +16,10 @@ so:
 - It binds to `127.0.0.1` and ships **no authentication**. `ACCESS__MODE`
   defaults to `trusted_local`, which treats every caller as the local
   operator, including administration.
-- CORS defaults to any origin, which is safe only while the server is bound
-  to loopback.
+- CORS defaults to any origin. Loopback is not a boundary here: any page the
+  browser loads can call `127.0.0.1`, and under `trusted_local` that caller is
+  the local operator, administration included. Set `ACCESS__CORS_ORIGINS`, and
+  an authenticating mode, on any machine that also browses the web.
 - Provider keys are read from the environment or `.env` and are never written
   to the database, except through the encrypted provider-key store.
 
