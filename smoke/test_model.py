@@ -44,7 +44,9 @@ async def test_model_turn_is_saved(record_property):
             assert assistant["content"] == result["content"]
             record_property("model", result["model"])
             record_property("elapsed_seconds", round(perf_counter() - started, 3))
-            record_property("usage", str(assistant.get("usage")))
+            usage = assistant.get("usage")
+            assert isinstance(usage, dict), "Saved assistant message has no usage metadata"
+            record_property("usage", str(usage))
         finally:
             if completed:
                 # A successful non-streaming response means turn cleanup completed.
