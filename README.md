@@ -49,6 +49,11 @@ a TOML file, or `AssistantDefinition(profile=...)` in host code.
 
 The full walkthrough is in [docs/getting-started.md](docs/getting-started.md).
 
+For an assistant inside an application, try [Design Studio](https://github.com/eandualem/design-studio),
+a Markdown and Mermaid editor using the public host contracts. The
+[reference-app guide](docs/reference-app.md) covers setup, available behavior,
+separate live smoke checks and the adoption evidence still being collected.
+
 ## Documentation
 
 The pages ship with the package: `assistant-runtime docs` lists them and

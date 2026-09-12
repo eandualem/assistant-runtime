@@ -19,13 +19,27 @@ cd assistant-runtime
 uv sync                     # add --extra video --extra tracing for the optional features
 ```
 
-Or as a tool, once published: `uv tool install assistant-runtime`.
+Or install the released command-line tool: `uv tool install assistant-runtime`.
+The sections below show commands for each installation method; use the one
+that matches yours. To try a complete browser application, see the
+[reference-app guide](reference-app.md).
 
 ## 2. One key
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+From a checkout:
+
+```bash
 uv run assistant-runtime doctor
+```
+
+With the installed tool:
+
+```bash
+assistant-runtime doctor
 ```
 
 `doctor` prints one line per check: Python version, `.env`, provider keys,
@@ -41,8 +55,16 @@ the runtime uses that provider's default instead (`openai:gpt-5.6-terra`,
 
 ## 3. Talk to it
 
+From a checkout:
+
 ```bash
 uv run assistant-runtime chat
+```
+
+With the installed tool:
+
+```bash
+assistant-runtime chat
 ```
 
 This runs the runtime in-process, with the same services, tools and prompt
@@ -58,8 +80,21 @@ model carries on.
 
 ## 4. Run the server
 
+From a checkout:
+
 ```bash
 uv run assistant-runtime serve            # 127.0.0.1:7100
+```
+
+With the installed tool:
+
+```bash
+assistant-runtime serve                   # 127.0.0.1:7100
+```
+
+From another terminal, check the server and send a message:
+
+```bash
 curl -s localhost:7100/health
 curl -s -X POST localhost:7100/api/chat -H 'content-type: application/json' \
   -d '{"id":"m1","session_id":"s1","content":"What can you do?"}'

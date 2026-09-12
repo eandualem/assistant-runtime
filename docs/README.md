@@ -14,3 +14,6 @@ An installed runtime prints these pages with `assistant-runtime docs <page>`
 | [persistence](persistence.md) | What is stored, pending host actions across restarts, action outcomes, recovery and worker topology |
 | [composition](composition.md) | Native Pydantic AI extensions and request dependencies in a Python host |
 | [compatibility](compatibility.md) | Tested dependency versions and migration boundaries |
+
+For the complete browser application, separately runnable live smoke checks and
+current adoption limits, see [reference application](reference-app.md).
