@@ -180,11 +180,14 @@ the layering and the invariants a change must keep. Pull requests target
 
 ### Working with coding agents
 
-[AGENTS.md](AGENTS.md) is the shared source of project instructions. Codex
+[AGENTS.md](AGENTS.md) is the shared source of repository instructions. Codex
 loads it automatically; [CLAUDE.md](CLAUDE.md) imports it for Claude Code.
 With another CLI, ask it to read `AGENTS.md` before working if it does not
-discover the file itself. Edit shared guidance in `AGENTS.md` so it stays
-consistent across tools.
+discover the file itself. Edit repository guidance in `AGENTS.md` so it stays
+consistent across tools. Managed agent-backbone sessions receive routing,
+reporting, delivery and project-context policies at startup; their shared
+procedures are maintained there. `AGENTS.md` keeps this repository's checks,
+reviewers, branch conventions and local memory paths.
 
 Start a new agent session from this checkout after changing the instructions.
 These files provide project context; CLI credentials, permissions, MCP

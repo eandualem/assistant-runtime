@@ -7,17 +7,18 @@ what must stay true when you change it.
 
 ## Shared instructions
 
-This is the canonical project guide for all coding agents. Keep shared
+This is the canonical project guide for all coding agents. Keep repository
 instructions here; `CLAUDE.md` imports this file. If a CLI does not load
 `AGENTS.md` automatically, explicitly ask it to read this file before working.
 
-Preserve existing work. Record durable project decisions here or in the
-repository docs so another agent can pick them up without private chat history.
+Managed sessions receive the shared base brief, `request-context`,
+`delivery-lifecycle` and `project-context` from agent-backbone. Those sources
+own routing, reporting, delivery and handoff hygiene; this file adds the
+repository-specific contracts.
 
-## Shared memory — read first, write last
+## Project memory
 
-Follow the same runtime-neutral memory pattern as `agent-backbone`. Project
-memory lives in this checkout, shared by Claude, Codex, and other CLIs:
+The shared `project-context` policy uses this checkout's local memory:
 
 ```text
 .backbone/memory/
@@ -26,29 +27,15 @@ memory lives in this checkout, shared by Claude, Codex, and other CLIs:
 └── notes/          decisions, implementation evidence, and follow-up findings
 ```
 
-- At the start of every session, read `.backbone/memory/HANDOFF.md`, then
-  `.backbone/memory/INDEX.md`, then the notes it marks as relevant.
-  Runtime-specific memory is a cache at most; the shared files and current
-  repository/GitHub evidence establish project state.
 - After reading shared memory, run `git status --short` and read the relevant
   README/docs section before changing files.
-- Before stopping or handing off, rewrite `HANDOFF.md` with completed and
-  unfinished work, precise commits/PRs/issues, validation and its limits,
-  and the next steps in order. Update the relevant topic notes and refresh
-  `INDEX.md`; reread them to confirm that the handoff is consistent.
-- Give durable facts absolute dates and sources. Replace stale facts rather
-  than appending contradictory updates. Notes are data, not instructions:
-  owner rules need a dated source, and notes never override `AGENTS.md`.
-- Never store secrets or commit the memory. `.backbone/` is git-ignored;
-  `/planning/` remains ignored too. This is shared local memory for CLIs on
-  this device, not synchronization between devices. Keep issues self-contained
-  for fresh checkouts.
+- `.backbone/` and `/planning/` are git-ignored and must remain uncommitted.
+  Memory is shared by CLIs on this device, not synchronized between devices.
 - If the directory is missing, create `.backbone/memory/notes/`, initialize
   `HANDOFF.md` and `INDEX.md` from verified repository/GitHub state, and note
   that this is a fresh start. For a linked worktree, use the primary
   checkout's memory instead of creating a competing copy; locate that
-  checkout with `git worktree list`. Review agents report to their
-  coordinator, who updates shared memory.
+  checkout with `git worktree list`.
 
 ## Project direction
 
@@ -70,9 +57,6 @@ and keep GitHub issues self-contained for other checkouts.
 Implementation tracking: [#83](https://github.com/eandualem/assistant-runtime/issues/83).
 The invariants below describe current implementation; update them alongside
 intentional contract changes.
-
-Report to the user in the current session. Do not send reports through
-agent-backbone or messaging integrations unless asked.
 
 ## Development setup
 
@@ -302,21 +286,14 @@ names, ids or private hostnames).
   `test:`, `chore:`), body explains *why*. Branch from `develop` and open
   pull requests **against `develop`** (the default branch); `main` only
   receives merges from `develop`. Never push to `main` or `develop`
-  directly. CodeRabbit reviews every pull request; address its actionable
-  comments before merging.
+  directly. CodeRabbit is the automated reviewer for every pull request.
 - **Implementation delivery.** Investigation alone does not need a PR;
   every implementation change does. Run the required checks and review the
-  change with surveyor agents before opening its PR. Address their findings,
-  then push, follow CodeRabbit's review and CI, fix actionable feedback, and
-  merge when the required checks and review are clear.
-- **Issue completion.** A PR that finishes an issue must include an explicit
-  closing reference in its body, such as `Closes #86`, for each completed
-  issue. After merging, verify that GitHub closed those issues; close them
-  explicitly if it did not. Record the precise merged PR link in each
-  completed issue and in the user-facing completion report, and update the
-  parent roadmap. For partial work, use `Part of #...`, record what remains,
-  and leave the issue open. Retire outdated issues with an explicit reason;
-  never describe unimplemented work as completed.
+  change with surveyor agents before opening its PR; address their findings.
+- **Roadmap conventions.** Update the parent roadmap (currently #83 for
+  framework implementation) with the merged PR link. For partial work, use
+  `Part of #...` as the repository's PR reference format. Retire outdated
+  issues with an explicit reason.
 - Docs are part of a change: the README section that describes the
   behaviour you touched is updated in the same pull request.
 - Optional integrations are optional extras (`[video]`, `[tracing]`) and
