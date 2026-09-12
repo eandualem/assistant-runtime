@@ -19,7 +19,10 @@ cd assistant-runtime
 uv sync                     # add --extra video --extra tracing for the optional features
 ```
 
-Or as a tool, once published: `uv tool install assistant-runtime`.
+Or install the released command-line tool: `uv tool install assistant-runtime`.
+With that installation, use `assistant-runtime` directly instead of `uv run
+assistant-runtime` in the commands below. To try a complete browser application,
+see the [reference-app guide](reference-app.md).
 
 ## 2. One key
 
