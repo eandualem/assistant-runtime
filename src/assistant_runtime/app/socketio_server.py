@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 # Maps event dict `type` to socket.io event name.
 # debug_* events are mapped dynamically (all → assistant:debug).
 _EVENT_TYPE_MAP: dict[str, str] = {
+    "voice": "assistant:voice",
     "agent_status": "assistant:status",
     "thinking_delta": "assistant:thinking_delta",
     "text_delta": "assistant:text_delta",

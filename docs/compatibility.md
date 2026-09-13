@@ -145,3 +145,20 @@ No dependency upgrade is required for these supported replacements. The
 history policy ([#87](https://github.com/eandualem/assistant-runtime/issues/87))
 and the recovery contract ([#92](https://github.com/eandualem/assistant-runtime/issues/92),
 [persistence](persistence.md)) are implemented on this baseline.
+
+## GPT-Live client delegation
+
+`tests/compatibility/test_voice.py` exercises the voice bridge with real
+Pydantic AI `FunctionModel` execution, native backend tools, deferred host
+results, saved history and cancellation. It also covers ownership and exclusion
+between an active voice reservation and asynchronous session administration.
+Only provider HTTP/WebSocket boundaries are faked. Unit tests cover the
+published Live protocol shapes, event replay, cumulative usage and finalization.
+The tests do not exercise a live OpenAI session, browser audio or provider billing.
+
+The installed OpenAI SDK has no Live client surface, and Pydantic AI's native
+Realtime API adapter is a different protocol. The optional `[voice]` transport
+therefore uses documented Live HTTP/WebSocket endpoints behind a private adapter.
+Backend execution continues exclusively through `StreamingService` and native
+Pydantic AI events/cancellation. Reevaluate the transport when upstream exposes
+Live client delegation; do not substitute a Realtime model based on its name.

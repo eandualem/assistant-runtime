@@ -377,3 +377,8 @@ def make_debug_completed_event(
         "type": "debug_completed",
         "duration_ms": round(duration_ms, 1),
     }
+
+
+def make_voice_event(call_id: str, event: str, data: dict) -> dict:
+    """Voice call events are distinct from delegated backend turn completion."""
+    return {"type": "voice", "call_id": call_id, "event": event, "data": data}

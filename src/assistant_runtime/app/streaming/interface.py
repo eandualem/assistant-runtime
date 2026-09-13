@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing
+from contextlib import aclosing, contextmanager
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -26,7 +26,9 @@ from assistant_runtime.app.streaming._event_builder import (
     make_debug_error_event,
     make_error_event,
     make_final_response_event,
+    make_voice_event,
 )
+from assistant_runtime.app.streaming._host_tool import clear_stale_pending_call
 from assistant_runtime.app.streaming._runner import TurnRunner, format_error_message
 from assistant_runtime.app.streaming._turn import TurnPlanner
 from assistant_runtime.app.streaming.config import StreamingConfig
@@ -60,6 +62,8 @@ class StreamingService:
         self._ingress: Any | None = None
         self._started = False
         self._active_turns: dict[str, TurnControl] = {}
+        self._session_leases: dict[str, str] = {}
+        self._session_mutations: set[str] = set()
 
     @property
     def _sessions(self) -> SessionStore:
@@ -95,7 +99,13 @@ class StreamingService:
         await asyncio.gather(*(turn.done.wait() for turn in turns))
         logger.info("Streaming service stopped")
 
-    async def cancel_session(self, session_id: str, *, principal: Principal | None = None) -> bool:
+    async def cancel_session(
+        self,
+        session_id: str,
+        *,
+        principal: Principal | None = None,
+        session_lease: str | None = None,
+    ) -> bool:
         """Request cancellation of the active turn; idle host actions are unchanged.
 
         Returns whether an active, cancellable turn was found. Its producer
@@ -105,8 +115,69 @@ class StreamingService:
         in-process callers that pass none act as the local operator.
         """
         await self._authorize(session_id, principal)
+        self.check_session_available(session_id, session_lease)
         turn = self._active_turns.get(session_id)
         return turn.cancel() if turn is not None else False
+
+    def check_session_available(self, session_id: str, session_lease: str | None = None) -> None:
+        """An active voice transport owns this session until it releases its lease."""
+        if session_id in self._session_mutations:
+            raise SessionError("Session administration is in progress")
+        lease = self._session_leases.get(session_id)
+        if lease is not None and lease != session_lease:
+            raise SessionError("Session is reserved by a voice call; use the voice call endpoints")
+
+    @contextmanager
+    def session_mutation(self, session_id: str):
+        """Exclude voice reservation throughout an asynchronous session mutation."""
+        self.check_session_available(session_id)
+        self._session_mutations.add(session_id)
+        try:
+            yield
+        finally:
+            self._session_mutations.discard(session_id)
+
+    async def authorize_session(self, session_id: str, principal: Principal) -> None:
+        """Check current session ownership without starting or cancelling a turn."""
+        if await self._sessions.get_context_if_exists_async(session_id) is None:
+            raise SessionError("Session not found")
+        await self._authorize(session_id, principal)
+
+    async def reserve_session(
+        self, session_id: str, lease: str, principal: Principal
+    ) -> list[dict]:
+        """Reserve an idle session and return client-visible text history only."""
+        await self._authorize(session_id, principal)
+        self.check_session_available(session_id)
+        if session_id in self._active_turns:
+            raise SessionError("A turn is already running in this session")
+        self._session_leases[session_id] = lease
+        try:
+            ctx = await self._sessions.ensure_owned_session(session_id, principal.id)
+            if ctx.get("pending_tool_call_id"):
+                raise SessionError("Resolve the pending host action before starting voice")
+            path = await self._sessions.get_message_path(session_id)
+            return [{"role": m["role"], "content": m["content"]} for m in path if m["content"]]
+        except BaseException:
+            self.release_session(session_id, lease)
+            raise
+
+    def release_session(self, session_id: str, lease: str) -> None:
+        if self._session_leases.get(session_id) == lease:
+            self._session_leases.pop(session_id)
+
+    async def cancel_reserved_work(self, session_id: str, lease: str, principal: Principal) -> None:
+        """Drain a transport-owned turn and resolve pending host calls as interrupted."""
+        await self.cancel_session(session_id, principal=principal, session_lease=lease)
+        await self.wait_for_session(session_id)
+        ctx = await self._sessions.get_context_if_exists_async(session_id)
+        if ctx is not None:
+            await clear_stale_pending_call(self._sessions, session_id, ctx, status="cancelled")
+
+    @staticmethod
+    def voice_event(call_id: str, event: str, data: dict) -> dict:
+        """Build a voice lifecycle envelope through the common wire-event builder."""
+        return make_voice_event(call_id, event, data)
 
     async def _authorize(self, session_id: str, principal: Principal | None) -> None:
         """Deny a principal that may not act on an existing session."""
@@ -207,6 +278,8 @@ class StreamingService:
         *,
         principal: Principal | None = None,
         native_sink: Callable[[Any], None] | None = None,
+        session_lease: str | None = None,
+        cancel_after_plan: Callable[[], bool] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Run one turn and yield events through ``agent_status: completed``.
 
@@ -225,13 +298,15 @@ class StreamingService:
         """
         if not self._started:
             raise StreamingError("Streaming service not started")
+        self.check_session_available(request.session_id, session_lease)
         while (previous := self._active_turns.get(request.session_id)) is not None:
             if not request.is_continuation and not request.is_steering:
                 previous.cancel()
             await previous.done.wait()
+            self.check_session_available(request.session_id, session_lease)
             if not self._started:
                 raise StreamingError("Streaming service not started")
-        turn = TurnControl(native_sink=native_sink)
+        turn = TurnControl(native_sink=native_sink, cancel_after_plan=cancel_after_plan)
         self._active_turns[request.session_id] = turn
         turn.task = asyncio.create_task(
             self._produce_turn(request, turn, principal or LOCAL_PRINCIPAL)
@@ -275,6 +350,10 @@ class StreamingService:
             async for event in self._setup_failure_envelope(request, e):
                 yield event
             return
+        # Once admitted, the runner saves accepted host results even when the
+        # native token is cancelled. Never cancel result validation halfway.
+        if turn.cancel_after_plan is not None and turn.cancel_after_plan():
+            turn.cancel()
         if self._ingress is not None and plan.kind == "message":
             # The session exists now; waiting messages ride along as steering.
             try:

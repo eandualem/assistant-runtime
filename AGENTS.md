@@ -93,7 +93,7 @@ execution, history, serialization, or the upstream dependency; see
 ## Invariants — do not route around these
 
 - **Every service and app module has the same skeleton** (`services/<name>/`,
-  `app/access`, `app/assistant`, `app/streaming`, `app/ingress`, `app/heartbeat`;
+  `app/access`, `app/assistant`, `app/streaming`, `app/voice`, `app/ingress`, `app/heartbeat`;
   the leaf modules `base`, `artifacts`, `host_context`, `principal`, `config`
   and the `app/routes` package are exempt).
   `config.py` (a frozen pydantic
@@ -106,7 +106,7 @@ execution, history, serialization, or the upstream dependency; see
   private to their module; other modules use the interface class only.
 - **Startup order is registration order** (`main.py:lifespan`): access,
   database, oauth, llm, history, media, mcp, artifacts, tools, assistant,
-  streaming, ingress, heartbeat.
+  streaming, voice, ingress, heartbeat.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
@@ -230,6 +230,19 @@ execution, history, serialization, or the upstream dependency; see
   `_agui.py`, optional `ag-ui` extra) is the reference; it maps the run
   input onto sessions, continuations and host actions and never runs the
   agent itself.
+- **Voice delegates through the shared pipeline.** Optional `app/voice` imports
+  `app/streaming` and owns the GPT-Live sideband; the browser owns WebRTC audio.
+  Voice configuration is startup-only and its API key is environment-only,
+  independent of the backend model and subscription authentication. One call
+  reserves its backend session; session administration excludes reservation
+  throughout asynchronous mutations. Client delegations use the normal planner
+  and runner, including host continuations. Protect submitted host results until
+  admission, then use native cancellation so subsequent work can stop while the
+  accepted result is saved. Speech interruption alone does not cancel tools.
+  Transcript/usage snapshots live in optional `voice_calls`, separate from the
+  backend message tree; raw audio is not stored, and restart never replays work.
+  `session.closed` confirms final usage; absent finalization stays explicit.
+  Docs: `docs/voice.md`.
 - **The system prompt is assembled from the profile's artifacts**, in the
   profile's order, then MCP connections, the current time, the host context
   and working memory. Stable fragments come first so provider prompt
