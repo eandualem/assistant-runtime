@@ -112,6 +112,15 @@ class SessionStore:
 
     # --- messages -----------------------------------------------------------
 
+    async def ensure_owned_session(self, session_id: str, owner_id: str) -> dict[str, Any]:
+        """Create an empty owned conversation for a long-lived host transport."""
+        ctx = await self.get_context_async(session_id)
+        if ctx.get("owner_id") is None:
+            ctx["owner_id"] = owner_id
+        if self._db is not None:
+            await self._db.ensure_session(session_id, ctx.get("title"), ctx.get("owner_id"))
+        return ctx
+
     async def register_user_message(
         self, request: AssistantRequest, *, owner_id: str | None = None
     ) -> tuple[dict[str, Any], MessageRecord]:

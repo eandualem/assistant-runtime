@@ -25,6 +25,8 @@ class TurnControl:
     # Receives every native Pydantic AI event of the turn's runs, before the
     # application mapping; protocol adapters build their own encoding from it.
     native_sink: Callable[[Any], None] | None = None
+    # A transport can defer cancellation until a submitted result is admitted.
+    cancel_after_plan: Callable[[], bool] | None = None
 
     def cancel(self) -> bool:
         """Request native cancellation without interrupting persistence or delivery."""

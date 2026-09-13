@@ -159,6 +159,26 @@ from native [Pydantic AI capabilities](composition.md).
 `video_timeout_seconds`, `video_max_concurrent_jobs`. Video needs the
 `[video]` extra and `RUNWAYML_API_SECRET` or `LUMAAI_API_KEY`.
 
+### Voice (`VOICE__*`)
+
+Optional GPT-Live provider policy, fixed at startup; these are not request
+or runtime-overlay tunables. Install `[voice]` and see [the frontend contract](voice.md).
+
+`enabled` (`false`), `model` (`gpt-live-1`), `voice` (`marin`), `api_key_env`
+(`OPENAI_API_KEY`, the name of an environment variable), `instructions`
+(neutral concise speech and backend delegation). Voice instructions are
+separate from the backend assistant's profile and artifacts.
+
+`max_sessions` (`4`, 1–100), `max_duration_seconds` (`1800`, 15–7200),
+`connect_timeout_seconds` (`20`, >0–60), `close_timeout_seconds` (`10`, >0–60),
+`max_transcript_chars` (`200000`, 1000–1000000), `context_chars` (`16000`,
+1000–24000), `retained_calls` (`100`, 1–1000), `event_buffer_size` (`512`,
+16–4096). Transcript context limits apply to delegated prompts; retained
+calls and replay events are bounded process-memory caches. Database
+checkpoints remain until their parent session is deleted. Transcript fragment
+and event-count bounds also close excessive calls. Limits are per process;
+use one owning runtime process or sticky routing for a call's full lifecycle.
+
 ### Heartbeat (`HEARTBEAT__*`)
 
 `enabled` (`false`), `interval_seconds` (`300`), `startup_delay_seconds`

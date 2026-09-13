@@ -283,3 +283,16 @@ default `neutral` profile defines `instructions` and `scratchpad`.
 | `GET /api/media/{image_id}` | a generated image from the cache |
 | `GET /api/media/video/{job_id}` | video job status |
 | `GET /api/debug/tools` | the complete tool registry and MCP server status |
+
+## Voice calls
+
+The optional [GPT-Live integration](voice.md) exposes authenticated
+`/api/voice/status` and `/api/voice/calls` endpoints. POST an SDP offer to
+create a call, GET its snapshot or `/events` SSE stream, POST `/close` to
+finalize it, POST `/cancel` to cancel delegated backend work, PATCH `/context`
+to update host context, and POST `/delegations/{id}/tool-result` for a pending
+host action. The voice guide specifies request/response and event shapes.
+An active call reserves its runtime session: ordinary turns, cancellation,
+repair, deletion and reassignment return `409`. A call does not use the
+ordinary chat continuation endpoint. Backend stream events are nested inside
+voice SSE envelopes, preserving the same event shapes and saved message tree.

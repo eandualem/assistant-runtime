@@ -22,6 +22,7 @@ from assistant_runtime.app.settings import RuntimeSettings
 from assistant_runtime.app.streaming.exceptions import StreamingError
 from assistant_runtime.app.streaming.factory import register_streaming
 from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.app.voice.factory import register_voice
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.config import AppSettings
 from assistant_runtime.logging_config import setup_logging
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await register_tools(app.state, lifecycle, settings=settings)
         await register_assistant(app.state, lifecycle, settings=settings)
         await register_streaming(app.state, lifecycle, settings=settings)
+        await register_voice(app.state, lifecycle, settings=settings)
         await register_ingress(app.state, lifecycle)
         await register_heartbeat(app.state, lifecycle, settings=settings)
 

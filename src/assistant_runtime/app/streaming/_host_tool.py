@@ -34,7 +34,7 @@ STALE_HOST_TOOL_OUTPUT = (
 
 
 async def clear_stale_pending_call(
-    sessions: SessionStore, session_id: str, session_context: dict[str, Any]
+    sessions: SessionStore, session_id: str, session_context: dict[str, Any], *, status="superseded"
 ) -> None:
     """Abandon a pending host-tool call when a new message arrives before its result.
 
@@ -63,6 +63,7 @@ async def clear_stale_pending_call(
             session_context,
             assistant_message_id=assistant_message_id,
             tool_call_ids=set(batch) | {str(tool_call_id)},
+            status=status,
         )
     await sessions.clear_pending_action(session_id)
     session_context.pop("current_assistant_message_id", None)
@@ -75,6 +76,7 @@ async def _mark_superseded(
     *,
     assistant_message_id: str,
     tool_call_ids: set[str],
+    status="superseded",
 ) -> None:
     """Persist synthetic outputs for the abandoned calls on their assistant message."""
     record = session_context["message_index"].get(assistant_message_id)
@@ -86,7 +88,9 @@ async def _mark_superseded(
             pending_call_ids=sorted(tool_call_ids),
         )
         return
-    segments = superseded_segments(record.get("segments"), tool_call_ids=tool_call_ids)
+    segments = superseded_segments(
+        record.get("segments"), tool_call_ids=tool_call_ids, status=status
+    )
     if segments is None:
         logger.warning(
             "Stale host tool not found in assistant history; pending state cleared only",
@@ -99,7 +103,7 @@ async def _mark_superseded(
 
 
 def superseded_segments(
-    segments: list[dict[str, Any]] | None, *, tool_call_ids: set[str]
+    segments: list[dict[str, Any]] | None, *, tool_call_ids: set[str], status="superseded"
 ) -> list[dict[str, Any]] | None:
     """A copy of ``segments`` with the abandoned, unanswered calls resolved; None if none found."""
     if not segments:
@@ -114,7 +118,12 @@ def superseded_segments(
                 continue
             found = True
             if "output" not in tool:
-                resolve_tool_entry(tool, output=STALE_HOST_TOOL_OUTPUT, status="superseded")
+                output = (
+                    STALE_HOST_TOOL_OUTPUT
+                    if status == "superseded"
+                    else "[Host action interrupted; its external outcome is unknown.]"
+                )
+                resolve_tool_entry(tool, output=output, status=status)
     return updated if found else None
 
 

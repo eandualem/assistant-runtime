@@ -56,6 +56,18 @@ class SessionORM(Base):
     )
 
 
+class VoiceCallORM(Base):
+    """Checkpointed voice transcript/usage; delegated turns remain normal messages."""
+
+    __tablename__ = "voice_calls"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
 class MessageORM(Base):
     """Tree-structured conversation messages."""
 

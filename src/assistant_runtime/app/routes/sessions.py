@@ -15,6 +15,8 @@ from assistant_runtime.app.assistant._serialization import (
 )
 from assistant_runtime.app.assistant._stale_tools import find_tool_entry
 from assistant_runtime.app.assistant.deps import AssistantServiceDep
+from assistant_runtime.app.streaming.deps import StreamingServiceDep
+from assistant_runtime.app.voice.deps import OptionalVoiceServiceDep
 from assistant_runtime.principal import Principal, can_access_session
 
 if TYPE_CHECKING:
@@ -142,25 +144,37 @@ async def get_session_tree(
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(
-    session_id: str, service: AssistantServiceDep, principal: PrincipalDep
+    session_id: str,
+    service: AssistantServiceDep,
+    principal: PrincipalDep,
+    streaming: StreamingServiceDep,
+    voice: OptionalVoiceServiceDep,
 ) -> dict:
     """Delete a session and all its context."""
     sessions = service.get_session_store()
-    await _get_session_context(session_id, sessions, principal)
-    await sessions.delete_session(session_id)
+    with streaming.session_mutation(session_id):
+        await _get_session_context(session_id, sessions, principal)
+        await sessions.delete_session(session_id)
+        if voice is not None:
+            voice.forget_session(session_id)
     return {"session_id": session_id, "deleted": True}
 
 
 @router.patch("/sessions/{session_id}/owner")
 async def set_session_owner(
-    session_id: str, body: OwnerUpdate, service: AssistantServiceDep, admin: AdminDep
+    session_id: str,
+    body: OwnerUpdate,
+    service: AssistantServiceDep,
+    admin: AdminDep,
+    streaming: StreamingServiceDep,
 ) -> dict:
     """Assign a session to a principal (administration; null makes it unowned)."""
     sessions = service.get_session_store()
     if sessions is None:
         raise HTTPException(status_code=404, detail="Session not found")
     try:
-        await sessions.set_owner(session_id, body.owner_id)
+        with streaming.session_mutation(session_id):
+            await sessions.set_owner(session_id, body.owner_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     return {"session_id": session_id, "owner_id": body.owner_id}
@@ -168,7 +182,10 @@ async def set_session_owner(
 
 @router.post("/sessions/{session_id}/repair")
 async def repair_session(
-    session_id: str, service: AssistantServiceDep, principal: PrincipalDep
+    session_id: str,
+    service: AssistantServiceDep,
+    principal: PrincipalDep,
+    streaming: StreamingServiceDep,
 ) -> dict:
     """Resolve host tools stuck in a session as ``unknown``.
 
@@ -176,10 +193,10 @@ async def repair_session(
     every tool without a result a synthetic one, so the session can continue.
     """
     sessions = service.get_session_store()
-    await _get_session_context(session_id, sessions, principal)
-
     try:
-        report = await sessions.repair_stale_host_tools(session_id)
+        with streaming.session_mutation(session_id):
+            await _get_session_context(session_id, sessions, principal)
+            report = await sessions.repair_stale_host_tools(session_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
