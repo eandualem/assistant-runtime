@@ -103,6 +103,21 @@ A client needs a Socket.IO connection to the `/assistant` namespace, a
 [docs/api.md](docs/api.md); the host contract in
 [docs/host-contract.md](docs/host-contract.md).
 
+## GPT-Live voice
+
+Install the `[voice]` extra, set `VOICE__ENABLED=true` and provide an
+`OPENAI_API_KEY` to enable GPT-Live 1 speech-to-speech. The browser connects
+with WebRTC; the runtime creates the Live session and delegates tasks into
+its existing Pydantic AI pipeline, including backend and host tools. The
+backend can still use the local Codex subscription provider; the voice
+connection requires separate Live API access.
+
+The frontend connection, transcript/progress events, host-tool results,
+cancellation and duration accounting are documented in [voice integration](docs/voice.md).
+Voice is disabled by default and works without Postgres. Offline protocol
+and real-agent tests cover the bridge; an API-key-backed browser call is
+still required to verify live audio and provider access.
+
 ## Configuration in one screen
 
 Standalone commands read configuration from the environment or a `.env` file
@@ -127,7 +142,7 @@ TOOLS__PAGE_SCOPES='{"tasks": ["create_issue", "get_time"]}'                   #
 Three tiers apply at request time: the environment, a runtime overlay
 changed through `PATCH /api/settings`, and per-request overrides in the
 message. Details, defaults and the optional extras (`[video]`,
-`[tracing]`) are in [docs/configuration.md](docs/configuration.md).
+`[tracing]`, `[voice]`) are in [docs/configuration.md](docs/configuration.md).
 
 ### OpenAI through a ChatGPT/Codex subscription
 
