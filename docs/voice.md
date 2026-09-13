@@ -121,7 +121,7 @@ The envelope's `event` values are:
   Speakers can overlap. Fragments are not authoritative complete turns and an
   output transcript is not proof the user heard the audio.
 - `backend`: `{delegation_id, event}` where the inner event is the normal
-  [runtime stream event](api.md#socketio). Render tool progress and full backend
+  [runtime stream event](api.md#socketio-namespace-assistant). Render tool progress and full backend
   responses from these events or saved session history.
 - `delegation`: `{id, status, pending_tool_call?}`; states include `running`,
   `pending_host`, `superseded`, `cancelled`, `failed`, `result_sent`,
