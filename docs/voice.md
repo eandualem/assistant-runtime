@@ -123,7 +123,7 @@ The envelope's `event` values are:
 - `backend`: `{delegation_id, event}` where the inner event is the normal
   [runtime stream event](api.md#socketio-namespace-assistant). Render tool progress and full backend
   responses from these events or saved session history.
-- `delegation`: `{id, status, pending_tool_call?}`; states include `running`,
+- `delegation`: `{id, status, pending_tool_call?}`; states include `waiting` (backend cancellation is draining), `running`,
   `pending_host`, `superseded`, `cancelled`, `failed`, `result_sent`,
   `result_accepted`, `result_rejected`. An accepted commentary command does not
   mean its result was spoken. Errors may subsequently be followed by a generic

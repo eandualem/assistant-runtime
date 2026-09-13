@@ -235,17 +235,41 @@ class VoiceService:
 
     async def cancel_work(self, call_id: str, principal: Principal) -> dict:
         call = await self._active(call_id, principal)
+        cancelled_waiting = False
         async with call.control_lock:
             if call.stop_requested.is_set():
                 raise VoiceError("Voice call is closing")
-            previous = call.active_delegation
-            call.active_delegation = None
-            call.pending = None
-            self._cancel_unprotected(call)
-            # Process already submitted results before clearing pending state.
-            barrier = asyncio.get_running_loop().create_future()
-            self._enqueue(call, "", None, barrier)
-            await asyncio.shield(barrier)
+            if call.cancelling:
+                ident = call.deferred_delegation
+                if ident is not None:
+                    call.delegations[ident]["status"] = "cancelled"
+                    self._emit(call, "delegation", {"id": ident, "status": "cancelled"})
+                    call.active_delegation = None
+                    call.deferred_delegation = None
+                    cancelled_waiting = True
+                task = call.cancel_task
+            else:
+                previous = call.active_delegation
+                # Enqueue before changing state so a full queue is retryable.
+                barrier = asyncio.get_running_loop().create_future()
+                self._enqueue(call, "", None, barrier)
+                call.cancelling = True
+                call.active_delegation = None
+                call.pending = None
+                self._cancel_unprotected(call)
+                task = call.cancel_task = asyncio.create_task(
+                    self._cancel_backend(call, previous, barrier)
+                )
+        # The task owns cleanup even if the HTTP caller disconnects. The
+        # sideband reader remains free to consume transcripts and final usage.
+        result = await asyncio.shield(task)
+        return {"cancelled": result["cancelled"] or cancelled_waiting}
+
+    async def _cancel_backend(self, call: VoiceCall, previous: str | None, barrier) -> dict:
+        try:
+            error = await barrier
+            if error:
+                raise VoiceError(error)
             await self._streaming.cancel_reserved_work(
                 call.offer.session_id, call.lease, call.principal
             )
@@ -253,6 +277,19 @@ class VoiceService:
                 call.delegations[previous]["status"] = "cancelled"
                 self._emit(call, "delegation", {"id": previous, "status": "cancelled"})
             return {"cancelled": previous is not None}
+        except Exception:
+            call.reason = "backend_cancel_failed"
+            call.stop_requested.set()
+            raise
+        finally:
+            async with call.control_lock:
+                call.cancelling = False
+                ident = call.deferred_delegation
+                call.deferred_delegation = None
+                if ident and ident == call.active_delegation and not call.stop_requested.is_set():
+                    self._enqueue(call, ident, None)
+                    call.delegations[ident]["status"] = "running"
+                    self._emit(call, "delegation", {"id": ident, "status": "running"})
 
     async def events(
         self, call_id: str, principal: Principal, after: int = 0
@@ -338,6 +375,8 @@ class VoiceService:
                 _, _, receipt = call.queue.get_nowait()
                 if receipt is not None and not receipt.done():
                     receipt.set_result("Voice worker stopped before the result could be recorded")
+            if call.cancel_task is not None:
+                await asyncio.gather(call.cancel_task, return_exceptions=True)
             for task in (reader, saver, stop):
                 task.cancel()
             await asyncio.gather(reader, saver, stop, return_exceptions=True)
@@ -349,7 +388,7 @@ class VoiceService:
                 await call.connection.close()
             call.pending = None
             for state in call.delegations.values():
-                if state["status"] in ("running", "pending_host"):
+                if state["status"] in ("running", "pending_host", "waiting"):
                     state["status"] = "cancelled"
             call.status = "closed" if call.finalized else "interrupted"
             self._emit(
@@ -418,6 +457,7 @@ class VoiceService:
                 if kind == "session.closed":
                     call.finalized = True
                     call.reason = event.get("reason") or call.reason
+                    call.stop_requested.set()
                 self._emit(call, "usage", {"usage": call.usage, "finalized": call.finalized})
                 if call.finalized:
                     return
@@ -426,6 +466,7 @@ class VoiceService:
                 ident = delegation.get("id")
                 if (
                     not isinstance(ident, str)
+                    or not ident
                     or delegation.get("target") != "client"
                     or ident in call.delegations
                 ):
@@ -441,15 +482,20 @@ class VoiceService:
                     if previous and call.delegations[previous]["status"] in (
                         "running",
                         "pending_host",
+                        "waiting",
                     ):
                         call.delegations[previous]["status"] = "superseded"
                         self._emit(call, "delegation", {"id": previous, "status": "superseded"})
                     call.active_delegation = ident
                     call.pending = None
-                    call.delegations[ident] = {"status": "running"}
+                    status = "waiting" if call.cancelling else "running"
+                    call.delegations[ident] = {"status": status}
                     self._cancel_unprotected(call)
-                    self._enqueue(call, ident, None)
-                    self._emit(call, "delegation", {"id": ident, "status": "running"})
+                    if call.cancelling:
+                        call.deferred_delegation = ident
+                    else:
+                        self._enqueue(call, ident, None)
+                    self._emit(call, "delegation", {"id": ident, "status": status})
             elif kind in ("session.commentary.appended", "error"):
                 command_id = event.get("client_event_id")
                 if kind == "error":

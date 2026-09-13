@@ -36,6 +36,9 @@ class VoiceCall:
     task: asyncio.Task | None = None
     work: asyncio.Task | None = None
     work_continuation: bool = False
+    cancelling: bool = False
+    cancel_task: asyncio.Task | None = None
+    deferred_delegation: str | None = None
     control_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=32))
     changed: asyncio.Event = field(default_factory=asyncio.Event)

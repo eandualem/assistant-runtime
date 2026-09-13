@@ -10,7 +10,7 @@ from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.main import create_app
 from assistant_runtime.principal import Principal
 from assistant_runtime.services.llm.interface import LlmService
-from tests.unit.app.voice.test_voice import Transport, delegate, until
+from tests.voice_helpers import Transport, delegate, until
 
 from .test_execution import calls
 

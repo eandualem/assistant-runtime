@@ -15,53 +15,10 @@ from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.interface import VoiceService
 from assistant_runtime.app.voice.models import VoiceOffer, VoiceToolResult
 from assistant_runtime.principal import Principal
+from tests.voice_helpers import Transport, delegate, until
 
 OWNER = Principal("owner")
 OTHER = Principal("other")
-
-
-class Connection:
-    def __init__(self):
-        self.frames = asyncio.Queue()
-        self.sent = []
-        self.closed = False
-        self.finalize = True
-
-    def feed(self, kind, **data):
-        self.frames.put_nowait(json.dumps({"type": kind, **data}))
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        frame = await self.frames.get()
-        if frame is None:
-            raise StopAsyncIteration
-        return frame
-
-    async def send(self, frame):
-        event = json.loads(frame)
-        self.sent.append(event)
-        if event["type"] == "session.close" and self.finalize:
-            self.feed("session.closed", usage={"seconds": 12}, reason="close_requested")
-
-    async def close(self):
-        self.closed = True
-
-
-class Transport:
-    def __init__(self):
-        self.connection = Connection()
-        self.created = []
-        self.attach = AsyncMock(return_value=self.connection)
-        self.stopped = False
-
-    async def create(self, key, config, sdp):
-        self.created.append((key, config, sdp))
-        return "live_provider", "answer"
-
-    async def stop(self):
-        self.stopped = True
 
 
 class Backend:
@@ -107,12 +64,6 @@ class Backend:
             }
 
 
-async def until(predicate):
-    async with asyncio.timeout(2):
-        while not predicate():
-            await asyncio.sleep(0.001)
-
-
 @pytest.fixture
 async def setup(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-never-sent")
@@ -129,12 +80,6 @@ async def create(setup):
     service, backend, transport = setup
     response = await service.create(VoiceOffer(session_id="conversation", sdp="offer"), OWNER)
     return response["call_id"], transport.connection
-
-
-def delegate(connection, ident="item_1", text="Check availability"):
-    if text:
-        connection.feed("session.input_transcript.delta", delta=text, start_ms=1, end_ms=2)
-    connection.feed("session.delegation.created", delegation={"id": ident, "target": "client"})
 
 
 async def test_creation_uses_live_client_delegation_and_never_exposes_key(setup):
@@ -441,3 +386,87 @@ async def test_reservation_is_held_until_final_checkpoint_is_complete(setup):
     assert not backend.leases
     service.forget_session("conversation")
     assert call_id not in service._calls
+
+
+async def test_empty_provider_delegation_is_ignored_without_stopping_worker(setup):
+    service, backend, _ = setup
+    call_id, connection = await create(setup)
+    delegate(connection, ident="")
+    delegate(connection, ident="valid")
+    await until(lambda: connection.sent)
+    assert not service._calls[call_id].done.is_set()
+    assert "" not in service._calls[call_id].delegations
+    assert len(backend.requests) == 1
+    assert connection.sent[0]["delegation_id"] == "valid"
+
+
+@pytest.mark.parametrize("provider_closes", [False, True])
+async def test_cancel_cleanup_does_not_block_sideband_or_lose_guard_on_http_disconnect(
+    setup, provider_closes
+):
+    service, backend, _ = setup
+    started, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def runner(request):
+        if len(backend.requests) == 1:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup.set()
+                await release.wait()
+        yield {"type": "final_response", "model": "test", "content": "Second request completed"}
+
+    backend.runner = runner
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
+    delegate(connection)
+    await asyncio.wait_for(started.wait(), 2)
+    cancelling = asyncio.create_task(service.cancel_work(call_id, OWNER))
+    await asyncio.wait_for(cleanup.wait(), 2)
+    cancelling.cancel()  # Simulate the HTTP caller disappearing during cleanup.
+    with pytest.raises(asyncio.CancelledError):
+        await cancelling
+    delegate(connection, ident="item_2", text="Check a second item")
+    connection.feed("session.usage.updated", usage={"seconds": 9})
+    await until(lambda: call.usage.get("seconds") == 9)
+    assert call.cancelling
+    assert call.delegations["item_2"]["status"] == "waiting"
+    assert len(backend.requests) == 1
+    if provider_closes:
+        connection.feed("session.closed", usage={"seconds": 10}, reason="provider_closed")
+        await until(lambda: call.finalized)
+        assert not call.done.is_set()
+    release.set()
+    if provider_closes:
+        await asyncio.wait_for(call.done.wait(), 2)
+        assert len(backend.requests) == 1
+        assert call.snapshot()["finalized"] is True
+    else:
+        await until(lambda: any(e.get("delegation_id") == "item_2" for e in connection.sent))
+        assert len(backend.requests) == 2
+    assert not call.cancelling
+
+
+async def test_second_cancel_discards_delegation_waiting_for_cleanup(setup):
+    service, backend, _ = setup
+    call_id, connection = await create(setup)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def cleanup(*args):
+        entered.set()
+        await release.wait()
+
+    backend.cancel_reserved_work.side_effect = cleanup
+    first = asyncio.create_task(service.cancel_work(call_id, OWNER))
+    await asyncio.wait_for(entered.wait(), 2)
+    delegate(connection, ident="waiting")
+    call = service._calls[call_id]
+    await until(lambda: call.deferred_delegation == "waiting")
+    second = asyncio.create_task(service.cancel_work(call_id, OWNER))
+    await until(lambda: call.deferred_delegation is None)
+    release.set()
+    assert await first == {"cancelled": False}
+    assert await second == {"cancelled": True}
+    assert call.delegations["waiting"]["status"] == "cancelled"
+    assert not backend.requests
