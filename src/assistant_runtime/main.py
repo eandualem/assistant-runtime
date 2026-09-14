@@ -32,6 +32,11 @@ from assistant_runtime.services.history.factory import register_history
 from assistant_runtime.services.llm.factory import register_llm
 from assistant_runtime.services.mcp.factory import register_mcp
 from assistant_runtime.services.media.factory import register_media
+from assistant_runtime.services.oauth.exceptions import (
+    OAuthCodexSyncError,
+    OAuthError,
+    OAuthNotConfiguredError,
+)
 from assistant_runtime.services.oauth.factory import register_oauth
 from assistant_runtime.services.tools.factory import register_tools
 from assistant_runtime.services.tracing import initialize_tracing, shutdown_tracing
@@ -138,6 +143,20 @@ def create_app(
     )
 
     # Exception handlers
+    @app.exception_handler(OAuthError)
+    async def oauth_error_handler(request, exc: OAuthError):
+        if isinstance(exc, OAuthNotConfiguredError):
+            status_code, message = 503, str(exc)
+        elif isinstance(exc, OAuthCodexSyncError):
+            status_code, message = 400, str(exc)
+        else:
+            # Provider error bodies may contain sensitive OAuth details.
+            status_code, message = 502, "OAuth provider request failed; reconnect or retry"
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": message, "type": exc.__class__.__name__},
+        )
+
     @app.exception_handler(AuthenticationError)
     async def authentication_error_handler(request, exc: AuthenticationError):
         return JSONResponse(status_code=401, content={"error": str(exc), "type": "Unauthorized"})

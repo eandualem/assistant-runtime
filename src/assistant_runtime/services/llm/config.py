@@ -49,3 +49,11 @@ class LLMConfig(BaseModel):
             "decides what the subscription allows."
         ),
     )
+    codex_only: bool = Field(
+        default=False,
+        description=(
+            "Require ChatGPT/Codex subscription authentication for every LLM call. "
+            "Reject other providers, excluded models and unavailable OAuth; never use API keys. "
+            "Does not govern separate voice or media services."
+        ),
+    )
