@@ -68,6 +68,7 @@ from assistant_runtime.app.streaming._host_tool import pending_call_payloads, qu
 from assistant_runtime.app.streaming._usage import (
     cache_counts,
     merge_usage,
+    response_service_tiers,
     usage_dict,
     with_auxiliary,
 )
@@ -130,6 +131,7 @@ class _RunState:
     assistant_segments: list[dict[str, Any]] | None = None
     run_usage: Any = None
     usage: dict[str, int] | None = None
+    service_tiers: list[dict[str, Any]] | None = None
     output: Any = None
     final_output: str | None = None
     pending_tool_call: dict[str, Any] | None = None
@@ -711,6 +713,13 @@ class TurnRunner:
         state.assistant_messages.extend(new_messages)
         state.run_usage = result.usage
         state.usage = merge_usage(plan.prior_usage, usage_dict(result))
+        # Counts are cumulative within a turn; tiers arrive per response. Restored host
+        # history may lack provider_details, so retain the prior usage prefix explicitly.
+        if state.service_tiers is None:
+            state.service_tiers = list((plan.prior_usage or {}).get("service_tiers") or [])
+        state.service_tiers.extend(response_service_tiers(new_messages))
+        if state.usage is not None and state.service_tiers:
+            state.usage["service_tiers"] = list(state.service_tiers)
         if not isinstance(result, RunCancelled):
             state.output = result.output
 

@@ -26,7 +26,7 @@ from assistant_runtime.model_catalog import (
     PROVIDER_DEFAULT_SUMMARIZATION_MODELS,
     PROVIDER_ENV_VARS,
 )
-from assistant_runtime.services.llm._codex_model import OpenAICodexResponsesModel
+from assistant_runtime.services.llm._codex_model import CodexResponses, OpenAICodexResponsesModel
 from assistant_runtime.services.llm._settings import build_model_settings, validate_model_id
 from assistant_runtime.services.llm.config import LLMConfig, ProviderConfig
 from assistant_runtime.services.llm.exceptions import ProviderConfigError, classify_llm_error
@@ -187,6 +187,7 @@ class LlmService:
             "providers": providers,
             "primary_model": self.effective_primary_model(),
             "codex_only": self._config.codex_only,
+            "codex_service_tier": self._config.codex_service_tier,
         }
 
     async def reload_provider_key(self, provider: str, api_key: str) -> None:
@@ -373,6 +374,10 @@ class LlmService:
         # The subscription backend takes the Responses API settings but not the
         # sampling ones, max_output_tokens, or previous_response_id chaining.
         codex_settings: dict[str, Any] = {"openai_store": False}
+        if self._config.codex_service_tier is not None:
+            codex_settings["openai_service_tier"] = (
+                "priority" if self._config.codex_service_tier == "fast" else "default"
+            )
         if isinstance(settings, dict):
             for key in (
                 "timeout",
@@ -402,6 +407,7 @@ class LlmService:
             default_headers={"ChatGPT-Account-Id": session.account_id},
             http_client=http_client,
         )
+        openai_client.responses = CodexResponses(openai_client)
         self._codex_provider = OpenAIProvider(openai_client=openai_client)
         self._codex_provider_identity = identity
         return self._codex_provider

@@ -1,5 +1,7 @@
 """Configuration for the LLM service module."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from assistant_runtime.model_catalog import ALLOWED_PROVIDERS
@@ -55,5 +57,14 @@ class LLMConfig(BaseModel):
             "Require ChatGPT/Codex subscription authentication for every LLM call. "
             "Reject other providers, excluded models and unavailable OAuth; never use API keys. "
             "Does not govern separate voice or media services."
+        ),
+    )
+
+    codex_service_tier: Literal["default", "fast"] | None = Field(
+        default=None,
+        description=(
+            "Requested Codex subscription service tier. Unset omits the wire field; "
+            "fast requests priority processing with higher subscription credit consumption. "
+            "Only affects Codex-authenticated LLM calls, not API-key or voice/media calls."
         ),
     )

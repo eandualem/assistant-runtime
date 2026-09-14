@@ -173,3 +173,15 @@ Silent host decisions are exercised with native `ToolOutput` plus
 receipt-only completion, rejected multiple actions, and native cancellation.
 Conversation-only voice uses the existing offline transport tests; no provider
 allocation is part of these checks.
+
+
+Codex Fast mode uses native `openai_service_tier` serialization. The subscription
+adapter observes the OpenAI SDK's already-decoded terminal response events through
+its public Responses resource and async stream interface, because Pydantic AI
+2.38 does not retain `Response.service_tier` in its public model response. A
+request-scoped observer adds only requested/actual tier metadata to the public
+`StreamedResponse.provider_details`; no custom SSE parsing or agent execution is
+introduced. `test_codex_fast.py` exercises real native execution and HTTP wire
+serialization with a fake provider, including concurrent requests, missing or
+downgraded actual tier and rejected priority requests. Remove this observation
+adapter when upstream preserves the field natively with equivalent evidence.

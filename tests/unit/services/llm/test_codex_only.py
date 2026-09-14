@@ -11,13 +11,16 @@ from assistant_runtime.services.llm.exceptions import ProviderConfigError
 from assistant_runtime.services.llm.interface import LlmService
 
 
+@pytest.mark.parametrize("tier", [None, "fast"])
 @pytest.mark.parametrize("path", ["build_agent", "execute"])
 @pytest.mark.parametrize(
     "scenario", ["missing", "disconnected", "expired", "excluded", "other_provider"]
 )
-async def test_rejects_before_agent_or_api_transport(path, scenario, monkeypatch):
+async def test_rejects_before_agent_or_api_transport(path, scenario, tier, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-api-key-must-not-be-used")
-    service = LlmService(LLMConfig(codex_only=True, codex_models=["gpt-5.6-sol"]))
+    service = LlmService(
+        LLMConfig(codex_only=True, codex_models=["gpt-5.6-sol"], codex_service_tier=tier)
+    )
     if scenario != "missing":
         session = (
             None
