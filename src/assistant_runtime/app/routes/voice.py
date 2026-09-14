@@ -1,7 +1,7 @@
 """Authenticated GPT-Live browser negotiation and backend event/control endpoints."""
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from assistant_runtime.app.access.deps import PrincipalDep
 from assistant_runtime.app.voice.deps import VoiceServiceDep
@@ -15,6 +15,8 @@ async def _http(awaitable):
     try:
         return await awaitable
     except VoiceError as exc:
+        if exc.metadata:
+            return JSONResponse({"detail": str(exc), **exc.metadata}, status_code=exc.status_code)
         raise HTTPException(exc.status_code, str(exc)) from exc
 
 
