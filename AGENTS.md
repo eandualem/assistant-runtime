@@ -230,8 +230,16 @@ execution, history, serialization, or the upstream dependency; see
   `_agui.py`, optional `ag-ui` extra) is the reference; it maps the run
   input onto sessions, continuations and host actions and never runs the
   agent itself.
+- **Silent host decisions** opt in through request `output_mode: host_tools`: only
+  host-context actions and native structured hold are offered, at most one action
+  is admitted, and model prose is neither published nor saved in message snapshots.
+  Pending actions persist their output mode; receipt-only plans save the result
+  without another model, summarization or working-memory call. Hosts own scheduling
+  and physical cancellation. Docs: `docs/host-contract.md`.
 - **Voice delegates through the shared pipeline.** Optional `app/voice` imports
   `app/streaming` and owns the GPT-Live sideband; the browser owns WebRTC audio.
+  Conversation-only calls create no backend worker and reject tool-result
+  admission; `VOICE__DELEGATION_ENABLED=false` is the startup ceiling.
   Voice configuration is startup-only and its API key is environment-only,
   independent of the backend model and subscription authentication. One call
   reserves its backend session; session administration excludes reservation

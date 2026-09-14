@@ -592,6 +592,26 @@ class TestPendingActionPersistence:
         assert pending_action_from_context(db.save_state.await_args.args[1]) is None
         assert store.get_context("sess-1").get("pending_tool_call_id") is None
 
+    async def test_host_decision_mode_survives_save_restore_and_clear(self) -> None:
+        store, db = _store_with_db()
+        await _seed_basic_turn(store)
+        await store.set_pending_action(
+            "sess-1",
+            tool_call_id="call-1",
+            tool_name="ui_navigate",
+            assistant_message_id="a-1",
+            output_mode="host_tools",
+        )
+        saved = pending_action_from_context(store.get_context("sess-1"))
+        assert saved["output_mode"] == "host_tools"
+        saved["assistant_message_id"] = "assistant-1"
+        restored, _ = _store_with_db(_loaded(saved))
+        ctx = await restored.get_context_if_exists_async("sess-1")
+        assert ctx["pending_output_mode"] == "host_tools"
+        await restored.clear_pending_action("sess-1")
+        assert "pending_output_mode" not in ctx
+        assert pending_action_from_context(ctx) is None
+
     async def test_load_restores_a_stored_pending_action_and_repairs_nothing(self) -> None:
         pending = {
             "tool_call_id": "call-1",

@@ -32,7 +32,7 @@ sessions live in memory, and an unconfigured integration reports
 
 `POST /api/chat` with a message body (below) runs the same turn pipeline
 as the socket and returns `{"content", "model", "session_id",
-"turn_number", "message_id", "pending_tool_call"}` when the turn ends.
+"turn_number", "message_id", "pending_tool_call", "decision"}` when the turn ends.
 `pending_tool_call` is set when the turn stopped on a host tool call; answer
 it with a continuation body (`tool_call_id`, `tool_result`). A request
 that does not fit the session is a 409 and is not worth retrying: unknown
@@ -41,6 +41,10 @@ session or parent, duplicate message id, a continuation whose
 when the session has no conversation yet. A failed run is a 500. Both
 carry `{"error", "type"}`. Steering messages are rejected here
 (422); use the socket.
+
+For silent independent controllers, `output_mode: "host_tools"` returns
+`content: null` with `decision: "hold" | "pending" | "completed"`. Normal text
+turns have `decision: null`. See the [complete decision/receipt contract](host-contract.md#silent-host-decisions).
 
 ## Turn control
 
@@ -115,6 +119,7 @@ Keys may be camelCase; they are normalised.
 | `session_id` | string | created on first use |
 | `content` | string | the text; may be empty on a continuation |
 | `parent_id` | string, optional | the message to branch from; omitted, the message continues from the session's active leaf (the first message is the root) |
+| `output_mode` | `text` (default) or `host_tools` | silent single host-action decision; receipts inherit the pending mode |
 | `message_type` | `standard` (default) or `steering` | see concepts |
 | `attachments` | list, optional | images, documents or text for the model, or a `screenshot` for `look_at_screen`; shape in [the host contract](host-contract.md) |
 | `images` | list of data URLs, optional | legacy: screenshots; a top-level `screenshot` is folded in |

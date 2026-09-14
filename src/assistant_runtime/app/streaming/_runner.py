@@ -25,14 +25,22 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic_ai import DeferredToolRequests, capture_run_messages
 from pydantic_ai.exceptions import RunCancelled, UsageLimitExceeded
-from pydantic_ai.messages import ModelMessage, ModelRequest, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.app.assistant._serialization import (
@@ -40,6 +48,7 @@ from assistant_runtime.app.assistant._serialization import (
 )
 from assistant_runtime.app.assistant._stale_tools import ActionStatus
 from assistant_runtime.app.assistant.exceptions import SessionError
+from assistant_runtime.app.assistant.models import HoldDecision
 from assistant_runtime.app.streaming._agent_run import TurnPolicy, iterate_run
 from assistant_runtime.app.streaming._control import TurnControl
 from assistant_runtime.app.streaming._coordinator import EventCoordinator
@@ -62,7 +71,7 @@ from assistant_runtime.app.streaming._usage import (
     usage_dict,
     with_auxiliary,
 )
-from assistant_runtime.app.streaming.exceptions import StreamingError
+from assistant_runtime.app.streaming.exceptions import InvalidDecisionError, StreamingError
 from assistant_runtime.services.llm.exceptions import LLMCallError, classify_llm_error
 from assistant_runtime.services.tools._request_context import (
     assistant_request_context,
@@ -99,6 +108,8 @@ def format_error_message(message: str, trace_id: str | None) -> str:
 
 def _describe_error(exc: Exception) -> tuple[str, str, bool]:
     """``(message, error_type, retry_allowed)`` for an exception raised by the run."""
+    if isinstance(exc, InvalidDecisionError):
+        return str(exc), "invalid_decision", False
     if isinstance(exc, LLMCallError):
         llm_error: LLMCallError | None = exc
     else:
@@ -157,7 +168,7 @@ class TurnRunner:
         """Execute a turn, persisting cancellation before its terminal envelope."""
         control = control or TurnControl()
         coordinator = EventCoordinator(self._config.max_events_per_stream)
-        emit_debug = self._config.emit_debug_events
+        emit_debug = self._config.emit_debug_events and plan.request.output_mode != "host_tools"
         started_at = time.monotonic()
         trace_id = str(uuid.uuid4())
         request = plan.request
@@ -190,6 +201,7 @@ class TurnRunner:
                     tool_name=plan.next_pending["tool_name"],
                     assistant_message_id=plan.assistant_message_id,
                     batch=plan.pending_batch,
+                    output_mode=request.output_mode,
                 )
                 state.pending_tool_call = plan.next_pending
                 control.accepting_cancel = False
@@ -200,6 +212,20 @@ class TurnRunner:
                     message_id=plan.assistant_message_id,
                     usage=state.stored_usage or state.usage,
                     pending_tool_call=plan.next_pending,
+                    decision="pending" if request.output_mode == "host_tools" else None,
+                )
+                if final:
+                    yield final
+                return
+            if plan.receipt_only:
+                control.accepting_cancel = False
+                final = coordinator.try_final_response(
+                    None,
+                    resolved_model,
+                    session_id=session_id,
+                    message_id=plan.assistant_message_id,
+                    usage=state.stored_usage or state.usage,
+                    decision="completed",
                 )
                 if final:
                     yield final
@@ -221,7 +247,11 @@ class TurnRunner:
             )
             control.check_cancelled()
             resolved_model = ctx.resolved_model
-            state.history = self._history.processor(session_context)
+            state.history = (
+                None
+                if request.output_mode == "host_tools"
+                else self._history.processor(session_context)
+            )
             if emit_debug:
                 for event in self._setup_debug_events(ctx, session_id):
                     yield coordinator.track_debug(event)
@@ -274,6 +304,9 @@ class TurnRunner:
                 message_id=plan.assistant_message_id,
                 usage=state.stored_usage or state.usage,
                 pending_tool_call=state.pending_tool_call,
+                decision=("pending" if state.pending_tool_call else "hold")
+                if request.output_mode == "host_tools"
+                else None,
             )
             if final:
                 yield final
@@ -613,7 +646,9 @@ class TurnRunner:
                             usage=usage,
                             deps=ctx.deps,
                             cancellation_token=control.token,
-                            capabilities=[
+                            capabilities=[]
+                            if plan.request.output_mode == "host_tools"
+                            else [
                                 TurnPolicy(self._sessions, session_id, plan.session_context),
                                 *([state.history.capability()] if state.history else []),
                             ],
@@ -623,7 +658,9 @@ class TurnRunner:
                                 coordinator,
                                 config=self._config,
                                 tools=self._tools,
-                                emit_debug=self._config.emit_debug_events,
+                                emit_debug=self._config.emit_debug_events
+                                and plan.request.output_mode != "host_tools",
+                                silent=plan.request.output_mode == "host_tools",
                                 suppress_tool_call_ids=plan.suppress_tool_call_ids,
                                 host_tool_names=_host_tool_names(ctx),
                                 native_sink=control.native_sink,
@@ -679,6 +716,15 @@ class TurnRunner:
 
     async def _persist(self, plan: TurnPlan, state: _RunState) -> None:
         """Create or extend the assistant row with everything run so far."""
+        if plan.request.output_mode == "host_tools":
+            state.assistant_messages = [
+                replace(
+                    m, parts=[p for p in m.parts if not isinstance(p, (TextPart, ThinkingPart))]
+                )
+                if isinstance(m, ModelResponse)
+                else m
+                for m in state.assistant_messages
+            ]
         content, segments, timestamp = build_assistant_message_content(
             state.assistant_messages, interrupted_status=state.interrupted_status
         )
@@ -724,6 +770,8 @@ class TurnRunner:
         session_context = plan.session_context
         if await self._take_output(plan, state, ctx):
             return
+        if plan.request.output_mode == "host_tools":
+            return
         while session_context.get("pending_steering_ids"):
             pending = await self._sessions.list_pending_steering(plan.session_id)
             if not pending:
@@ -758,6 +806,10 @@ class TurnRunner:
                 assistant_segments=state.assistant_segments,
                 host_tool_names=_host_tool_names(ctx),
             )
+            if plan.request.output_mode == "host_tools" and len(payloads) != 1:
+                raise InvalidDecisionError(
+                    "host_tools requires exactly one host action per decision"
+                )
             batch = [payload["call_id"] for payload in payloads]
             await self._sessions.set_pending_action(
                 plan.session_id,
@@ -765,13 +817,19 @@ class TurnRunner:
                 tool_name=payloads[0]["tool_name"],
                 assistant_message_id=plan.assistant_message_id,
                 batch=batch,
+                output_mode=plan.request.output_mode,
             )
             state.pending_tool_call = queued_payload(payloads[0], batch[1:])
             state.final_output = None
             return True
         session_context.pop("pending_assistant_message_id", None)
         state.pending_tool_call = None
-        state.final_output = str(state.output)
+        if plan.request.output_mode == "host_tools":
+            if not isinstance(state.output, HoldDecision):
+                raise InvalidDecisionError("host_tools requires a host action or structured hold")
+            state.final_output = None
+        else:
+            state.final_output = str(state.output)
         return False
 
     @staticmethod

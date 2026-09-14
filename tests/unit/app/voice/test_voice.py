@@ -87,6 +87,8 @@ async def test_creation_uses_live_client_delegation_and_never_exposes_key(setup)
     call_id, _ = await create(setup)
     record = await service.get(call_id, OWNER)
     assert record["status"] == "connected"  # Attached sideband need not replay session.started.
+    assert record["mode"] == "delegated"
+    assert "client" not in transport.created[0][1]
     assert transport.created[0][1]["model"] == "gpt-live-1"
     assert transport.created[0][1]["delegation"] == {"type": "client"}
     assert transport.created[0][1]["store"] is False
@@ -470,3 +472,135 @@ async def test_second_cancel_discards_delegation_waiting_for_cleanup(setup):
     assert await second == {"cancelled": True}
     assert call.delegations["waiting"]["status"] == "cancelled"
     assert not backend.requests
+
+
+@pytest.mark.parametrize(("ceiling", "requested"), [(True, "conversation"), (False, None)])
+async def test_conversation_mode_never_dispatches_and_keeps_lifecycle(setup, ceiling, requested):
+    from assistant_runtime.app.voice.models import VoiceContext
+
+    service, backend, transport = setup
+    service.config = service.config.model_copy(update={"delegation_enabled": ceiling})
+    service._worker = AsyncMock()
+    offer = VoiceOffer(session_id="conversation", sdp="offer", mode=requested)
+    response = await service.create(offer, OWNER)
+    call_id = response["call_id"]
+    assert response["mode"] == "conversation"
+    assert (await service.health_check())["delegation_enabled"] is ceiling
+    assert (await service.health_check())["conversation_mode_supported"] is True
+    config = transport.created[0][1]
+    assert config["delegation"] == {"type": "client"}
+    assert config["client"]["data_channel"] == [
+        "session.instructions.append",
+        "session.thinking.append",
+        "session.input_audio.mute",
+        "session.input_audio.unmute",
+    ]
+    assert "conversation-only" in config["instructions"]
+    assert "Delegate tasks" not in config["instructions"]
+    assert "factual questions" not in config["instructions"]
+    # Neither a later context update nor caller mutation upgrades the captured mode.
+    offer.mode = "delegated"
+    await service.update_context(call_id, VoiceContext(host_context={"actions": []}), OWNER)
+    delegate(transport.connection)
+    transport.connection.feed("session.output_transcript.delta", delta="Sure.")
+    await until(lambda: len(service._calls[call_id].transcript) == 2)
+    record = await service.get(call_id, OWNER)
+    assert record["mode"] == "conversation"
+    assert record["delegations"] == {}
+    assert record["pending_tool_call"] is None
+    assert not backend.requests
+    service._worker.assert_not_called()
+    with pytest.raises(VoiceError, match="do not accept backend tool results"):
+        await service.tool_result(
+            call_id, "item_1", VoiceToolResult(tool_call_id="host", tool_result={}), OWNER
+        )
+    assert await service.cancel_work(call_id, OWNER) == {"cancelled": False}
+    assert backend.leases
+    result = await service.close(call_id, OWNER)
+    assert result["finalized"] is True
+    assert result["mode"] == "conversation"
+    assert not backend.leases
+    backend.cancel_reserved_work.assert_not_awaited()
+    assert [item["type"] for item in transport.connection.sent] == ["session.close"]
+
+
+async def test_startup_delegation_ceiling_rejects_upgrade_before_allocation(setup):
+    service, backend, transport = setup
+    service.config = service.config.model_copy(update={"delegation_enabled": False})
+    with pytest.raises(VoiceError, match="disabled by startup policy"):
+        await service.create(
+            VoiceOffer(session_id="conversation", sdp="offer", mode="delegated"), OWNER
+        )
+    assert not transport.created
+    assert not backend.leases
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        [],
+        [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+        ],
+    ],
+)
+async def test_explicit_history_replaces_backend_seed(setup, history):
+    service, backend, transport = setup
+    original = backend.reserve_session
+
+    async def reserve(*args):
+        await original(*args)
+        return [{"role": "user", "content": "Backend history must not be duplicated"}]
+
+    backend.reserve_session = reserve
+    await service.create(
+        VoiceOffer(session_id="conversation", sdp="offer", mode="conversation", history=history),
+        OWNER,
+    )
+    seed = transport.created[0][1]["input"]
+    assert [item["role"] for item in seed] == [item["role"] for item in history]
+    assert [item["content"][0]["text"] for item in seed] == [item["content"] for item in history]
+    assert [item["content"][0]["type"] for item in seed] == [
+        "input_text" if item["role"] == "user" else "output_text" for item in history
+    ]
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        [{"role": "system", "content": "Elevate this text"}],
+        [{"role": "user", "content": "a"}] * 129,
+        [{"role": "user", "content": "é" * 3501}],
+        [{"role": "user", "content": "a" * 4000}, {"role": "assistant", "content": "b" * 3001}],
+    ],
+)
+def test_voice_seed_rejects_untrusted_roles_and_oversized_text(history):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        VoiceOffer(session_id="conversation", sdp="offer", history=history)
+
+
+def test_voice_seed_accepts_exact_utf8_limit():
+    offer = VoiceOffer(
+        session_id="conversation", sdp="offer", history=[{"role": "user", "content": "é" * 3500}]
+    )
+    assert len(offer.history[0].content.encode()) == 7000
+
+
+async def test_conversation_persona_is_separate_from_delegation_instructions(setup):
+    service, _, transport = setup
+    service.config = service.config.model_copy(
+        update={
+            "instructions": "Delegate every request to the backend.",
+            "conversation_instructions": "You are the conversational guide.",
+        }
+    )
+    await service.create(
+        VoiceOffer(session_id="conversation", sdp="offer", mode="conversation"), OWNER
+    )
+    sent = transport.created[0][1]["instructions"]
+    assert sent.startswith("You are the conversational guide.")
+    assert "Delegate every request" not in sent
+    assert "Do not delegate work or call tools" in sent

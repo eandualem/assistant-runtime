@@ -83,6 +83,11 @@ class ToolService:
         self._ensure_started()
         return self._registry.get_available_tools(host_context)
 
+    def host_action_tools(self, host_context: dict[str, Any] | None) -> tuple[ToolSet, list]:
+        """Build an isolated external toolset from host-context actions only."""
+        self._ensure_started()
+        return self._registry.host_action_tools(host_context)
+
     def warm_host_context(self, host_context: dict[str, Any] | None = None) -> None:
         """Precompute page-scoped tool availability and toolsets."""
         self._ensure_started()

@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from pydantic_ai import DeferredToolRequests
+from pydantic_ai import DeferredToolRequests, ToolOutput
 from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.app.assistant._budget import build_usage_limits
@@ -21,7 +21,12 @@ from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.assistant.definition import AssistantDefinition
 from assistant_runtime.app.assistant.exceptions import AssistantError
-from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest
+from assistant_runtime.app.assistant.models import (
+    AgentSetupContext,
+    AssistantRequest,
+    HoldDecision,
+    PromptResult,
+)
 from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
 from assistant_runtime.app.streaming._usage import usage_dict
 from assistant_runtime.host_context import view_name_of
@@ -180,12 +185,16 @@ class AssistantService:
                 session_context["last_request_config"] = request.config
 
             # 1. Tools
-            available_tools = self._tools.get_available_tools(host_context)
-            toolsets = self._tools.build_toolset(host_context)
+            host_only = request.output_mode == "host_tools"
+            if host_only:
+                available_tools, toolsets = self._tools.host_action_tools(host_context)
+            else:
+                available_tools = self._tools.get_available_tools(host_context)
+                toolsets = self._tools.build_toolset(host_context)
 
             native_options: dict[str, Any] = {}
             deps = None
-            if self._definition is not None:
+            if self._definition is not None and not host_only:
                 definition = self._definition
                 toolsets = [*toolsets, *definition.toolsets]
                 native_options = {
@@ -198,7 +207,9 @@ class AssistantService:
                     if inspect.isawaitable(deps):
                         deps = await deps
 
-            mcp_summary_task = asyncio.create_task(self._tools.get_mcp_summary())
+            mcp_summary_task = asyncio.create_task(
+                asyncio.sleep(0, result=None) if host_only else self._tools.get_mcp_summary()
+            )
             artifacts_task = asyncio.create_task(self._artifacts.active_texts())
 
             # 2. Config resolution can run while prompt inputs load.
@@ -225,8 +236,17 @@ class AssistantService:
             )
 
             # 4. Build agent — use union output type when host tools are registered
-            output_type: type | list[type] = str
-            if available_tools.host_tools:
+            output_type: Any = str
+            if host_only:
+                output_type = [ToolOutput(HoldDecision, name="hold"), DeferredToolRequests]
+                prompt_result = PromptResult(
+                    content=prompt_result.content + "\n\nSelect exactly one supplied host action, "
+                    "or return hold with decision=hold when no action is needed. "
+                    "Produce no prose, narration, or visible reasoning. "
+                    "The host executes actions and records receipts independently.",
+                    fragments=prompt_result.fragments,
+                )
+            elif available_tools.host_tools:
                 output_type = [str, DeferredToolRequests]
 
             agent = self._llm.build_agent(

@@ -240,4 +240,5 @@ def pending_action_from_context(ctx: dict[str, Any]) -> dict[str, Any] | None:
         # Every host call of the response that produced this action, in order;
         # the ones after tool_call_id are handed to the host one at a time.
         "batch": list(ctx.get("pending_tool_batch") or [tool_call_id]),
+        **({"output_mode": "host_tools"} if ctx.get("pending_output_mode") == "host_tools" else {}),
     }

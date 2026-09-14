@@ -249,4 +249,5 @@ class TestAssistantResult:
             "turn_number": 1,
             "message_id": None,
             "pending_tool_call": None,
+            "decision": None,
         }

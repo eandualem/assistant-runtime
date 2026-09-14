@@ -4,7 +4,7 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from assistant_runtime.app.voice.models import VoiceOffer
 from assistant_runtime.principal import Principal
@@ -18,6 +18,7 @@ class VoiceCall:
     lease: str
     model: str
     voice: str
+    mode: Literal["delegated", "conversation"] = "delegated"
     provider_id: str = ""
     status: str = "connecting"
     reason: str | None = None
@@ -54,6 +55,7 @@ class VoiceCall:
             "provider_session_id": self.provider_id,
             "model": self.model,
             "voice": self.voice,
+            "mode": self.mode,
             "status": self.status,
             "reason": self.reason,
             "created_at": self.created_at,
