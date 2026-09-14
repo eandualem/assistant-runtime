@@ -136,7 +136,7 @@ class VoiceService:
                         break
                 instructions = self.config.instructions
                 if call.mode == "conversation":
-                    instructions += (
+                    instructions = self.config.conversation_instructions + (
                         "\nThis call is conversation-only. Do not delegate work or call tools. "
                         "Independent application controls handle actions. Acknowledge requests "
                         "without claiming actions have started or completed until the application "

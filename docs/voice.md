@@ -103,7 +103,12 @@ Set `mode: "conversation"` on creation to keep Live focused on conversation.
 this startup ceiling to `false` selects conversation mode and rejects explicit
 requests for delegated mode with `409`, before allocating a provider session.
 The resolved mode is fixed for the call and appears in creation responses and
-snapshots. A context PATCH cannot change it.
+snapshots. A context PATCH cannot change it. Set the conversation persona with
+`VOICE__CONVERSATION_INSTRUCTIONS` (default: helpful, concise conversation).
+Conversation calls never inherit `VOICE__INSTRUCTIONS`, which belongs to the
+delegated mode and defaults to requesting delegation. Keep custom conversation
+instructions free of delegation directives; the runtime adds a final policy
+prohibiting delegation and unconfirmed execution claims.
 
 Conversation calls keep the normal session lease, ownership, transcripts, usage
 and close handshake. They create no backend worker and discard unexpected

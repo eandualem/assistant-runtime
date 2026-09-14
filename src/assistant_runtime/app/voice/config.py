@@ -21,6 +21,11 @@ class VoiceConfig(BaseModel):
         min_length=1,
         max_length=16000,
     )
+    conversation_instructions: str = Field(
+        default="You are a helpful voice assistant. Keep spoken replies concise.",
+        min_length=1,
+        max_length=16000,
+    )
     max_sessions: int = Field(default=4, ge=1, le=100)
     max_duration_seconds: int = Field(default=1800, ge=15, le=7200)
     connect_timeout_seconds: float = Field(default=20, gt=0, le=60)

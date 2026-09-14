@@ -496,6 +496,8 @@ async def test_conversation_mode_never_dispatches_and_keeps_lifecycle(setup, cei
         "session.input_audio.unmute",
     ]
     assert "conversation-only" in config["instructions"]
+    assert "Delegate tasks" not in config["instructions"]
+    assert "factual questions" not in config["instructions"]
     # Neither a later context update nor caller mutation upgrades the captured mode.
     offer.mode = "delegated"
     await service.update_context(call_id, VoiceContext(host_context={"actions": []}), OWNER)
@@ -585,3 +587,20 @@ def test_voice_seed_accepts_exact_utf8_limit():
         session_id="conversation", sdp="offer", history=[{"role": "user", "content": "é" * 3500}]
     )
     assert len(offer.history[0].content.encode()) == 7000
+
+
+async def test_conversation_persona_is_separate_from_delegation_instructions(setup):
+    service, _, transport = setup
+    service.config = service.config.model_copy(
+        update={
+            "instructions": "Delegate every request to the backend.",
+            "conversation_instructions": "You are the conversational guide.",
+        }
+    )
+    await service.create(
+        VoiceOffer(session_id="conversation", sdp="offer", mode="conversation"), OWNER
+    )
+    sent = transport.created[0][1]["instructions"]
+    assert sent.startswith("You are the conversational guide.")
+    assert "Delegate every request" not in sent
+    assert "Do not delegate work or call tools" in sent
