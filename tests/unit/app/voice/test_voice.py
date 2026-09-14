@@ -114,6 +114,7 @@ async def test_attach_failure_releases_reservation(setup):
     with pytest.raises(VoiceError, match="unconfirmed") as failure:
         await create(setup)
     assert "secret" not in str(failure.value)
+    assert failure.value.metadata == {"allocation_status": "unknown"}
     assert not backend.leases
 
 
@@ -489,7 +490,7 @@ async def test_conversation_mode_never_dispatches_and_keeps_lifecycle(setup, cei
     assert (await service.health_check())["conversation_mode_supported"] is True
     config = transport.created[0][1]
     assert config["delegation"] == {"type": "client"}
-    assert config["client"]["data_channel"] == [
+    assert config["client"]["data_channel"]["allowed_client_events"] == [
         "session.instructions.append",
         "session.thinking.append",
         "session.input_audio.mute",

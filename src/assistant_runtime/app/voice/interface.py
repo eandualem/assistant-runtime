@@ -76,27 +76,38 @@ class VoiceService:
 
     async def create(self, offer: VoiceOffer, principal: Principal) -> dict:
         if not self._started or not self.config.enabled:
-            raise VoiceError("Voice is disabled; set VOICE__ENABLED=true", 503)
+            raise VoiceError(
+                "Voice is disabled; set VOICE__ENABLED=true", 503, allocation_status="rejected"
+            )
         mode = offer.mode or ("delegated" if self.config.delegation_enabled else "conversation")
         if mode == "delegated" and not self.config.delegation_enabled:
-            raise VoiceError("Voice delegation is disabled by startup policy", 409)
+            raise VoiceError(
+                "Voice delegation is disabled by startup policy", 409, allocation_status="rejected"
+            )
         key = os.getenv(self.config.api_key_env)
         if not key:
             raise VoiceError(
                 f"GPT-Live requires {self.config.api_key_env}; Codex login does not provide Live API access",
                 503,
+                allocation_status="rejected",
             )
         if self._transport is None:
             try:
                 from websockets.asyncio.client import connect  # noqa: F401
             except ImportError as exc:
-                raise VoiceError("Install assistant-runtime[voice] to enable voice", 503) from exc
+                raise VoiceError(
+                    "Install assistant-runtime[voice] to enable voice",
+                    503,
+                    allocation_status="rejected",
+                ) from exc
             self._transport = LiveTransport(self.config.connect_timeout_seconds)
         async with self._create_lock:
             if not self._started:
-                raise VoiceError("Voice service is stopping", 503)
+                raise VoiceError("Voice service is stopping", 503, allocation_status="rejected")
             if sum(not c.done.is_set() for c in self._calls.values()) >= self.config.max_sessions:
-                raise VoiceError("Voice session capacity reached", 429)
+                raise VoiceError(
+                    "Voice session capacity reached", 429, allocation_status="rejected"
+                )
             call = VoiceCall(
                 id=str(uuid.uuid4()),
                 offer=offer,
@@ -153,12 +164,14 @@ class VoiceService:
                         **(
                             {
                                 "client": {
-                                    "data_channel": [
-                                        "session.instructions.append",
-                                        "session.thinking.append",
-                                        "session.input_audio.mute",
-                                        "session.input_audio.unmute",
-                                    ]
+                                    "data_channel": {
+                                        "allowed_client_events": [
+                                            "session.instructions.append",
+                                            "session.thinking.append",
+                                            "session.input_audio.mute",
+                                            "session.input_audio.unmute",
+                                        ]
+                                    }
                                 }
                             }
                             if call.mode == "conversation"
@@ -188,10 +201,15 @@ class VoiceService:
                 if call.connection is not None:
                     with contextlib.suppress(Exception):
                         await call.connection.close()
-                if isinstance(exc, (VoiceError, asyncio.CancelledError)):
+                if isinstance(exc, asyncio.CancelledError):
                     raise
+                if isinstance(exc, VoiceError) and not call.provider_id:
+                    raise
+                logger.warning("GPT-Live connection setup failed: allocation_status=unknown")
                 raise VoiceError(
-                    "GPT-Live connection failed; provider finalization is unconfirmed", 502
+                    "GPT-Live connection failed; provider finalization is unconfirmed",
+                    502,
+                    allocation_status="unknown",
                 ) from exc
 
     async def get(self, call_id: str, principal: Principal) -> dict:

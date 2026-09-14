@@ -119,6 +119,9 @@ its existing Pydantic AI pipeline, including backend and host tools. Alternative
 controller can use separate chat sessions. The
 backend can still use the local Codex subscription provider; the voice
 connection requires separate Live API access.
+Create failures retain the string `detail` and add safe allocation metadata:
+`allocation_status: "rejected"` for definite rejection, or `"unknown"` when
+allocation/finalization cannot be confirmed. No automatic creation retry occurs.
 
 The frontend connection, transcript/progress events, host-tool results,
 cancellation and duration accounting are documented in [voice integration](docs/voice.md).
