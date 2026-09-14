@@ -189,7 +189,8 @@ unset preserves the existing provider default. This is separate from CLI
 `/fast` and does not read or modify your Codex CLI configuration. Fast mode uses
 more subscription credits; see the [official speed guide](https://learn.chatgpt.com/docs/agent-configuration/speed).
 It does not enable API fallback, change Voice billing, or guarantee an end-to-end
-latency multiplier. LLM health reports the **requested** `codex_service_tier`;
+latency multiplier. `/health` reports the **requested** mode at
+`components.llm_service.codex_service_tier`;
 chat results report each provider response under `usage.service_tiers`, with
 separate `requested` and `actual` fields. An absent or unrecognized terminal
 provider tier stays `null`; requested Fast mode alone is not proof of priority
