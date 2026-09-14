@@ -43,7 +43,8 @@ async def test_sync_survives_unavailable_database_and_reports_memory_only(health
         await service.stop()
 
 
-async def test_disconnect_reports_incomplete_deletion_then_retries_on_recovery():
+@pytest.mark.parametrize("row_existed", [True, False])
+async def test_disconnect_reports_incomplete_deletion_then_retries_on_recovery(row_existed):
     session = SimpleNamespace(commit=AsyncMock())
 
     @asynccontextmanager
@@ -60,7 +61,7 @@ async def test_disconnect_reports_incomplete_deletion_then_retries_on_recovery()
     assert service.get_codex_session() is None
     database.healthy = True
     with patch("assistant_runtime.services.database.repositories.OAuthTokenRepository") as repo:
-        repo.return_value.delete = AsyncMock()
+        repo.return_value.delete = AsyncMock(return_value=row_existed)
         assert await service.disconnect() is True
         repo.return_value.delete.assert_awaited_once_with("openai")
     session.commit.assert_awaited_once()

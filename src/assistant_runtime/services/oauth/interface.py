@@ -347,6 +347,7 @@ class OAuthService:
                     repo = OAuthTokenRepository(session)
                     await repo.delete("openai")
                     await session.commit()
+                # DELETE is idempotent: an already absent row also confirms removal.
                 deleted = True
             except Exception as exc:
                 logger.warning(

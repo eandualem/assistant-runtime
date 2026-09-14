@@ -166,7 +166,10 @@ working-memory routes. This rejects non-OpenAI models, models excluded by
 LLM request, even when API keys are present. The default is `false`, which
 retains API fallback when OAuth is unavailable. This guard covers the shared
 LLM service; voice audio and media generation have separate credentials and
-billing. Disable unwanted tools/providers separately.
+billing. Disable unwanted tools/providers separately. The Codex transport
+omits unsupported sampling, response-ID chaining, and `max_output_tokens`
+parameters. Use native per-turn usage limits for runtime budget enforcement;
+they are not a server-side generation-token cap.
 
 OAuth works without Postgres: successful sync returns `connected: true`,
 `source: "codex_cli"`, and `persisted: false` when credentials are held only
@@ -175,7 +178,8 @@ When Postgres is reachable, tokens are encrypted at rest. A disconnect during
 a database outage clears this process's credentials but cannot remove an
 older persisted token; repeat the disconnect after database recovery before
 restarting. `DELETE` reports this as `persisted_deleted: false`; `true` confirms
-deletion (or that no database service exists). Missing startup encryption
+that no saved token remains (including an already absent row or no database
+service). Missing startup encryption
 configuration returns HTTP 503 with
 `type: "OAuthNotConfiguredError"`; an invalid or missing CLI auth file
 returns HTTP 400 with `type: "OAuthCodexSyncError"`.
