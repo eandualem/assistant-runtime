@@ -188,7 +188,7 @@ class TestBuildAgent:
         assert settings_arg["openai_send_reasoning_ids"] is False
         assert "openai_previous_response_id" not in settings_arg
 
-    def test_codex_settings_keep_max_tokens(self, service):
+    def test_codex_settings_omit_unsupported_max_output_tokens(self, service):
         service.set_oauth_service(
             SimpleNamespace(
                 get_codex_session=lambda: SimpleNamespace(access_token="t", account_id="a")
@@ -197,7 +197,7 @@ class TestBuildAgent:
         settings = service._apply_model_transport_defaults(
             "openai:gpt-5.6-terra", {"max_tokens": 4096, "temperature": 0.2, "timeout": 5}
         )
-        assert settings["max_tokens"] == 4096
+        assert "max_tokens" not in settings
         assert settings["timeout"] == 5
         assert "temperature" not in settings
         assert settings["openai_store"] is False

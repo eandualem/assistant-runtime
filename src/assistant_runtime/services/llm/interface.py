@@ -186,6 +186,7 @@ class LlmService:
             "healthy": self._started and len(providers) > 0,
             "providers": providers,
             "primary_model": self.effective_primary_model(),
+            "codex_only": self._config.codex_only,
         }
 
     async def reload_provider_key(self, provider: str, api_key: str) -> None:
@@ -296,6 +297,9 @@ class LlmService:
         )
 
     def _effective_model(self, configured: str, defaults: dict[str, str]) -> str:
+        if self._config.codex_only:
+            # Never turn a missing subscription into an API-provider fallback.
+            return configured
         provider = configured.split(":", 1)[0]
         available = self._configured_provider_names() if self._started else []
         if not available:
@@ -315,6 +319,8 @@ class LlmService:
 
     def _configured_provider_names(self) -> list[str]:
         """Return provider names including active Codex-backed OpenAI auth."""
+        if self._config.codex_only:
+            return ["openai"] if self._get_codex_session() is not None else []
         providers = {p.provider for p in self._providers}
         if self._get_codex_session() is not None:
             providers.add("openai")
@@ -338,12 +344,22 @@ class LlmService:
         ``LLMConfig.codex_models`` narrows the list.
         """
         if not resolved_model.startswith("openai:"):
+            if self._config.codex_only:
+                raise ProviderConfigError("Subscription-only routing requires an openai: model")
             return False
         model_name = resolved_model.split(":", 1)[1]
         allowed = self._config.codex_models
         if allowed and model_name not in allowed:
+            if self._config.codex_only:
+                raise ProviderConfigError("Model is excluded by LLM__CODEX_MODELS")
             return False
-        return self._get_codex_session() is not None
+        connected = self._get_codex_session() is not None
+        if self._config.codex_only and not connected:
+            raise ProviderConfigError(
+                "Subscription-only routing requires a connected, unexpired Codex session; "
+                "sync or reconnect OAuth. API fallback is disabled."
+            )
+        return connected
 
     def _apply_model_transport_defaults(
         self,
@@ -355,11 +371,10 @@ class LlmService:
             return settings
 
         # The subscription backend takes the Responses API settings but not the
-        # sampling ones (temperature, top_p) or previous_response_id chaining.
+        # sampling ones, max_output_tokens, or previous_response_id chaining.
         codex_settings: dict[str, Any] = {"openai_store": False}
         if isinstance(settings, dict):
             for key in (
-                "max_tokens",
                 "timeout",
                 "extra_headers",
                 "extra_body",

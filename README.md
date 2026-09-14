@@ -159,6 +159,30 @@ enter the code) or import an existing Codex CLI login
 model goes through the subscription (set `LLM__CODEX_MODELS` to a JSON
 list to narrow that); the backend decides what the plan allows. Other
 OpenAI features, such as image generation, still use an API key.
+For a subscription-only backend, set `LLM__CODEX_ONLY=true` at startup
+and choose `openai:` models for the primary, subagent, summarization and
+working-memory routes. This rejects non-OpenAI models, models excluded by
+`LLM__CODEX_MODELS`, and missing or expired OAuth before constructing an
+LLM request, even when API keys are present. The default is `false`, which
+retains API fallback when OAuth is unavailable. This guard covers the shared
+LLM service; voice audio and media generation have separate credentials and
+billing. Disable unwanted tools/providers separately. The Codex transport
+omits unsupported sampling, response-ID chaining, and `max_output_tokens`
+parameters. Use native per-turn usage limits for runtime budget enforcement;
+they are not a server-side generation-token cap.
+
+OAuth works without Postgres: successful sync returns `connected: true`,
+`source: "codex_cli"`, and `persisted: false` when credentials are held only
+in process memory. Re-sync after restart (or enable `OAUTH__CODEX_AUTO_SYNC`).
+When Postgres is reachable, tokens are encrypted at rest. A disconnect during
+a database outage clears this process's credentials but cannot remove an
+older persisted token; repeat the disconnect after database recovery before
+restarting. `DELETE` reports this as `persisted_deleted: false`; `true` confirms
+that no saved token remains (including an already absent row or no database
+service). Missing startup encryption
+configuration returns HTTP 503 with
+`type: "OAuthNotConfiguredError"`; an invalid or missing CLI auth file
+returns HTTP 400 with `type: "OAuthCodexSyncError"`.
 `assistant-runtime doctor` reports the state of this path. It is not
 intended for multi-user hosted services.
 

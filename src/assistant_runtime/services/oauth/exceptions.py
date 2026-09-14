@@ -32,7 +32,11 @@ class OAuthRefreshError(OAuthError):
 class OAuthNotConfiguredError(OAuthError):
     """OAuth is not configured (missing encryption key or client ID)."""
 
-    def __init__(self, message: str = "OAuth not configured", **kwargs) -> None:
+    def __init__(
+        self,
+        message: str = "OAuth not configured: set OAUTH__ENCRYPTION_KEY before startup",
+        **kwargs,
+    ) -> None:
         kwargs.setdefault("severity", "medium")
         kwargs.setdefault("retry_allowed", False)
         super().__init__(message, **kwargs)

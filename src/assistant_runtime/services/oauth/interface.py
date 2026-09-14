@@ -69,6 +69,7 @@ class AuthStatus(BaseModel):
     api_key_preview: str | None = None
     expires_at: float | None = None
     error: str | None = None
+    persisted: bool = False
 
 
 class CodexSession(BaseModel):
@@ -109,6 +110,7 @@ class OAuthService:
         self._expires_at: float = 0.0
         self._email: str | None = None
         self._auth_source: AuthSource | None = None
+        self._token_persisted = False
 
         # Device code flow state
         self._device_code_status = DeviceCodeStatus.IDLE
@@ -225,6 +227,7 @@ class OAuthService:
             api_key_preview=None,
             expires_at=self._expires_at if self._expires_at > 0 else None,
             error=self._device_code_error,
+            persisted=self._token_persisted,
         )
 
     def get_codex_session(self) -> CodexSession | None:
@@ -320,8 +323,8 @@ class OAuthService:
         )
         return self.get_device_code_status()
 
-    async def disconnect(self) -> None:
-        """Disconnect — delete tokens from DB and clear env var."""
+    async def disconnect(self) -> bool:
+        """Clear local auth; return whether persisted-token deletion is confirmed."""
         self._access_token = None
         self._refresh_token = None
         self._id_token = None
@@ -329,19 +332,30 @@ class OAuthService:
         self._expires_at = 0.0
         self._email = None
         self._auth_source = None
+        self._token_persisted = False
         self._device_code_status = DeviceCodeStatus.IDLE
         self._device_code_error = None
 
-        # Delete from DB
-        if self._db_service is not None:
-            async with self._db_service.session_context() as session:
-                from assistant_runtime.services.database.repositories import OAuthTokenRepository
+        deleted = self._db_service is None
+        if self._db_service is not None and self._db_service.healthy:
+            try:
+                async with self._db_service.session_context() as session:
+                    from assistant_runtime.services.database.repositories import (
+                        OAuthTokenRepository,
+                    )
 
-                repo = OAuthTokenRepository(session)
-                await repo.delete("openai")
-                await session.commit()
+                    repo = OAuthTokenRepository(session)
+                    await repo.delete("openai")
+                    await session.commit()
+                # DELETE is idempotent: an already absent row also confirms removal.
+                deleted = True
+            except Exception as exc:
+                logger.warning(
+                    "OAuth persisted-token deletion failed", error_type=type(exc).__name__
+                )
 
-        logger.info("OpenAI OAuth disconnected")
+        logger.info("OpenAI OAuth disconnected", persisted_deleted=deleted)
+        return deleted
 
     # --- Private methods ---
 
@@ -440,6 +454,8 @@ class OAuthService:
 
     async def _load_stored_token(self) -> bool:
         """Load stored OAuth token from database."""
+        if self._db_service is None or not self._db_service.healthy:
+            return False
         try:
             async with self._db_service.session_context() as session:
                 from assistant_runtime.services.database.repositories import OAuthTokenRepository
@@ -463,6 +479,7 @@ class OAuthService:
                 self._sync_token_metadata()
 
                 if self._access_token and self._account_id and not self.needs_refresh():
+                    self._token_persisted = True
                     self._auth_source = AuthSource.DATABASE
                     self._device_code_status = DeviceCodeStatus.AUTHORIZED
                     logger.info("Loaded stored OpenAI OAuth token", email=self._email)
@@ -479,25 +496,35 @@ class OAuthService:
         return False
 
     async def _save_token(self) -> None:
-        """Save current token state to database."""
-        if self._db_service is None:
+        """Best-effort encrypted persistence; optional DB outages never prevent auth."""
+        self._token_persisted = False
+        if self._db_service is None or not self._db_service.healthy:
             return
 
-        async with self._db_service.session_context() as session:
-            from assistant_runtime.services.database.repositories import OAuthTokenRepository
+        try:
+            async with self._db_service.session_context() as session:
+                from assistant_runtime.services.database.repositories import OAuthTokenRepository
 
-            repo = OAuthTokenRepository(session)
-            await repo.upsert(
-                provider="openai",
-                encrypted_api_key=self._encrypt(self._access_token) if self._access_token else None,
-                encrypted_refresh_token=self._encrypt(self._refresh_token)
-                if self._refresh_token
-                else None,
-                encrypted_id_token=self._encrypt(self._id_token) if self._id_token else None,
-                expires_at=self._expires_at,
-                email=self._email,
+                repo = OAuthTokenRepository(session)
+                await repo.upsert(
+                    provider="openai",
+                    encrypted_api_key=self._encrypt(self._access_token)
+                    if self._access_token
+                    else None,
+                    encrypted_refresh_token=self._encrypt(self._refresh_token)
+                    if self._refresh_token
+                    else None,
+                    encrypted_id_token=self._encrypt(self._id_token) if self._id_token else None,
+                    expires_at=self._expires_at,
+                    email=self._email,
+                )
+                await session.commit()
+            self._token_persisted = True
+        except Exception as exc:
+            # DB exception text can contain bound encrypted credentials; do not log it.
+            logger.warning(
+                "OAuth tokens remain in memory; persistence failed", error_type=type(exc).__name__
             )
-            await session.commit()
 
     def _read_codex_cli_auth(self) -> CodexCliAuth:
         """Read ChatGPT/Codex OAuth state from the local Codex CLI auth file."""
@@ -509,9 +536,11 @@ class OAuthService:
             data = json.loads(auth_path.read_text())
         except OSError as exc:
             raise OAuthCodexSyncError(f"Failed to read Codex auth file: {auth_path}") from exc
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise OAuthCodexSyncError(f"Invalid JSON in Codex auth file: {auth_path}") from exc
 
+        if not isinstance(data, dict):
+            raise OAuthCodexSyncError("Codex auth file must contain a JSON object")
         auth_mode = data.get("auth_mode")
         if auth_mode == "apikey":
             raise OAuthCodexSyncError(

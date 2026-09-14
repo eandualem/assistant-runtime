@@ -162,3 +162,8 @@ therefore uses documented Live HTTP/WebSocket endpoints behind a private adapter
 Backend execution continues exclusively through `StreamingService` and native
 Pydantic AI events/cancellation. Reevaluate the transport when upstream exposes
 Live client delegation; do not substitute a Realtime model based on its name.
+
+Codex subscription transport omits `max_output_tokens` (the runtime `max_tokens`
+model setting): the subscription endpoint rejects it, unlike the public Responses
+API. Numeric thinking budgets still map to reasoning effort. Native usage limits
+remain runtime checks, not a provider-side generation cap.
