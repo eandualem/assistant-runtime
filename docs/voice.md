@@ -121,12 +121,18 @@ from the old voice delegation path alongside that controller.
 Live's public configuration has no disabled delegation type, so creation still
 uses `delegation: {type: "client"}`. Conversation mode enforces the restriction
 in the runtime, adds conversation-only instructions, and sets the provider's
-`client.data_channel` allowlist to exactly:
+`client.data_channel.allowed_client_events` array to exactly:
 
 - `session.instructions.append`
 - `session.thinking.append`
 - `session.input_audio.mute`
 - `session.input_audio.unmute`
+
+The provider expects `client.data_channel` to be an **object**, with the array
+under `allowed_client_events`, as documented in the
+[Live API reference](https://developers.openai.com/api/reference/typescript/resources/live).
+`allowed_server_events` is omitted to retain all server acknowledgments and
+transcript events. Restrictions do not affect the trusted sideband.
 
 This excludes browser `session.update` and all `response.*` commands. Hosts must
 keep the same narrow policy in their client. The runtime owns close/finalization
@@ -278,3 +284,27 @@ surface; the native Pydantic AI Realtime adapter implements a different protocol
 Protocol sources: [Live overview](https://developers.openai.com/api/docs/guides/live),
 [client delegation](https://developers.openai.com/api/docs/guides/live-delegation),
 and [Live conversations](https://developers.openai.com/api/docs/guides/live-conversations).
+
+
+## Creation failure diagnostics
+
+`POST /api/voice/calls` preserves the existing string `detail` on errors. Service
+creation errors additionally include `allocation_status`:
+
+- `rejected`: local startup/configuration/capacity policy prevented allocation,
+  or the provider returned a known request rejection: HTTP 400, 401, 402,
+  403, 404, 405, 409, 413, 415, 422 or 429.
+- `unknown`: other provider statuses (including 408, nonstandard 499 and 5xx),
+  network failure/timeout, malformed success, or
+  sideband attachment failure after creation. This does not confirm provider
+  finalization, even when local `active_calls` is zero and the session lease
+  has been released.
+
+Errors outside the voice service (for example request validation or session
+ownership) may omit this field; hosts must handle absence conservatively.
+Neither classification triggers an automatic retry or guarantees billing state.
+A provider HTTP rejection also includes numeric `provider_status_code` and, when
+it matches `req_` plus 32 hexadecimal digits, `provider_request_id`. Other request
+ID formats are omitted. The same bounded metadata is logged. Raw provider error
+bodies/messages, prompts/history, SDP and credentials are never included in these
+diagnostics. Existing errors on other voice endpoints retain their response shape.

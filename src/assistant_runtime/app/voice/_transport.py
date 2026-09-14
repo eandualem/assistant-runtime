@@ -7,12 +7,17 @@ creation retries: the provider may already have allocated a billable session.
 
 import asyncio
 import json
+import re
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+from loguru import logger
 
 from assistant_runtime.app.voice.exceptions import VoiceError
+
+# Known request rejections; timeout, proxy/nonstandard and other statuses stay unknown.
+_REJECTED_CREATE_STATUSES = {400, 401, 402, 403, 404, 405, 409, 413, 415, 422, 429}
 
 
 class LiveTransport:
@@ -45,10 +50,31 @@ class LiveTransport:
                 if code in (401, 403)
                 else "GPT-Live session creation failed"
             )
-            raise VoiceError(message, 502) from exc
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            allocation = "rejected" if code in _REJECTED_CREATE_STATUSES else "unknown"
+            request_id = exc.response.headers.get("x-request-id", "")
+            # Accept only the provider's opaque request-id form, never arbitrary headers.
+            if not re.fullmatch(r"req_[0-9a-fA-F]{32}", request_id):
+                request_id = None
+            logger.warning(
+                "GPT-Live create HTTP failure: provider_status_code={} allocation_status={} "
+                "provider_request_id={}",
+                code,
+                allocation,
+                request_id,
+            )
             raise VoiceError(
-                "GPT-Live session creation failed; allocation may be unconfirmed", 502
+                message,
+                502,
+                allocation_status=allocation,
+                provider_status_code=code,
+                provider_request_id=request_id,
+            ) from exc
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("GPT-Live create failed: allocation_status=unknown")
+            raise VoiceError(
+                "GPT-Live session creation failed; allocation may be unconfirmed",
+                502,
+                allocation_status="unknown",
             ) from exc
 
     async def attach(self, api_key: str, session_id: str) -> Any:
