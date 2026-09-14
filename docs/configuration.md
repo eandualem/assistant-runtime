@@ -266,7 +266,7 @@ for Fast-to-priority mapping. Provider/model eligibility and processing may vary
 measure whole-turn planning latency separately from host execution. No end-to-end
 speed multiplier is guaranteed.
 
-`/health` includes `components.llm.codex_service_tier`, the startup **request default**.
+`/health` includes `components.llm_service.codex_service_tier`, the startup **request default**.
 Chat final-response and stored assistant usage can contain:
 
 ```json
