@@ -276,6 +276,9 @@ class AssistantResult(BaseModel):
     session_id: str
     turn_number: int
     message_id: str | None = Field(default=None, description="Id of the assistant message row")
+    usage: dict[str, Any] | None = Field(
+        default=None, description="Usage from the shared turn stream"
+    )
     pending_tool_call: dict[str, Any] | None = Field(
         default=None,
         description="Set when the turn ended on a host tool call the client must answer",

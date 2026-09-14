@@ -248,6 +248,7 @@ class TestAssistantResult:
             "session_id": "sess-1",
             "turn_number": 1,
             "message_id": None,
+            "usage": None,
             "pending_tool_call": None,
             "decision": None,
         }
