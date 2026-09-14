@@ -19,11 +19,11 @@ from assistant_runtime.services.llm.config import LLMConfig
 from assistant_runtime.services.llm.interface import LlmService
 
 
-def frames(tier, response_id="resp_test", tool=False):
+def frames(tier, response_id="resp_test", tool=False, model="gpt-5.6-sol"):
     response = {
         "id": response_id,
         "object": "response",
-        "model": "gpt-5.6-sol",
+        "model": model,
         "created_at": 1,
         "status": "in_progress",
         "output": [],
@@ -75,13 +75,15 @@ def frames(tier, response_id="resp_test", tool=False):
 async def codex(monkeypatch):
     # Real model requests are allowed only into this explicitly replaced HTTP client.
     monkeypatch.setattr(models, "ALLOW_MODEL_REQUESTS", True)
-    state = SimpleNamespace(requests=[], actual="priority", status=200, streams=[], tool=False)
+    state = SimpleNamespace(
+        requests=[], actual="priority", status=200, streams=[], tool=False, model="gpt-5.6-sol"
+    )
 
     class WireStream(httpx.AsyncByteStream):
         closed = False
 
         async def __aiter__(self):
-            for frame in frames(state.actual, tool=state.tool).split("\n\n"):
+            for frame in frames(state.actual, tool=state.tool, model=state.model).split("\n\n"):
                 await asyncio.sleep(0)
                 yield (frame + "\n\n").encode()
 
@@ -113,7 +115,7 @@ async def codex(monkeypatch):
                 LLMConfig(
                     codex_only=True,
                     codex_service_tier=tier,
-                    primary_model="openai:gpt-5.6-sol",
+                    primary_model=f"openai:{state.model}",
                 )
             )
             instance.set_oauth_service(
@@ -243,11 +245,13 @@ async def test_tiers_survive_cumulative_followup_without_double_counting(codex):
     assert state.usage["output_tokens"] == 4
 
 
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra"])
 @pytest.mark.parametrize("mode", ["host_tools", "text"])
-async def test_http_host_continuations_retain_tiers(codex, isolated_services, mode):
+async def test_http_host_continuations_retain_tiers(codex, isolated_services, mode, model):
     from assistant_runtime.main import create_app
 
     codex.tool = True
+    codex.model = model
     configured = codex.service("fast")
     settings = isolated_services.model_copy(update={"llm": configured._config})
     app = create_app(settings=settings)
@@ -276,6 +280,14 @@ async def test_http_host_continuations_retain_tiers(codex, isolated_services, mo
                 },
             )
             assert response.status_code == 200, response.text
+            payload = codex.requests[0]
+            assert payload["model"] == model
+            assert payload["reasoning"]["effort"] == "low"
+            assert payload["service_tier"] == "priority"
+            assert any(t["name"] == "move" for t in payload["tools"])
+            for unsupported in ("temperature", "top_p", "top_logprobs", "logprobs"):
+                assert unsupported not in payload
+            assert "message.output_text.logprobs" not in payload.get("include", [])
             decision = response.json()
             if mode == "host_tools":
                 assert decision["decision"] == "pending", decision

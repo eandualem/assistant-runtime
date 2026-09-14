@@ -131,6 +131,15 @@ MODEL_CATALOG: list[ModelEntry] = [
     ),
     # --- OpenAI ---
     ModelEntry(
+        id="openai:gpt-6-astra",
+        provider="openai",
+        name="GPT-6 Astra",
+        capability="flagship",
+        context_window=1_050_000,
+        capabilities=["text", "vision", "thinking"],
+        description="Complex reasoning and tool use through Codex Responses",
+    ),
+    ModelEntry(
         id="openai:gpt-5.6-sol",
         provider="openai",
         name="GPT-5.6 Sol",

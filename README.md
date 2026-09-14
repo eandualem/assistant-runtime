@@ -181,6 +181,9 @@ billing. Disable unwanted tools/providers separately. The Codex transport
 omits unsupported sampling, response-ID chaining, and `max_output_tokens`
 parameters. Use native per-turn usage limits for runtime budget enforcement;
 they are not a server-side generation-token cap.
+For `openai:gpt-6-astra` on Codex, host tools use Responses and a thinking budget
+of `4000` maps to `low` effort. Sampling and log-probability parameters are omitted.
+Account/model eligibility is still decided by the subscription backend.
 
 To request Codex Fast mode, set `LLM__CODEX_SERVICE_TIER=fast` at startup.
 It sends `service_tier: "priority"` on Codex-authenticated LLM requests without
