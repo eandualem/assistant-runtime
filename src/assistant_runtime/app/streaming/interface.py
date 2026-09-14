@@ -403,6 +403,7 @@ class StreamingService:
             turn_number=turn_number,
             message_id=final.get("message_id"),
             pending_tool_call=final.get("pending_tool_call"),
+            usage=final.get("usage"),
         )
 
     async def _setup_failure_envelope(

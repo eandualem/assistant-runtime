@@ -37,6 +37,7 @@ At least one provider must be usable.
 | `OAUTH__ENCRYPTION_KEY` | Fernet key; enables the ChatGPT/Codex OAuth path and the encrypted provider-key store (`PUT /api/providers/{provider}/api-key`) |
 | `LLM__CODEX_MODELS` | JSON list of OpenAI model names to route through the ChatGPT/Codex subscription when connected; empty routes every `openai:` model |
 | `LLM__CODEX_ONLY` | `false`; when `true`, all shared LLM calls require usable Codex OAuth and an allowed `openai:` model. No API-key or other-provider fallback, including request overrides and auxiliary calls. Startup-only; separate voice/media services are unaffected |
+| `LLM__CODEX_SERVICE_TIER` | Unset by default (omit request field); `fast` maps to Codex wire `service_tier: "priority"`, `default` requests standard processing. Startup-only, applies to all Codex-authenticated shared LLM routes, including auxiliaries. Preserves model/effort and subscription-only policy; does not configure API-key, voice or media requests. Fast consumes more subscription credits. LLM health reports requested mode only |
 
 If the primary or summarization model's provider has no credentials but
 another provider does, that provider's default is used instead and a
@@ -245,3 +246,47 @@ Provider keys and tokens are read from the environment only. The one
 place a key is stored is the encrypted provider-key store behind
 `PUT /api/providers/{provider}/api-key`, which needs `OAUTH__ENCRYPTION_KEY`
 and Postgres. Never commit `.env`.
+
+
+### Codex Fast mode and returned tier
+
+`LLM__CODEX_SERVICE_TIER=fast` is a startup default for Codex-authenticated shared
+LLM calls; `default` sends `service_tier: "default"`, and unset omits the field.
+It maps to `service_tier: "priority"` using Pydantic AI's supported
+`openai_service_tier` setting. It does not read or modify CLI `/fast` preferences,
+change model/reasoning effort, or configure separate voice/media services.
+`LLM__CODEX_ONLY=true` remains the independent guard against API fallback.
+Unsupported tier errors propagate without retrying on a different tier/provider.
+The normal SDK retry policy for transient failures remains unchanged.
+
+See the [official Codex speed guide](https://learn.chatgpt.com/docs/agent-configuration/speed)
+for subscription credit tradeoffs and the
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+for Fast-to-priority mapping. Provider/model eligibility and processing may vary;
+measure whole-turn planning latency separately from host execution. No end-to-end
+speed multiplier is guaranteed.
+
+`/health` includes `components.llm.codex_service_tier`, the startup **request default**.
+Chat final-response and stored assistant usage can contain:
+
+```json
+{
+  "service_tiers": [
+    {
+      "provider_response_id": "resp_example",
+      "model": "gpt-5.6-sol",
+      "requested": "priority",
+      "actual": "priority"
+    }
+  ]
+}
+```
+
+Each entry describes one model response. `requested` is the actual outbound wire
+setting (`null` when omitted); `actual` is the recognized tier on a provider
+`response.completed` or `response.incomplete` event. Missing/unrecognized values,
+an interrupted stream, or a stream without such an event leave `actual: null`.
+Never infer actual priority from the requested value or a startup/created event.
+Host receipt continuations retain the original usage without adding a model call.
+Native model messages also retain `provider_details.codex_service_tier`; auxiliary
+helpers returning only aggregated token usage may not expose tier entries.
