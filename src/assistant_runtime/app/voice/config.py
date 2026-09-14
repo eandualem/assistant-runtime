@@ -7,6 +7,7 @@ class VoiceConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = False
+    delegation_enabled: bool = True
     model: str = Field(default="gpt-live-1", min_length=1, max_length=128)
     voice: str = Field(default="marin", min_length=1, max_length=128)
     api_key_env: str = Field(default="OPENAI_API_KEY", pattern=r"^[A-Z][A-Z0-9_]*$")
@@ -17,6 +18,11 @@ class VoiceConfig(BaseModel):
             "Do not claim an action succeeded until the backend confirms it. "
             "You can continue listening while the backend works."
         ),
+        min_length=1,
+        max_length=16000,
+    )
+    conversation_instructions: str = Field(
+        default="You are a helpful voice assistant. Keep spoken replies concise.",
         min_length=1,
         max_length=16000,
     )

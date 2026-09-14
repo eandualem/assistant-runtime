@@ -102,6 +102,7 @@ class EventCoordinator:
         error_type: str | None = None,
         usage: dict[str, int] | None = None,
         pending_tool_call: dict[str, Any] | None = None,
+        decision: str | None = None,
     ) -> dict[str, Any] | None:
         """Emit final_response if not already emitted.
 
@@ -129,6 +130,7 @@ class EventCoordinator:
             error_type=error_type,
             usage=usage,
             pending_tool_call=pending_tool_call,
+            decision=decision,
         )
         self._event_count += 1  # count but never raise
         return event

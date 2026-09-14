@@ -93,6 +93,7 @@ class TurnPlan:
     # Bookkeeping.
     turn_number: int = 0
     update_working_memory: bool = True
+    receipt_only: bool = False
     input_message: str = ""
     trace_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -119,6 +120,8 @@ class TurnPlanner:
             else:
                 plan = await self._plan_message(request, principal)
             plan.principal = principal
+            if plan.request.output_mode == "host_tools":
+                plan.update_working_memory = False
             return plan
         except (SessionError, AccessDeniedError):
             raise
@@ -174,6 +177,11 @@ class TurnPlanner:
             raise SessionError(f"Continuation rejected: session '{session_id}' does not exist")
         self._authorize(session_context, principal, session_id)
 
+        stored_mode = session_context.get("pending_output_mode", "text")
+        if stored_mode == "host_tools":
+            request = request.model_copy(update={"output_mode": "host_tools"})
+        elif request.output_mode == "host_tools":
+            raise SessionError("Continuation output_mode does not match the pending action")
         recorded = _recorded_call(session_context, request.tool_call_id or "")
         if recorded is not None and "output" in recorded:
             # The result of this call is already on the assistant row (a
@@ -299,6 +307,7 @@ class TurnPlanner:
                 if next_pending
                 else DeferredToolResults(calls={request.tool_call_id: deferred_result})
             ),
+            receipt_only=request.output_mode == "host_tools",
             next_pending=next_pending,
             pending_batch=batch,
             accepted_tool_result=ModelRequest(

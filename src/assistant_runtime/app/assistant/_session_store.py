@@ -497,6 +497,7 @@ class SessionStore:
         tool_name: str,
         assistant_message_id: str,
         batch: list[str] | None = None,
+        output_mode: str = "text",
     ) -> None:
         """Record the one host-tool call the session now waits on, in memory and on the row.
 
@@ -508,6 +509,7 @@ class SessionStore:
         ctx["pending_tool_name"] = tool_name
         ctx["pending_assistant_message_id"] = assistant_message_id
         ctx["pending_tool_batch"] = list(batch) if batch else [tool_call_id]
+        ctx["pending_output_mode"] = output_mode
         await self.save_session_state_async(session_id)
 
     async def clear_pending_action(self, session_id: str) -> dict[str, Any] | None:
@@ -530,6 +532,7 @@ class SessionStore:
             "pending_tool_name",
             "pending_assistant_message_id",
             "pending_tool_batch",
+            "pending_output_mode",
         ):
             ctx.pop(key, None)
         await self.save_session_state_async(session_id)
@@ -703,6 +706,9 @@ def _restore_pending_action(
             already_answered=entry is not None and "output" in entry,
         )
         return None
+    ctx["pending_output_mode"] = (
+        "host_tools" if pending.get("output_mode") == "host_tools" else "text"
+    )
     ctx["pending_tool_call_id"] = str(tool_call_id)
     ctx["pending_tool_name"] = pending.get("tool_name") or str(entry.get("name", ""))
     ctx["pending_assistant_message_id"] = assistant_message_id

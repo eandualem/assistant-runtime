@@ -162,6 +162,14 @@ from native [Pydantic AI capabilities](composition.md).
 
 ### Voice (`VOICE__*`)
 
+`VOICE__DELEGATION_ENABLED` defaults to `true`. Set it to `false` for an instance that
+only permits conversation-only calls; requests cannot override this ceiling.
+When enabled, callers can still opt into `mode: "conversation"` per call.
+`VOICE__CONVERSATION_INSTRUCTIONS` supplies the conversation-only persona
+(default: helpful, concise conversation); it is separate from delegated-mode
+`VOICE__INSTRUCTIONS`, whose default asks Live to delegate.
+See [conversation-only voice](voice.md#conversation-only-calls).
+
 Optional GPT-Live provider policy, fixed at startup; these are not request
 or runtime-overlay tunables. Install `[voice]` and see [the frontend contract](voice.md).
 

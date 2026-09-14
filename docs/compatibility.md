@@ -167,3 +167,9 @@ Codex subscription transport omits `max_output_tokens` (the runtime `max_tokens`
 model setting): the subscription endpoint rejects it, unlike the public Responses
 API. Numeric thinking budgets still map to reasoning effort. Native usage limits
 remain runtime checks, not a provider-side generation cap.
+
+Silent host decisions are exercised with native `ToolOutput` plus
+`DeferredToolRequests`, including hold/action output ordering, suppressed prose,
+receipt-only completion, rejected multiple actions, and native cancellation.
+Conversation-only voice uses the existing offline transport tests; no provider
+allocation is part of these checks.

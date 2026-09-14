@@ -396,7 +396,8 @@ class StreamingService:
             raise AgentRunError(message)
         turn_number = self._sessions.get_context(request.session_id).get("turn_number", 0)
         return AssistantResult(
-            content=final.get("content") or "".join(text),
+            content=None if final.get("decision") else final.get("content") or "".join(text),
+            decision=final.get("decision"),
             model=final["model"],
             session_id=request.session_id,
             turn_number=turn_number,
