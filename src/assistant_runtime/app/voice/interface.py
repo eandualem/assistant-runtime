@@ -1,4 +1,4 @@
-"""GPT-Live voice conversations delegating exclusively through StreamingService.
+"""GPT-Live conversations with optional delegation through StreamingService.
 
 The browser carries audio. This service owns the provider sideband, transcript
 checkpoints and delegated backend turns. Provider events never execute tools
@@ -67,6 +67,8 @@ class VoiceService:
         return {
             "healthy": self._started,
             "enabled": self.config.enabled,
+            "delegation_enabled": self.config.delegation_enabled,
+            "conversation_mode_supported": True,
             "configured": bool(os.getenv(self.config.api_key_env)),
             "model": self.config.model,
             "active_calls": sum(not c.done.is_set() for c in self._calls.values()),
@@ -75,6 +77,9 @@ class VoiceService:
     async def create(self, offer: VoiceOffer, principal: Principal) -> dict:
         if not self._started or not self.config.enabled:
             raise VoiceError("Voice is disabled; set VOICE__ENABLED=true", 503)
+        mode = offer.mode or ("delegated" if self.config.delegation_enabled else "conversation")
+        if mode == "delegated" and not self.config.delegation_enabled:
+            raise VoiceError("Voice delegation is disabled by startup policy", 409)
         key = os.getenv(self.config.api_key_env)
         if not key:
             raise VoiceError(
@@ -99,10 +104,13 @@ class VoiceService:
                 lease=str(uuid.uuid4()),
                 model=self.config.model,
                 voice=self.config.voice,
+                mode=mode,
             )
             history = await self._streaming.reserve_session(offer.session_id, call.lease, principal)
             try:
                 # Conservative UTF-8 budget fits the provider's startup token cap.
+                if offer.history is not None:
+                    history = [item.model_dump() for item in offer.history]
                 seed = []
                 remaining = 7000
                 for item in reversed(history[-128:]):
@@ -126,13 +134,36 @@ class VoiceService:
                     remaining -= len(content.encode())
                     if remaining <= 0:
                         break
+                instructions = self.config.instructions
+                if call.mode == "conversation":
+                    instructions += (
+                        "\nThis call is conversation-only. Do not delegate work or call tools. "
+                        "Independent application controls handle actions. Acknowledge requests "
+                        "without claiming actions have started or completed until the application "
+                        "supplies confirmed execution facts."
+                    )
                 call.provider_id, answer = await self._transport.create(
                     key,
                     {
                         "model": self.config.model,
-                        "instructions": self.config.instructions,
+                        "instructions": instructions,
                         "audio": {"output": {"voice": self.config.voice}},
+                        # Live has no disabled delegation type. Runtime policy blocks dispatch.
                         "delegation": {"type": "client"},
+                        **(
+                            {
+                                "client": {
+                                    "data_channel": [
+                                        "session.instructions.append",
+                                        "session.thinking.append",
+                                        "session.input_audio.mute",
+                                        "session.input_audio.unmute",
+                                    ]
+                                }
+                            }
+                            if call.mode == "conversation"
+                            else {}
+                        ),
                         "input": list(reversed(seed)),
                         "store": False,
                     },
@@ -150,6 +181,7 @@ class VoiceService:
                     "provider_session_id": call.provider_id,
                     "transport": {"type": "webrtc", "sdp": answer},
                     "events_url": f"/api/voice/calls/{call.id}/events",
+                    "mode": call.mode,
                 }
             except BaseException as exc:
                 self._streaming.release_session(offer.session_id, call.lease)
@@ -167,6 +199,7 @@ class VoiceService:
         record = call.snapshot() if call else await self._persistence.load(call_id)
         if record is None:
             raise VoiceError("Voice call not found", 404)
+        record.setdefault("mode", "delegated")
         if not can_access_session(principal, record["owner_id"]):
             raise AccessDeniedError("Voice call belongs to another principal")
         await self._streaming.authorize_session(record["session_id"], principal)
@@ -210,6 +243,8 @@ class VoiceService:
         self, call_id: str, delegation_id: str, result: VoiceToolResult, principal: Principal
     ) -> dict:
         call = await self._active(call_id, principal)
+        if call.mode == "conversation":
+            raise VoiceError("Conversation-only calls do not accept backend tool results", 409)
         async with call.control_lock:
             if call.stop_requested.is_set():
                 raise VoiceError("Voice call is closing")
@@ -235,6 +270,8 @@ class VoiceService:
 
     async def cancel_work(self, call_id: str, principal: Principal) -> dict:
         call = await self._active(call_id, principal)
+        if call.mode == "conversation":
+            return {"cancelled": False}
         cancelled_waiting = False
         async with call.control_lock:
             if call.stop_requested.is_set():
@@ -338,12 +375,12 @@ class VoiceService:
 
     async def _run(self, call: VoiceCall) -> None:
         reader = asyncio.create_task(self._receive(call))
-        worker = asyncio.create_task(self._worker(call))
+        worker = asyncio.create_task(self._worker(call)) if call.mode == "delegated" else None
         saver = asyncio.create_task(self._checkpoint(call))
         stop = asyncio.create_task(call.stop_requested.wait())
         try:
             completed, _ = await asyncio.wait(
-                [reader, worker, stop],
+                [reader, stop, *([worker] if worker is not None else [])],
                 timeout=self.config.max_duration_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -366,10 +403,9 @@ class VoiceService:
             self._cancel_unprotected(call)
             # Do not cancel a worker awaiting native cancellation cleanup. It
             # drains accepted continuations, then observes this sentinel.
-            if not worker.done():
-                await call.queue.put((None, None, None))
-                await asyncio.gather(worker, return_exceptions=True)
-            else:
+            if worker is not None:
+                if not worker.done():
+                    await call.queue.put((None, None, None))
                 await asyncio.gather(worker, return_exceptions=True)
             while not call.queue.empty():
                 _, _, receipt = call.queue.get_nowait()
@@ -380,10 +416,11 @@ class VoiceService:
             for task in (reader, saver, stop):
                 task.cancel()
             await asyncio.gather(reader, saver, stop, return_exceptions=True)
-            with contextlib.suppress(Exception):
-                await self._streaming.cancel_reserved_work(
-                    call.offer.session_id, call.lease, call.principal
-                )
+            if call.mode == "delegated":
+                with contextlib.suppress(Exception):
+                    await self._streaming.cancel_reserved_work(
+                        call.offer.session_id, call.lease, call.principal
+                    )
             with contextlib.suppress(Exception):
                 await call.connection.close()
             call.pending = None
@@ -462,6 +499,8 @@ class VoiceService:
                 if call.finalized:
                     return
             elif kind == "session.delegation.created" and not call.stop_requested.is_set():
+                if call.mode == "conversation":
+                    continue  # Provider events never override the immutable call policy.
                 delegation = event.get("delegation", {})
                 ident = delegation.get("id")
                 if (
@@ -516,6 +555,8 @@ class VoiceService:
     def _enqueue(
         self, call: VoiceCall, ident: str, request: AssistantRequest | None, receipt=None
     ) -> None:
+        if call.mode == "conversation":
+            raise VoiceError("Conversation-only calls cannot enqueue backend work", 409)
         if call.queue.full():
             raise VoiceError("Voice work queue is full", 429)
         call.queue.put_nowait((ident, request, receipt))

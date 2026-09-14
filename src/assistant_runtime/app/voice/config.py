@@ -7,6 +7,7 @@ class VoiceConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = False
+    delegation_enabled: bool = True
     model: str = Field(default="gpt-live-1", min_length=1, max_length=128)
     voice: str = Field(default="marin", min_length=1, max_length=128)
     api_key_env: str = Field(default="OPENAI_API_KEY", pattern=r"^[A-Z][A-Z0-9_]*$")

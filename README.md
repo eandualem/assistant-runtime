@@ -103,12 +103,20 @@ A client needs a Socket.IO connection to the `/assistant` namespace, a
 [docs/api.md](docs/api.md); the host contract in
 [docs/host-contract.md](docs/host-contract.md).
 
+For an independent silent controller, send `output_mode: "host_tools"`. It returns
+one host action or structured hold, and records the execution receipt without
+another model call. The host owns scheduling, revision checks and physical
+cancellation. See [silent host decisions](docs/host-contract.md#silent-host-decisions).
+
 ## GPT-Live voice
 
 Install the `[voice]` extra, set `VOICE__ENABLED=true` and provide an
 `OPENAI_API_KEY` to enable GPT-Live 1 speech-to-speech. The browser connects
 with WebRTC; the runtime creates the Live session and delegates tasks into
-its existing Pydantic AI pipeline, including backend and host tools. The
+its existing Pydantic AI pipeline, including backend and host tools. Alternatively,
+`mode: "conversation"` disables runtime delegation for that call;
+`VOICE__DELEGATION_ENABLED=false` enforces it for the instance. An independent
+controller can use separate chat sessions. The
 backend can still use the local Codex subscription provider; the voice
 connection requires separate Live API access.
 

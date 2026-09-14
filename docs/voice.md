@@ -3,12 +3,13 @@
 The optional `[voice]` integration connects a browser microphone and speaker to
 **GPT-Live 1** using OpenAI's Live API. The runtime owns session creation and a
 server WebSocket connection for delegation, transcripts, usage and closing.
-GPT-Live delegates work through the existing Pydantic AI turn pipeline, so the
+In delegated mode, GPT-Live sends work through the existing Pydantic AI turn pipeline, so the
 configured assistant profile, capabilities, tools, host actions, access rules,
-history and budgets still apply to backend work.
+history and budgets still apply to backend work. Conversation-only mode keeps speech
+and transcripts independent of backend execution.
 
 This is the Live API, not the older Realtime API. It is not a model that can be
-selected through `/api/models` or `config.model`: voice and the backend model are
+selected through `/api/models` or `config.default_model`: voice and the backend model are
 configured independently. The reference frontend supplies WebRTC, playback and
 avatar animation; this package supplies the backend contract.
 
@@ -24,8 +25,10 @@ uv run assistant-runtime serve
 
 With Postgres, apply migrations through `uv run assistant-runtime migrate`
 before serving. The integration also works in memory without Postgres.
-`GET /api/voice/status` reports `enabled`, `configured`, `model`, `active_calls`
-and lifecycle `healthy`. `configured` means a key is present, not that model
+`GET /api/voice/status` reports `enabled`, `delegation_enabled`, `configured`, `model`, `active_calls`
+and lifecycle `healthy`. It also reports `conversation_mode_supported: true`,
+so hosts can reject an older runtime before opening the microphone or allocating
+a provider session. `configured` means a key is present, not that model
 access has been tested. Disabled or unconfigured creation returns `503`.
 
 Voice requires a Live API key. This integration does not exchange Codex login
@@ -61,16 +64,16 @@ Use the voice control endpoints during a call.
      "session_id": "voice-demo",
      "sdp": "<complete WebRTC offer>",
      "host_context": {"actions": []},
-     "config": {"model": "openai:gpt-5.4"}
+     "config": {"default_model": "openai:gpt-5.4"}
    }
    ```
 
    `host_context` and `config` are optional and have the normal
    [host contract](host-contract.md) and per-request tunable validation.
-   `config.model` selects the **backend** model. Omit it to use existing defaults.
+   `config.default_model` selects the **backend** model. Omit it to use existing defaults.
    The example is illustrative; choose a backend model available to your provider.
 3. The `201` response contains `call_id`, `session_id`, `provider_session_id`,
-   `transport: {type: "webrtc", sdp: "<answer>"}` and `events_url`.
+   `transport: {type: "webrtc", sdp: "<answer>"}`, resolved `mode` and `events_url`.
    Apply `await pc.setRemoteDescription({type: "answer", sdp: result.transport.sdp})`.
    The HTTP operation already started the provider session: **do not send
    `session.start`**. Wait for `session.started` before any provider commands.
@@ -92,10 +95,68 @@ can drive mouth movement; the backend does not generate visemes.
 See OpenAI's [WebRTC guide](https://developers.openai.com/api/docs/guides/voice-webrtc?api=live)
 and [server controls](https://developers.openai.com/api/docs/guides/voice-server-controls?api=live).
 
+## Conversation-only calls
+
+Set `mode: "conversation"` on creation to keep Live focused on conversation.
+`mode: "delegated"` retains the existing backend bridge. When mode is omitted,
+`VOICE__DELEGATION_ENABLED=true` (the default) selects delegated mode; setting
+this startup ceiling to `false` selects conversation mode and rejects explicit
+requests for delegated mode with `409`, before allocating a provider session.
+The resolved mode is fixed for the call and appears in creation responses and
+snapshots. A context PATCH cannot change it.
+
+Conversation calls keep the normal session lease, ownership, transcripts, usage
+and close handshake. They create no backend worker and discard unexpected
+provider delegation events without executing or returning backend results. The
+voice tool-result endpoint returns `409`; voice cancel returns
+`{"cancelled": false}` without affecting speech. Run independent action planning
+through ordinary chat on a **separate** backend session. Never execute movement
+from the old voice delegation path alongside that controller.
+
+Live's public configuration has no disabled delegation type, so creation still
+uses `delegation: {type: "client"}`. Conversation mode enforces the restriction
+in the runtime, adds conversation-only instructions, and sets the provider's
+`client.data_channel` allowlist to exactly:
+
+- `session.instructions.append`
+- `session.thinking.append`
+- `session.input_audio.mute`
+- `session.input_audio.unmute`
+
+This excludes browser `session.update` and all `response.*` commands. Hosts must
+keep the same narrow policy in their client. The runtime owns close/finalization
+through the sideband. Quiet application execution facts can use
+`session.thinking.append` with `delegation_id: null`; these are application
+context, not user speech or proof that the model has consumed the update. Keep
+internal action receipts out of visible conversation and only report movement
+started when the execution engine confirms it.
+
+Creation optionally accepts a replacement text seed:
+
+```json
+{
+  "session_id": "voice-conversation",
+  "sdp": "<complete WebRTC offer>",
+  "mode": "conversation",
+  "history": [
+    {"role": "user", "content": "Earlier question"},
+    {"role": "assistant", "content": "Earlier spoken answer"}
+  ]
+}
+```
+
+`history` accepts only user/assistant text, at most 128 entries and 7,000 UTF-8
+bytes of content in total. Oversized seeds and other roles return `422`; entries
+remain ordered and are supplied as conversation messages, never instructions.
+An explicit list replaces the backend history seed, including an empty list;
+omitting it retains the existing bounded active-branch history behavior. It does
+not import messages into the leased backend session. The application remains
+responsible for durable conversation context and selecting relevant prior turns.
+
 ## Events, reconnect and host actions
 
 `GET /api/voice/calls/{call_id}` returns the current snapshot: identity, model,
-voice, status/reason, transcript fragments, delegation states,
+voice, resolved `mode`, status/reason, transcript fragments, delegation states,
 `active_delegation`, `pending_tool_call`, cumulative `usage`, `finalized` and `cursor`.
 
 `GET /api/voice/calls/{call_id}/events?after=123` streams SSE. Each event has an

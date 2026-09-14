@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.host_context import (
@@ -146,6 +146,13 @@ def strip_screenshot_from_tool_result(tool_result: Any) -> Any:
     return tool_result
 
 
+class HoldDecision(BaseModel):
+    """A silent decision to leave host state unchanged."""
+
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["hold"]
+
+
 class AssistantRequest(BaseModel):
     """Input for a single assistant interaction."""
 
@@ -154,6 +161,7 @@ class AssistantRequest(BaseModel):
     parent_id: str | None = None
     message_type: Literal["standard", "steering"] = Field(default="standard")
     content: str
+    output_mode: Literal["text", "host_tools"] = "text"
     images: list[str] = Field(default_factory=list)
     """Legacy: data URIs treated as screenshots. Prefer ``attachments``."""
     attachments: list[Attachment] = Field(default_factory=list)
@@ -196,6 +204,8 @@ class AssistantRequest(BaseModel):
             # because serialised requests (``model_dump()``) carry it explicitly.
             raise ValueError("tool_outcome requires tool_call_id (a continuation)")
         if self.is_steering:
+            if self.output_mode == "host_tools":
+                raise ValueError("host_tools decisions do not support steering")
             if self.parent_id is not None:
                 raise ValueError("Steering requests must not include parent_id")
             if self.tool_call_id is not None or self.tool_result is not None:
@@ -260,7 +270,8 @@ class AssistantRequest(BaseModel):
 class AssistantResult(BaseModel):
     """The final answer of one turn (the non-streaming form of ``final_response``)."""
 
-    content: str = Field(description="Text response")
+    content: str | None = Field(description="Text response; null for silent host decisions")
+    decision: Literal["hold", "pending", "completed"] | None = None
     model: str = Field(description="Model used for this turn")
     session_id: str
     turn_number: int

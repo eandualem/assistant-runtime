@@ -164,6 +164,19 @@ class ToolRegistry:
             self._toolset_cache[cache_key] = list(toolsets)
         return list(toolsets)
 
+    def host_action_tools(self, host_context: dict[str, Any] | None) -> tuple[ToolSet, list]:
+        """Only actions explicitly supplied by the host; no configured tools or providers."""
+        actions = actions_of(host_context)
+        if any(action.name == "hold" for action in actions):
+            raise ToolValidationError("'hold' is reserved for the host_tools decision output")
+        schemas = {
+            a.name: {"description": a.description, "parameters": a.parameters} for a in actions
+        }
+        return (
+            ToolSet(backend_tools=[], host_tools=get_host_definitions(schemas)),
+            [build_host_toolset(schemas)] if schemas else [],
+        )
+
     def build_subagent_toolset(self) -> list:
         """Build toolsets for subagent execution — backend tools only, excluding run_subagent.
 
