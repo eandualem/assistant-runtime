@@ -220,11 +220,12 @@ class TestBuildModelSettings:
             (40_000, "xhigh"),
         ],
     )
-    def test_openai_gpt5_thinking_budget_maps_reasoning_effort(
-        self, thinking_budget, expected_effort
+    @pytest.mark.parametrize("model", ["openai:gpt-5.4", "openai:gpt-6-astra"])
+    def test_openai_thinking_budget_maps_reasoning_effort(
+        self, thinking_budget, expected_effort, model
     ):
         settings = build_model_settings(
-            model_id="openai:gpt-5.4",
+            model_id=model,
             thinking_budget=thinking_budget,
         )
         assert isinstance(settings, dict)

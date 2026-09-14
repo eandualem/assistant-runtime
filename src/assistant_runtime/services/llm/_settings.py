@@ -120,7 +120,8 @@ def build_model_settings(
     is_openrouter = model_id.startswith("openrouter:")
     is_anthropic = "anthropic" in model_id and not is_openrouter
     is_google = model_id.startswith("google:") or model_id.startswith("google-cloud:")
-    is_openai_reasoning = model_id.startswith("openai:gpt-5")
+    is_astra = model_id == "openai:gpt-6-astra" or model_id.startswith("openai:gpt-6-astra-")
+    is_openai_reasoning = model_id.startswith("openai:gpt-5") or is_astra
 
     # Compute effective temperature and max_tokens
     base_max_tokens = max_tokens if max_tokens is not None else _RESPONSE_MAX_TOKENS
@@ -243,6 +244,8 @@ def build_model_settings(
             # IDs can break OpenAI continuation requests.
             "openai_send_reasoning_ids": False,
         }
+        if is_astra:
+            openai_kwargs.pop("temperature", None)
         if thinking_budget:
             openai_kwargs["openai_reasoning_effort"] = _map_openai_reasoning_effort(
                 model_id=model_id,
