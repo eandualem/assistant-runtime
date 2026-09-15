@@ -258,3 +258,34 @@ class TestRunSubagentRuntimeSettings:
         call_kwargs = mock_execute.call_args.kwargs
         assert call_kwargs["model_override"] is None
         assert call_kwargs["thinking_budget_override"] is None
+
+
+class TestFrozenSubagentDefaults:
+    async def test_frozen_defaults_apply_under_the_runtime_overlay(self):
+        """ASSISTANT__SUBAGENT_* are the defaults; the runtime overlay wins when set."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from assistant_runtime.services.tools._registry import ToolRegistry
+        from assistant_runtime.services.tools.builtin.subagent import register_subagent_tools
+        from assistant_runtime.services.tools.config import ToolConfig
+
+        registry = ToolRegistry(ToolConfig())
+        overlay: dict = {}
+        register_subagent_tools(
+            registry,
+            MagicMock(),
+            backend_toolsets=lambda: [],
+            runtime_settings=lambda: MagicMock(get=lambda k, d=None: overlay.get(k, d)),
+            defaults={"subagent_model": "cerebras:qwen-3.8-27b", "subagent_thinking_budget": 2000},
+        )
+        handler = registry._backend_handlers["run_subagent"]
+        with patch(
+            "assistant_runtime.services.tools.builtin._subagent_executor.execute_subagent",
+            new=AsyncMock(return_value={"result": "ok"}),
+        ) as execute:
+            await handler(MagicMock(usage=None), task="t")
+            assert execute.call_args.kwargs["model_override"] == "cerebras:qwen-3.8-27b"
+            assert execute.call_args.kwargs["thinking_budget_override"] == 2000
+            overlay["subagent_model"] = "anthropic:claude-haiku-4-5"
+            await handler(MagicMock(usage=None), task="t")
+            assert execute.call_args.kwargs["model_override"] == "anthropic:claude-haiku-4-5"

@@ -31,6 +31,7 @@ def register_builtin_tools(
     backend_toolsets: Callable[[], list[Any]],
     runtime_settings: Callable[[], Any | None],
     subagent_usage_limits: Any | None = None,
+    subagent_defaults: dict[str, Any] | None = None,
     enabled: frozenset[str] | None = None,
 ) -> None:
     """Register the built-in tools; the optional ones only when their service exists."""
@@ -47,6 +48,7 @@ def register_builtin_tools(
             backend_toolsets=backend_toolsets,
             runtime_settings=runtime_settings,
             usage_limits=subagent_usage_limits,
+            defaults=subagent_defaults,
         )
     if media_service is not None:
         if enabled is None or "media" in enabled:

@@ -380,10 +380,10 @@ class LlmService:
         )
 
     def _effective_model(self, configured: str, defaults: dict[str, str]) -> str:
-        if self._config.codex_only:
+        provider = configured.split(":", 1)[0]
+        if self._config.codex_only and provider == "openai":
             # Never turn a missing subscription into an API-provider fallback.
             return configured
-        provider = configured.split(":", 1)[0]
         available = self._configured_provider_names() if self._started else []
         if not available:
             return configured
@@ -401,10 +401,14 @@ class LlmService:
         return fallback
 
     def _configured_provider_names(self) -> list[str]:
-        """Return provider names including active Codex-backed OpenAI auth."""
-        if self._config.codex_only:
-            return ["openai"] if self._get_codex_session() is not None else []
+        """Provider names with usable credentials, including Codex-backed OpenAI.
+
+        Under the subscription guard an OPENAI_API_KEY does not count: openai
+        is available only through a connected subscription.
+        """
         providers = {p.provider for p in self._providers}
+        if self._config.codex_only:
+            providers.discard("openai")
         if self._get_codex_session() is not None:
             providers.add("openai")
         return sorted(providers)
@@ -427,8 +431,7 @@ class LlmService:
         ``LLMConfig.codex_models`` narrows the list.
         """
         if not resolved_model.startswith("openai:"):
-            if self._config.codex_only:
-                raise ProviderConfigError("Subscription-only routing requires an openai: model")
+            # The guard is about OpenAI billing; another provider's key is its own choice.
             return False
         model_name = resolved_model.split(":", 1)[1]
         allowed = self._config.codex_models
@@ -448,18 +451,23 @@ class LlmService:
         self,
         resolved_model: str,
         settings: dict[str, Any] | Any,
+        *,
+        service_tier: str | None = None,
     ) -> dict[str, Any] | Any:
-        """Apply transport-specific defaults for certain providers."""
+        """Apply transport-specific defaults for certain providers.
+
+        ``service_tier`` is the turn's Codex tier (the tunable); unset falls
+        back to ``LLM__CODEX_SERVICE_TIER``.
+        """
         if not self._should_use_codex_provider(resolved_model):
             return settings
 
         # The subscription backend takes the Responses API settings but not the
         # sampling ones, max_output_tokens, or previous_response_id chaining.
         codex_settings: dict[str, Any] = {"openai_store": False}
-        if self._config.codex_service_tier is not None:
-            codex_settings["openai_service_tier"] = (
-                "priority" if self._config.codex_service_tier == "fast" else "default"
-            )
+        tier = service_tier or self._config.codex_service_tier
+        if tier is not None:
+            codex_settings["openai_service_tier"] = "priority" if tier == "fast" else "default"
         if isinstance(settings, dict):
             for key in (
                 "timeout",
@@ -541,6 +549,7 @@ class LlmService:
         temperature: float | None = None,
         tools: Sequence[Tool[Any] | ToolFuncEither[Any, ...]] = (),
         capabilities: Sequence[AgentCapability[Any]] = (),
+        codex_service_tier: str | None = None,
     ) -> Agent:
         """Create a configured Pydantic AI Agent.
 
@@ -568,7 +577,9 @@ class LlmService:
             thinking_budget=thinking_budget,
             temperature=temperature,
         )
-        settings = self._apply_model_transport_defaults(resolved_model, settings)
+        settings = self._apply_model_transport_defaults(
+            resolved_model, settings, service_tier=codex_service_tier
+        )
         agent_model = self._resolve_agent_model(resolved_model)
 
         agent_kwargs: dict[str, Any] = {

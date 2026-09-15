@@ -28,6 +28,10 @@ async def register_tools(
         artifact_service=artifact_service,
         providers=build_providers(settings.providers),
         subagent_usage_limits=_budget_limits(settings.assistant.budget),
+        subagent_defaults={
+            "subagent_model": settings.assistant.subagent_model,
+            "subagent_thinking_budget": settings.assistant.subagent_thinking_budget,
+        },
     )
     app_state.tool_service = service
     await lifecycle.register("tool_service", service)

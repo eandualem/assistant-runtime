@@ -21,7 +21,7 @@ most specific wins.
 The tunables, which exist in all three tiers: `default_model`,
 `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`,
 `summarization_model`, `working_memory_model`, `default_image_model`,
-`default_video_model`, `subagent_model`, `subagent_thinking_budget`.
+`default_video_model`, `subagent_model`, `subagent_thinking_budget`, `codex_service_tier`.
 `GET /api/settings` shows each value and which tier it came from.
 
 ## Providers and models
@@ -30,14 +30,14 @@ At least one provider must be usable.
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY` | Provider keys; set any combination |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY` | Provider keys; set any combination |
 | `LLM__PROVIDERS_JSON` | Alternative: `[{"provider":"anthropic","api_key":"..."}]` (provider and key only; other fields are rejected) |
 | `LLM__PRIMARY_MODEL` | Chat model, default `anthropic:claude-opus-5` |
 | `LLM__SUMMARIZATION_MODEL` | History summaries and lightweight tasks, default `anthropic:claude-haiku-4-5` |
 | `OAUTH__ENCRYPTION_KEY` | Fernet key; enables the ChatGPT/Codex OAuth path and the encrypted provider-key store (`PUT /api/providers/{provider}/api-key`) |
 | `LLM__CODEX_MODELS` | JSON list of OpenAI model names to route through the ChatGPT/Codex subscription when connected; empty routes every `openai:` model |
-| `LLM__CODEX_ONLY` | `false`; when `true`, all shared LLM calls require usable Codex OAuth and an allowed `openai:` model. No API-key or other-provider fallback, including request overrides and auxiliary calls. Startup-only; separate voice/media services are unaffected |
-| `LLM__CODEX_SERVICE_TIER` | Unset by default (omit request field); `fast` maps to Codex wire `service_tier: "priority"`, `default` requests standard processing. Startup-only, applies to all Codex-authenticated shared LLM routes, including auxiliaries. Preserves model/effort and subscription-only policy; does not configure API-key, voice or media requests. Fast consumes more subscription credits. LLM health reports requested mode only |
+| `LLM__CODEX_ONLY` | `false`; when `true`, the subscription guard: every `openai:` model must go through the ChatGPT/Codex subscription (a disconnected subscription is an error, never an `OPENAI_API_KEY` fallback), and an `OPENAI_API_KEY` does not make openai available. Other providers with a configured key stay routable; `ASSISTANT__REQUEST_MODELS` limits what a request may pick. Startup-only; voice and media have separate credentials |
+| `LLM__CODEX_SERVICE_TIER` | Unset by default (omit the wire field); `fast` maps to Codex wire `service_tier: "priority"`, `default` requests standard processing. The startup fallback for the `codex_service_tier` tunable, which a request or the runtime overlay can set per turn (see `ASSISTANT__REQUEST_SERVICE_TIER`). Applies to Codex-authenticated `openai:` calls only, including auxiliaries; fast consumes more subscription credits |
 
 If the primary or summarization model's provider has no credentials but
 another provider does, that provider's default is used instead and a
@@ -76,6 +76,10 @@ sampling parameters are not sent a temperature.
 | `default_model` | unset (uses `LLM__PRIMARY_MODEL`) | model override |
 | `thinking_budget` | `10000` | thinking tokens; unset disables thinking |
 | `temperature` | `1.0` | sampling temperature where the model accepts one |
+| `subagent_model` | unset (the primary model) | model for `run_subagent`; the `subagent_model` tunable's startup default |
+| `subagent_thinking_budget` | unset | thinking budget for `run_subagent`; the tunable's startup default |
+| `codex_service_tier` | unset (uses `LLM__CODEX_SERVICE_TIER`) | the turn's Codex service tier; the tunable's startup default |
+| `request_service_tier` | `true` | whether a request's `config` may pick `codex_service_tier`; `false` pins the configured tier (fast costs more subscription credits) |
 | `request_models` | `[]` (any) | model ids a request's `config` may pick for any `*_model` tunable; a request naming another keeps the host's value. Empty allows any model: fine for development, list the allowed ones for a deployment |
 | `max_turns` | `10` | agent loop iterations per request |
 | `enable_working_memory` | `true` | extract working memory after each turn |
@@ -170,7 +174,10 @@ from native [Pydantic AI capabilities](composition.md).
 `VOICE__DELEGATION_ENABLED` defaults to `true`. Set it to `false` for an instance that
 only permits conversation-only calls; requests cannot override this ceiling.
 When enabled, callers can still opt into `mode: "conversation"` per call.
-`VOICE__CONVERSATION_INSTRUCTIONS` supplies the conversation-only persona
+`VOICE__INSTRUCTIONS_FILE` and `VOICE__CONVERSATION_INSTRUCTIONS_FILE` read the
+corresponding text from a file at startup, so a prompt checked into the host
+application's repository is the single source (an unreadable or empty file
+fails startup). `VOICE__CONVERSATION_INSTRUCTIONS` supplies the conversation-only persona
 (default: helpful, concise conversation); it is separate from delegated-mode
 `VOICE__INSTRUCTIONS`, whose default asks Live to delegate.
 See [conversation-only voice](voice.md#conversation-only-calls).
@@ -259,7 +266,10 @@ LLM calls; `default` sends `service_tier: "default"`, and unset omits the field.
 It maps to `service_tier: "priority"` using Pydantic AI's supported
 `openai_service_tier` setting. It does not read or modify CLI `/fast` preferences,
 change model/reasoning effort, or configure separate voice/media services.
-`LLM__CODEX_ONLY=true` remains the independent guard against API fallback.
+`LLM__CODEX_ONLY=true` remains the independent guard against an OpenAI API fallback.
+The `codex_service_tier` tunable (request `config`, `PATCH /api/settings`, or
+`ASSISTANT__CODEX_SERVICE_TIER`) chooses the tier per turn; the startup value is
+the fallback when none is set.
 Unsupported tier errors propagate without retrying on a different tier/provider.
 The normal SDK retry policy for transient failures remains unchanged.
 

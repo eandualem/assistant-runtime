@@ -51,8 +51,10 @@ class LLMConfig(BaseModel):
     codex_only: bool = Field(
         default=False,
         description=(
-            "Require ChatGPT/Codex subscription authentication for every LLM call. "
-            "Reject other providers, excluded models and unavailable OAuth; never use API keys. "
+            "The subscription guard: every openai: model must go through the ChatGPT/Codex "
+            "subscription, never an OPENAI_API_KEY, and a disconnected subscription is an "
+            "error rather than an API fallback. Other providers with a configured key stay "
+            "routable; ASSISTANT__REQUEST_MODELS limits what a request may pick. "
             "Does not govern separate voice or media services."
         ),
     )

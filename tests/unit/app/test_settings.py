@@ -110,7 +110,7 @@ class TestRuntimeSettings:
         assert second_update is not None
         assert second_update >= first_update
 
-    def test_tunable_fields_are_the_eleven_documented_ones(self):
+    def test_tunable_fields_are_the_twelve_documented_ones(self):
         expected = {
             "default_model",
             "thinking_budget",
@@ -123,9 +123,10 @@ class TestRuntimeSettings:
             "default_video_model",
             "subagent_model",
             "subagent_thinking_budget",
+            "codex_service_tier",
         }
         assert expected == TUNABLE_FIELDS
-        assert len(TUNABLE_FIELDS) == 11
+        assert len(TUNABLE_FIELDS) == 12
 
     @pytest.mark.asyncio
     async def test_update_summarization_model(self):
@@ -169,7 +170,7 @@ class TestRuntimeSettings:
         rs = RuntimeSettings(frozen_config=AssistantConfig())
         assert rs.get("summarization_model", None) is None
 
-    def test_to_response_dict_includes_all_11_fields(self):
+    def test_to_response_dict_includes_all_12_fields(self):
         rs = RuntimeSettings(frozen_config=AssistantConfig())
         resp = rs.to_response_dict()
         expected_fields = {
@@ -184,6 +185,7 @@ class TestRuntimeSettings:
             "default_video_model",
             "subagent_model",
             "subagent_thinking_budget",
+            "codex_service_tier",
         }
         assert set(resp["values"].keys()) == expected_fields
 
@@ -494,7 +496,7 @@ class TestRuntimeSettingsDB:
         assert rs._updated_at == datetime(2026, 2, 21, tzinfo=UTC)
 
     @pytest.mark.asyncio
-    async def test_persist_sends_all_11_fields(self):
+    async def test_persist_sends_all_12_fields(self):
         mock_repo = MagicMock()
         mock_repo.save = AsyncMock()
         mock_settings_repo_cls = MagicMock(return_value=mock_repo)
@@ -518,7 +520,7 @@ class TestRuntimeSettingsDB:
         assert state_dict["subagent_thinking_budget"] is None
         # All 11 valid fields are present
         assert set(state_dict.keys()) == TUNABLE_FIELDS
-        assert len(state_dict) == 11
+        assert len(state_dict) == 12
 
 
 class TestResolveEffectiveConfig:
@@ -579,6 +581,7 @@ class TestResolveEffectiveConfig:
             default_video_model=None,
             subagent_model=None,
             subagent_thinking_budget=None,
+            codex_service_tier=None,
         )
         with pytest.raises(AttributeError):
             effective.temperature = 0.5  # type: ignore[misc]
@@ -688,3 +691,26 @@ class TestRequestModelAllowlist:
         rs = RuntimeSettings(frozen_config=frozen)
         await rs.update(default_model="anthropic:claude-opus-5")
         assert resolve_effective_config(frozen, rs).default_model == "anthropic:claude-opus-5"
+
+
+class TestServiceTierTunable:
+    """``codex_service_tier`` is a per-request tunable; ``request_service_tier`` pins it."""
+
+    def test_a_request_may_pick_the_tier_by_default(self):
+        frozen = AssistantConfig(codex_service_tier="default")
+        per_req = TunableOverrides(codex_service_tier="fast")
+        assert resolve_effective_config(frozen, None, per_req).codex_service_tier == "fast"
+        assert resolve_effective_config(frozen).codex_service_tier == "default"
+
+    def test_a_pinned_tier_keeps_the_hosts_value(self):
+        frozen = AssistantConfig(codex_service_tier="default", request_service_tier=False)
+        per_req = TunableOverrides(codex_service_tier="fast")
+        assert resolve_effective_config(frozen, None, per_req).codex_service_tier == "default"
+
+    @pytest.mark.asyncio
+    async def test_the_runtime_overlay_sets_the_tier(self):
+        rs = RuntimeSettings(frozen_config=AssistantConfig())
+        await rs.update(codex_service_tier="fast")
+        assert resolve_effective_config(AssistantConfig(), rs).codex_service_tier == "fast"
+        with pytest.raises(ValueError, match="Invalid settings"):
+            await rs.update(codex_service_tier="turbo")

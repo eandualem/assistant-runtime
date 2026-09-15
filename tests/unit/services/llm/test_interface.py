@@ -857,18 +857,19 @@ class TestDbProviderKeys:
         assert not service._codex_close_tasks
 
     async def test_get_provider_status_returns_all_providers(self, monkeypatch):
-        """get_provider_status includes entries for all four known providers."""
+        """get_provider_status includes entries for every known provider."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         service = LlmService(config=LLMConfig())
         await service.start()
 
         statuses = service.get_provider_status()
         provider_names = {s["provider"] for s in statuses}
-        assert provider_names == {"anthropic", "openai", "google", "openrouter"}
+        assert provider_names == {"anthropic", "openai", "google", "openrouter", "cerebras"}
 
         # All should be unconfigured
         for status in statuses:

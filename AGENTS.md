@@ -140,7 +140,9 @@ execution, history, serialization, or the upstream dependency; see
   body and the runtime overlay's validation all use it, and
   `EffectiveConfig` has one attribute per tunable (a test enforces it). A
   new tunable is a field there, an attribute on `EffectiveConfig`, a column
-  on `user_settings` (migration) and a line in `docs/configuration.md`.
+  on `user_settings` (migration), a frozen default on `AssistantConfig` (or
+  the owning service's config) so it is settable from the environment, and
+  a line in `docs/configuration.md`.
   The request tier is untrusted: `CEILING_FIELDS` (`max_turns`, the
   thinking budgets) can only be lowered by a request. Per-turn native
   `UsageLimits` come from `ASSISTANT__BUDGET__*` merged with

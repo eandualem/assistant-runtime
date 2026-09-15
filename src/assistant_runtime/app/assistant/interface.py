@@ -256,6 +256,7 @@ class AssistantService:
                 output_type=output_type,
                 thinking_budget=effective.thinking_budget,
                 temperature=effective.temperature,
+                codex_service_tier=effective.codex_service_tier,
                 **native_options,
             )
 
