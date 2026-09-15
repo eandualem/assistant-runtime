@@ -81,6 +81,7 @@ def register_subagent_tools(
     backend_toolsets: Callable[[], list[Any]],
     runtime_settings: Callable[[], Any | None],
     usage_limits: UsageLimits | None = None,
+    defaults: dict[str, Any] | None = None,
 ) -> None:
     """Register ``run_subagent``.
 
@@ -121,9 +122,19 @@ def register_subagent_tools(
         # Import here to avoid circular imports at module level
         from assistant_runtime.services.tools.builtin._subagent_executor import execute_subagent
 
+        # The runtime overlay over the frozen ASSISTANT__SUBAGENT_* defaults.
+        frozen = defaults or {}
         settings = runtime_settings()
-        model_override = settings.get("subagent_model", None) if settings else None
-        thinking_override = settings.get("subagent_thinking_budget", None) if settings else None
+        model_override = (
+            settings.get("subagent_model", frozen.get("subagent_model"))
+            if settings
+            else frozen.get("subagent_model")
+        )
+        thinking_override = (
+            settings.get("subagent_thinking_budget", frozen.get("subagent_thinking_budget"))
+            if settings
+            else frozen.get("subagent_thinking_budget")
+        )
 
         return await execute_subagent(
             definition=definition,

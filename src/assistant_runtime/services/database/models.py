@@ -200,6 +200,7 @@ class UserSettingsORM(Base):
     default_video_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     subagent_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     subagent_thinking_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    codex_service_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

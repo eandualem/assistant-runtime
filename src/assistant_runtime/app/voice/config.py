@@ -1,6 +1,10 @@
 """Startup policy for voice sessions; independent of backend model routing."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from __future__ import annotations
+
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class VoiceConfig(BaseModel):
@@ -26,6 +30,35 @@ class VoiceConfig(BaseModel):
         min_length=1,
         max_length=16000,
     )
+    instructions_file: str | None = Field(
+        default=None,
+        description="Path of a text file whose content replaces `instructions` (read at startup).",
+    )
+    conversation_instructions_file: str | None = Field(
+        default=None,
+        description=(
+            "Path of a text file whose content replaces `conversation_instructions` "
+            "(read at startup), so a checked-in prompt file is the single source."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _read_instruction_files(self) -> VoiceConfig:
+        for field, path in (
+            ("instructions", self.instructions_file),
+            ("conversation_instructions", self.conversation_instructions_file),
+        ):
+            if not path:
+                continue
+            try:
+                text = Path(path).expanduser().read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise ValueError(f"VOICE__{field.upper()}_FILE cannot be read: {exc}") from exc
+            if not text or len(text) > 16000:
+                raise ValueError(f"VOICE__{field.upper()}_FILE must hold 1 to 16000 characters")
+            object.__setattr__(self, field, text)
+        return self
+
     max_sessions: int = Field(default=4, ge=1, le=100)
     max_duration_seconds: int = Field(default=1800, ge=15, le=7200)
     connect_timeout_seconds: float = Field(default=20, gt=0, le=60)

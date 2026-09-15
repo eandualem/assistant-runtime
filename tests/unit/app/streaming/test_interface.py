@@ -96,6 +96,7 @@ def _agent_context(agent: Any) -> AgentSetupContext:
         default_video_model=None,
         subagent_model=None,
         subagent_thinking_budget=None,
+        codex_service_tier=None,
     )
     return AgentSetupContext(
         agent=agent,

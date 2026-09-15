@@ -32,11 +32,13 @@ class ToolService:
         artifact_service: Any | None = None,
         providers: dict[str, Any] | None = None,
         subagent_usage_limits: Any | None = None,
+        subagent_defaults: dict[str, Any] | None = None,
     ) -> None:
         self._config = config
         self._providers = providers or {}
         # The host's per-turn ceilings (native UsageLimits) a subagent run stays within.
         self._subagent_usage_limits = subagent_usage_limits
+        self._subagent_defaults = subagent_defaults
         self._media_service = media_service
         self._llm_service = llm_service
         self._mcp_service = mcp_service
@@ -149,6 +151,7 @@ class ToolService:
             ),
             runtime_settings=lambda: self._runtime_settings,
             subagent_usage_limits=self._subagent_usage_limits,
+            subagent_defaults=self._subagent_defaults,
             enabled=self._config.builtin_tools,
         )
         # Host tools from configuration (always available, bypass page scoping)

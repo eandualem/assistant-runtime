@@ -86,6 +86,12 @@ def _effective_defaults(request: Request) -> dict[str, Any]:
         ),
         "default_image_model": _tunable("default_image_model", settings.media.default_image_model),
         "default_video_model": _tunable("default_video_model", settings.media.default_video_model),
-        "subagent_model": _tunable("subagent_model", None),
-        "subagent_thinking_budget": _tunable("subagent_thinking_budget", None),
+        "subagent_model": _tunable("subagent_model", settings.assistant.subagent_model),
+        "subagent_thinking_budget": _tunable(
+            "subagent_thinking_budget", settings.assistant.subagent_thinking_budget
+        ),
+        "codex_service_tier": _tunable(
+            "codex_service_tier",
+            settings.assistant.codex_service_tier or settings.llm.codex_service_tier,
+        ),
     }
