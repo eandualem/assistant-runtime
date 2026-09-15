@@ -136,6 +136,8 @@ class TraceORM(Base):
     """Debug trace storage — one row per assistant request (stream)."""
 
     __tablename__ = "traces"
+    # Retention deletes by age; without this the startup cleanup scans the table.
+    __table_args__ = (Index("ix_traces_created_at", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     session_id: Mapped[str] = mapped_column(
@@ -145,7 +147,8 @@ class TraceORM(Base):
     user_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_continuation: Mapped[bool] = mapped_column(Boolean, default=False)
     duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
-    screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The table still has a nullable ``screenshot`` column; migration 0024 cleared
+    # it and nothing maps it, so a screenshot can no longer end up in a trace.
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

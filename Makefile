@@ -24,7 +24,7 @@ install:
 # --- Development ---
 dev:
 	@echo "${CYAN}Starting dev server...${RESET}"
-	uv run uvicorn assistant_runtime.main:app --reload --host 0.0.0.0 --port $${PORT:-7100}
+	uv run uvicorn assistant_runtime.main:app --reload --host $${HOST:-127.0.0.1} --port $${PORT:-7100}
 
 # --- Code Quality ---
 lint:

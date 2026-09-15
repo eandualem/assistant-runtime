@@ -24,6 +24,8 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+from assistant_runtime import RUNTIME_MARKER
+
 REPLACE_TIMEOUT_SECONDS = 10.0
 
 
@@ -107,8 +109,12 @@ _HEALTH_BODY_LIMIT = 64 * 1024
 
 
 def is_assistant_runtime(host: str, port: int, *, deadline: float = HEALTH_PROBE_SECONDS) -> bool:
-    """Whether the listener answers ``/health`` like this runtime (200 or 503 with ``healthy``).
+    """Whether the listener answers ``/health`` like this runtime (200 or 503).
 
+    Recognised by the ``runtime`` marker, or by the shape a runtime before
+    the marker returned (``healthy`` plus a ``components`` object) so an
+    upgrade still replaces the previous instance. A program that merely
+    returns JSON with a ``healthy`` key is not ours and is never signalled.
     The whole probe, body read included, is bounded by ``deadline``; the
     socket timeout alone only bounds each individual read.
     """
@@ -128,7 +134,12 @@ def is_assistant_runtime(host: str, port: int, *, deadline: float = HEALTH_PROBE
         payload = json.loads(body)
     except ValueError:
         return False
-    return isinstance(payload, dict) and "healthy" in payload
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("runtime") == RUNTIME_MARKER:
+        return True
+    # Pre-marker runtimes: keep replacing them across the upgrade.
+    return "healthy" in payload and isinstance(payload.get("components"), dict)
 
 
 def _read_health(host: str, port: int) -> bytes | None:

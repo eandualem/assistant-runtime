@@ -279,7 +279,9 @@ execution, history, serialization, or the upstream dependency; see
   the streaming service and the session routes. Administration (settings
   writes, provider keys, OAuth, ingress, inbox, debug, artifact mutations,
   session reassignment) requires the `admin` role. Tools read the principal
-  from the request context. Docs: `docs/access.md`.
+  from the request context. Browser origins for HTTP and Socket.IO both
+  come from `AccessConfig` (localhost by default); `/health` returns
+  component detail only to an authenticated caller. Docs: `docs/access.md`.
 - **Messages carry a provenance envelope** (`[via:telegram from:X]`,
   `[via:tmux from:agent]`, `[via:room ...]`, `[via:backbone]`); the
   communication protocol artifact tells the model to answer on the same

@@ -240,3 +240,20 @@ class TestSubagentIntegration:
             await handler(MagicMock(), task="look")
 
         assert execute.call_args.kwargs["model_override"] == "openai:gpt-5.4"
+
+
+class TestPrivilegedCapabilities:
+    """``approvals`` acts on other agents' terminals; it needs an explicit selection."""
+
+    async def test_all_configured_skips_privileged_capabilities(self):
+        service = ToolService(config=ToolConfig(), providers={"approvals": MagicMock()})
+        await service.start()
+        assert "approve_plan" not in service._registry.get_tool_names()
+
+    async def test_explicit_selection_registers_them(self):
+        service = ToolService(
+            config=ToolConfig(provider_capabilities=frozenset({"approvals"})),
+            providers={"approvals": MagicMock()},
+        )
+        await service.start()
+        assert "approve_plan" in service._registry.get_tool_names()

@@ -231,7 +231,6 @@ async def get_session_traces(
                     "user_message": row.user_message,
                     "is_continuation": row.is_continuation,
                     "duration_ms": row.duration_ms,
-                    "screenshot": row.screenshot,
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                 }
                 for row in rows

@@ -216,12 +216,16 @@ intended for multi-user hosted services.
 
 ## Security
 
-By default every caller is the local operator and CORS is open: bind to
-localhost (the default). To serve several people, put the server behind
+By default every caller is the local operator, the server binds to
+localhost, and only browser pages served from this machine may call it
+(`ACCESS__CORS_ORIGIN_REGEX`); `ACCESS__LOCAL_TOKEN` adds a bearer token
+when that is not enough. To serve several people, put the server behind
 a reverse proxy that authenticates and sets `X-Assistant-Principal`
 (`ACCESS__MODE=header`), or plug your own identity system in with
-`AssistantDefinition(authenticate=...)` (`ACCESS__MODE=host`), and
-restrict `ACCESS__CORS_ORIGINS`. Sessions belong to the principal that
+`AssistantDefinition(authenticate=...)` (`ACCESS__MODE=host`), list the
+real origins in `ACCESS__CORS_ORIGINS`, and consider
+`STREAMING__CLIENT_ERROR_DETAIL=false` and `ASSISTANT__REQUEST_MODELS`
+(the models a request may choose). Sessions belong to the principal that
 created them; administration (settings, provider keys, artifact
 mutations, ingress, debugging) needs the `admin` role. See
 [identity and access](docs/access.md). Secrets are read from the

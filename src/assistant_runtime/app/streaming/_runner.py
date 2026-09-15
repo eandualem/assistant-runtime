@@ -43,6 +43,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 
+from assistant_runtime.app.access.exceptions import AccessDeniedError
 from assistant_runtime.app.assistant._serialization import (
     build_assistant_message_content,
 )
@@ -107,8 +108,12 @@ def format_error_message(message: str, trace_id: str | None) -> str:
     return f"{message} [trace_id: {trace_id}]"
 
 
-def _describe_error(exc: Exception) -> tuple[str, str, bool]:
-    """``(message, error_type, retry_allowed)`` for an exception raised by the run."""
+def _describe_error(exc: Exception, *, detail: bool = True) -> tuple[str, str, bool]:
+    """``(message, error_type, retry_allowed)`` for an exception raised by the run.
+
+    ``detail`` (``STREAMING__CLIENT_ERROR_DETAIL``) decides whether the
+    exception text itself reaches the client; the log always has it.
+    """
     if isinstance(exc, InvalidDecisionError):
         return str(exc), "invalid_decision", False
     if isinstance(exc, LLMCallError):
@@ -117,9 +122,16 @@ def _describe_error(exc: Exception) -> tuple[str, str, bool]:
         classified = classify_llm_error(exc)
         llm_error = None if classified.error_category == "UNKNOWN" else classified
     if llm_error is None:
-        return f"Request failed: {exc.__class__.__name__}: {exc}", "internal", False
+        message = f"Request failed: {exc.__class__.__name__}: {exc}" if detail else "Request failed"
+        return message, "internal", False
     error_type = _LLM_ERROR_TYPES.get(llm_error.error_category, "provider_error")
-    return str(llm_error), error_type, llm_error.retry_allowed
+    message = str(llm_error) if detail else f"LLM call failed ({llm_error.error_category})"
+    return message, error_type, llm_error.retry_allowed
+
+
+def _persistence_failure(what: str, exc: BaseException, *, detail: bool) -> str:
+    """The client-visible text for a snapshot that could not be saved."""
+    return f"{what} could not be saved: {exc}" if detail else f"{what} could not be saved"
 
 
 @dataclass
@@ -324,7 +336,9 @@ class TurnRunner:
                 events = self._terminal_error_events(
                     coordinator,
                     session_id=session_id,
-                    message=f"Cancelled turn could not be saved: {exc}",
+                    message=_persistence_failure(
+                        "Cancelled turn", exc, detail=self._config.client_error_detail
+                    ),
                     error_type="persistence_error",
                     retry_allowed=False,
                     trace_id=trace_id,
@@ -368,7 +382,9 @@ class TurnRunner:
                 events = self._terminal_error_events(
                     coordinator,
                     session_id=session_id,
-                    message=f"Usage-limited turn could not be saved: {persist_exc}",
+                    message=_persistence_failure(
+                        "Usage-limited turn", persist_exc, detail=self._config.client_error_detail
+                    ),
                     error_type="persistence_error",
                     retry_allowed=False,
                     trace_id=trace_id,
@@ -396,14 +412,30 @@ class TurnRunner:
         except StreamingError:
             raise
         except Exception as exc:
+            detail = self._config.client_error_detail
             if phase == "setup":
                 is_session_error = isinstance(exc, SessionError)
-                message = f"Setup failed: {exc}"
-                error_type = "session_error" if is_session_error else "setup_error"
-                retry_allowed = not is_session_error
+                # A session or access error describes the client's own request; its
+                # text stays whatever the detail setting (as in the setup envelope).
+                own_request = isinstance(exc, SessionError | AccessDeniedError)
+                message = f"Setup failed: {exc}" if detail or own_request else "Setup failed"
+                error_type = (
+                    "session_error"
+                    if is_session_error
+                    else "forbidden"
+                    if isinstance(exc, AccessDeniedError)
+                    else "setup_error"
+                )
+                retry_allowed = not own_request
             else:
-                message, error_type, retry_allowed = _describe_error(exc)
-            logger.warning("[STREAM] Turn failed", session_id=session_id, error=message)
+                message, error_type, retry_allowed = _describe_error(exc, detail=detail)
+            # The log always carries the exception; only the client text is redacted.
+            logger.warning(
+                "[STREAM] Turn failed",
+                session_id=session_id,
+                error_type=error_type,
+                error=f"{exc.__class__.__name__}: {exc}",
+            )
             # Calls the model made but nobody answered would block every later
             # prompt ("unprocessed tool calls"); resolve them like a cancellation.
             with contextlib.suppress(Exception):
@@ -464,7 +496,6 @@ class TurnRunner:
                 trace_id=trace_id,
                 user_message=plan.input_message,
                 duration_ms=duration_ms,
-                screenshot=request.images[0] if request.images else None,
             )
             completed = coordinator.try_completed()
             if completed:
@@ -963,9 +994,8 @@ class TurnRunner:
         trace_id: str | None = None,
         user_message: str | None = None,
         duration_ms: float | None = None,
-        screenshot: str | None = None,
     ) -> None:
-        """Persist collected debug events as a trace row. Best-effort."""
+        """Persist collected debug events as a trace row (never the screenshot). Best-effort."""
         if self._db is None or not trace_events:
             return
         try:
@@ -978,7 +1008,6 @@ class TurnRunner:
                     events=trace_events,
                     user_message=user_message,
                     duration_ms=duration_ms,
-                    screenshot=screenshot,
                 )
         except Exception as e:
             logger.warning("Failed to persist trace", session_id=session_id, error=str(e))
