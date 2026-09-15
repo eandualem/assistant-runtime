@@ -11,7 +11,10 @@ Interactive OpenAPI docs are served at `/docs`.
 Every route and the Socket.IO connection establish a principal as
 configured by `ACCESS__MODE` (see [access](access.md)): the local
 operator by default, the `X-Assistant-Principal` / `X-Assistant-Roles`
-headers behind an authenticating proxy, or the host's callback. An
+headers behind an authenticating proxy, or the host's callback. The one
+exception is `GET /api/media/{id}`, which a browser fetches as an image
+without headers: it is an expiring capability URL (a random id) and
+establishes no principal. An
 unidentified caller gets `401` (a refused connection on Socket.IO); a
 session that belongs to someone else (or an unowned legacy session, for a non-administrator) `403` (`assistant:error` of type
 `forbidden`); administration without the `admin` role `403`.

@@ -66,15 +66,15 @@ class TestOriginRule:
         environ = {"wsgi.url_scheme": "https", "HTTP_HOST": "runtime.example"}
         assert check("https://runtime.example", environ) is True
         assert check("https://other.example", environ) is False
-        # Behind a TLS-terminating proxy the page's origin is the forwarded one.
-        proxied = {
+        # Forwarded headers are client-controllable and must not widen the rule.
+        forged = {
             "wsgi.url_scheme": "http",
-            "HTTP_HOST": "127.0.0.1:7100",
+            "HTTP_HOST": "runtime.example",
             "HTTP_X_FORWARDED_PROTO": "https",
-            "HTTP_X_FORWARDED_HOST": "assistant.example",
+            "HTTP_X_FORWARDED_HOST": "evil.example",
         }
-        assert check("https://assistant.example", proxied) is True
-        assert check("http://127.0.0.1:7100", proxied) is True
+        assert check("https://evil.example", forged) is False
+        assert check("http://runtime.example", forged) is True
         wildcard = create_sio(AccessConfig(cors_origins=["*"])).eio
         assert wildcard.cors_allowed_origins == "*"
         assert wildcard.cors_credentials is False

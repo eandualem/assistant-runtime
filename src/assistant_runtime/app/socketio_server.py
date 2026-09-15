@@ -83,23 +83,17 @@ def _origin_check(config: AccessConfig) -> Callable[[str | None, dict[str, Any] 
 
 
 def _own_origins(environ: dict[str, Any]) -> set[str]:
-    """The request's own origin(s), as Engine.IO's default policy derives them.
+    """The request's own origin, from the connection's scheme and ``Host``.
 
-    Behind a reverse proxy the page's origin is the forwarded scheme and host,
-    so those are accepted too when the proxy sends the ``X-Forwarded-*`` headers.
+    ``X-Forwarded-*`` headers are deliberately not consulted: a client can
+    send them too. Behind a reverse proxy, list the public origin in
+    ``ACCESS__CORS_ORIGINS`` (or keep the localhost regex when the proxy is
+    on this machine).
     """
     host = environ.get("HTTP_HOST")
     if not host:
         return set()
-    scheme = environ.get("wsgi.url_scheme", "http")
-    origins = {f"{scheme}://{host}"}
-    forwarded_host = environ.get("HTTP_X_FORWARDED_HOST")
-    forwarded_proto = environ.get("HTTP_X_FORWARDED_PROTO")
-    if forwarded_host or forwarded_proto:
-        proxy_scheme = (forwarded_proto or scheme).split(",")[0].strip()
-        proxy_host = (forwarded_host or host).split(",")[0].strip()
-        origins.add(f"{proxy_scheme}://{proxy_host}")
-    return origins
+    return {f"{environ.get('wsgi.url_scheme', 'http')}://{host}"}
 
 
 @dataclass

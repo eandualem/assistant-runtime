@@ -260,10 +260,13 @@ def create_asgi_app(
     """Create the full ASGI application with Socket.IO wrapper."""
     from assistant_runtime.app.socketio_server import create_sio
 
+    if settings is None:
+        # Both transports read the origin rule now, so resolve settings once,
+        # after the same ``.env`` load the lifespan performs.
+        load_dotenv(find_dotenv(usecwd=True))
+        settings = AppSettings()
     fastapi_app = create_app(assistant=assistant, settings=settings)
-    # The origin rule is read here like the HTTP CORS middleware's; the
-    # lifespan still builds the app's settings after loading ``.env``.
-    sio = create_sio((settings or AppSettings()).access)
+    sio = create_sio(settings.access)
     sio.fastapi_app = fastapi_app
     fastapi_app.state.sio = sio
     return socketio.ASGIApp(sio, fastapi_app)

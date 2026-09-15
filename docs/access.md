@@ -30,8 +30,10 @@ machine may talk to it: `ACCESS__CORS_ORIGIN_REGEX` admits
 `http(s)://localhost`, `127.0.0.1` and `[::1]` on any port, and
 `ACCESS__CORS_ORIGINS` (a JSON list) adds exact origins. Both HTTP and
 Socket.IO apply the same rule. When you expose the server, clear the regex
-(`ACCESS__CORS_ORIGIN_REGEX=`) and list the real origins; `["*"]` opens it
-to every origin and then refuses credentials.
+(`ACCESS__CORS_ORIGIN_REGEX=`) and list the real origins, including the
+public origin of a reverse proxy in front of the runtime (forwarded
+headers are not trusted for this decision); `["*"]` opens it to every
+origin and then refuses credentials.
 
 `ACCESS__LOCAL_TOKEN` hardens `trusted_local` further: when set, a caller
 must send `Authorization: Bearer <token>` (HTTP) or `auth: {"token":

@@ -333,7 +333,6 @@ class TraceRepository:
         user_message: str | None = None,
         is_continuation: bool = False,
         duration_ms: float | None = None,
-        screenshot: str | None = None,
     ) -> TraceORM:
         """Create a new trace row."""
         result = await self._session.execute(
@@ -345,7 +344,6 @@ class TraceRepository:
                 user_message=user_message,
                 is_continuation=is_continuation,
                 duration_ms=duration_ms,
-                screenshot=screenshot,
             )
             .returning(TraceORM)
         )
