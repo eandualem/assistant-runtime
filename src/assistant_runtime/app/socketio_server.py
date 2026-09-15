@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
@@ -16,6 +17,7 @@ from weakref import WeakValueDictionary
 import socketio
 from loguru import logger
 
+from assistant_runtime.app.access.config import AccessConfig
 from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.host_context import host_context_from_payload
@@ -50,11 +52,32 @@ def socket_event_name(event: dict[str, Any]) -> str:
     return "assistant:debug" if event_type.startswith("debug_") else "assistant:unknown"
 
 
-def create_sio() -> socketio.AsyncServer:
-    """Create and configure the Socket.IO async server."""
-    sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+def create_sio(access: AccessConfig | None = None) -> socketio.AsyncServer:
+    """Create and configure the Socket.IO async server.
+
+    Browser origins are checked against the same ``AccessConfig`` as the HTTP
+    CORS middleware: the listed origins, the origin regex (localhost by
+    default) and the page's own origin. ``*`` in ``cors_origins`` opens it.
+    """
+    config = access or AccessConfig()
+    allowed: Any = "*" if "*" in config.cors_origins else _origin_check(config)
+    sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=allowed)
     sio.register_namespace(AssistantNamespace("/assistant"))
     return sio
+
+
+def _origin_check(config: AccessConfig) -> Callable[[str | None, dict[str, Any] | None], bool]:
+    """The Engine.IO origin callback for ``config``; the request's own origin always passes."""
+
+    def allowed(origin: str | None, environ: dict[str, Any] | None = None) -> bool:
+        if config.origin_allowed(origin):
+            return True
+        if environ and origin and "HTTP_HOST" in environ:
+            scheme = environ.get("wsgi.url_scheme", "http")
+            return origin == f"{scheme}://{environ['HTTP_HOST']}"
+        return False
+
+    return allowed
 
 
 @dataclass

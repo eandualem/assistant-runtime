@@ -5,11 +5,12 @@ from contextlib import asynccontextmanager
 
 import socketio
 from dotenv import find_dotenv, load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from assistant_runtime.app.access import deps as access_deps
 from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
 from assistant_runtime.app.access.factory import register_access
 from assistant_runtime.app.assistant.definition import AssistantDefinition
@@ -24,8 +25,10 @@ from assistant_runtime.app.streaming.factory import register_streaming
 from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.app.voice.factory import register_voice
 from assistant_runtime.base.lifecycle import LifecycleManager
+from assistant_runtime.cli.serve import RUNTIME_MARKER
 from assistant_runtime.config import AppSettings
 from assistant_runtime.logging_config import setup_logging
+from assistant_runtime.principal import Credentials
 from assistant_runtime.services.artifacts.factory import register_artifacts
 from assistant_runtime.services.database.factory import register_database
 from assistant_runtime.services.history.factory import register_history
@@ -98,7 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if getattr(app.state, "tool_service", None) is not None:
             app.state.tool_service.set_runtime_settings(rs)
 
-        # Cleanup expired sessions on startup (before accepting requests)
+        # Cleanup expired sessions and old traces on startup (before accepting requests)
         if getattr(app.state, "assistant_service", None) is not None:
             try:
                 cleaned = await app.state.assistant_service.cleanup_expired_sessions()
@@ -106,6 +109,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     logger.info("Cleaned up expired sessions on startup", count=cleaned)
             except Exception as e:
                 logger.warning("Session cleanup skipped on startup", error=str(e))
+        if getattr(app.state, "streaming_service", None) is not None:
+            try:
+                cleaned = await app.state.streaming_service.cleanup_expired_traces()
+                if cleaned:
+                    logger.info("Cleaned up old traces on startup", count=cleaned)
+            except Exception as e:
+                logger.warning("Trace cleanup skipped on startup", error=str(e))
 
         logger.info("Application started", app=settings.app_name)
 
@@ -132,15 +142,23 @@ def create_app(
     app.state.assistant_definition = assistant
     app.state.settings = settings
 
-    # CORS: ACCESS__CORS_ORIGINS, "*" by default for the localhost-bound install.
-    origins = list((settings or AppSettings()).access.cors_origins)
+    # CORS: the listed origins plus the origin regex (localhost on any port by
+    # default). Socket.IO applies the same AccessConfig in create_asgi_app.
+    access = (settings or AppSettings()).access
+    origins = list(access.cors_origins)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
+        allow_origin_regex=access.cors_origin_regex or None,
         allow_credentials="*" not in origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    def _detail(request: Request) -> bool:
+        """Whether internal error text may reach the client (STREAMING__CLIENT_ERROR_DETAIL)."""
+        app_settings = getattr(request.app.state, "settings", None)
+        return app_settings is None or app_settings.streaming.client_error_detail
 
     # Exception handlers
     @app.exception_handler(OAuthError)
@@ -175,30 +193,70 @@ def create_app(
         )
 
     @app.exception_handler(AssistantError)
-    async def assistant_error_handler(request, exc: AssistantError):
+    async def assistant_error_handler(request: Request, exc: AssistantError):
+        message = str(exc) if _detail(request) else "The assistant request failed"
         return JSONResponse(
             status_code=500,
-            content={"error": str(exc), "type": exc.__class__.__name__},
+            content={"error": message, "type": exc.__class__.__name__},
         )
 
     @app.exception_handler(StreamingError)
-    async def streaming_error_handler(request, exc: StreamingError):
+    async def streaming_error_handler(request: Request, exc: StreamingError):
+        message = str(exc) if _detail(request) else "The assistant request failed"
         return JSONResponse(
             status_code=500,
-            content={"error": str(exc), "type": exc.__class__.__name__},
+            content={"error": message, "type": exc.__class__.__name__},
         )
 
     # Routes
     app.include_router(router, prefix="/api")
 
     @app.get("/health")
-    async def health() -> JSONResponse:
+    async def health(request: Request) -> JSONResponse:
+        """Liveness for anyone; component detail for an authenticated caller.
+
+        The full report names providers, models, MCP servers and the database
+        host, so an anonymous caller (a probe, a page on another site in
+        ``header``/``host`` mode) gets only the per-component ``healthy`` flags.
+        In ``trusted_local`` every caller is authenticated.
+        """
         lifecycle: LifecycleManager = app.state.lifecycle
         result = await lifecycle.health()
+        result["runtime"] = RUNTIME_MARKER
+        if not await _authenticated(request):
+            result = public_health(result)
         status_code = 200 if result.get("healthy") else 503
         return JSONResponse(content=result, status_code=status_code)
 
     return app
+
+
+async def _authenticated(request: Request) -> bool:
+    """Whether the access service recognises the caller (never raises)."""
+    try:
+        # Looked up through the module, as the route dependencies do.
+        service = access_deps.get_access_service(request)
+        await service.authenticate(
+            Credentials.from_headers(
+                "http", request.headers, client=request.client.host if request.client else None
+            )
+        )
+    except (AuthenticationError, HTTPException):
+        return False
+    return True
+
+
+def public_health(result: dict) -> dict:
+    """The anonymous form of a health report: flags only, no configuration."""
+    return {
+        "healthy": result.get("healthy", False),
+        "runtime": result.get("runtime", RUNTIME_MARKER),
+        "components": {
+            name: {"healthy": bool(component.get("healthy", False))}
+            for name, component in (result.get("components") or {}).items()
+            if isinstance(component, dict)
+        },
+    }
 
 
 def create_asgi_app(
@@ -207,8 +265,9 @@ def create_asgi_app(
     """Create the full ASGI application with Socket.IO wrapper."""
     from assistant_runtime.app.socketio_server import create_sio
 
+    settings = settings or AppSettings()
     fastapi_app = create_app(assistant=assistant, settings=settings)
-    sio = create_sio()
+    sio = create_sio(settings.access)
     sio.fastapi_app = fastapi_app
     fastapi_app.state.sio = sio
     return socketio.ASGIApp(sio, fastapi_app)

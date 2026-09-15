@@ -27,6 +27,20 @@ class StreamingConfig(BaseModel):
             "selection. Off by default: any client of the unauthenticated socket could read them."
         ),
     )
+    client_error_detail: bool = Field(
+        default=True,
+        description=(
+            "Include the underlying exception text in errors sent to clients (provider "
+            "messages, internal failures). On by default for development; turn it off on "
+            "an exposed server, where clients then get the error type and a trace id only."
+        ),
+    )
+    trace_retention_hours: int = Field(
+        default=168,
+        ge=1,
+        le=8760,
+        description="Debug trace rows older than this are deleted at startup (Postgres only).",
+    )
     part_start_chunk_size: int = Field(
         default=100,
         ge=20,

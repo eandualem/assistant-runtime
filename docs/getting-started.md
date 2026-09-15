@@ -100,9 +100,10 @@ curl -s -X POST localhost:7100/api/chat -H 'content-type: application/json' \
   -d '{"id":"m1","session_id":"s1","content":"What can you do?"}'
 ```
 
-`serve` binds to loopback by default. The API has no authentication and
-CORS is open, so keep it on localhost or put it behind your own reverse
-proxy with auth. `--host 0.0.0.0 --port 8080` changes the binding,
+`serve` binds to loopback by default, every caller is the local operator,
+and only pages served from this machine may call it from a browser
+([identity and access](access.md)). Put it behind your own reverse proxy
+with auth before exposing it. `--host 0.0.0.0 --port 8080` changes the binding,
 `--reload` restarts on source changes (`make dev` is the same thing).
 If a previous assistant-runtime still holds the port (recognised by its
 `/health` answer), `serve` stops it and takes over, so a new configuration

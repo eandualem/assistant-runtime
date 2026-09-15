@@ -267,7 +267,7 @@ class TestServeReplace:
 
         def fake_urlopen(url, timeout):
             urls.append(url)
-            return Response(b'{"healthy": false}')
+            return Response(b'{"healthy": false, "runtime": "assistant-runtime"}')
 
         monkeypatch.setattr(serve, "urlopen", fake_urlopen)
         assert serve.is_assistant_runtime("127.0.0.1", 7100) is True
@@ -502,3 +502,30 @@ def test_bad_arguments_exit_2(argv):
     with pytest.raises(SystemExit) as exc:
         main(argv)
     assert exc.value.code == 2
+
+
+class TestRuntimeMarker:
+    def test_a_health_body_without_the_marker_is_not_ours(self, monkeypatch):
+        """Any service answering /health with a ``healthy`` key must not be signalled."""
+
+        class Response:
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            def read(self, limit=None):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Response(b'{"healthy": true}'))
+        assert serve.is_assistant_runtime("127.0.0.1", 7100) is False
+        monkeypatch.setattr(
+            serve,
+            "urlopen",
+            lambda url, timeout: Response(b'{"healthy": true, "runtime": "assistant-runtime"}'),
+        )
+        assert serve.is_assistant_runtime("127.0.0.1", 7100) is True

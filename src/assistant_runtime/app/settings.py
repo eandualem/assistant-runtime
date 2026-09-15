@@ -177,6 +177,8 @@ class RuntimeSettings:
 CEILING_FIELDS: frozenset[str] = frozenset(
     {"max_turns", "thinking_budget", "subagent_thinking_budget"}
 )
+# Model choices; a request may only pick from ``AssistantConfig.request_models`` when set.
+MODEL_FIELDS: frozenset[str] = frozenset(f for f in TUNABLE_FIELDS if f.endswith("_model"))
 
 
 def resolve_effective_config(
@@ -191,6 +193,7 @@ def resolve_effective_config(
     """
     request_values = per_request.model_dump(exclude_none=True) if per_request else {}
     runtime_values = runtime_settings.overrides if runtime_settings else {}
+    allowed_models = frozenset(getattr(frozen_config, "request_models", None) or ())
 
     def _trusted(field: str) -> Any:
         if field in runtime_values:
@@ -201,6 +204,13 @@ def resolve_effective_config(
         if field in request_values:
             requested = request_values[field]
             ceiling = _trusted(field)
+            if field in MODEL_FIELDS and allowed_models and requested not in allowed_models:
+                logger.warning(
+                    "Request model not in ASSISTANT__REQUEST_MODELS; using the host's value",
+                    field=field,
+                    requested=requested,
+                )
+                return ceiling
             if field in CEILING_FIELDS:
                 if ceiling is None:
                     # The host disabled this budget; a request cannot switch it on.

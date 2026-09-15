@@ -20,8 +20,12 @@ the inbox, debugging, every artifact mutation and session reassignment.
 
 ## Health
 
-`GET /health`: `{"healthy": bool, "components": {name: {...}}}`, status
-200 or 503. The rule is whether the runtime can answer a turn: with no
+`GET /health`: `{"healthy": bool, "runtime": "assistant-runtime",
+"components": {name: {...}}}`, status 200 or 503. An anonymous caller
+gets each component's `healthy` flag only; an authenticated caller (every
+caller in `trusted_local`) gets the full component detail. `runtime` is
+the marker `serve` looks for before replacing a previous instance on its
+port. The rule is whether the runtime can answer a turn: with no
 provider key configured it reports 503, because it cannot. Optional
 dependencies do not make it unhealthy — Postgres being unreachable is
 reported as `database_service: {"healthy": true, "reachable": false}` and

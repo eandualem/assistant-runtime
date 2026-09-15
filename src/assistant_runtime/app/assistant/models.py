@@ -156,9 +156,10 @@ class HoldDecision(BaseModel):
 class AssistantRequest(BaseModel):
     """Input for a single assistant interaction."""
 
-    id: str
-    session_id: str
-    parent_id: str | None = None
+    # Ids are stored in 64-character columns; a longer one is a 422, not a database error.
+    id: str = Field(min_length=1, max_length=64)
+    session_id: str = Field(min_length=1, max_length=64)
+    parent_id: str | None = Field(default=None, max_length=64)
     message_type: Literal["standard", "steering"] = Field(default="standard")
     content: str
     output_mode: Literal["text", "host_tools"] = "text"

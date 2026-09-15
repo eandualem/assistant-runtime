@@ -20,6 +20,7 @@ for HTTP, Socket.IO and in-process callers.
 
 from __future__ import annotations
 
+import hmac
 import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -69,6 +70,7 @@ class AccessService:
         """The principal behind ``credentials``; ``AuthenticationError`` when there is none."""
         mode = self._config.mode
         if mode == "trusted_local":
+            self._check_local_token(credentials)
             return LOCAL_PRINCIPAL
         if mode == "header":
             return self._from_headers(credentials)
@@ -87,6 +89,27 @@ class AccessService:
         if not isinstance(result, Principal):
             raise AuthenticationError("Host authenticator returned no Principal")
         return result
+
+    def _check_local_token(self, credentials: Credentials) -> None:
+        """``ACCESS__LOCAL_TOKEN``: when set, the caller must present it.
+
+        Accepted as ``Authorization: Bearer <token>`` or, on a Socket.IO
+        connect, as ``auth.token``. Compared in constant time.
+        """
+        expected = self._config.local_token
+        if not expected:
+            return
+        presented: list[str] = []
+        scheme, _, value = (credentials.header("authorization") or "").partition(" ")
+        if scheme.lower() == "bearer" and value.strip():
+            presented.append(value.strip())
+        if isinstance(credentials.auth, dict) and isinstance(credentials.auth.get("token"), str):
+            presented.append(credentials.auth["token"])
+        if not any(hmac.compare_digest(token, expected) for token in presented):
+            raise AuthenticationError(
+                "This runtime requires its local token (ACCESS__LOCAL_TOKEN) as "
+                "'Authorization: Bearer <token>' or Socket.IO auth.token"
+            )
 
     def _from_headers(self, credentials: Credentials) -> Principal:
         principal_id = (credentials.header(self._config.principal_header) or "").strip()

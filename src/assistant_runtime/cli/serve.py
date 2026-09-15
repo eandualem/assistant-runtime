@@ -106,11 +106,16 @@ HEALTH_PROBE_SECONDS = 3.0
 _HEALTH_BODY_LIMIT = 64 * 1024
 
 
-def is_assistant_runtime(host: str, port: int, *, deadline: float = HEALTH_PROBE_SECONDS) -> bool:
-    """Whether the listener answers ``/health`` like this runtime (200 or 503 with ``healthy``).
+RUNTIME_MARKER = "assistant-runtime"
+"""The ``runtime`` value in this runtime's ``/health`` body; only such a listener is replaced."""
 
-    The whole probe, body read included, is bounded by ``deadline``; the
-    socket timeout alone only bounds each individual read.
+
+def is_assistant_runtime(host: str, port: int, *, deadline: float = HEALTH_PROBE_SECONDS) -> bool:
+    """Whether the listener answers ``/health`` with this runtime's marker (200 or 503).
+
+    A program that merely returns JSON with a ``healthy`` key is not ours and
+    is never signalled. The whole probe, body read included, is bounded by
+    ``deadline``; the socket timeout alone only bounds each individual read.
     """
     pool = ThreadPoolExecutor(max_workers=1)
     try:
@@ -128,7 +133,7 @@ def is_assistant_runtime(host: str, port: int, *, deadline: float = HEALTH_PROBE
         payload = json.loads(body)
     except ValueError:
         return False
-    return isinstance(payload, dict) and "healthy" in payload
+    return isinstance(payload, dict) and payload.get("runtime") == RUNTIME_MARKER
 
 
 def _read_health(host: str, port: int) -> bytes | None:

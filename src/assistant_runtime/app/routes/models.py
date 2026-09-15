@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 
+from assistant_runtime.app.access.deps import PrincipalDep
 from assistant_runtime.config import AppSettings
 from assistant_runtime.model_catalog import get_models, get_provider_info
 
@@ -15,6 +16,7 @@ router = APIRouter()
 @router.get("/models")
 async def list_models(
     request: Request,
+    principal: PrincipalDep,
     capability: str | None = Query(
         default=None, description="Filter by capability tag (e.g. text, vision, image-generation)"
     ),

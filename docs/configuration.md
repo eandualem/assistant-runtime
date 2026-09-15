@@ -65,7 +65,9 @@ sampling parameters are not sent a temperature.
 | `mode` | `trusted_local` | `trusted_local` (every caller is the local operator), `header` (an authenticating proxy sets the principal header) or `host` (`AssistantDefinition.authenticate` decides); see [access](access.md) |
 | `principal_header` | `X-Assistant-Principal` | header carrying the principal id in header mode |
 | `roles_header` | `X-Assistant-Roles` | comma-separated roles in header mode; `admin` administers |
-| `cors_origins` | `["*"]` | allowed browser origins; restrict when exposed |
+| `cors_origins` | `[]` | browser origins allowed exactly (HTTP and Socket.IO); `["*"]` allows every origin without credentials |
+| `cors_origin_regex` | localhost on any port | regular expression for allowed origins; clear it when exposing the server; see [access](access.md#browser-origins) |
+| `local_token` | unset | `trusted_local` only: when set, callers must present it as a bearer token or Socket.IO `auth.token` |
 
 ### Assistant (`ASSISTANT__*`)
 
@@ -74,6 +76,7 @@ sampling parameters are not sent a temperature.
 | `default_model` | unset (uses `LLM__PRIMARY_MODEL`) | model override |
 | `thinking_budget` | `10000` | thinking tokens; unset disables thinking |
 | `temperature` | `1.0` | sampling temperature where the model accepts one |
+| `request_models` | `[]` (any) | model ids a request's `config` may pick for any `*_model` tunable; a request naming another keeps the host's value. Empty allows any model: fine for development, list the allowed ones for a deployment |
 | `max_turns` | `10` | agent loop iterations per request |
 | `enable_working_memory` | `true` | extract working memory after each turn |
 | `session_ttl_hours` | `24` | sessions older than this are cleaned up |
@@ -130,6 +133,8 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | `max_events_per_stream` | `10000` | safety limit |
 | `stream_timeout_seconds` | `300` | one turn |
 | `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for trusted clients: the events carry the system prompt and history of the caller's own sessions |
+| `client_error_detail` | `true` | include exception and provider text in errors sent to clients; set `false` on an exposed server, clients then get the error type and trace id only (the log keeps the detail) |
+| `trace_retention_hours` | `168` | debug trace rows older than this are deleted at startup (Postgres only); screenshots are no longer stored in traces |
 
 ### Tools (`TOOLS__*`)
 
@@ -138,7 +143,7 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | `max_tools_per_request` | `64` | warn above this many tools in one request |
 | `tool_timeout_seconds` | `30` | |
 | `builtin_tools` | `["time", "screen", "artifacts", "subagent", "media", "video"]` | selected built-in groups; `[]` disables all, existing service requirements still apply |
-| `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup |
+| `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup. `approvals` is privileged (it types into other agents' terminals) and is registered only when named here |
 | `host_tools` | `{}` | tools the host executes: `{"name": {"description": "...", "parameters": <JSON schema>}}`; names must match `^[A-Za-z0-9_-]{1,64}$` |
 | `host_tools_path` | unset | a JSON file with the same shape, merged over `host_tools` |
 | `page_scopes` | `{}` | `{"page name": ["tool", ...]}`: backend tools allowed while the host shows that page; unlisted pages get every tool |

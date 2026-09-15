@@ -352,6 +352,12 @@ class TraceRepository:
         await self._session.flush()
         return result.scalar_one()
 
+    async def delete_older_than(self, cutoff: datetime) -> int:
+        """Delete traces created before ``cutoff``. Returns the number of rows removed."""
+        result = await self._session.execute(delete(TraceORM).where(TraceORM.created_at < cutoff))
+        await self._session.flush()
+        return result.rowcount or 0
+
     async def list_by_session(
         self, session_id: str, limit: int = 50, offset: int = 0
     ) -> list[TraceORM]:

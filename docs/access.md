@@ -21,9 +21,27 @@ Header names are configurable (`ACCESS__PRINCIPAL_HEADER`,
 a message body changes who it is: `AssistantRequest` carries no identity
 fields, and any it invents are ignored or rejected.
 
-`ACCESS__CORS_ORIGINS` lists the allowed browser origins; the default `*`
-suits the localhost installation and should be restricted whenever the
-server is exposed (credentials are only allowed with explicit origins).
+## Browser origins
+
+Every caller being the local operator makes the browser the attack
+surface: a page on any site could otherwise call `http://127.0.0.1:7100`
+and administer the runtime. So by default only pages served from this
+machine may talk to it: `ACCESS__CORS_ORIGIN_REGEX` admits
+`http(s)://localhost`, `127.0.0.1` and `[::1]` on any port, and
+`ACCESS__CORS_ORIGINS` (a JSON list) adds exact origins. Both HTTP and
+Socket.IO apply the same rule. When you expose the server, clear the regex
+(`ACCESS__CORS_ORIGIN_REGEX=`) and list the real origins; `["*"]` opens it
+to every origin and then refuses credentials.
+
+`ACCESS__LOCAL_TOKEN` hardens `trusted_local` further: when set, a caller
+must send `Authorization: Bearer <token>` (HTTP) or `auth: {"token":
+"..."}` on the Socket.IO connect, and everything else is `401`. Use it when
+the runtime must listen on an address other people can reach but you have
+no proxy to authenticate them.
+
+`GET /health` answers everyone, but the per-component detail (providers,
+models, MCP servers, the database host) is only in the response of an
+authenticated caller; an anonymous probe gets the `healthy` flags.
 
 ## The host callback
 
