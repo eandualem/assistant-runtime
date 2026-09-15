@@ -18,6 +18,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import AgentCapability
+from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.tools import Tool, ToolFuncEither
 
@@ -78,6 +79,24 @@ def _collect_retryable_llm_exceptions() -> tuple[type[Exception], ...]:
 _LLM_RETRYABLE_EXCEPTIONS = _collect_retryable_llm_exceptions()
 # The Codex CLI's backend; the same client id and device-auth flow (services/oauth).
 _CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex/"
+
+
+def _cerebras_model(model_name: str) -> Model:
+    """A Cerebras model with every tool sent non-strict.
+
+    Cerebras rejects a request whose tools carry different ``strict`` flags
+    ("Tools with mixed values for strict are not allowed"). Pydantic AI marks
+    each tool strict only when its schema qualifies, so a host action with a
+    numeric range next to a strict runtime tool fails every call. Turning
+    strict off for the provider makes the flags uniform; the partial profile
+    merges over the provider's own.
+    """
+    from pydantic_ai.models.cerebras import CerebrasModel
+    from pydantic_ai.profiles.openai import OpenAIModelProfile
+
+    return CerebrasModel(
+        model_name, profile=OpenAIModelProfile(openai_supports_strict_tool_definition=False)
+    )
 
 
 class LLMResult(BaseModel):
@@ -526,8 +545,10 @@ class LlmService:
                 "Stale Codex HTTP client did not close cleanly", error=str(task.exception())
             )
 
-    def _resolve_agent_model(self, resolved_model: str) -> str | OpenAICodexResponsesModel:
+    def _resolve_agent_model(self, resolved_model: str) -> str | Model:
         """Resolve the actual Agent model object to use for a model id."""
+        if resolved_model.startswith("cerebras:"):
+            return _cerebras_model(resolved_model.split(":", 1)[1])
         if not self._should_use_codex_provider(resolved_model):
             return resolved_model
 

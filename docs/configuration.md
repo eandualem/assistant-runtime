@@ -31,6 +31,7 @@ At least one provider must be usable.
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY` | Provider keys; set any combination |
+| | Cerebras models are sent every tool non-strict: the provider rejects a request whose tools carry mixed `strict` flags, and a host action with a numeric range is never strict-compatible |
 | `LLM__PROVIDERS_JSON` | Alternative: `[{"provider":"anthropic","api_key":"..."}]` (provider and key only; other fields are rejected) |
 | `LLM__PRIMARY_MODEL` | Chat model, default `anthropic:claude-opus-5` |
 | `LLM__SUMMARIZATION_MODEL` | History summaries and lightweight tasks, default `anthropic:claude-haiku-4-5` |
