@@ -85,7 +85,7 @@ configuration lists the providers.
 | library | `list_documents`, `read_document` | `LIBRARY_PATHS` |
 | artifacts | `manage_artifacts` | Postgres |
 | peers, rooms, reminders, activity, workgroups, repositories | `list_agents`, `start_agent`, `send_agent_message`, `create_meeting_room`, `add_schedule_item`, `get_delivery_status`, `create_swarm`, `onboard_repo`, ... | `BACKBONE_URL` |
-| approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR` |
+| approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR`, and `approvals` named in `TOOLS__PROVIDER_CAPABILITIES` (it types into other agents' terminals) |
 | issues | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
 | messaging | `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
 | media | `generate_image`, `generate_video` | an image provider key; the `[video]` extra and a Runway or Luma key |

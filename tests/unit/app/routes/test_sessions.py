@@ -290,3 +290,20 @@ class TestDeleteSession:
             )
 
         assert response.status_code == 404
+
+
+class TestRequestIdLimits:
+    """Ids live in 64-character columns; a longer one is the client's mistake (422)."""
+
+    def test_ids_longer_than_the_column_are_rejected(self):
+        from pydantic import ValidationError
+
+        from assistant_runtime.app.assistant.models import AssistantRequest
+
+        AssistantRequest(id="a" * 64, session_id="s" * 64, content="hi")
+        with pytest.raises(ValidationError):
+            AssistantRequest(id="a" * 65, session_id="s1", content="hi")
+        with pytest.raises(ValidationError):
+            AssistantRequest(id="m1", session_id="s" * 65, content="hi")
+        with pytest.raises(ValidationError):
+            AssistantRequest(id="", session_id="s1", content="hi")

@@ -11,7 +11,10 @@ Interactive OpenAPI docs are served at `/docs`.
 Every route and the Socket.IO connection establish a principal as
 configured by `ACCESS__MODE` (see [access](access.md)): the local
 operator by default, the `X-Assistant-Principal` / `X-Assistant-Roles`
-headers behind an authenticating proxy, or the host's callback. An
+headers behind an authenticating proxy, or the host's callback. The one
+exception is `GET /api/media/{id}`, which a browser fetches as an image
+without headers: it is an expiring capability URL (a random id) and
+establishes no principal. An
 unidentified caller gets `401` (a refused connection on Socket.IO); a
 session that belongs to someone else (or an unowned legacy session, for a non-administrator) `403` (`assistant:error` of type
 `forbidden`); administration without the `admin` role `403`.
@@ -20,8 +23,13 @@ the inbox, debugging, every artifact mutation and session reassignment.
 
 ## Health
 
-`GET /health`: `{"healthy": bool, "components": {name: {...}}}`, status
-200 or 503. The rule is whether the runtime can answer a turn: with no
+`GET /health`: `{"healthy": bool, "runtime": "assistant-runtime",
+"components": {name: {...}}}`, status 200 or 503. An anonymous caller
+gets each component's `healthy` flag only; an authenticated caller gets
+the full component detail. Every caller is authenticated in `trusted_local`
+unless `ACCESS__LOCAL_TOKEN` is set, in which case the token is required. `runtime` is
+the marker `serve` looks for before replacing a previous instance on its
+port. The rule is whether the runtime can answer a turn: with no
 provider key configured it reports 503, because it cannot. Optional
 dependencies do not make it unhealthy — Postgres being unreachable is
 reported as `database_service: {"healthy": true, "reachable": false}` and
@@ -115,16 +123,16 @@ Keys may be camelCase; they are normalised.
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | string | client-generated message id |
-| `session_id` | string | created on first use |
+| `id` | string | client-generated message id, 1 to 64 characters (the stored column width; longer is a 422) |
+| `session_id` | string | created on first use; 1 to 64 characters. An AG-UI `threadId` is a session id and has the same limit |
 | `content` | string | the text; may be empty on a continuation |
-| `parent_id` | string, optional | the message to branch from; omitted, the message continues from the session's active leaf (the first message is the root) |
+| `parent_id` | string, optional, at most 64 characters | the message to branch from; omitted, the message continues from the session's active leaf (the first message is the root) |
 | `output_mode` | `text` (default) or `host_tools` | silent single host-action decision; receipts inherit the pending mode |
 | `message_type` | `standard` (default) or `steering` | see concepts |
 | `attachments` | list, optional | images, documents or text for the model, or a `screenshot` for `look_at_screen`; shape in [the host contract](host-contract.md) |
 | `images` | list of data URLs, optional | legacy: screenshots; a top-level `screenshot` is folded in |
 | `host_context` | object, optional | what the host shows, version 1 of [the host contract](host-contract.md); invalid content is a `422` |
-| `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model` |
+| `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model`. Budgets can only be lowered; when the host sets `ASSISTANT__REQUEST_MODELS`, a model outside that list keeps the host's value |
 | `tool_call_id`, `tool_result` | continuation only | the pending host tool's call id and its result |
 | `tool_outcome` | continuation only | `success` (default) or `failed`: the host could not perform the action; `tool_result` is then the failure the model reads |
 

@@ -42,6 +42,12 @@ CAPABILITIES: dict[str, Callable[[ToolRegistry, Any], None]] = {
 }
 
 
+PRIVILEGED_CAPABILITIES: frozenset[str] = frozenset({"approvals"})
+"""Capabilities that act on other processes on the operator's behalf (``approvals``
+types into other agents' terminals). They are registered only when
+``TOOLS__PROVIDER_CAPABILITIES`` names them, never by the "all configured" default."""
+
+
 def register_capabilities(registry: ToolRegistry, providers: dict[str, Any]) -> list[str]:
     """Register the tools of each capability that has a provider; returns their names."""
     registered = []

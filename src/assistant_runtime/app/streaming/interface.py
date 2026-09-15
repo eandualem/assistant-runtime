@@ -12,6 +12,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -223,6 +224,16 @@ class StreamingService:
     async def health_check(self) -> dict:
         return {"healthy": self._started}
 
+    async def cleanup_expired_traces(self) -> int:
+        """Delete debug traces older than ``trace_retention_hours``; 0 without a database."""
+        if self._db is None or not getattr(self._db, "healthy", False):
+            return 0
+        from assistant_runtime.services.database.repositories import TraceRepository
+
+        cutoff = datetime.now(UTC) - timedelta(hours=self._config.trace_retention_hours)
+        async with self._db.session_context() as db_session:
+            return await TraceRepository(db_session).delete_older_than(cutoff)
+
     async def warm_session(
         self,
         session_id: str,
@@ -428,9 +439,13 @@ class StreamingService:
         )
         retry_allowed = not is_session_error and not is_cancelled
         trace_id = str(uuid.uuid4())
-        message = (
-            "Request cancelled before turn acceptance" if is_cancelled else f"Setup failed: {exc}"
-        )
+        if is_cancelled:
+            message = "Request cancelled before turn acceptance"
+        elif is_session_error or self._config.client_error_detail:
+            # A session or access error describes the client's own request.
+            message = f"Setup failed: {exc}"
+        else:
+            message = "Setup failed"
         # A denied request leaves nothing under the session it could not reach.
         if not isinstance(exc, AccessDeniedError):
             await self._runner.save_trace(
@@ -447,7 +462,6 @@ class StreamingService:
                 ],
                 trace_id=trace_id,
                 user_message=request.content,
-                screenshot=request.images[0] if request.images else None,
             )
         yield make_agent_status_event("started")
         yield make_final_response_event(

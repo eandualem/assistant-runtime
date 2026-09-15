@@ -644,3 +644,47 @@ class TestRequestCeilings:
             runtime._frozen, runtime, TunableOverrides(max_turns=20)
         )
         assert effective.max_turns == 8
+
+
+class TestRequestModelAllowlist:
+    """``ASSISTANT__REQUEST_MODELS``: empty allows any model, otherwise only the listed ones."""
+
+    def test_empty_allowlist_accepts_any_model(self):
+        frozen = AssistantConfig(default_model="anthropic:claude-haiku-4-5")
+        per_req = TunableOverrides(default_model="anthropic:claude-opus-5")
+        assert (
+            resolve_effective_config(frozen, None, per_req).default_model
+            == "anthropic:claude-opus-5"
+        )
+
+    def test_listed_models_pass_and_others_keep_the_host_value(self):
+        frozen = AssistantConfig(
+            default_model="anthropic:claude-haiku-4-5",
+            request_models=["anthropic:claude-sonnet-5", "openai:gpt-5.6-luna"],
+        )
+        allowed = TunableOverrides(default_model="anthropic:claude-sonnet-5")
+        assert (
+            resolve_effective_config(frozen, None, allowed).default_model
+            == "anthropic:claude-sonnet-5"
+        )
+        refused = TunableOverrides(
+            default_model="anthropic:claude-opus-5",
+            summarization_model="openai:gpt-5.6-sol",
+            subagent_model="openai:gpt-5.6-luna",
+        )
+        effective = resolve_effective_config(frozen, None, refused)
+        assert effective.default_model == "anthropic:claude-haiku-4-5"
+        assert effective.summarization_model is None
+        assert effective.subagent_model == "openai:gpt-5.6-luna"
+
+    def test_every_model_tunable_is_covered(self):
+        from assistant_runtime.app.settings import MODEL_FIELDS
+
+        assert {f for f in TUNABLE_FIELDS if f.endswith("_model")} == MODEL_FIELDS
+
+    @pytest.mark.asyncio
+    async def test_the_runtime_overlay_is_trusted_and_not_filtered(self):
+        frozen = AssistantConfig(request_models=["anthropic:claude-sonnet-5"])
+        rs = RuntimeSettings(frozen_config=frozen)
+        await rs.update(default_model="anthropic:claude-opus-5")
+        assert resolve_effective_config(frozen, rs).default_model == "anthropic:claude-opus-5"

@@ -9,7 +9,11 @@ from loguru import logger
 
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.builtin import register_builtin_tools
-from assistant_runtime.services.tools.capabilities import CAPABILITIES, register_capabilities
+from assistant_runtime.services.tools.capabilities import (
+    CAPABILITIES,
+    PRIVILEGED_CAPABILITIES,
+    register_capabilities,
+)
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.exceptions import ToolError
 from assistant_runtime.services.tools.models import ToolDefinition, ToolSet
@@ -147,9 +151,22 @@ class ToolService:
         # Host tools from configuration (always available, bypass page scoping)
         self._registry.register_host_tools()
         selected = self._config.provider_capabilities
-        providers = (
-            self._providers
-            if selected is None
-            else {name: provider for name, provider in self._providers.items() if name in selected}
-        )
+        if selected is None:
+            # Every configured capability, except the privileged ones: those
+            # must be named explicitly in TOOLS__PROVIDER_CAPABILITIES.
+            skipped = sorted(PRIVILEGED_CAPABILITIES & self._providers.keys())
+            if skipped:
+                logger.warning(
+                    "Privileged capabilities need explicit TOOLS__PROVIDER_CAPABILITIES",
+                    skipped=skipped,
+                )
+            providers = {
+                name: provider
+                for name, provider in self._providers.items()
+                if name not in PRIVILEGED_CAPABILITIES
+            }
+        else:
+            providers = {
+                name: provider for name, provider in self._providers.items() if name in selected
+            }
         return register_capabilities(self._registry, providers)

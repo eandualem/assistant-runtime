@@ -167,11 +167,11 @@ class OAuthService:
             # Optional integration: absent is a state, not a failure.
             return {"healthy": True, "status": "disabled", "reason": "not_configured"}
 
+        # The account email is administration data: GET /api/oauth/openai/status.
         connected = self.get_codex_session() is not None
         return {
             "healthy": True,
             "status": "connected" if connected else "disconnected",
-            "email": self._email,
             "expires_at": self._expires_at if self._expires_at > 0 else None,
         }
 

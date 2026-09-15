@@ -68,6 +68,14 @@ class AssistantConfig(BaseModel):
         le=168,
         description="Session TTL in hours.",
     )
+    request_models: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Model ids a request's config may select (every *_model tunable). Empty, the "
+            "development default, allows any model; a deployment lists the ones its callers "
+            "may use, and a request naming another keeps the host's value."
+        ),
+    )
 
 
 class TunableOverrides(BaseModel):
