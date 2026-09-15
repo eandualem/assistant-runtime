@@ -132,3 +132,18 @@ async def test_the_turns_tier_overrides_the_startup_default(monkeypatch):
         assert fast.model_settings["openai_service_tier"] == "priority"
     finally:
         await service.stop()
+
+
+@pytest.mark.parametrize("alias", ["openai-chat:gpt-5.4", "openai-responses:gpt-5.4"])
+async def test_openai_aliases_cannot_bypass_the_subscription_guard(alias, monkeypatch):
+    """The upstream aliases bill the same account through an API key; the guard rejects them."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-api-key-must-not-be-used")
+    service = LlmService(LLMConfig(codex_only=True))
+    service.set_oauth_service(SimpleNamespace(get_codex_session=lambda: None))
+    with patch("assistant_runtime.services.llm.interface.Agent") as agent:
+        with pytest.raises(ProviderConfigError, match="openai: prefix"):
+            service.build_agent(model=alias, system_prompt="test")
+        agent.assert_not_called()
+    # Without the guard the aliases work as any API-key model.
+    open_service = LlmService(LLMConfig())
+    assert open_service._should_use_codex_provider(alias) is False

@@ -561,7 +561,9 @@ class TestDbProviderKeys:
         monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         encrypted = fernet.encrypt(b"sk-from-database").decode()
-        mock_token = SimpleNamespace(encrypted_api_key=encrypted)
+        mock_token = SimpleNamespace(
+            encrypted_api_key=encrypted, encrypted_refresh_token=None, encrypted_id_token=None
+        )
 
         async def fake_get(provider):
             if provider == "anthropic":
@@ -596,7 +598,9 @@ class TestDbProviderKeys:
         monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         encrypted = fernet.encrypt(b"sk-from-db").decode()
-        mock_token = SimpleNamespace(encrypted_api_key=encrypted)
+        mock_token = SimpleNamespace(
+            encrypted_api_key=encrypted, encrypted_refresh_token=None, encrypted_id_token=None
+        )
 
         async def fake_get(provider):
             if provider == "anthropic":
@@ -715,7 +719,11 @@ class TestDbProviderKeys:
 
             async def get(self, provider):
                 if provider in rows:
-                    return SimpleNamespace(encrypted_api_key=rows[provider])
+                    return SimpleNamespace(
+                        encrypted_api_key=rows[provider],
+                        encrypted_refresh_token=None,
+                        encrypted_id_token=None,
+                    )
                 return None
 
             async def delete(self, provider):
@@ -939,3 +947,56 @@ class TestDbProviderKeys:
         assert anthropic["configured"] is True
         assert anthropic["source"] == "environment"
         assert anthropic["api_key_preview"] == "...abcd"
+
+
+class TestOAuthRowsAreNotApiKeys:
+    async def test_a_codex_login_row_is_not_exported_as_openai_api_key(self, monkeypatch):
+        """The OAuth service stores its access token in the same table; it must not
+        replace a separately configured OPENAI_API_KEY (voice, image generation)."""
+        import os
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from cryptography.fernet import Fernet
+
+        from assistant_runtime.services.database import repositories
+
+        for name in PROVIDER_ENV_VARS.values():
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-api-key")
+        key = Fernet.generate_key().decode()
+        fernet = Fernet(key.encode())
+        rows = {
+            "openai": SimpleNamespace(
+                encrypted_api_key=fernet.encrypt(b"oauth-access-token").decode(),
+                encrypted_refresh_token=fernet.encrypt(b"refresh").decode(),
+                encrypted_id_token=None,
+            ),
+            "anthropic": SimpleNamespace(
+                encrypted_api_key=fernet.encrypt(b"sk-ant-stored").decode(),
+                encrypted_refresh_token=None,
+                encrypted_id_token=None,
+            ),
+        }
+
+        class FakeRepo:
+            def __init__(self, session) -> None:
+                pass
+
+            async def get(self, provider):
+                return rows.get(provider)
+
+        monkeypatch.setattr(repositories, "OAuthTokenRepository", FakeRepo)
+
+        @asynccontextmanager
+        async def session_context():
+            yield object()
+
+        service = LlmService(config=LLMConfig())
+        service.set_database_service(
+            MagicMock(healthy=True, session_context=session_context), encryption_key=key
+        )
+        await service.start()
+        assert os.getenv("OPENAI_API_KEY") == "sk-real-api-key"
+        assert os.getenv("ANTHROPIC_API_KEY") == "sk-ant-stored"
+        assert service._db_providers == {"anthropic": "database"}
