@@ -1,13 +1,14 @@
 """Media serving endpoints — serves cached images and video job status."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from assistant_runtime.app.access.deps import get_principal
 from assistant_runtime.services.media.deps import MediaServiceDep
 
-# Generated media belongs to the installation's callers, not to anyone who can reach the port.
-router = APIRouter(prefix="/media", tags=["media"], dependencies=[Depends(get_principal)])
+# No principal here on purpose: a browser fetches ``<img src="/api/media/...">``
+# without headers, so a token or proxy header cannot be required. The ids are
+# 128-bit random values that expire with the cache (capability URLs).
+router = APIRouter(prefix="/media", tags=["media"])
 
 
 @router.get("/video/{job_id}")

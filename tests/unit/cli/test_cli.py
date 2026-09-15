@@ -523,6 +523,13 @@ class TestRuntimeMarker:
 
         monkeypatch.setattr(serve, "urlopen", lambda url, timeout: Response(b'{"healthy": true}'))
         assert serve.is_assistant_runtime("127.0.0.1", 7100) is False
+        # A runtime from before the marker: healthy plus a components object.
+        monkeypatch.setattr(
+            serve,
+            "urlopen",
+            lambda url, timeout: Response(b'{"healthy": true, "components": {"llm_service": {}}}'),
+        )
+        assert serve.is_assistant_runtime("127.0.0.1", 7100) is True
         monkeypatch.setattr(
             serve,
             "urlopen",

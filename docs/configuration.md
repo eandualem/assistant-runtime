@@ -133,7 +133,7 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | `max_events_per_stream` | `10000` | safety limit |
 | `stream_timeout_seconds` | `300` | one turn |
 | `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for trusted clients: the events carry the system prompt and history of the caller's own sessions |
-| `client_error_detail` | `true` | include exception and provider text in errors sent to clients; set `false` on an exposed server, clients then get the error type and trace id only (the log keeps the detail) |
+| `client_error_detail` | `true` | include exception and provider text in errors sent to clients; set `false` on an exposed server, clients then get the error type and trace id only (the log keeps the detail). Session and access errors describe the client's own request and keep their text either way |
 | `trace_retention_hours` | `168` | debug trace rows older than this are deleted at startup (Postgres only); screenshots are no longer stored in traces |
 
 ### Tools (`TOOLS__*`)
@@ -229,7 +229,7 @@ variables:
 | `BACKBONE_INFRASTRUCTURE_SESSIONS` (comma-separated) | peers | session names to leave out of the active-agent list |
 | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` | issues (`create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue`) | GitHub, one repository |
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | messaging (`respond_telegram`) | a Telegram bot and the chat it answers in |
-| `AGENT_STATE_DIR` | approvals (`list_agent_plans`, `approve_plan`, `reject_plan`); also enriches peers | a directory of agent state files (the Claude Code layout, `~/.claude/state`) |
+| `AGENT_STATE_DIR` | approvals (`list_agent_plans`, `approve_plan`, `reject_plan`), registered only when `TOOLS__PROVIDER_CAPABILITIES` names `approvals`; also enriches peers | a directory of agent state files (the Claude Code layout, `~/.claude/state`) |
 
 ## Integrations
 

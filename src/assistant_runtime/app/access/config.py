@@ -1,6 +1,7 @@
 """Configuration for the access module."""
 
 import re
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -61,5 +62,11 @@ class AccessConfig(BaseModel):
         if "*" in self.cors_origins or origin in self.cors_origins:
             return True
         if self.cors_origin_regex:
-            return re.fullmatch(self.cors_origin_regex, origin) is not None
+            return _compiled(self.cors_origin_regex).fullmatch(origin) is not None
         return False
+
+
+@lru_cache(maxsize=8)
+def _compiled(pattern: str) -> re.Pattern[str]:
+    """The origin regex, compiled once; the check runs on every Socket.IO request."""
+    return re.compile(pattern)

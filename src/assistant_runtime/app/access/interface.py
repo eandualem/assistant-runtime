@@ -105,7 +105,9 @@ class AccessService:
             presented.append(value.strip())
         if isinstance(credentials.auth, dict) and isinstance(credentials.auth.get("token"), str):
             presented.append(credentials.auth["token"])
-        if not any(hmac.compare_digest(token, expected) for token in presented):
+        # Bytes: compare_digest refuses non-ASCII str, and the value is client-supplied.
+        expected_bytes = expected.encode()
+        if not any(hmac.compare_digest(token.encode(), expected_bytes) for token in presented):
             raise AuthenticationError(
                 "This runtime requires its local token (ACCESS__LOCAL_TOKEN) as "
                 "'Authorization: Bearer <token>' or Socket.IO auth.token"

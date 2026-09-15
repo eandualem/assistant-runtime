@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from assistant_runtime import RUNTIME_MARKER
 from assistant_runtime.app.access import deps as access_deps
 from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
 from assistant_runtime.app.access.factory import register_access
@@ -25,10 +26,8 @@ from assistant_runtime.app.streaming.factory import register_streaming
 from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.app.voice.factory import register_voice
 from assistant_runtime.base.lifecycle import LifecycleManager
-from assistant_runtime.cli.serve import RUNTIME_MARKER
 from assistant_runtime.config import AppSettings
 from assistant_runtime.logging_config import setup_logging
-from assistant_runtime.principal import Credentials
 from assistant_runtime.services.artifacts.factory import register_artifacts
 from assistant_runtime.services.database.factory import register_database
 from assistant_runtime.services.history.factory import register_history
@@ -232,16 +231,12 @@ def create_app(
 
 
 async def _authenticated(request: Request) -> bool:
-    """Whether the access service recognises the caller (never raises)."""
+    """Whether the route dependency would accept the caller (never raises)."""
     try:
-        # Looked up through the module, as the route dependencies do.
-        service = access_deps.get_access_service(request)
-        await service.authenticate(
-            Credentials.from_headers(
-                "http", request.headers, client=request.client.host if request.client else None
-            )
-        )
-    except (AuthenticationError, HTTPException):
+        # The same dependency the routes use; looked up through the module
+        # so a test may replace the access service.
+        await access_deps.get_principal(request)
+    except HTTPException:
         return False
     return True
 
@@ -250,7 +245,7 @@ def public_health(result: dict) -> dict:
     """The anonymous form of a health report: flags only, no configuration."""
     return {
         "healthy": result.get("healthy", False),
-        "runtime": result.get("runtime", RUNTIME_MARKER),
+        "runtime": RUNTIME_MARKER,
         "components": {
             name: {"healthy": bool(component.get("healthy", False))}
             for name, component in (result.get("components") or {}).items()
@@ -265,9 +260,10 @@ def create_asgi_app(
     """Create the full ASGI application with Socket.IO wrapper."""
     from assistant_runtime.app.socketio_server import create_sio
 
-    settings = settings or AppSettings()
     fastapi_app = create_app(assistant=assistant, settings=settings)
-    sio = create_sio(settings.access)
+    # The origin rule is read here like the HTTP CORS middleware's; the
+    # lifespan still builds the app's settings after loading ``.env``.
+    sio = create_sio((settings or AppSettings()).access)
     sio.fastapi_app = fastapi_app
     fastapi_app.state.sio = sio
     return socketio.ASGIApp(sio, fastapi_app)

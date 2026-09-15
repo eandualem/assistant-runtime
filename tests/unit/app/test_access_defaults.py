@@ -66,7 +66,19 @@ class TestOriginRule:
         environ = {"wsgi.url_scheme": "https", "HTTP_HOST": "runtime.example"}
         assert check("https://runtime.example", environ) is True
         assert check("https://other.example", environ) is False
-        assert create_sio(AccessConfig(cors_origins=["*"])).eio.cors_allowed_origins == "*"
+        # Behind a TLS-terminating proxy the page's origin is the forwarded one.
+        proxied = {
+            "wsgi.url_scheme": "http",
+            "HTTP_HOST": "127.0.0.1:7100",
+            "HTTP_X_FORWARDED_PROTO": "https",
+            "HTTP_X_FORWARDED_HOST": "assistant.example",
+        }
+        assert check("https://assistant.example", proxied) is True
+        assert check("http://127.0.0.1:7100", proxied) is True
+        wildcard = create_sio(AccessConfig(cors_origins=["*"])).eio
+        assert wildcard.cors_allowed_origins == "*"
+        assert wildcard.cors_credentials is False
+        assert create_sio(AccessConfig()).eio.cors_credentials is True
 
 
 class TestLocalToken:
@@ -93,6 +105,16 @@ class TestLocalToken:
         assert (await service.authenticate(socket)).is_admin
         with pytest.raises(AuthenticationError):
             await service.authenticate(Credentials.from_environ({}, auth={"token": "nope"}))
+
+    @pytest.mark.asyncio
+    async def test_non_ascii_tokens_are_a_401_not_a_500(self):
+        service = AccessService(AccessConfig(local_token="s3cret"))
+        with pytest.raises(AuthenticationError):
+            await service.authenticate(Credentials.from_environ({}, auth={"token": "sécret"}))
+        accented = AccessService(AccessConfig(local_token="sécret"))
+        assert (
+            await accented.authenticate(Credentials.from_environ({}, auth={"token": "sécret"}))
+        ).is_admin
 
 
 class TestHealthDetail:
@@ -133,7 +155,7 @@ class TestHealthDetail:
 
 class TestAuthenticatedRoutes:
     @pytest.mark.asyncio
-    async def test_models_and_media_need_a_principal(self, app, client, monkeypatch):
+    async def test_models_needs_a_principal_and_media_does_not(self, app, client, monkeypatch):
         from unittest.mock import MagicMock
 
         app.state.media_service = MagicMock(get_cached_image=lambda image_id: None)
@@ -143,11 +165,10 @@ class TestAuthenticatedRoutes:
             lambda request: AccessService(AccessConfig(mode="header")),
         )
         assert (await client.get("/api/models")).status_code == 401
-        assert (await client.get("/api/media/abc")).status_code == 401
-        assert (await client.get("/api/media/video/abc")).status_code == 401
         header = {"X-Assistant-Principal": "alice"}
         assert (await client.get("/api/models", headers=header)).status_code == 200
-        assert (await client.get("/api/media/abc", headers=header)).status_code == 404
+        # Media stays anonymous: a browser <img> cannot send the header; ids are random.
+        assert (await client.get("/api/media/abc")).status_code == 404
 
 
 def _component(health: dict):

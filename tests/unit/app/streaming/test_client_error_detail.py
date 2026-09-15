@@ -38,6 +38,19 @@ class TestDescribeError:
         assert "org-1234" in _describe_error(exc)[0]
 
 
+class TestPersistenceFailureText:
+    def test_detail_decides_whether_the_exception_is_shown(self):
+        from assistant_runtime.app.streaming._runner import _persistence_failure
+
+        exc = RuntimeError("connection to db-host refused")
+        assert _persistence_failure("Cancelled turn", exc, detail=True) == (
+            "Cancelled turn could not be saved: connection to db-host refused"
+        )
+        assert _persistence_failure("Cancelled turn", exc, detail=False) == (
+            "Cancelled turn could not be saved"
+        )
+
+
 class TestTraceRetention:
     @pytest.mark.asyncio
     async def test_without_a_reachable_database_nothing_runs(self):

@@ -136,6 +136,8 @@ class TraceORM(Base):
     """Debug trace storage — one row per assistant request (stream)."""
 
     __tablename__ = "traces"
+    # Retention deletes by age; without this the startup cleanup scans the table.
+    __table_args__ = (Index("ix_traces_created_at", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     session_id: Mapped[str] = mapped_column(

@@ -37,7 +37,10 @@ to every origin and then refuses credentials.
 must send `Authorization: Bearer <token>` (HTTP) or `auth: {"token":
 "..."}` on the Socket.IO connect, and everything else is `401`. Use it when
 the runtime must listen on an address other people can reach but you have
-no proxy to authenticate them.
+no proxy to authenticate them. Browser-native fetches cannot add that
+header: put a server-side proxy in front (as the reference apps do) for
+`EventSource` streams such as the voice call events. `GET /api/media/{id}`
+stays anonymous so `<img src>` works; its ids are random and expire.
 
 `GET /health` answers everyone, but the per-component detail (providers,
 models, MCP servers, the database host) is only in the response of an

@@ -60,8 +60,13 @@ def create_sio(access: AccessConfig | None = None) -> socketio.AsyncServer:
     default) and the page's own origin. ``*`` in ``cors_origins`` opens it.
     """
     config = access or AccessConfig()
-    allowed: Any = "*" if "*" in config.cors_origins else _origin_check(config)
-    sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=allowed)
+    wildcard = "*" in config.cors_origins
+    sio = socketio.AsyncServer(
+        async_mode="asgi",
+        cors_allowed_origins="*" if wildcard else _origin_check(config),
+        # Like the HTTP middleware: every origin, or credentials, never both.
+        cors_credentials=not wildcard,
+    )
     sio.register_namespace(AssistantNamespace("/assistant"))
     return sio
 
@@ -72,12 +77,29 @@ def _origin_check(config: AccessConfig) -> Callable[[str | None, dict[str, Any] 
     def allowed(origin: str | None, environ: dict[str, Any] | None = None) -> bool:
         if config.origin_allowed(origin):
             return True
-        if environ and origin and "HTTP_HOST" in environ:
-            scheme = environ.get("wsgi.url_scheme", "http")
-            return origin == f"{scheme}://{environ['HTTP_HOST']}"
-        return False
+        return bool(origin) and origin in _own_origins(environ or {})
 
     return allowed
+
+
+def _own_origins(environ: dict[str, Any]) -> set[str]:
+    """The request's own origin(s), as Engine.IO's default policy derives them.
+
+    Behind a reverse proxy the page's origin is the forwarded scheme and host,
+    so those are accepted too when the proxy sends the ``X-Forwarded-*`` headers.
+    """
+    host = environ.get("HTTP_HOST")
+    if not host:
+        return set()
+    scheme = environ.get("wsgi.url_scheme", "http")
+    origins = {f"{scheme}://{host}"}
+    forwarded_host = environ.get("HTTP_X_FORWARDED_HOST")
+    forwarded_proto = environ.get("HTTP_X_FORWARDED_PROTO")
+    if forwarded_host or forwarded_proto:
+        proxy_scheme = (forwarded_proto or scheme).split(",")[0].strip()
+        proxy_host = (forwarded_host or host).split(",")[0].strip()
+        origins.add(f"{proxy_scheme}://{proxy_host}")
+    return origins
 
 
 @dataclass

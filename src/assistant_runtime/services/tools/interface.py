@@ -156,7 +156,7 @@ class ToolService:
             # must be named explicitly in TOOLS__PROVIDER_CAPABILITIES.
             skipped = sorted(PRIVILEGED_CAPABILITIES & self._providers.keys())
             if skipped:
-                logger.info(
+                logger.warning(
                     "Privileged capabilities need explicit TOOLS__PROVIDER_CAPABILITIES",
                     skipped=skipped,
                 )

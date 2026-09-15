@@ -677,6 +677,11 @@ class TestRequestModelAllowlist:
         assert effective.summarization_model is None
         assert effective.subagent_model == "openai:gpt-5.6-luna"
 
+    def test_every_model_tunable_is_covered(self):
+        from assistant_runtime.app.settings import MODEL_FIELDS
+
+        assert {f for f in TUNABLE_FIELDS if f.endswith("_model")} == MODEL_FIELDS
+
     @pytest.mark.asyncio
     async def test_the_runtime_overlay_is_trusted_and_not_filtered(self):
         frozen = AssistantConfig(request_models=["anthropic:claude-sonnet-5"])
