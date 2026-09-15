@@ -71,6 +71,9 @@ class StreamingService:
         # ordered per session so a later turn's extraction never lands first.
         self._background: set[asyncio.Task[Any]] = set()
         self._background_chains: dict[str, asyncio.Task[Any]] = {}
+        # Steering admission and voice reservation of one session exclude each
+        # other, so a lease cannot appear while an admission hydrates or writes.
+        self._admission_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def _sessions(self) -> SessionStore:
@@ -182,17 +185,24 @@ class StreamingService:
             raise SessionError("Session not found")
         await self._authorize(session_id, principal)
 
+    def _admission_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._admission_locks.get(session_id)
+        if lock is None:
+            lock = self._admission_locks[session_id] = asyncio.Lock()
+        return lock
+
     async def reserve_session(
         self, session_id: str, lease: str, principal: Principal
     ) -> list[dict]:
         """Reserve an idle session and return client-visible text history only."""
         await self._authorize(session_id, principal)
-        self.check_session_available(session_id)
-        if session_id in self._active_turns:
-            raise SessionError("A turn is already running in this session")
-        self._session_leases[session_id] = lease
-        # The reserved session must stay cached for the call's lifetime.
-        self._sessions.pin(session_id)
+        async with self._admission_lock(session_id):
+            self.check_session_available(session_id)
+            if session_id in self._active_turns:
+                raise SessionError("A turn is already running in this session")
+            self._session_leases[session_id] = lease
+            # The reserved session must stay cached for the call's lifetime.
+            self._sessions.pin(session_id)
         try:
             ctx = await self._sessions.ensure_owned_session(session_id, principal.id)
             if ctx.get("pending_tool_call_id"):
@@ -307,32 +317,40 @@ class StreamingService:
         except UnknownProfileError as exc:
             raise SessionError(str(exc)) from exc
         # A voice call owns its session: ordinary steering must not reach it.
-        self.check_session_available(request.session_id)
-        session_context = await self._sessions.get_context_if_exists_async(request.session_id)
-        if session_context is None:
-            raise SessionError(f"Steering rejected: session '{request.session_id}' does not exist")
-        await self._authorize(request.session_id, principal)
+        # The lock holds from the check through hydration and the queue write,
+        # so a reservation cannot slip in between.
+        async with self._admission_lock(request.session_id):
+            self.check_session_available(request.session_id)
+            session_context = await self._sessions.get_context_if_exists_async(request.session_id)
+            if session_context is None:
+                raise SessionError(
+                    f"Steering rejected: session '{request.session_id}' does not exist"
+                )
+            await self._authorize(request.session_id, principal)
 
-        if has_live_stream or session_context.get("pending_tool_call_id"):
-            await self._sessions.queue_steering(request.session_id, request)
-            return "queued"
+            if has_live_stream or session_context.get("pending_tool_call_id"):
+                await self._sessions.queue_steering(request.session_id, request)
+                return "queued"
 
-        active_leaf_id = session_context.get("active_leaf_id")
-        if active_leaf_id is None or session_context["message_index"].get(active_leaf_id) is None:
-            raise SessionError(
-                f"Steering rejected: session '{request.session_id}' has no active conversation"
+            active_leaf_id = session_context.get("active_leaf_id")
+            if (
+                active_leaf_id is None
+                or session_context["message_index"].get(active_leaf_id) is None
+            ):
+                raise SessionError(
+                    f"Steering rejected: session '{request.session_id}' has no active conversation"
+                )
+            turn_in_flight = (
+                session_context.get("current_assistant_message_id") is not None
+                or session_context.get("pending_assistant_message_id") is not None
             )
-        turn_in_flight = (
-            session_context.get("current_assistant_message_id") is not None
-            or session_context.get("pending_assistant_message_id") is not None
-        )
-        if turn_in_flight:
+            if turn_in_flight:
+                await self._sessions.queue_steering(request.session_id, request)
+                return "queued"
+            # Promotion chooses when to run; delivery is acknowledged only after
+            # a native model request consumes this still-pending instruction.
             await self._sessions.queue_steering(request.session_id, request)
-            return "queued"
-        # Promotion chooses when to run; delivery is acknowledged only after
-        # a native model request consumes this still-pending instruction.
-        await self._sessions.queue_steering(request.session_id, request)
-        return "promoted"
+            return "promoted"
 
     async def stream_message(
         self,

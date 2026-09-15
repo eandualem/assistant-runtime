@@ -289,8 +289,14 @@ class AssistantService:
         session_id: str,
         session_context: dict[str, Any],
         turn_number: int,
+        *,
+        leaf_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Extract the working-memory delta from the recent path and persist it (best-effort).
+
+        ``leaf_id`` is the assistant message the extraction belongs to; the
+        path to it is read, not the session's active leaf, so a queued
+        extraction still sees its own turn once later turns have landed.
 
         Returns the usage of the extraction's model call, so the turn can
         account for it, or None when nothing ran.
@@ -302,7 +308,7 @@ class AssistantService:
             current_wm = session_context.get("working_memory") or WorkingMemory()
             sessions = self._sessions
             assert sessions is not None
-            path = await sessions.get_message_path(session_id)
+            path = await sessions.get_message_path(session_id, leaf_id=leaf_id)
 
             recent: list[dict[str, Any]] = []
             for message in path[-4:]:

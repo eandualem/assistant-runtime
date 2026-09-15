@@ -71,6 +71,9 @@ class AgentRegistryCache:
         return None
 
 
+_instance: AgentRegistryCache | None = None
+
+
 def get_registry_cache() -> AgentRegistryCache:
     """Return the module-level singleton cache instance."""
     global _instance
