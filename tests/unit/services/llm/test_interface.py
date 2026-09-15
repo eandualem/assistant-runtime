@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from cryptography.fernet import Fernet
 
+from assistant_runtime.model_catalog import PROVIDER_ENV_VARS
 from assistant_runtime.services.llm._codex_model import OpenAICodexResponsesModel
 from assistant_runtime.services.llm.config import LLMConfig
 from assistant_runtime.services.llm.exceptions import LLMCallError, ProviderConfigError
@@ -43,6 +44,7 @@ class TestLlmServiceLifecycle:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
         config = LLMConfig(providers_json='[{"provider": "anthropic", "api_key": "sk-json-key"}]')
         service = LlmService(config=config)
         await service.start()
@@ -63,6 +65,7 @@ class TestLlmServiceLifecycle:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
         await service.start()
         assert service._started is True
         health = await service.health_check()
@@ -112,7 +115,7 @@ class TestLlmServiceLifecycle:
         assert service.resolve_model("openai:gpt-5.4") == "openai:gpt-5.4"
 
     async def test_no_providers_keeps_configured_model(self, service, monkeypatch):
-        for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+        for var in PROVIDER_ENV_VARS.values():
             monkeypatch.delenv(var, raising=False)
         await service.start()
         assert service.effective_primary_model() == "anthropic:claude-opus-5"
@@ -555,6 +558,7 @@ class TestDbProviderKeys:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         encrypted = fernet.encrypt(b"sk-from-database").decode()
         mock_token = SimpleNamespace(encrypted_api_key=encrypted)
@@ -589,6 +593,7 @@ class TestDbProviderKeys:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         encrypted = fernet.encrypt(b"sk-from-db").decode()
         mock_token = SimpleNamespace(encrypted_api_key=encrypted)
@@ -622,6 +627,7 @@ class TestDbProviderKeys:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         service = LlmService(config=LLMConfig())
         await service.start()
@@ -649,6 +655,7 @@ class TestDbProviderKeys:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         service = LlmService(config=LLMConfig())
         await service.start()
@@ -670,6 +677,7 @@ class TestDbProviderKeys:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
         service = LlmService(config=LLMConfig())
         await service.start()
 
@@ -695,7 +703,7 @@ class TestDbProviderKeys:
 
         from assistant_runtime.services.database import repositories
 
-        for name in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+        for name in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "CEREBRAS_API_KEY"):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env")
         key = Fernet.generate_key().decode()
@@ -734,7 +742,13 @@ class TestDbProviderKeys:
         """A providers-JSON key exported at start is what a later removal restores."""
         import os
 
-        for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+        for name in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENROUTER_API_KEY",
+            "CEREBRAS_API_KEY",
+        ):
             monkeypatch.delenv(name, raising=False)
         service = LlmService(
             config=LLMConfig(providers_json='[{"provider":"anthropic","api_key":"sk-json"}]')
@@ -792,7 +806,13 @@ class TestDbProviderKeys:
 
         from assistant_runtime.services.database import repositories
 
-        for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+        for name in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENROUTER_API_KEY",
+            "CEREBRAS_API_KEY",
+        ):
             monkeypatch.delenv(name, raising=False)
         key = Fernet.generate_key().decode()
         rows: dict[str, str] = {}
@@ -882,6 +902,7 @@ class TestDbProviderKeys:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         service = LlmService(config=LLMConfig())
         await service.start()
@@ -906,6 +927,7 @@ class TestDbProviderKeys:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
 
         service = LlmService(config=LLMConfig())
         await service.start()

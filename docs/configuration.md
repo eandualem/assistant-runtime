@@ -53,7 +53,7 @@ override when set, and otherwise the summarization model.
 
 Model ids are `provider:name`, lowercase. Providers: `anthropic`,
 `openai`, `google` (Gemini through the Google AI API), `google-cloud`
-(Vertex), `openrouter`. `GET /api/models` lists the catalog with each
+(Vertex), `openrouter`, `cerebras`. `GET /api/models` lists the catalog with each
 provider's status. Provider-specific settings are derived from the model:
 current Claude models get adaptive thinking with an effort level mapped
 from `thinking_budget`; older ones get a fixed budget; models that reject

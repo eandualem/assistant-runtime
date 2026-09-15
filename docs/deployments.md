@@ -88,10 +88,12 @@ Without a reachable Postgres the runtime runs entirely in process memory:
 
 A restart clears all of it. This is fine for a first look and for
 development, and it is the default; a demo that people return to needs
-Postgres. Independently of storage, a session expires
+Postgres. A Postgres-backed session then expires
 `ASSISTANT__SESSION_TTL_HOURS` (24 by default, up to 168) after its last
-activity and expired rows are deleted at startup, so raise it for a demo
-that is meant to keep yesterday's conversation.
+saved activity and expired rows are deleted at startup, so raise it for a
+demo that is meant to keep yesterday's conversation. In memory-only mode
+the TTL does not apply: a session stays in the cache until it is evicted
+or the process stops.
 
 ## One profile per application
 
