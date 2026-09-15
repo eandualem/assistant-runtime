@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 from collections.abc import Callable
 from typing import Any
@@ -76,27 +77,48 @@ class ToolRegistry:
         return list(domains) if domains else None
 
     @staticmethod
-    def _wrap_handler(handler: Callable, tool_name: str) -> Callable:
-        """Wrap a tool handler with retry on transient errors and a safety net.
+    def _wrap_handler(
+        handler: Callable,
+        tool_name: str,
+        *,
+        timeout: float | None = None,
+        idempotent: bool = False,
+    ) -> Callable:
+        """Wrap a tool handler with a timeout, an optional retry and a safety net.
 
-        Retries once (2 total attempts) on ConnectionError/TimeoutError before
-        falling through to the structured error response.
+        Each attempt is bounded by ``timeout`` seconds. Only an idempotent
+        handler is retried (once) on ``ConnectionError``/``TimeoutError``: a
+        write that timed out may already have happened. Every failure becomes
+        the structured error response instead of an exception.
         """
 
-        @retry_with_backoff(
-            max_attempts=2,
-            min_wait=0.5,
-            max_wait=5.0,
-            retry_on=(ConnectionError, TimeoutError),
-            name=f"tool:{tool_name}",
-        )
-        async def _retryable(*args: Any, **kwargs: Any) -> Any:
-            return await handler(*args, **kwargs)
+        async def _attempt(*args: Any, **kwargs: Any) -> Any:
+            if timeout is None:
+                return await handler(*args, **kwargs)
+            async with asyncio.timeout(timeout):
+                return await handler(*args, **kwargs)
+
+        _retryable: Callable[..., Any] = _attempt
+        if idempotent:
+            _retryable = retry_with_backoff(
+                max_attempts=2,
+                min_wait=0.5,
+                max_wait=5.0,
+                retry_on=(ConnectionError, TimeoutError),
+                name=f"tool:{tool_name}",
+            )(_attempt)
 
         @functools.wraps(handler)
         async def _safe_handler(*args: Any, **kwargs: Any) -> Any:
             try:
                 return await _retryable(*args, **kwargs)
+            except TimeoutError:
+                logger.warning("[TOOLS] Tool timed out", tool=tool_name, timeout=timeout)
+                return {
+                    "success": False,
+                    "error": f"Tool '{tool_name}' timed out after {timeout}s",
+                    "error_code": "TOOL_TIMEOUT",
+                }
             except Exception as e:
                 logger.error(
                     "[TOOLS] Unhandled tool exception",
@@ -132,7 +154,7 @@ class ToolRegistry:
             func_toolset = FunctionToolset()
             for defn in available.backend_tools:
                 handler = self._backend_handlers[defn.name]
-                safe_handler = self._wrap_handler(handler, defn.name)
+                safe_handler = self._wrap_handler(handler, defn.name, **self._wrap_options(defn))
                 func_toolset.add_function(
                     safe_handler,
                     name=defn.name,
@@ -177,6 +199,13 @@ class ToolRegistry:
             [build_host_toolset(schemas)] if schemas else [],
         )
 
+    def _wrap_options(self, defn: ToolDefinition) -> dict[str, Any]:
+        """The timeout (the tool's own, else the configured default) and retry policy."""
+        return {
+            "timeout": defn.timeout or self._config.tool_timeout_seconds,
+            "idempotent": defn.idempotent,
+        }
+
     def build_subagent_toolset(self) -> list:
         """Build toolsets for subagent execution — backend tools only, excluding run_subagent.
 
@@ -193,7 +222,7 @@ class ToolRegistry:
             func_toolset = FunctionToolset()
             for defn in backend_defs:
                 handler = self._backend_handlers[defn.name]
-                safe_handler = self._wrap_handler(handler, defn.name)
+                safe_handler = self._wrap_handler(handler, defn.name, **self._wrap_options(defn))
                 func_toolset.add_function(
                     safe_handler,
                     name=defn.name,

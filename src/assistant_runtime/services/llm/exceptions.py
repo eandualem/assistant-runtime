@@ -23,6 +23,10 @@ class ProviderConfigError(LLMError):
         super().__init__(message, **kwargs)
 
 
+class ProviderKeyStoreUnavailableError(ProviderConfigError):
+    """Stored provider keys need the encryption key and a reachable database."""
+
+
 class LLMCallError(LLMError):
     """LLM call execution failed."""
 

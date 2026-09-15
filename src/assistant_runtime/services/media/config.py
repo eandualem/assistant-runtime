@@ -13,7 +13,6 @@ class MediaConfig(BaseModel):
     default_quality: str = Field(default="medium")
     cache_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
     cache_max_items: int = Field(default=100, ge=1, le=1000)
-    generation_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
 
     # Video generation settings
     default_video_model: str = Field(default="runway:gen4-turbo")
