@@ -277,6 +277,13 @@ class SessionStore:
             )
         return record
 
+    def get_message(self, session_id: str, message_id: str) -> MessageRecord | None:
+        """The cached record of one message, or None when the session or message is not cached."""
+        ctx = self._sessions.get(session_id)
+        if ctx is None:
+            return None
+        return ctx["message_index"].get(message_id)
+
     async def get_message_path(
         self,
         session_id: str,

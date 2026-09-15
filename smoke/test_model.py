@@ -41,7 +41,7 @@ async def test_model_turn_is_saved(record_property):
             saved.raise_for_status()
             assistant = next(row for row in saved.json() if row["id"] == result["message_id"])
             assert assistant["role"] == "assistant"
-            assert assistant["content"] == result["content"]
+            assert assistant["text"] == result["content"]
             record_property("model", result["model"])
             record_property("elapsed_seconds", round(perf_counter() - started, 3))
             usage = assistant.get("usage")

@@ -165,7 +165,7 @@ class TurnRunner:
         history: HistoryService,
         assistant_service: AssistantService,
         database_service: DatabaseService | None,
-        background: Callable[[Any], None] | None = None,
+        background: Callable[..., None] | None = None,
     ) -> None:
         self._config = config
         self._sessions = sessions
@@ -505,7 +505,10 @@ class TurnRunner:
                 # the terminal event, so it runs after them. The session stays
                 # pinned until it is done so its context is the cached one.
                 self._sessions.pin(session_id)
-                self._background(self._update_working_memory(plan, state, release_pin=True))
+                self._background(
+                    self._update_working_memory(plan, state, release_pin=True),
+                    session_id=session_id,
+                )
 
     async def _update_working_memory(
         self, plan: TurnPlan, state: _RunState, *, release_pin: bool = False
@@ -517,7 +520,11 @@ class TurnRunner:
             )
             if memory_usage is None:
                 return
-            state.stored_usage = with_auxiliary(state.stored_usage, "working_memory", memory_usage)
+            # Merge into the row's usage as it is now: a continuation may have
+            # added its own requests since this turn saved its snapshot.
+            current = self._sessions.get_message(plan.session_id, plan.assistant_message_id)
+            base = current.get("usage") if current is not None else state.stored_usage
+            state.stored_usage = with_auxiliary(base, "working_memory", memory_usage)
             with contextlib.suppress(Exception):
                 await self._sessions.update_message(
                     plan.session_id, plan.assistant_message_id, usage=state.stored_usage
