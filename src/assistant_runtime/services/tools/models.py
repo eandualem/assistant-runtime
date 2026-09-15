@@ -40,7 +40,7 @@ class ToolSet(BaseModel):
 
     @property
     def total_count(self) -> int:
-        """Total number of tools in this set."""
+        """Backend and host tools together."""
         return len(self.backend_tools) + len(self.host_tools)
 
     @property

@@ -19,6 +19,7 @@ from loguru import logger
 from pydantic_ai.exceptions import RunCancelled
 
 from assistant_runtime.app.access.exceptions import AccessDeniedError
+from assistant_runtime.app.access.interface import AccessService
 from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
 from assistant_runtime.app.assistant.models import AssistantRequest, AssistantResult
 from assistant_runtime.app.streaming._control import TurnControl
@@ -34,10 +35,10 @@ from assistant_runtime.app.streaming._runner import TurnRunner, format_error_mes
 from assistant_runtime.app.streaming._turn import TurnPlanner
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.exceptions import StreamingError, StreamSetupError
-from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal, can_access_session
+from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant._session_store import SessionStore
+    from assistant_runtime.app.assistant import SessionStore
     from assistant_runtime.app.assistant.interface import AssistantService
     from assistant_runtime.services.database.interface import DatabaseService
     from assistant_runtime.services.history.interface import HistoryService
@@ -201,8 +202,8 @@ class StreamingService:
         if actor.is_admin:
             return
         context = await self._sessions.get_context_if_exists_async(session_id)
-        if context is not None and not can_access_session(actor, context.get("owner_id")):
-            raise AccessDeniedError(f"Session '{session_id}' belongs to another principal")
+        if context is not None:
+            AccessService.check_session(actor, context.get("owner_id"), session_id)
 
     @staticmethod
     def cancelled_before_start_events(session_id: str) -> list[dict[str, Any]]:

@@ -58,7 +58,8 @@ class TestExamples:
     def test_browser_and_service_hosts_validate_against_the_same_schema(self):
         browser = HostContext.from_payload(BROWSER)
         service = HostContext.from_payload(SERVICE)
-        assert browser.view_name == "tasks"
+        assert browser.view is not None
+        assert browser.view.name == "tasks"
         assert browser.host.kind == "browser"
         assert [a.name for a in browser.actions] == ["select_issue"]
         assert browser.attachments[0].purpose == "screenshot"
@@ -89,7 +90,8 @@ class TestAdapters:
         context = HostContext.from_payload(
             {"page": {"name": "agents"}, "capturedAt": "2026-09-05T10:00:00Z"}
         )
-        assert context.view_name == "agents"
+        assert context.view is not None
+        assert context.view.name == "agents"
         assert context.captured_at == datetime(2026, 9, 5, 10, tzinfo=UTC)
         assert camel_to_snake("HTMLParser") == "html_parser"
 

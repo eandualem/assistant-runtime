@@ -15,16 +15,16 @@ from pydantic_ai.usage import UsageLimits
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
 from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest, PromptResult
+from assistant_runtime.app.assistant.usage import cache_counts
 from assistant_runtime.app.settings import EffectiveConfig
 from assistant_runtime.app.streaming._agent_run import enqueue_pending_steering
 from assistant_runtime.app.streaming._host_tool import STALE_HOST_TOOL_OUTPUT
 from assistant_runtime.app.streaming._runner import TurnRunner
-from assistant_runtime.app.streaming._usage import cache_counts
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.exceptions import StreamingError
 from assistant_runtime.app.streaming.interface import StreamingService
-from assistant_runtime.services.tools._request_context import record_current_telegram_chat_binding
 from assistant_runtime.services.tools.models import ToolSet
+from assistant_runtime.services.tools.request_context import record_current_telegram_chat_binding
 
 
 def _request(

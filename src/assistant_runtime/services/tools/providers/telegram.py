@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from assistant_runtime.services.tools._request_context import (
+from assistant_runtime.services.tools.request_context import (
     get_current_assistant_session_id,
     record_current_telegram_chat_binding,
 )

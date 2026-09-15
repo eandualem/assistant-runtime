@@ -245,7 +245,7 @@ including when the provider represents them as JSON strings.
 uv sync --locked --extra dev       # install runtime + test/lint tools from uv.lock
 make check                        # ruff check + format check + pytest; the CI gate
 make test                         # pytest only; no services needed
-make dev                          # uvicorn with reload on port 7100
+make dev                          # serve --reload on 127.0.0.1:7100
 make db-up / db-upgrade / db-migrate MSG="..."   # Postgres in Docker, migrations
 ```
 

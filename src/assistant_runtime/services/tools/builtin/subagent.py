@@ -8,6 +8,7 @@ from typing import Any
 
 from loguru import logger
 from pydantic_ai import RunContext
+from pydantic_ai.usage import UsageLimits
 
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
@@ -21,37 +22,29 @@ class SubagentDefinition:
     name: str
     description: str
     system_prompt: str
-    default_model: str | None = None
-    default_thinking_budget: int | None = None
     max_iterations: int = 10
 
 
 RESEARCHER_SYSTEM_PROMPT = """\
-You are a Research Agent operating within this environment — an AI agent \
-orchestration ecosystem. Your job is to perform deep, focused research on a \
-given topic and return a comprehensive synthesis.
+You are a research agent working for an application's assistant. You are given \
+one focused task; perform the multi-step investigation it needs and return a \
+synthesis the assistant can act on.
 
-## Your Capabilities
+## Your capabilities
 
-You have access to backend tools for inspecting the agent ecosystem:
-- Agent session management (list, inspect, message agents)
-- GitHub issue management (search, read, create issues)
-- Agent plan inspection and management
-- Notes management
-- Schedule management
+You have the backend tools of the session that delegated to you. Use them to \
+gather information; you cannot delegate further.
 
-## Research Guidelines
+## Research guidelines
 
-1. **Be thorough.** Use multiple tools to gather information from different \
-angles. Cross-reference findings.
-2. **Synthesize, don't just list.** Your output should be a coherent analysis, \
-not a raw dump of tool results.
-3. **Cite sources.** When referencing specific agent states, issues, or plans, \
-include identifiers (session names, issue numbers, etc.).
-4. **Stay focused.** Address the specific research task given to you. Don't \
-go on tangents.
-5. **Acknowledge gaps.** If you can't find information on something, say so \
-explicitly rather than guessing.
+1. **Be thorough.** Use several tools and angles; cross-check what you find.
+2. **Synthesize, don't just list.** Return a coherent analysis, not a dump of \
+tool results.
+3. **Cite sources.** Name the tool results, files, records or identifiers a \
+finding rests on.
+4. **Stay focused.** Answer the task you were given; note tangents, do not \
+pursue them.
+5. **Acknowledge gaps.** Say what you could not find rather than guessing.
 """
 
 
@@ -60,10 +53,8 @@ SUBAGENT_REGISTRY: dict[str, SubagentDefinition] = {
         id="researcher",
         name="Research Agent",
         description=(
-            "Deep research agent that can investigate topics across the agent "
-            "ecosystem — agent states, GitHub issues, plans, and system status. "
-            "Use for complex queries that require gathering and synthesizing "
-            "information from multiple sources."
+            "Deep research agent for questions that need several tool calls and a "
+            "synthesis of what they return."
         ),
         system_prompt=RESEARCHER_SYSTEM_PROMPT,
     ),
@@ -89,12 +80,15 @@ def register_subagent_tools(
     *,
     backend_toolsets: Callable[[], list[Any]],
     runtime_settings: Callable[[], Any | None],
+    usage_limits: UsageLimits | None = None,
 ) -> None:
     """Register ``run_subagent``.
 
     ``backend_toolsets`` and ``runtime_settings`` are callables because both
     change after registration: tools keep being registered, and the runtime
     settings overlay is attached once the lifecycle has started.
+    ``usage_limits`` are the host's per-turn ceilings; a subagent run stays
+    within them on top of its own iteration limit.
     """
 
     async def run_subagent(
@@ -140,6 +134,7 @@ def register_subagent_tools(
             usage=ctx.usage,
             model_override=model_override,
             thinking_budget_override=thinking_override,
+            usage_limits=usage_limits,
         )
 
     registry.register_backend_tool(
@@ -147,10 +142,9 @@ def register_subagent_tools(
             name="run_subagent",
             description=(
                 "Delegate a focused research or analysis task to a subagent. "
-                "The subagent has access to backend tools (agent state, GitHub "
-                "issues, plans, notes) but cannot spawn further subagents. "
-                "Use this for complex queries requiring multi-step investigation "
-                "and synthesis. Available subagents: "
+                "The subagent has this session's backend tools but cannot spawn "
+                "further subagents. Use it for questions that need multi-step "
+                "investigation and synthesis. Available subagents: "
                 + ", ".join(f"'{d.id}' ({d.description})" for d in SUBAGENT_REGISTRY.values())
             ),
             parameters_schema={

@@ -95,20 +95,22 @@ def build_assistant_requests(
                 break
             trailing.append(message)
         trailing.reverse()
-        return [
-            AssistantRequest.model_validate(
-                {
-                    **base,
-                    "id": message.id,
-                    "content": "",
-                    "tool_call_id": message.tool_call_id,
-                    "tool_result": _tool_result(message.content),
-                    "tool_outcome": "failed" if getattr(message, "error", None) else "success",
-                }
-            )
-            for message in trailing
-        ]
+        return [_continuation(base, message) for message in trailing]
     return [build_assistant_request(run_input, session_context)]
+
+
+def _continuation(base: dict[str, Any], message: ToolMessage) -> AssistantRequest:
+    """The runtime continuation for one AG-UI tool message."""
+    return AssistantRequest.model_validate(
+        {
+            **base,
+            "id": message.id,
+            "content": "",
+            "tool_call_id": message.tool_call_id,
+            "tool_result": _tool_result(message.content),
+            "tool_outcome": "failed" if getattr(message, "error", None) else "success",
+        }
+    )
 
 
 def build_assistant_request(
@@ -127,16 +129,7 @@ def build_assistant_request(
         base["config"] = config
 
     if isinstance(last, ToolMessage):
-        return AssistantRequest.model_validate(
-            {
-                **base,
-                "id": last.id,
-                "content": "",
-                "tool_call_id": last.tool_call_id,
-                "tool_result": _tool_result(last.content),
-                "tool_outcome": "failed" if getattr(last, "error", None) else "success",
-            }
-        )
+        return _continuation(base, last)
     if isinstance(last, UserMessage):
         text, attachments = _user_content(last)
         return AssistantRequest.model_validate(

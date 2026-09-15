@@ -27,8 +27,8 @@ from assistant_runtime.app.assistant.models import (
     HoldDecision,
     PromptResult,
 )
+from assistant_runtime.app.assistant.usage import usage_dict
 from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
-from assistant_runtime.app.streaming._usage import usage_dict
 from assistant_runtime.host_context import view_name_of
 from assistant_runtime.services.tracing import create_span
 

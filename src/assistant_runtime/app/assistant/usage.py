@@ -1,4 +1,7 @@
-"""Token usage snapshots from pydantic-ai run results."""
+"""Token usage snapshots from pydantic-ai run results.
+
+Shared by the assistant service (working memory) and the turn runner.
+"""
 
 from __future__ import annotations
 

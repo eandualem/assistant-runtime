@@ -204,3 +204,24 @@ class TestListModels:
         assert response.status_code == 200
         data = response.json()
         assert data["models"] == []
+
+
+class TestProviderStatus:
+    @pytest.mark.asyncio
+    async def test_configured_comes_from_the_llm_service_when_it_is_up(self, monkeypatch):
+        """``/api/models`` and ``/api/providers`` must agree: stored keys and Codex count."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        app = _make_app()
+        llm = MagicMock()
+        llm.get_provider_status.return_value = [
+            {"provider": "openai", "configured": True, "source": "database"},
+            {"provider": "anthropic", "configured": False, "source": None},
+        ]
+        app.state.llm_service = llm
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            providers = (await c.get("/api/models")).json()["providers"]
+        assert providers["openai"]["configured"] is True
+        assert providers["anthropic"]["configured"] is False
+        assert "runway" in providers  # media providers stay environment-based

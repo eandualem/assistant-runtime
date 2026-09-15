@@ -6,20 +6,7 @@ Not a logging framework — just conventions and helpers.
 
 from __future__ import annotations
 
-# --- Tag constants (prefix log messages for grep-ability) ---
-
-TAG_REQUEST = "[REQUEST]"
-TAG_STREAM = "[STREAM]"
-TAG_TOOLS = "[TOOLS]"
-TAG_SESSION = "[SESSION]"
-TAG_DB = "[DB]"
-TAG_LLM = "[LLM]"
-TAG_HISTORY = "[HISTORY]"
-
-# --- Truncation ---
-
 FULL_LOG_THRESHOLD = 500
-PREVIEW_LENGTH = 200
 
 
 def truncate(text: str, max_length: int = FULL_LOG_THRESHOLD) -> str:

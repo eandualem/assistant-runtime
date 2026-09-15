@@ -25,16 +25,6 @@ class HistoryPreparationResult:
     message_summaries: list[dict[str, Any]] = field(default_factory=list)
 
 
-MEMORY_CATEGORIES = [
-    "agent_behavior",
-    "backbone_pattern",
-    "tool_behavior",
-    "workflow_pattern",
-    "user_preference",
-    "system_quirk",
-]
-
-
 class MemoryOperation(StrEnum):
     """Delta operation types for memory management."""
 
@@ -51,8 +41,7 @@ class MemoryEntry(BaseModel):
     content: str = Field(description="The memory content/insight")
     category: str = Field(
         description=(
-            "One of: agent_behavior, backbone_pattern, tool_behavior, "
-            "workflow_pattern, user_preference, system_quirk"
+            "One of: user_preference, workflow, tool_behavior, environment, project_fact, other"
         ),
     )
     confidence: float = Field(
