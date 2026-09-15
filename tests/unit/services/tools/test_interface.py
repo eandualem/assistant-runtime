@@ -277,6 +277,8 @@ class TestSubagentScopeAndBudget:
         from assistant_runtime.services.tools.factory import _budget_limits
 
         assert _budget_limits(UsageBudget()) is None
+        assert _budget_limits(UsageBudget(tool_calls=0)).tool_calls_limit == 0
+        assert _budget_limits(UsageBudget(cost_usd=0.25)).cost_limit == 0.25
         limits = _budget_limits(UsageBudget(tool_calls=4, total_tokens=50_000, cost_usd=1.5))
         assert isinstance(limits, UsageLimits)
         assert limits.tool_calls_limit == 4

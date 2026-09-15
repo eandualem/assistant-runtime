@@ -43,4 +43,9 @@ def _budget_limits(budget: Any) -> UsageLimits | None:
         total_tokens_limit=budget.total_tokens,
         cost_limit=budget.cost_usd,
     )
-    return limits if limits.has_token_limits() or limits.tool_calls_limit else None
+    configured = (
+        limits.has_token_limits()
+        or limits.tool_calls_limit is not None
+        or limits.cost_limit is not None
+    )
+    return limits if configured else None

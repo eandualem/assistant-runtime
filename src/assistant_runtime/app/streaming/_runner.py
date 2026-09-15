@@ -373,7 +373,6 @@ class TurnRunner:
                         message_id=plan.assistant_message_id,
                         content="",
                         usage=state.usage,
-                        count_error=False,
                     )
             for event in events:
                 yield event
@@ -885,7 +884,6 @@ class TurnRunner:
         message_id: str | None = None,
         content: str | None = None,
         usage: dict[str, Any] | None = None,
-        count_error: bool = True,
     ) -> list[dict[str, Any]]:
         """The one terminal lifecycle of a turn that did not finish normally.
 
@@ -893,8 +891,8 @@ class TurnRunner:
         only with ``emit_debug``) and the terminal ``error``. A saved snapshot
         (cancellation, usage limit) names its ``message_id`` and ``usage``;
         ``content`` stays empty, only native middleware decides what text a
-        client sees. ``count_error=False`` keeps the error event outside the
-        event limit so a cancellation always reaches the client.
+        client sees. Like the other terminal events, the error is not counted
+        against the event limit: the client must always receive it.
         """
         final = coordinator.try_final_response(
             content,
@@ -928,7 +926,7 @@ class TurnRunner:
             terminal=True,
             retry_allowed=retry_allowed,
         )
-        events.append(coordinator.track(error) if count_error else error)
+        events.append(error)
         return events
 
     async def save_trace(
