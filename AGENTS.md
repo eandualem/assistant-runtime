@@ -154,7 +154,9 @@ execution, history, serialization, or the upstream dependency; see
   is a `ToolDefinition` plus an async handler registered through
   `register_backend_tool`. Handlers return dicts (`{"success": False,
   "error": ..., "error_code": ...}` on failure) and do not raise; the
-  registry wraps them with one retry on connection errors and a catch-all.
+  registry bounds each call by `TOOLS__TOOL_TIMEOUT_SECONDS` (or the
+  definition's `timeout`), retries once on connection errors only when the
+  definition says `idempotent=True`, and turns any failure into that dict.
   Request scope (session id, screenshot, Telegram binding) travels in
   contextvars (`_request_context.py`); other dependencies are closed over
   at registration.

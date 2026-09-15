@@ -6,6 +6,7 @@ LLM calls, and manages provider lifecycle (API key loading and export).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import Sequence
@@ -29,7 +30,11 @@ from assistant_runtime.model_catalog import (
 from assistant_runtime.services.llm._codex_model import CodexResponses, OpenAICodexResponsesModel
 from assistant_runtime.services.llm._settings import build_model_settings, validate_model_id
 from assistant_runtime.services.llm.config import LLMConfig, ProviderConfig
-from assistant_runtime.services.llm.exceptions import ProviderConfigError, classify_llm_error
+from assistant_runtime.services.llm.exceptions import (
+    ProviderConfigError,
+    ProviderKeyStoreUnavailableError,
+    classify_llm_error,
+)
 from assistant_runtime.services.tracing import create_span
 
 
@@ -92,9 +97,13 @@ class LlmService:
         self._db_service: Any | None = None
         self._fernet: Any | None = None
         self._db_providers: dict[str, str] = {}  # provider → "database" (tracks DB-sourced keys)
+        # Environment values this service replaced, so removing a stored key
+        # restores what the operator had configured (None: the variable was unset).
+        self._env_backup: dict[str, str | None] = {}
         self._codex_provider: OpenAIProvider | None = None
         self._codex_provider_identity: tuple[str, str] | None = None
         self._codex_http_clients: list[httpx.AsyncClient] = []
+        self._codex_close_tasks: set[asyncio.Task[None]] = set()
         self._started = False
 
     def set_oauth_service(self, oauth_service: Any) -> None:
@@ -147,12 +156,19 @@ class LlmService:
                         ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
                     )
 
-        # 3. Export keys for Pydantic AI auto-detection
+        # 3. Export keys for Pydantic AI auto-detection. A stored (database) key
+        # is the operator's explicit choice and overrides the environment; the
+        # value it replaces is kept so removing the stored key restores it.
         for provider in providers:
             env_var = PROVIDER_ENV_VARS.get(provider.provider)
-            if env_var and not os.getenv(env_var):
+            if not env_var:
+                continue
+            if provider.provider in self._db_providers:
+                self._env_backup.setdefault(provider.provider, os.environ.get(env_var))
                 os.environ[env_var] = provider.api_key.get_secret_value()
-                logger.debug("Exported API key for Pydantic AI", provider=provider.provider)
+            elif not os.getenv(env_var):
+                os.environ[env_var] = provider.api_key.get_secret_value()
+            logger.debug("Exported API key for Pydantic AI", provider=provider.provider)
 
         self._providers = providers
         self._started = True
@@ -171,6 +187,9 @@ class LlmService:
 
     async def stop(self) -> None:
         """Shutdown the LLM service."""
+        if self._codex_close_tasks:
+            await asyncio.gather(*self._codex_close_tasks, return_exceptions=True)
+            self._codex_close_tasks.clear()
         for client in self._codex_http_clients:
             await client.aclose()
         self._codex_http_clients.clear()
@@ -207,22 +226,85 @@ class LlmService:
         # Track as DB-sourced and export to env var for Pydantic AI
         self._db_providers[provider] = "database"
         env_var = PROVIDER_ENV_VARS[provider]
+        self._env_backup.setdefault(provider, os.environ.get(env_var))
         os.environ[env_var] = api_key
         logger.info("Provider API key reloaded", provider=provider)
 
     async def remove_provider_key(self, provider: str) -> None:
-        """Remove a provider API key from in-memory state and env var.
+        """Forget a stored provider key; a key from the environment stays in force.
 
-        Called by the providers route after deleting the key from the DB.
+        The environment variable is restored to what it was before this service
+        set it, so deleting a key that was never stored changes nothing.
         """
+        from pydantic import SecretStr
+
         if provider not in PROVIDER_ENV_VARS:
             raise ProviderConfigError(f"Unknown provider: {provider}")
 
         self._providers = [p for p in self._providers if p.provider != provider]
         self._db_providers.pop(provider, None)
         env_var = PROVIDER_ENV_VARS[provider]
-        os.environ.pop(env_var, None)
-        logger.info("Provider API key removed", provider=provider)
+        if provider in self._env_backup:
+            previous = self._env_backup.pop(provider)
+            if previous is None:
+                os.environ.pop(env_var, None)
+            else:
+                os.environ[env_var] = previous
+        remaining = os.environ.get(env_var)
+        if remaining:
+            self._providers.append(ProviderConfig(provider=provider, api_key=SecretStr(remaining)))
+        logger.info("Provider API key removed", provider=provider, environment_key=bool(remaining))
+
+    # --- stored provider keys (the one persisted secret) ---------------------
+
+    def _key_store(self) -> Any:
+        """The database service, when stored keys can be read and written."""
+        if self._fernet is None:
+            raise ProviderKeyStoreUnavailableError(
+                "Encryption not configured — set OAUTH__ENCRYPTION_KEY to enable API key storage"
+            )
+        if self._db_service is None or not getattr(self._db_service, "healthy", False):
+            raise ProviderKeyStoreUnavailableError(
+                "Database not reachable; stored keys need Postgres"
+            )
+        return self._db_service
+
+    async def store_provider_key(self, provider: str, api_key: str) -> None:
+        """Encrypt and persist ``api_key`` for ``provider``, then activate it.
+
+        Raises:
+            ProviderConfigError: Unknown provider.
+            ProviderKeyStoreUnavailableError: No encryption key or no database.
+        """
+        if provider not in PROVIDER_ENV_VARS:
+            raise ProviderConfigError(f"Unknown provider: {provider}")
+        db = self._key_store()
+        from assistant_runtime.services.database.repositories import OAuthTokenRepository
+
+        encrypted = self._fernet.encrypt(api_key.encode()).decode()
+        try:
+            async with db.session_context() as session:
+                await OAuthTokenRepository(session).upsert(
+                    provider=provider, encrypted_api_key=encrypted
+                )
+        except Exception as exc:
+            raise ProviderKeyStoreUnavailableError(f"Storing the key failed: {exc}") from exc
+        await self.reload_provider_key(provider, api_key)
+
+    async def delete_provider_key(self, provider: str) -> bool:
+        """Delete the stored key for ``provider``; returns whether one was stored."""
+        if provider not in PROVIDER_ENV_VARS:
+            raise ProviderConfigError(f"Unknown provider: {provider}")
+        db = self._key_store()
+        from assistant_runtime.services.database.repositories import OAuthTokenRepository
+
+        try:
+            async with db.session_context() as session:
+                deleted = await OAuthTokenRepository(session).delete(provider)
+        except Exception as exc:
+            raise ProviderKeyStoreUnavailableError(f"Deleting the key failed: {exc}") from exc
+        await self.remove_provider_key(provider)
+        return deleted
 
     def get_provider_status(self) -> list[dict[str, Any]]:
         """Return provider auth status for each known provider."""
@@ -401,6 +483,7 @@ class LlmService:
 
         http_client = httpx.AsyncClient(timeout=120.0)
         self._codex_http_clients.append(http_client)
+        self._close_stale_codex_clients()
         openai_client = AsyncOpenAI(
             api_key=session.access_token,
             base_url=_CODEX_BACKEND_BASE_URL,
@@ -411,6 +494,29 @@ class LlmService:
         self._codex_provider = OpenAIProvider(openai_client=openai_client)
         self._codex_provider_identity = identity
         return self._codex_provider
+
+    def _close_stale_codex_clients(self, keep: int = 2) -> None:
+        """Close clients older than the current and previous one.
+
+        Tokens rotate about hourly; the previous client may still serve an
+        in-flight request, anything older is closed in the background.
+        """
+        while len(self._codex_http_clients) > keep:
+            stale = self._codex_http_clients.pop(0)
+            try:
+                task = asyncio.get_running_loop().create_task(stale.aclose())
+            except RuntimeError:  # no running loop: close at stop()
+                self._codex_http_clients.insert(0, stale)
+                return
+            self._codex_close_tasks.add(task)
+            task.add_done_callback(self._codex_client_closed)
+
+    def _codex_client_closed(self, task: asyncio.Task[None]) -> None:
+        self._codex_close_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "Stale Codex HTTP client did not close cleanly", error=str(task.exception())
+            )
 
     def _resolve_agent_model(self, resolved_model: str) -> str | OpenAICodexResponsesModel:
         """Resolve the actual Agent model object to use for a model id."""

@@ -42,13 +42,6 @@ async def backbone_request(
 
     url = f"{backbone_url}{path}"
 
-    @retry_with_backoff(
-        max_attempts=3,
-        min_wait=0.5,
-        max_wait=10.0,
-        retry_on=_BACKBONE_RETRYABLE,
-        name="backbone_request",
-    )
     async def _request() -> tuple[int, Any]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.request(
@@ -60,10 +53,22 @@ async def backbone_request(
             )
             return (response.status_code, response.json())
 
+    # Only a read is retried: a POST (a message, a reminder) that timed out may
+    # already have been applied, and a retry would apply it twice.
+    send = _request
+    if method.upper() == "GET":
+        send = retry_with_backoff(
+            max_attempts=3,
+            min_wait=0.5,
+            max_wait=10.0,
+            retry_on=_BACKBONE_RETRYABLE,
+            name="backbone_request",
+        )(_request)
+
     try:
-        return await _request()
+        return await send()
     except httpx.TimeoutException:
-        logger.warning("Backbone request timed out after retries", method=method, path=path)
+        logger.warning("Backbone request timed out", method=method, path=path)
         return (
             -1,
             {
@@ -73,9 +78,7 @@ async def backbone_request(
             },
         )
     except httpx.HTTPError as exc:
-        logger.warning(
-            "Backbone request failed after retries", method=method, path=path, error=str(exc)
-        )
+        logger.warning("Backbone request failed", method=method, path=path, error=str(exc))
         return (
             -1,
             {

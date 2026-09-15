@@ -55,6 +55,9 @@ class SessionStore:
         )
         self._pending_db_loads: dict[str, asyncio.Task[dict[str, Any] | None]] = {}
         self._pending_db_loads_lock = asyncio.Lock()
+        # Sessions with a running turn or post-turn work (a count per holder);
+        # never evicted from the cache while the count is above zero.
+        self._pinned: dict[str, int] = {}
 
     # --- contexts -----------------------------------------------------------
 
@@ -109,6 +112,20 @@ class SessionStore:
 
     def session_count(self) -> int:
         return len(self._sessions)
+
+    def pin(self, session_id: str) -> None:
+        """Keep the session cached while a turn (or its post-turn work) uses it.
+
+        Reference counted: every ``pin`` needs one ``unpin``.
+        """
+        self._pinned[session_id] = self._pinned.get(session_id, 0) + 1
+
+    def unpin(self, session_id: str) -> None:
+        count = self._pinned.get(session_id, 0) - 1
+        if count > 0:
+            self._pinned[session_id] = count
+        else:
+            self._pinned.pop(session_id, None)
 
     # --- messages -----------------------------------------------------------
 
@@ -456,6 +473,8 @@ class SessionStore:
         everything (administration).
         """
         if self._db is None:
+            # Most recently used first, like the database's ``updated_at desc``:
+            # ``_touch_session`` moves a used session to the end of the dict.
             sessions = [
                 {
                     "session_id": sid,
@@ -465,7 +484,7 @@ class SessionStore:
                     "message_count": ctx.get("message_count", 0),
                     "created_at": None,
                 }
-                for sid, ctx in self._sessions.items()
+                for sid, ctx in reversed(list(self._sessions.items()))
                 if owner_id is None or ctx.get("owner_id") == owner_id
             ]
             return sessions[offset : offset + limit]
@@ -581,11 +600,18 @@ class SessionStore:
         if len(self._sessions) <= _MAX_MEMORY_SESSIONS:
             return
         evict_count = len(self._sessions) // 2
-        for key in list(self._sessions.keys())[:evict_count]:
+        evicted = 0
+        for key in list(self._sessions.keys()):
+            if evicted >= evict_count:
+                break
+            if key in self._pinned:
+                continue  # a turn is running on it; its writes must keep landing
             del self._sessions[key]
+            evicted += 1
         logger.info(
             "[SESSION] Evicted in-memory sessions",
-            evicted=evict_count,
+            evicted=evicted,
+            pinned=len(self._pinned),
             remaining=len(self._sessions),
         )
 

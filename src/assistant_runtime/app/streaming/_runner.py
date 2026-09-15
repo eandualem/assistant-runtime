@@ -168,6 +168,7 @@ class TurnRunner:
         history: HistoryService,
         assistant_service: AssistantService,
         database_service: DatabaseService | None,
+        background: Callable[[Any], None] | None = None,
     ) -> None:
         self._config = config
         self._sessions = sessions
@@ -175,6 +176,8 @@ class TurnRunner:
         self._history = history
         self._assistant = assistant_service
         self._db = database_service
+        # Schedules post-turn work; without it the work runs inline before ``completed``.
+        self._background = background
 
     async def run(
         self, plan: TurnPlan, *, control: TurnControl | None = None
@@ -455,25 +458,16 @@ class TurnRunner:
         finally:
             control.accepting_cancel = False
             session_context.pop("current_assistant_message_id", None)
-            if (
+            update_memory = (
                 state.persisted
                 and not state.cancelled
                 and not control.token.cancelled
                 and plan.update_working_memory
                 and ctx is not None
                 and ctx.effective_config.enable_working_memory
-            ):
-                memory_usage = await self._assistant.update_working_memory(
-                    session_id, session_context, plan.turn_number
-                )
-                if memory_usage is not None:
-                    state.stored_usage = with_auxiliary(
-                        state.stored_usage, "working_memory", memory_usage
-                    )
-                    with contextlib.suppress(Exception):
-                        await self._sessions.update_message(
-                            session_id, plan.assistant_message_id, usage=state.stored_usage
-                        )
+            )
+            if update_memory and self._background is None:
+                await self._update_working_memory(plan, state)
             if emit_debug:
                 coordinator.flush_thinking()
                 if coordinator.accumulated_response:
@@ -500,6 +494,31 @@ class TurnRunner:
             completed = coordinator.try_completed()
             if completed:
                 yield completed
+            if update_memory and self._background is not None:
+                # An extra model call; the client already has its answer and
+                # the terminal event, so it runs after them. The session stays
+                # pinned until it is done so its context is the cached one.
+                self._sessions.pin(session_id)
+                self._background(self._update_working_memory(plan, state, release_pin=True))
+
+    async def _update_working_memory(
+        self, plan: TurnPlan, state: _RunState, *, release_pin: bool = False
+    ) -> None:
+        """Extract the working-memory delta and account its usage on the assistant row."""
+        try:
+            memory_usage = await self._assistant.update_working_memory(
+                plan.session_id, plan.session_context, plan.turn_number
+            )
+            if memory_usage is None:
+                return
+            state.stored_usage = with_auxiliary(state.stored_usage, "working_memory", memory_usage)
+            with contextlib.suppress(Exception):
+                await self._sessions.update_message(
+                    plan.session_id, plan.assistant_message_id, usage=state.stored_usage
+                )
+        finally:
+            if release_pin:
+                self._sessions.unpin(plan.session_id)
 
     async def _clear_pending(self, plan: TurnPlan) -> None:
         """Clear the turn's pending host action, in memory and on the session row."""

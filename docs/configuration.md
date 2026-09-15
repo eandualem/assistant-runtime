@@ -31,7 +31,7 @@ At least one provider must be usable.
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY` | Provider keys; set any combination |
-| `LLM__PROVIDERS_JSON` | Alternative: `[{"provider":"anthropic","api_key":"...","base_url":null,"timeout":120,"max_retries":3}]` |
+| `LLM__PROVIDERS_JSON` | Alternative: `[{"provider":"anthropic","api_key":"..."}]` (provider and key only; other fields are rejected) |
 | `LLM__PRIMARY_MODEL` | Chat model, default `anthropic:claude-opus-5` |
 | `LLM__SUMMARIZATION_MODEL` | History summaries and lightweight tasks, default `anthropic:claude-haiku-4-5` |
 | `OAUTH__ENCRYPTION_KEY` | Fernet key; enables the ChatGPT/Codex OAuth path and the encrypted provider-key store (`PUT /api/providers/{provider}/api-key`) |
@@ -122,7 +122,6 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | `protect_recent_tool_results` | `3` | most recent tool results (counted individually) never cleared |
 | `message_truncation_limit` | `1000` | characters per message in summaries |
 | `summarization_model`, `working_memory_model` | unset | override the models for these tasks |
-| `working_memory_enabled` | `true` | |
 | `max_memory_entries` | `15` | key decisions kept in working memory |
 
 ### Streaming (`STREAMING__*`)
@@ -141,7 +140,7 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | Setting | Default | Meaning |
 |---|---|---|
 | `max_tools_per_request` | `64` | warn above this many tools in one request |
-| `tool_timeout_seconds` | `30` | |
+| `tool_timeout_seconds` | `30` | seconds a backend tool may run per attempt; a `ToolDefinition.timeout` overrides it; the model gets a `TOOL_TIMEOUT` error. Only tools declared `idempotent` are retried once on a timeout or connection error |
 | `builtin_tools` | `["time", "screen", "artifacts", "subagent", "media", "video"]` | selected built-in groups; `[]` disables all, existing service requirements still apply |
 | `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup. `approvals` is privileged (it types into other agents' terminals) and is registered only when named here |
 | `host_tools` | `{}` | tools the host executes: `{"name": {"description": "...", "parameters": <JSON schema>}}`; names must match `^[A-Za-z0-9_-]{1,64}$` |
@@ -161,7 +160,7 @@ from native [Pydantic AI capabilities](composition.md).
 
 `default_image_model` (`openai:gpt-image-1`), `default_size`
 (`1024x1024`), `default_quality` (`medium`), `cache_ttl_seconds`,
-`cache_max_items`, `generation_timeout_seconds`; for video
+`cache_max_items`; for video
 `default_video_model` (`runway:gen4-turbo`), `video_poll_interval_seconds`,
 `video_timeout_seconds`, `video_max_concurrent_jobs`. Video needs the
 `[video]` extra and `RUNWAYML_API_SECRET` or `LUMAAI_API_KEY`.
