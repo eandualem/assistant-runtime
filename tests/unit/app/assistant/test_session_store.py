@@ -242,7 +242,10 @@ class TestSteeringMessages:
             ),
         )
 
-        delivered = await store.deliver_pending_steering("sess-1")
+        pending = await store.list_pending_steering("sess-1")
+        delivered = await store.mark_steering_delivered(
+            "sess-1", [record["id"] for record in pending]
+        )
         ctx = store.get_context("sess-1")
         path = await store.get_message_path("sess-1")
         display_steering = await store.get_display_steering("sess-1")
@@ -253,24 +256,6 @@ class TestSteeringMessages:
         assert ctx["active_leaf_id"] == "assistant-1"
         assert [message["id"] for message in path] == ["user-1", "assistant-1"]
         assert [record["id"] for record in display_steering] == ["steering-1", "steering-2"]
-
-    async def test_marks_steering_promoted_for_idle_delivery(self) -> None:
-        store = SessionStore()
-        await _seed_basic_turn(store)
-        await store.queue_steering(
-            "sess-1",
-            _request(
-                message_id="steering-1",
-                content="Focus on Leo only",
-                message_type="steering",
-            ),
-        )
-
-        promoted = await store.mark_steering_promoted("sess-1", "steering-1")
-
-        assert promoted["status"] == "promoted"
-        assert promoted["delivered_at"] is not None
-        assert store.get_context("sess-1")["pending_steering_ids"] == []
 
 
 class TestMessagePathResolution:

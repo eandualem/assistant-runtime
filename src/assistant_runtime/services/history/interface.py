@@ -66,7 +66,7 @@ class HistoryProcessor:
         self.result = HistoryPreparationResult(
             was_compacted=was_compacted,
             message_count=len(prepared),
-            estimated_tokens=self._manager._estimate_tokens(prepared),
+            estimated_tokens=self._manager.estimate_tokens(prepared),
             compacted_from=len(messages) if was_compacted else 0,
             message_summaries=HistoryService._summarize_messages(prepared),
         )
@@ -137,50 +137,30 @@ class HistoryService:
         summaries: list[dict[str, Any]] = []
         for msg in messages:
             if isinstance(msg, ModelRequest):
-                content_parts = []
-                for part in msg.parts:
-                    text = getattr(part, "content", None)
-                    if text is not None and not isinstance(text, str):
-                        text = str(text)
-                    if text:
-                        content_parts.append(text)
-                full = "\n".join(content_parts)
-                preview = full[:preview_limit] if len(full) > preview_limit else full
-                summaries.append(
-                    {
-                        "role": "user",
-                        "content_preview": preview,
-                        "char_count": len(full),
-                        "part_count": len(msg.parts),
-                    }
-                )
+                role = "user"
             elif isinstance(msg, ModelResponse):
-                content_parts = []
-                for part in msg.parts:
-                    text = getattr(part, "content", None)
-                    if text is not None and not isinstance(text, str):
-                        text = str(text)
-                    if text:
-                        content_parts.append(text)
-                full = "\n".join(content_parts)
-                preview = full[:preview_limit] if len(full) > preview_limit else full
-                summaries.append(
-                    {
-                        "role": "assistant",
-                        "content_preview": preview,
-                        "char_count": len(full),
-                        "part_count": len(msg.parts),
-                    }
-                )
+                role = "assistant"
             else:
                 summaries.append(
-                    {
-                        "role": "system",
-                        "content_preview": "",
-                        "char_count": 0,
-                        "part_count": 0,
-                    }
+                    {"role": "system", "content_preview": "", "char_count": 0, "part_count": 0}
                 )
+                continue
+            texts = []
+            for part in msg.parts:
+                text = getattr(part, "content", None)
+                if text is not None and not isinstance(text, str):
+                    text = str(text)
+                if text:
+                    texts.append(text)
+            full = "\n".join(texts)
+            summaries.append(
+                {
+                    "role": role,
+                    "content_preview": full[:preview_limit],
+                    "char_count": len(full),
+                    "part_count": len(msg.parts),
+                }
+            )
         return summaries
 
     async def extract_memory_delta(
@@ -204,6 +184,6 @@ class HistoryService:
         if self._manager is None:
             raise CompactionError("History service not started")
 
-        return await self._manager._summarizer.extract_memory_delta(
+        return await self._manager.summarizer.extract_memory_delta(
             current_wm, recent_messages, turn_number, usage=usage
         )

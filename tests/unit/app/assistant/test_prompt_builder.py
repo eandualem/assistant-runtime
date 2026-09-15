@@ -7,9 +7,9 @@ import pytest
 from assistant_runtime.app.assistant._prompt_builder import (
     _datetime_fragment,
     _host_context_fragment,
-    _mcp_connections_fragment,
     _render_state,
     _working_memory_fragment,
+    mcp_connections_fragment,
 )
 from assistant_runtime.app.assistant._prompt_builder import (
     build_system_prompt as _build_system_prompt,
@@ -117,13 +117,13 @@ class TestWorkingMemoryFragment:
 
 class TestMcpConnectionsFragment:
     def test_none_returns_empty(self):
-        assert _mcp_connections_fragment(None) == ""
+        assert mcp_connections_fragment(None) == ""
 
     def test_empty_list_returns_empty(self):
-        assert _mcp_connections_fragment([]) == ""
+        assert mcp_connections_fragment([]) == ""
 
     def test_simple_server_no_tools(self):
-        frag = _mcp_connections_fragment([{"name": "memory"}])
+        frag = mcp_connections_fragment([{"name": "memory"}])
         assert "**memory**" in frag
 
     def test_server_with_tools_shows_names_and_count(self):
@@ -134,7 +134,7 @@ class TestMcpConnectionsFragment:
                 "tool_count": 3,
             }
         ]
-        frag = _mcp_connections_fragment(summary)
+        frag = mcp_connections_fragment(summary)
         assert "**memory** (3 tools)" in frag
         assert "add_observations" in frag
         assert "create_entities" in frag
@@ -148,7 +148,7 @@ class TestMcpConnectionsFragment:
                 "tool_count": 5,
             }
         ]
-        frag = _mcp_connections_fragment(summary)
+        frag = mcp_connections_fragment(summary)
         assert "(5 tools)" in frag
         assert "+2 more" in frag
 
@@ -157,14 +157,14 @@ class TestMcpConnectionsFragment:
             {"name": "memory", "tools": ["create_entities"], "tool_count": 1},
             {"name": "brave-search", "tools": ["brave_web_search"], "tool_count": 1},
         ]
-        frag = _mcp_connections_fragment(summary)
+        frag = mcp_connections_fragment(summary)
         assert "**memory**" in frag
         assert "**brave-search**" in frag
         assert "brave_web_search" in frag
 
     def test_includes_calling_guidance(self):
         summary = [{"name": "memory", "tools": ["tool_a"], "tool_count": 1}]
-        frag = _mcp_connections_fragment(summary)
+        frag = mcp_connections_fragment(summary)
         assert "MCP tools are called directly by name" in frag
 
 

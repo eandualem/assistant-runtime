@@ -44,12 +44,16 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.app.access.exceptions import AccessDeniedError
-from assistant_runtime.app.assistant._serialization import (
-    build_assistant_message_content,
-)
-from assistant_runtime.app.assistant._stale_tools import ActionStatus
+from assistant_runtime.app.assistant import ActionStatus, build_assistant_message_content
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import HoldDecision
+from assistant_runtime.app.assistant.usage import (
+    cache_counts,
+    merge_usage,
+    response_service_tiers,
+    usage_dict,
+    with_auxiliary,
+)
 from assistant_runtime.app.streaming._agent_run import TurnPolicy, iterate_run
 from assistant_runtime.app.streaming._control import TurnControl
 from assistant_runtime.app.streaming._coordinator import EventCoordinator
@@ -66,23 +70,16 @@ from assistant_runtime.app.streaming._event_builder import (
     make_error_event,
 )
 from assistant_runtime.app.streaming._host_tool import pending_call_payloads, queued_payload
-from assistant_runtime.app.streaming._usage import (
-    cache_counts,
-    merge_usage,
-    response_service_tiers,
-    usage_dict,
-    with_auxiliary,
-)
 from assistant_runtime.app.streaming.exceptions import InvalidDecisionError, StreamingError
 from assistant_runtime.services.llm.exceptions import LLMCallError, classify_llm_error
-from assistant_runtime.services.tools._request_context import (
+from assistant_runtime.services.tools.request_context import (
     assistant_request_context,
     get_current_telegram_chat_binding,
 )
 from assistant_runtime.services.tracing import create_request_trace
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant._session_store import SessionStore
+    from assistant_runtime.app.assistant import SessionStore
     from assistant_runtime.app.assistant.interface import AssistantService
     from assistant_runtime.app.assistant.models import AgentSetupContext
     from assistant_runtime.app.streaming._turn import TurnPlan
@@ -336,7 +333,7 @@ class TurnRunner:
                 logger.exception(
                     "Cancelled turn snapshot could not be saved", session_id=session_id
                 )
-                events = self._terminal_error_events(
+                events = self._outcome_events(
                     coordinator,
                     session_id=session_id,
                     message=_persistence_failure(
@@ -351,7 +348,7 @@ class TurnRunner:
                 )
             else:
                 if isinstance(cancellation, TimeoutError):
-                    events = self._terminal_error_events(
+                    events = self._outcome_events(
                         coordinator,
                         session_id=session_id,
                         message=f"Request timed out after {self._config.stream_timeout_seconds}s",
@@ -363,14 +360,20 @@ class TurnRunner:
                         emit_debug=emit_debug,
                     )
                 else:
-                    events = self._cancelled_events(
+                    events = self._outcome_events(
                         coordinator,
-                        plan,
-                        state,
-                        model=resolved_model,
+                        session_id=session_id,
+                        message="Request cancelled",
+                        error_type="cancelled",
+                        retry_allowed=False,
                         trace_id=trace_id,
+                        model=resolved_model,
                         phase=phase,
                         emit_debug=emit_debug,
+                        message_id=plan.assistant_message_id,
+                        content="",
+                        usage=state.usage,
+                        count_error=False,
                     )
             for event in events:
                 yield event
@@ -382,7 +385,7 @@ class TurnRunner:
                 await self._persist_cancelled(plan, state, interrupted=False)
             except Exception as persist_exc:
                 logger.exception("Usage-limited turn could not be saved", session_id=session_id)
-                events = self._terminal_error_events(
+                events = self._outcome_events(
                     coordinator,
                     session_id=session_id,
                     message=_persistence_failure(
@@ -400,15 +403,19 @@ class TurnRunner:
                 logger.info(
                     "[STREAM] Turn stopped by usage limit", session_id=session_id, error=str(exc)
                 )
-                events = self._exhausted_events(
+                events = self._outcome_events(
                     coordinator,
-                    plan,
-                    state,
+                    session_id=session_id,
                     message=str(exc),
-                    model=resolved_model,
+                    error_type="usage_limit",
+                    retry_allowed=False,
                     trace_id=trace_id,
+                    model=resolved_model,
                     phase=phase,
                     emit_debug=emit_debug,
+                    message_id=plan.assistant_message_id,
+                    content="",
+                    usage=state.stored_usage,
                 )
             for event in events:
                 yield event
@@ -443,7 +450,7 @@ class TurnRunner:
             # prompt ("unprocessed tool calls"); resolve them like a cancellation.
             with contextlib.suppress(Exception):
                 await self._resolve_unanswered_calls(plan, state)
-            for event in self._terminal_error_events(
+            for event in self._outcome_events(
                 coordinator,
                 session_id=session_id,
                 message=message,
@@ -567,101 +574,6 @@ class TurnRunner:
         state.assistant_messages.append(ModelRequest(parts=interrupted))
         return True
 
-    @staticmethod
-    def _exhausted_events(
-        coordinator: EventCoordinator,
-        plan: TurnPlan,
-        state: _RunState,
-        *,
-        message: str,
-        model: str,
-        trace_id: str,
-        phase: str,
-        emit_debug: bool,
-    ) -> list[dict[str, Any]]:
-        """A turn stopped by a usage limit: saved work, one final/error/completed lifecycle."""
-        final = coordinator.try_final_response(
-            "",
-            model,
-            session_id=plan.session_id,
-            message_id=plan.assistant_message_id,
-            trace_id=trace_id,
-            error=True,
-            error_type="usage_limit",
-            usage=state.stored_usage,
-        )
-        debug = make_debug_error_event(
-            message,
-            error_type="usage_limit",
-            retry_allowed=False,
-            trace_id=trace_id,
-            model=model,
-            phase=phase,
-        )
-        coordinator.track_debug(debug)
-        events = [debug] if emit_debug else []
-        if final:
-            events.append(final)
-        events.append(
-            coordinator.track(
-                make_error_event(
-                    format_error_message(message, trace_id),
-                    error_type="usage_limit",
-                    trace_id=trace_id,
-                    terminal=True,
-                    retry_allowed=False,
-                )
-            )
-        )
-        return events
-
-    @staticmethod
-    def _cancelled_events(
-        coordinator: EventCoordinator,
-        plan: TurnPlan,
-        state: _RunState,
-        *,
-        model: str,
-        trace_id: str,
-        phase: str,
-        emit_debug: bool,
-    ) -> list[dict[str, Any]]:
-        """A saved cancellation is one final/error/completed lifecycle."""
-        final = coordinator.try_final_response(
-            # Only native event middleware may decide what text reaches clients.
-            # The saved snapshot can contain deliberately suppressed content.
-            "",
-            model,
-            session_id=plan.session_id,
-            message_id=plan.assistant_message_id,
-            trace_id=trace_id,
-            error=True,
-            error_type="cancelled",
-            usage=state.usage,
-        )
-        debug = make_debug_error_event(
-            "Request cancelled",
-            error_type="cancelled",
-            retry_allowed=False,
-            trace_id=trace_id,
-            model=model,
-            phase=phase,
-        )
-        coordinator.track_debug(debug)
-        events = [debug] if emit_debug else []
-        if final:
-            events.append(final)
-        events.append(
-            make_error_event(
-                "Request cancelled",
-                error_type="cancelled",
-                trace_id=trace_id,
-                terminal=True,
-                retry_allowed=False,
-            )
-        )
-        return events
-
     # --- pieces -----------------------------------------------------------------
 
     async def _run_agent(
@@ -685,7 +597,10 @@ class TurnRunner:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
                 with (
                     assistant_request_context(
-                        session_id, screenshot=plan.screenshot, principal=plan.principal
+                        session_id,
+                        screenshot=plan.screenshot,
+                        principal=plan.principal,
+                        host_context=plan.session_context.get("last_host_context"),
                     ),
                     capture_run_messages() as captured,
                 ):
@@ -956,7 +871,7 @@ class TurnRunner:
         )
 
     @staticmethod
-    def _terminal_error_events(
+    def _outcome_events(
         coordinator: EventCoordinator,
         *,
         session_id: str,
@@ -967,20 +882,31 @@ class TurnRunner:
         model: str,
         phase: str,
         emit_debug: bool,
+        message_id: str | None = None,
+        content: str | None = None,
+        usage: dict[str, Any] | None = None,
+        count_error: bool = True,
     ) -> list[dict[str, Any]]:
-        """``final_response(error)`` + terminal ``error``; the debug error is always traced."""
-        events: list[dict[str, Any]] = []
+        """The one terminal lifecycle of a turn that did not finish normally.
+
+        ``final_response(error=True)``, the debug error (always traced, sent
+        only with ``emit_debug``) and the terminal ``error``. A saved snapshot
+        (cancellation, usage limit) names its ``message_id`` and ``usage``;
+        ``content`` stays empty, only native middleware decides what text a
+        client sees. ``count_error=False`` keeps the error event outside the
+        event limit so a cancellation always reaches the client.
+        """
         final = coordinator.try_final_response(
-            None,
+            content,
             model,
             session_id=session_id,
+            message_id=message_id,
             trace_id=trace_id,
             error=True,
             error_type=error_type,
+            usage=usage,
         )
-        if final:
-            events.append(final)
-        debug_error = coordinator.track_debug(
+        debug = coordinator.track_debug(
             make_debug_error_event(
                 message,
                 error_type=error_type,
@@ -990,19 +916,19 @@ class TurnRunner:
                 phase=phase,
             )
         )
+        events: list[dict[str, Any]] = []
+        if final:
+            events.append(final)
         if emit_debug:
-            events.append(debug_error)
-        events.append(
-            coordinator.track(
-                make_error_event(
-                    format_error_message(message, trace_id),
-                    error_type=error_type,
-                    trace_id=trace_id,
-                    terminal=True,
-                    retry_allowed=retry_allowed,
-                )
-            )
+            events.append(debug)
+        error = make_error_event(
+            format_error_message(message, trace_id),
+            error_type=error_type,
+            trace_id=trace_id,
+            terminal=True,
+            retry_allowed=retry_allowed,
         )
+        events.append(coordinator.track(error) if count_error else error)
         return events
 
     async def save_trace(

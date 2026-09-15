@@ -151,16 +151,7 @@ class ToolRegistry:
         toolsets: list = []
 
         if available.backend_tools:
-            func_toolset = FunctionToolset()
-            for defn in available.backend_tools:
-                handler = self._backend_handlers[defn.name]
-                safe_handler = self._wrap_handler(handler, defn.name, **self._wrap_options(defn))
-                func_toolset.add_function(
-                    safe_handler,
-                    name=defn.name,
-                    description=defn.description,
-                )
-            toolsets.append(func_toolset)
+            toolsets.append(self._function_toolset(available.backend_tools))
 
         # Host tools — always appended, bypass page scoping
         if self._host_toolset is not None:
@@ -206,36 +197,33 @@ class ToolRegistry:
             "idempotent": defn.idempotent,
         }
 
-    def build_subagent_toolset(self) -> list:
-        """Build toolsets for subagent execution — backend tools only, excluding run_subagent.
+    def build_subagent_toolset(self, host_context: dict[str, Any] | None = None) -> list:
+        """Toolsets for a subagent: the turn's page-scoped backend tools, minus ``run_subagent``.
 
-        Returns a list with a single FunctionToolset containing all backend tools
-        except run_subagent (prevents recursion). No host tools — subagents
-        don't interact with the UI.
+        No host tools: a subagent does not interact with the host application.
         """
-        toolsets: list = []
         backend_defs = [
-            defn for defn in self._backend_definitions.values() if defn.name != "run_subagent"
+            defn
+            for defn in self._resolve_available_tools(host_context).backend_tools
+            if defn.name != "run_subagent"
         ]
-
-        if backend_defs:
-            func_toolset = FunctionToolset()
-            for defn in backend_defs:
-                handler = self._backend_handlers[defn.name]
-                safe_handler = self._wrap_handler(handler, defn.name, **self._wrap_options(defn))
-                func_toolset.add_function(
-                    safe_handler,
-                    name=defn.name,
-                    description=defn.description,
-                )
-            toolsets.append(func_toolset)
-
+        toolsets: list = [self._function_toolset(backend_defs)] if backend_defs else []
         logger.debug(
-            "[TOOLS] Built subagent toolsets",
-            backend=len(backend_defs),
-            excluded="run_subagent",
+            "[TOOLS] Built subagent toolsets", backend=len(backend_defs), excluded="run_subagent"
         )
         return toolsets
+
+    def _function_toolset(self, definitions: list[ToolDefinition]) -> FunctionToolset:
+        """A native toolset of the given backend tools with their wrapped handlers."""
+        toolset = FunctionToolset()
+        for defn in definitions:
+            handler = self._backend_handlers[defn.name]
+            toolset.add_function(
+                self._wrap_handler(handler, defn.name, **self._wrap_options(defn)),
+                name=defn.name,
+                description=defn.description,
+            )
+        return toolset
 
     def get_available_tools(self, host_context: dict[str, Any] | None = None) -> ToolSet:
         """List tools available for a given host context."""

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_runtime.app.access.deps import require_admin
 from assistant_runtime.model_catalog import ALLOWED_PROVIDERS
+from assistant_runtime.services.llm.deps import LlmServiceDep
 from assistant_runtime.services.llm.exceptions import ProviderKeyStoreUnavailableError
-from assistant_runtime.services.llm.interface import LlmService
 
 router = APIRouter(prefix="/providers", tags=["providers"], dependencies=[Depends(require_admin)])
 
@@ -20,16 +20,6 @@ _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "google": "Google",
     "openrouter": "OpenRouter",
 }
-
-
-# --- Dependencies ---
-
-
-def get_llm_service(request: Request) -> LlmService:
-    return request.app.state.llm_service
-
-
-LlmServiceDep = Annotated[LlmService, Depends(get_llm_service)]
 
 
 # --- Request / Response models ---

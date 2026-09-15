@@ -23,8 +23,6 @@ def subagent_definition() -> SubagentDefinition:
         name="Research Agent",
         description="Deep research agent for testing",
         system_prompt="You are a research assistant.",
-        default_model="anthropic:claude-sonnet",
-        default_thinking_budget=None,
         max_iterations=10,
     )
 
@@ -133,8 +131,10 @@ class TestExecuteSubagent:
 
         mock_llm_service.resolve_model.assert_called_once_with("anthropic:claude-haiku")
 
-    async def test_default_model_used_without_override(self, subagent_definition, mock_llm_service):
-        """Without model_override, resolve_model uses the definition's default_model."""
+    async def test_service_default_model_used_without_override(
+        self, subagent_definition, mock_llm_service
+    ):
+        """Without model_override, the LLM service resolves its own default (None)."""
         await execute_subagent(
             definition=subagent_definition,
             task="Research with default",
@@ -142,7 +142,7 @@ class TestExecuteSubagent:
             backend_toolsets=[],
         )
 
-        mock_llm_service.resolve_model.assert_called_once_with("anthropic:claude-sonnet")
+        mock_llm_service.resolve_model.assert_called_once_with(None)
 
     async def test_context_appended_to_prompt(self, subagent_definition, mock_llm_service):
         """When context is provided, build_agent receives a system_prompt with Additional Context."""
@@ -175,20 +175,35 @@ class TestExecuteSubagent:
         assert system_prompt == "You are a research assistant."
         assert "Additional Context" not in system_prompt
 
-    async def test_max_iterations_override(self, subagent_definition, mock_llm_service, mock_agent):
-        """When max_iterations_override is provided, agent.run uses it as request_limit."""
+    async def test_host_usage_limits_apply_to_the_subagent(
+        self, subagent_definition, mock_llm_service, mock_agent
+    ):
+        """The host's per-turn ceilings bound the subagent; its own request limit stays."""
         await execute_subagent(
             definition=subagent_definition,
-            task="Research with iteration limit",
+            task="Research within the budget",
             llm_service=mock_llm_service,
             backend_toolsets=[],
-            max_iterations_override=5,
+            usage_limits=UsageLimits(request_limit=5, total_tokens_limit=20_000, cost_limit=0.5),
         )
 
-        run_call = mock_agent.run.call_args
-        usage_limits = run_call.kwargs["usage_limits"]
+        usage_limits = mock_agent.run.call_args.kwargs["usage_limits"]
         assert isinstance(usage_limits, UsageLimits)
-        assert usage_limits.request_limit == 5
+        assert usage_limits.request_limit == 5  # the stricter of 10 and 5
+        assert usage_limits.total_tokens_limit == 20_000
+        assert usage_limits.cost_limit == 0.5
+
+    async def test_host_request_limit_never_raises_the_subagents(
+        self, subagent_definition, mock_llm_service, mock_agent
+    ):
+        await execute_subagent(
+            definition=subagent_definition,
+            task="Research",
+            llm_service=mock_llm_service,
+            backend_toolsets=[],
+            usage_limits=UsageLimits(request_limit=50),
+        )
+        assert mock_agent.run.call_args.kwargs["usage_limits"].request_limit == 10
 
     async def test_default_max_iterations_from_definition(
         self, subagent_definition, mock_llm_service, mock_agent

@@ -17,6 +17,7 @@ from assistant_runtime.services.tools.capabilities import (
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.exceptions import ToolError
 from assistant_runtime.services.tools.models import ToolDefinition, ToolSet
+from assistant_runtime.services.tools.request_context import get_current_host_context
 
 
 class ToolService:
@@ -30,9 +31,12 @@ class ToolService:
         mcp_service: Any | None = None,
         artifact_service: Any | None = None,
         providers: dict[str, Any] | None = None,
+        subagent_usage_limits: Any | None = None,
     ) -> None:
         self._config = config
         self._providers = providers or {}
+        # The host's per-turn ceilings (native UsageLimits) a subagent run stays within.
+        self._subagent_usage_limits = subagent_usage_limits
         self._media_service = media_service
         self._llm_service = llm_service
         self._mcp_service = mcp_service
@@ -112,11 +116,6 @@ class ToolService:
         self._ensure_started()
         self._registry.register_backend_tool(definition, handler)
 
-    def get_subagent_toolsets(self) -> list:
-        """Build toolsets for subagent execution (backend only, no run_subagent)."""
-        self._ensure_started()
-        return self._registry.build_subagent_toolset()
-
     def set_runtime_settings(self, runtime_settings: object | None) -> None:
         """Attach live runtime settings; the subagent tool reads them on each call."""
         self._runtime_settings = runtime_settings
@@ -144,8 +143,12 @@ class ToolService:
             artifact_service=self._artifact_service,
             llm_service=self._llm_service,
             media_service=self._media_service,
-            backend_toolsets=self._registry.build_subagent_toolset,
+            # The subagent gets the turn's page-scoped tools, read from the request context.
+            backend_toolsets=lambda: self._registry.build_subagent_toolset(
+                get_current_host_context()
+            ),
             runtime_settings=lambda: self._runtime_settings,
+            subagent_usage_limits=self._subagent_usage_limits,
             enabled=self._config.builtin_tools,
         )
         # Host tools from configuration (always available, bypass page scoping)

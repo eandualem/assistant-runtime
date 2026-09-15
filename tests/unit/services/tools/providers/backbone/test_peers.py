@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._request_context import assistant_request_context
 from assistant_runtime.services.tools.capabilities.peers import register_peers_tools
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.providers.backbone.peers import (
@@ -24,6 +23,7 @@ from assistant_runtime.services.tools.providers.backbone.peers import (
     start_agent,
     stop_agent,
 )
+from assistant_runtime.services.tools.request_context import assistant_request_context
 
 # ---------------------------------------------------------------------------
 # Fixtures

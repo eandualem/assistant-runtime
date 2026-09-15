@@ -23,7 +23,7 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
 )
 
-from assistant_runtime.app.assistant._serialization import (
+from assistant_runtime.app.assistant import (
     SteeringRecord,
     build_steering_request,
     sanitize_image_tool_returns,
@@ -36,7 +36,7 @@ from assistant_runtime.app.streaming._event_builder import (
 )
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant._session_store import SessionStore
+    from assistant_runtime.app.assistant import SessionStore
     from assistant_runtime.app.streaming.config import StreamingConfig
     from assistant_runtime.services.tools.interface import ToolService
 

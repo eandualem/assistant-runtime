@@ -33,7 +33,7 @@ def _datetime_fragment() -> str:
     return f"Current time: {now.strftime('%Y-%m-%d %H:%M UTC')} ({now.strftime('%A')})"
 
 
-def _mcp_connections_fragment(mcp_summary: list[dict[str, Any]] | None) -> str:
+def mcp_connections_fragment(mcp_summary: list[dict[str, Any]] | None) -> str:
     """Compact summary of connected MCP integrations with tool names."""
     if not mcp_summary:
         return ""
@@ -306,7 +306,7 @@ def build_system_prompt(
         if content:
             named_fragments.append((artifact.name, content))
 
-    mcp_frag = _mcp_connections_fragment(mcp_summary)
+    mcp_frag = mcp_connections_fragment(mcp_summary)
     if mcp_frag:
         named_fragments.append(("mcp_connections", mcp_frag))
 

@@ -12,7 +12,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.main import AssistantDefinition, create_runtime
 from assistant_runtime.services.llm.interface import LlmService
-from assistant_runtime.services.tools._request_context import (
+from assistant_runtime.services.tools.request_context import (
     assistant_request_context,
     get_current_assistant_session_id,
     get_current_screenshot,
@@ -97,3 +97,15 @@ async def test_native_tools_bind_their_concurrent_sessions(isolated_services, mo
             )
             assert sessions.get_context(f"session-{i}")["telegram_bound_at"] is not None
         assert get_current_telegram_chat_binding() is None
+
+
+def test_host_context_is_bound_for_the_turn():
+    from assistant_runtime.services.tools.request_context import (
+        assistant_request_context,
+        get_current_host_context,
+    )
+
+    assert get_current_host_context() is None
+    with assistant_request_context("s", host_context={"view": {"name": "tasks"}}):
+        assert get_current_host_context() == {"view": {"name": "tasks"}}
+    assert get_current_host_context() is None

@@ -21,10 +21,10 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from pydantic_ai import DeferredToolRequests
 
-from assistant_runtime.app.assistant._stale_tools import resolve_tool_entry
+from assistant_runtime.app.assistant import resolve_tool_entry
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant._session_store import SessionStore
+    from assistant_runtime.app.assistant import SessionStore
     from assistant_runtime.services.tools.interface import ToolService
 
 STALE_HOST_TOOL_OUTPUT = (

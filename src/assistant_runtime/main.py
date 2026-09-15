@@ -4,7 +4,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import socketio
-from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -46,12 +45,12 @@ from assistant_runtime.services.tracing import initialize_tracing, shutdown_trac
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifecycle — startup and shutdown."""
-    # Load .env into os.environ before AppSettings or os.getenv() calls.
-    # Pydantic Settings' env_file only populates model fields, not os.environ.
-    # LLM providers use os.getenv() for API keys, so they need this.
-    load_dotenv(find_dotenv(usecwd=True))
+    """Application lifecycle — startup and shutdown.
 
+    The environment is taken as it is: the ``assistant-runtime`` command loads
+    ``.env`` before anything else, and a host embedding the runtime owns its
+    own environment (see ``docs/composition.md``).
+    """
     lifecycle = LifecycleManager()
     app.state.lifecycle = lifecycle
     try:
@@ -261,9 +260,7 @@ def create_asgi_app(
     from assistant_runtime.app.socketio_server import create_sio
 
     if settings is None:
-        # Both transports read the origin rule now, so resolve settings once,
-        # after the same ``.env`` load the lifespan performs.
-        load_dotenv(find_dotenv(usecwd=True))
+        # Both transports read the origin rule, so resolve settings once.
         settings = AppSettings()
     fastapi_app = create_app(assistant=assistant, settings=settings)
     sio = create_sio(settings.access)
@@ -287,6 +284,3 @@ async def create_runtime(
 
 
 __all__ = ["AssistantDefinition", "create_app", "create_asgi_app", "create_runtime"]
-
-
-app = create_asgi_app()

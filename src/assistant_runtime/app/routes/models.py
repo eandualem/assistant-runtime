@@ -26,7 +26,7 @@ async def list_models(
     models = get_models(capability=capability, provider=provider)
     result: dict[str, Any] = {
         "models": [m.model_dump() for m in models],
-        "providers": {k: v.model_dump() for k, v in get_provider_info().items()},
+        "providers": _provider_status(request),
         "defaults": _effective_defaults(request),
     }
 
@@ -39,6 +39,21 @@ async def list_models(
             "source": status.source,
         }
     return result
+
+
+def _provider_status(request: Request) -> dict[str, Any]:
+    """Provider availability: the LLM service's view (stored keys, Codex) over the environment.
+
+    ``GET /api/providers`` reads the same service, so the two agree; media
+    providers only have the environment.
+    """
+    info = {name: entry.model_dump() for name, entry in get_provider_info().items()}
+    llm = getattr(request.app.state, "llm_service", None)
+    if llm is not None:
+        for entry in llm.get_provider_status():
+            if entry["provider"] in info:
+                info[entry["provider"]]["configured"] = bool(entry["configured"])
+    return info
 
 
 def _effective_defaults(request: Request) -> dict[str, Any]:

@@ -235,7 +235,7 @@ class TestGetSessionMessages:
                 message_type="steering",
             ),
         )
-        await sessions.deliver_pending_steering("sess-1")
+        await sessions.mark_steering_delivered("sess-1", ["steering-1"])
         app = _create_test_app(sessions=sessions)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

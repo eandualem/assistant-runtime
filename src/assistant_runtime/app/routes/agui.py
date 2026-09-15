@@ -6,10 +6,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import ValidationError
 
 from assistant_runtime.app.access.deps import PrincipalDep
-from assistant_runtime.app.access.exceptions import AccessDeniedError
+from assistant_runtime.app.access.interface import AccessService
 from assistant_runtime.app.assistant.deps import AssistantServiceDep
 from assistant_runtime.app.streaming.deps import StreamingServiceDep
-from assistant_runtime.principal import can_access_session
 
 router = APIRouter()
 
@@ -68,8 +67,8 @@ async def agui_run(
 
     sessions = assistant.get_session_store()
     context = await sessions.get_context_if_exists_async(run_input.thread_id)
-    if context is not None and not can_access_session(principal, context.get("owner_id")):
-        raise AccessDeniedError(f"Session '{run_input.thread_id}' belongs to another principal")
+    if context is not None:
+        AccessService.check_session(principal, context.get("owner_id"), run_input.thread_id)
 
     try:
         assistant_requests = bridge.build_assistant_requests(run_input, context)
