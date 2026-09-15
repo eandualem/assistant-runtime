@@ -270,6 +270,19 @@ class TestSafetyWrapper:
         assert result["error_code"] == "TOOL_TIMEOUT"
         assert "0.05" in result["error"]
 
+    def test_a_definition_timeout_must_be_positive_and_finite(self):
+        from pydantic import ValidationError
+
+        for bad in (0, -1, float("inf"), float("nan")):
+            with pytest.raises(ValidationError):
+                ToolDefinition(
+                    name="t",
+                    description="",
+                    parameters_schema={},
+                    category=ToolCategory.BACKEND,
+                    timeout=bad,
+                )
+
     def test_wrap_options_come_from_the_definition_then_the_config(self):
         registry = ToolRegistry(ToolConfig(tool_timeout_seconds=12.0))
         default = ToolDefinition(

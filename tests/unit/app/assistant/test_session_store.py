@@ -475,3 +475,14 @@ class TestMemoryModeListingAndPinning:
         assert not store.has_session("s1")
         store.unpin("s0")
         assert "s0" not in store._pinned
+
+    def test_pins_are_reference_counted(self) -> None:
+        store = SessionStore()
+        store.pin("s")
+        store.pin("s")  # the turn and its post-turn work
+        store.unpin("s")
+        assert store._pinned == {"s": 1}
+        store.unpin("s")
+        assert "s" not in store._pinned
+        store.unpin("s")  # extra unpins are harmless
+        assert "s" not in store._pinned

@@ -55,8 +55,9 @@ class SessionStore:
         )
         self._pending_db_loads: dict[str, asyncio.Task[dict[str, Any] | None]] = {}
         self._pending_db_loads_lock = asyncio.Lock()
-        # Sessions with a running turn; never evicted from the cache.
-        self._pinned: set[str] = set()
+        # Sessions with a running turn or post-turn work (a count per holder);
+        # never evicted from the cache while the count is above zero.
+        self._pinned: dict[str, int] = {}
 
     # --- contexts -----------------------------------------------------------
 
@@ -113,11 +114,18 @@ class SessionStore:
         return len(self._sessions)
 
     def pin(self, session_id: str) -> None:
-        """Keep the session cached while a turn runs on it (see ``_evict_if_needed``)."""
-        self._pinned.add(session_id)
+        """Keep the session cached while a turn (or its post-turn work) uses it.
+
+        Reference counted: every ``pin`` needs one ``unpin``.
+        """
+        self._pinned[session_id] = self._pinned.get(session_id, 0) + 1
 
     def unpin(self, session_id: str) -> None:
-        self._pinned.discard(session_id)
+        count = self._pinned.get(session_id, 0) - 1
+        if count > 0:
+            self._pinned[session_id] = count
+        else:
+            self._pinned.pop(session_id, None)
 
     # --- messages -----------------------------------------------------------
 

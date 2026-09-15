@@ -1320,7 +1320,10 @@ class TestPostTurnWork:
         assert not gate.is_set()
         assert service._background
 
+        # The session stays pinned while the extraction runs, and is released after.
+        assert service._sessions._pinned.get("sess-1") == 1
         gate.set()
         await service.wait_for_background()
         service._assistant_service.update_working_memory.assert_awaited_once()
         assert not service._background
+        assert "sess-1" not in service._sessions._pinned

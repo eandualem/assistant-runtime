@@ -103,6 +103,7 @@ class LlmService:
         self._codex_provider: OpenAIProvider | None = None
         self._codex_provider_identity: tuple[str, str] | None = None
         self._codex_http_clients: list[httpx.AsyncClient] = []
+        self._codex_close_tasks: set[asyncio.Task[None]] = set()
         self._started = False
 
     def set_oauth_service(self, oauth_service: Any) -> None:
@@ -155,13 +156,19 @@ class LlmService:
                         ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
                     )
 
-        # 3. Export keys for Pydantic AI auto-detection
+        # 3. Export keys for Pydantic AI auto-detection. A stored (database) key
+        # is the operator's explicit choice and overrides the environment; the
+        # value it replaces is kept so removing the stored key restores it.
         for provider in providers:
             env_var = PROVIDER_ENV_VARS.get(provider.provider)
-            if env_var and not os.getenv(env_var):
-                self._env_backup.setdefault(provider.provider, None)
+            if not env_var:
+                continue
+            if provider.provider in self._db_providers:
+                self._env_backup.setdefault(provider.provider, os.environ.get(env_var))
                 os.environ[env_var] = provider.api_key.get_secret_value()
-                logger.debug("Exported API key for Pydantic AI", provider=provider.provider)
+            elif not os.getenv(env_var):
+                os.environ[env_var] = provider.api_key.get_secret_value()
+            logger.debug("Exported API key for Pydantic AI", provider=provider.provider)
 
         self._providers = providers
         self._started = True
@@ -180,6 +187,9 @@ class LlmService:
 
     async def stop(self) -> None:
         """Shutdown the LLM service."""
+        if self._codex_close_tasks:
+            await asyncio.gather(*self._codex_close_tasks, return_exceptions=True)
+            self._codex_close_tasks.clear()
         for client in self._codex_http_clients:
             await client.aclose()
         self._codex_http_clients.clear()
@@ -272,10 +282,13 @@ class LlmService:
         from assistant_runtime.services.database.repositories import OAuthTokenRepository
 
         encrypted = self._fernet.encrypt(api_key.encode()).decode()
-        async with db.session_context() as session:
-            await OAuthTokenRepository(session).upsert(
-                provider=provider, encrypted_api_key=encrypted
-            )
+        try:
+            async with db.session_context() as session:
+                await OAuthTokenRepository(session).upsert(
+                    provider=provider, encrypted_api_key=encrypted
+                )
+        except Exception as exc:
+            raise ProviderKeyStoreUnavailableError(f"Storing the key failed: {exc}") from exc
         await self.reload_provider_key(provider, api_key)
 
     async def delete_provider_key(self, provider: str) -> bool:
@@ -285,8 +298,11 @@ class LlmService:
         db = self._key_store()
         from assistant_runtime.services.database.repositories import OAuthTokenRepository
 
-        async with db.session_context() as session:
-            deleted = await OAuthTokenRepository(session).delete(provider)
+        try:
+            async with db.session_context() as session:
+                deleted = await OAuthTokenRepository(session).delete(provider)
+        except Exception as exc:
+            raise ProviderKeyStoreUnavailableError(f"Deleting the key failed: {exc}") from exc
         await self.remove_provider_key(provider)
         return deleted
 
@@ -488,10 +504,19 @@ class LlmService:
         while len(self._codex_http_clients) > keep:
             stale = self._codex_http_clients.pop(0)
             try:
-                asyncio.get_running_loop().create_task(stale.aclose())
+                task = asyncio.get_running_loop().create_task(stale.aclose())
             except RuntimeError:  # no running loop: close at stop()
                 self._codex_http_clients.insert(0, stale)
                 return
+            self._codex_close_tasks.add(task)
+            task.add_done_callback(self._codex_client_closed)
+
+    def _codex_client_closed(self, task: asyncio.Task[None]) -> None:
+        self._codex_close_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "Stale Codex HTTP client did not close cleanly", error=str(task.exception())
+            )
 
     def _resolve_agent_model(self, resolved_model: str) -> str | OpenAICodexResponsesModel:
         """Resolve the actual Agent model object to use for a model id."""

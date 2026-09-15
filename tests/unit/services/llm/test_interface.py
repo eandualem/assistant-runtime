@@ -685,6 +685,89 @@ class TestDbProviderKeys:
         assert os.getenv("ANTHROPIC_API_KEY") is None
         assert not any(p.provider == "anthropic" for p in service._providers)
 
+    async def test_a_stored_key_overrides_and_restores_an_environment_key(self, monkeypatch):
+        """The database key wins at startup; deleting it brings the environment key back."""
+        import os
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from cryptography.fernet import Fernet
+
+        from assistant_runtime.services.database import repositories
+
+        for name in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env")
+        key = Fernet.generate_key().decode()
+        rows = {"anthropic": Fernet(key.encode()).encrypt(b"sk-stored").decode()}
+
+        class FakeRepo:
+            def __init__(self, session) -> None:
+                pass
+
+            async def get(self, provider):
+                if provider in rows:
+                    return SimpleNamespace(encrypted_api_key=rows[provider])
+                return None
+
+            async def delete(self, provider):
+                return rows.pop(provider, None) is not None
+
+        monkeypatch.setattr(repositories, "OAuthTokenRepository", FakeRepo)
+
+        @asynccontextmanager
+        async def session_context():
+            yield object()
+
+        service = LlmService(config=LLMConfig())
+        service.set_database_service(
+            MagicMock(healthy=True, session_context=session_context), encryption_key=key
+        )
+        await service.start()
+        assert os.getenv("ANTHROPIC_API_KEY") == "sk-stored"
+
+        assert await service.delete_provider_key("anthropic") is True
+        assert os.getenv("ANTHROPIC_API_KEY") == "sk-from-env"
+        assert [p.api_key.get_secret_value() for p in service._providers] == ["sk-from-env"]
+
+    async def test_json_keys_are_exported_without_a_backup(self, monkeypatch):
+        """A providers-JSON key exported at start is what a later removal restores."""
+        import os
+
+        for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        service = LlmService(
+            config=LLMConfig(providers_json='[{"provider":"anthropic","api_key":"sk-json"}]')
+        )
+        await service.start()
+        assert os.getenv("ANTHROPIC_API_KEY") == "sk-json"
+        assert "anthropic" not in service._env_backup
+        await service.reload_provider_key("anthropic", "sk-stored")
+        await service.remove_provider_key("anthropic")
+        assert os.getenv("ANTHROPIC_API_KEY") == "sk-json"
+
+    async def test_database_failures_while_storing_are_503_material(self, monkeypatch):
+        from contextlib import asynccontextmanager
+
+        from cryptography.fernet import Fernet
+
+        from assistant_runtime.services.llm.exceptions import ProviderKeyStoreUnavailableError
+
+        @asynccontextmanager
+        async def failing_session():
+            raise RuntimeError("connection dropped")
+            yield
+
+        service = LlmService(config=LLMConfig())
+        service.set_database_service(
+            MagicMock(healthy=True, session_context=failing_session),
+            encryption_key=Fernet.generate_key().decode(),
+        )
+        with pytest.raises(ProviderKeyStoreUnavailableError, match="connection dropped"):
+            await service.store_provider_key("anthropic", "sk-x")
+        with pytest.raises(ProviderKeyStoreUnavailableError, match="connection dropped"):
+            await service.delete_provider_key("anthropic")
+
     async def test_key_store_needs_encryption_and_a_reachable_database(self, monkeypatch):
         from cryptography.fernet import Fernet
 
@@ -749,7 +832,6 @@ class TestDbProviderKeys:
 
     async def test_stale_codex_clients_are_closed(self, monkeypatch):
         """One client per token rotation leaked until shutdown; now only two are kept."""
-        import asyncio
         from types import SimpleNamespace
 
         closed: list[int] = []
@@ -768,9 +850,11 @@ class TestDbProviderKeys:
         for n in range(4):
             session = SimpleNamespace(access_token=f"tok-{n}", account_id="acct")
             service._get_or_create_codex_provider(session)
-        await asyncio.sleep(0)  # let the scheduled closes run
-        assert len(service._codex_http_clients) == 2
-        assert len(closed) == 2
+        assert len(service._codex_close_tasks) == 2
+        await service.stop()  # drains the close tasks, then closes the rest
+        assert len(service._codex_http_clients) == 0
+        assert len(closed) == 4
+        assert not service._codex_close_tasks
 
     async def test_get_provider_status_returns_all_providers(self, monkeypatch):
         """get_provider_status includes entries for all four known providers."""
