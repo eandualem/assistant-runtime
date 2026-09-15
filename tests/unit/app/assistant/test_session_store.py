@@ -450,3 +450,28 @@ class TestOwnership:
         await store.set_owner("sess-1", "bob")
         assert store.get_context("sess-1")["owner_id"] == "bob"
         db.set_owner.assert_awaited_once_with("sess-1", "bob")
+
+
+class TestMemoryModeListingAndPinning:
+    async def test_memory_listing_is_most_recently_used_first(self) -> None:
+        """The ingress picks ``list_sessions(limit=1)[0]`` as the newest session."""
+        store = SessionStore()
+        for sid in ("old", "middle", "new"):
+            store.get_context(sid)
+        store.get_context("old")  # used again: now the most recent
+        listed = [s["session_id"] for s in await store.list_sessions()]
+        assert listed == ["old", "new", "middle"]
+        assert (await store.list_sessions(limit=1))[0]["session_id"] == "old"
+
+    def test_pinned_sessions_survive_eviction(self) -> None:
+        from assistant_runtime.app.assistant import _session_store
+
+        store = SessionStore()
+        for n in range(_session_store._MAX_MEMORY_SESSIONS + 1):
+            store.get_context(f"s{n}")
+        store.pin("s0")
+        store.get_context("overflow")  # over the cap: evicts the older half
+        assert store.has_session("s0")
+        assert not store.has_session("s1")
+        store.unpin("s0")
+        assert "s0" not in store._pinned

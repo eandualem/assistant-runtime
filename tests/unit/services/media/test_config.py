@@ -14,7 +14,6 @@ class TestMediaConfigDefaults:
         assert config.default_quality == "medium"
         assert config.cache_ttl_seconds == 3600
         assert config.cache_max_items == 100
-        assert config.generation_timeout_seconds == 60.0
 
     def test_override_default_image_model(self):
         config = MediaConfig(default_image_model="anthropic:claude-image-1")
@@ -36,10 +35,6 @@ class TestMediaConfigDefaults:
         config = MediaConfig(cache_max_items=500)
         assert config.cache_max_items == 500
 
-    def test_override_generation_timeout_seconds(self):
-        config = MediaConfig(generation_timeout_seconds=120.0)
-        assert config.generation_timeout_seconds == 120.0
-
     def test_override_all_fields(self):
         config = MediaConfig(
             default_image_model="custom:model",
@@ -47,14 +42,12 @@ class TestMediaConfigDefaults:
             default_quality="low",
             cache_ttl_seconds=300,
             cache_max_items=50,
-            generation_timeout_seconds=30.0,
         )
         assert config.default_image_model == "custom:model"
         assert config.default_size == "256x256"
         assert config.default_quality == "low"
         assert config.cache_ttl_seconds == 300
         assert config.cache_max_items == 50
-        assert config.generation_timeout_seconds == 30.0
 
 
 class TestMediaConfigValidation:
@@ -102,21 +95,3 @@ class TestMediaConfigValidation:
     def test_cache_max_items_boundary_max(self):
         config = MediaConfig(cache_max_items=1000)
         assert config.cache_max_items == 1000
-
-    # --- generation_timeout_seconds boundaries (ge=5.0, le=300.0) ---
-
-    def test_generation_timeout_below_min_rejected(self):
-        with pytest.raises(ValidationError):
-            MediaConfig(generation_timeout_seconds=4.9)
-
-    def test_generation_timeout_above_max_rejected(self):
-        with pytest.raises(ValidationError):
-            MediaConfig(generation_timeout_seconds=300.1)
-
-    def test_generation_timeout_boundary_min(self):
-        config = MediaConfig(generation_timeout_seconds=5.0)
-        assert config.generation_timeout_seconds == 5.0
-
-    def test_generation_timeout_boundary_max(self):
-        config = MediaConfig(generation_timeout_seconds=300.0)
-        assert config.generation_timeout_seconds == 300.0

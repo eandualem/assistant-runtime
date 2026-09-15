@@ -23,6 +23,11 @@ class ToolDefinition(BaseModel):
     parameters_schema: dict[str, Any]
     category: ToolCategory
     timeout: float | None = None
+    """Seconds the handler may run; ``ToolConfig.tool_timeout_seconds`` when unset."""
+    idempotent: bool = False
+    """Whether a timed-out or disconnected call may be retried once. Only a read
+    with no side effect qualifies; a retried write (a message sent, an issue
+    created) can execute twice."""
 
 
 class ToolSet(BaseModel):

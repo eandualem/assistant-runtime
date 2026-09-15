@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1192,6 +1193,7 @@ class TestRunMessage:
         path = await service._assistant_service.get_session_store().get_message_path("sess-1")
         assert [message["id"] for message in path] == ["user-1", result.message_id]
         assert path[-1]["content"] == "Hello!"
+        await service.wait_for_background()
         service._assistant_service.update_working_memory.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1293,3 +1295,32 @@ class TestIngressHook:
 
         final = next(e for e in events if e["type"] == "final_response")
         assert final["content"] == "Hello!"
+
+
+class TestPostTurnWork:
+    """Working memory is an extra model call; it runs after the terminal event."""
+
+    @pytest.mark.asyncio
+    async def test_completed_is_not_delayed_by_working_memory(self) -> None:
+        service = _make_service()
+        await service.start()
+        gate = asyncio.Event()
+
+        async def slow_extraction(*_args, **_kwargs):
+            await gate.wait()
+            return
+
+        service._assistant_service.update_working_memory = AsyncMock(side_effect=slow_extraction)
+
+        types = [
+            event["type"] async for event in service.stream_message(_request(message_id="user-1"))
+        ]
+        # The stream ended with the terminal event while the extraction still waits.
+        assert types[-1] == "agent_status"
+        assert not gate.is_set()
+        assert service._background
+
+        gate.set()
+        await service.wait_for_background()
+        service._assistant_service.update_working_memory.assert_awaited_once()
+        assert not service._background

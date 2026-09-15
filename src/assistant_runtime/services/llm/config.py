@@ -14,9 +14,6 @@ class ProviderConfig(BaseModel):
 
     provider: str = Field(..., description="Provider name (anthropic, openai, google, openrouter)")
     api_key: SecretStr = Field(..., description="Provider API key")
-    base_url: str | None = Field(default=None, description="Custom base URL for the provider API")
-    timeout: float = Field(default=120.0, gt=0, description="Request timeout in seconds")
-    max_retries: int = Field(default=3, ge=0, description="Maximum retry attempts")
 
     @field_validator("provider")
     @classmethod

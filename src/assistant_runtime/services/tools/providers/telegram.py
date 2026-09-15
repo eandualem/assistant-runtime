@@ -7,14 +7,12 @@ from typing import Any
 
 import httpx
 
-from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.services.tools._request_context import (
     get_current_assistant_session_id,
     record_current_telegram_chat_binding,
 )
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
-_TELEGRAM_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionError, TimeoutError)
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +49,8 @@ async def respond_telegram(message: str) -> dict[str, Any]:
         }
     url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
 
-    @retry_with_backoff(
-        max_attempts=3,
-        min_wait=0.5,
-        max_wait=10.0,
-        retry_on=_TELEGRAM_RETRYABLE,
-        name="telegram_send",
-    )
+    # Sent once: a send that timed out may have been delivered, and a retry
+    # would deliver the message twice.
     async def _send() -> tuple[int, Any]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(

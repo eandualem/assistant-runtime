@@ -55,6 +55,7 @@ def register_screen_tools(registry: ToolRegistry) -> None:
             ),
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,
+            idempotent=True,
         ),
         look_at_screen,
     )

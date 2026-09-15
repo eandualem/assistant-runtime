@@ -76,13 +76,6 @@ async def _github_request(
 
     url = f"{GITHUB_API_BASE}{path}"
 
-    @retry_with_backoff(
-        max_attempts=3,
-        min_wait=0.5,
-        max_wait=10.0,
-        retry_on=_GITHUB_RETRYABLE,
-        name="github_request",
-    )
     async def _request() -> tuple[int, Any]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.request(
@@ -94,8 +87,20 @@ async def _github_request(
             )
             return (response.status_code, response.json())
 
+    # Only a read is retried: a POST that timed out may already have created
+    # the issue or comment, and a retry would create it twice.
+    send = _request
+    if method.upper() == "GET":
+        send = retry_with_backoff(
+            max_attempts=3,
+            min_wait=0.5,
+            max_wait=10.0,
+            retry_on=_GITHUB_RETRYABLE,
+            name="github_request",
+        )(_request)
+
     try:
-        return await _request()
+        return await send()
     except httpx.TimeoutException:
         return (
             -1,

@@ -237,10 +237,54 @@ class TestSafetyWrapper:
                 raise ConnectionError("transient")
             return "recovered"
 
-        wrapped = ToolRegistry._wrap_handler(flaky_handler, "flaky_tool")
+        wrapped = ToolRegistry._wrap_handler(flaky_handler, "flaky_tool", idempotent=True)
         result = await wrapped()
         assert result == "recovered"
         assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_tool_with_side_effects_is_not_retried(self):
+        """The default: a write that timed out may have happened; it runs once."""
+        call_count = 0
+
+        async def send_once() -> str:
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("transient")
+
+        wrapped = ToolRegistry._wrap_handler(send_once, "send_message")
+        result = await wrapped()
+        assert result["error_code"] == "TOOL_EXECUTION_ERROR"
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_timeout_bounds_each_attempt(self):
+        import asyncio
+
+        async def slow() -> str:
+            await asyncio.sleep(5)
+            return "late"
+
+        wrapped = ToolRegistry._wrap_handler(slow, "slow_tool", timeout=0.05)
+        result = await wrapped()
+        assert result["error_code"] == "TOOL_TIMEOUT"
+        assert "0.05" in result["error"]
+
+    def test_wrap_options_come_from_the_definition_then_the_config(self):
+        registry = ToolRegistry(ToolConfig(tool_timeout_seconds=12.0))
+        default = ToolDefinition(
+            name="a", description="", parameters_schema={}, category=ToolCategory.BACKEND
+        )
+        custom = ToolDefinition(
+            name="b",
+            description="",
+            parameters_schema={},
+            category=ToolCategory.BACKEND,
+            timeout=3.0,
+            idempotent=True,
+        )
+        assert registry._wrap_options(default) == {"timeout": 12.0, "idempotent": False}
+        assert registry._wrap_options(custom) == {"timeout": 3.0, "idempotent": True}
 
     @pytest.mark.asyncio
     async def test_gives_up_after_two_attempts_returns_error_dict(self):
@@ -252,11 +296,11 @@ class TestSafetyWrapper:
             call_count += 1
             raise TimeoutError("always times out")
 
-        wrapped = ToolRegistry._wrap_handler(always_timeout, "timeout_tool")
+        wrapped = ToolRegistry._wrap_handler(always_timeout, "timeout_tool", idempotent=True)
         result = await wrapped()
         assert isinstance(result, dict)
         assert "error" in result
-        assert result["error_code"] == "TOOL_EXECUTION_ERROR"
+        assert result["error_code"] == "TOOL_TIMEOUT"
         # 2 attempts total (1 initial + 1 retry)
         assert call_count == 2
 

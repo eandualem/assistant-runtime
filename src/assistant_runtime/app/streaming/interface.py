@@ -65,6 +65,8 @@ class StreamingService:
         self._active_turns: dict[str, TurnControl] = {}
         self._session_leases: dict[str, str] = {}
         self._session_mutations: set[str] = set()
+        # Work a turn leaves behind after its terminal event (working memory).
+        self._background: set[asyncio.Task[Any]] = set()
 
     @property
     def _sessions(self) -> SessionStore:
@@ -82,7 +84,19 @@ class StreamingService:
             history=self._history,
             assistant_service=self._assistant_service,
             database_service=self._db,
+            background=self._spawn_background,
         )
+
+    def _spawn_background(self, coroutine: Any) -> None:
+        """Run post-turn work (working memory) without delaying the terminal event."""
+        task = asyncio.create_task(coroutine)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def wait_for_background(self) -> None:
+        """Wait for post-turn work to finish (tests, shutdown)."""
+        while self._background:
+            await asyncio.gather(*list(self._background), return_exceptions=True)
 
     def attach_ingress(self, ingress: Any | None) -> None:
         """Attach the ingress service; its queue is drained into each new message turn."""
@@ -98,6 +112,7 @@ class StreamingService:
         for turn in turns:
             turn.cancel()
         await asyncio.gather(*(turn.done.wait() for turn in turns))
+        await self.wait_for_background()
         logger.info("Streaming service stopped")
 
     async def cancel_session(
@@ -319,6 +334,7 @@ class StreamingService:
                 raise StreamingError("Streaming service not started")
         turn = TurnControl(native_sink=native_sink, cancel_after_plan=cancel_after_plan)
         self._active_turns[request.session_id] = turn
+        self._sessions.pin(request.session_id)
         turn.task = asyncio.create_task(
             self._produce_turn(request, turn, principal or LOCAL_PRINCIPAL)
         )
@@ -345,6 +361,7 @@ class StreamingService:
         finally:
             if self._active_turns.get(request.session_id) is turn:
                 self._active_turns.pop(request.session_id, None)
+                self._sessions.unpin(request.session_id)
             turn.accepting_cancel = False
             turn.done.set()
             turn.events.put_nowait(None)
