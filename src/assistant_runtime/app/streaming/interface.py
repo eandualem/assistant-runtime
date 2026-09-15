@@ -66,8 +66,10 @@ class StreamingService:
         self._active_turns: dict[str, TurnControl] = {}
         self._session_leases: dict[str, str] = {}
         self._session_mutations: set[str] = set()
-        # Work a turn leaves behind after its terminal event (working memory).
+        # Work a turn leaves behind after its terminal event (working memory);
+        # ordered per session so a later turn's extraction never lands first.
         self._background: set[asyncio.Task[Any]] = set()
+        self._background_chains: dict[str, asyncio.Task[Any]] = {}
 
     @property
     def _sessions(self) -> SessionStore:
@@ -88,11 +90,30 @@ class StreamingService:
             background=self._spawn_background,
         )
 
-    def _spawn_background(self, coroutine: Any) -> None:
-        """Run post-turn work (working memory) without delaying the terminal event."""
-        task = asyncio.create_task(coroutine)
+    def _spawn_background(self, coroutine: Any, *, session_id: str | None = None) -> None:
+        """Run post-turn work (working memory) without delaying the terminal event.
+
+        Work for the same session runs in submission order: the extraction of
+        turn 2 waits for turn 1's, so the older result cannot overwrite the newer.
+        """
+        previous = self._background_chains.get(session_id) if session_id else None
+
+        async def _ordered() -> None:
+            if previous is not None:
+                await asyncio.gather(previous, return_exceptions=True)
+            await coroutine
+
+        task = asyncio.create_task(_ordered())
         self._background.add(task)
-        task.add_done_callback(self._background.discard)
+        if session_id is not None:
+            self._background_chains[session_id] = task
+
+        def _done(finished: asyncio.Task[Any]) -> None:
+            self._background.discard(finished)
+            if session_id is not None and self._background_chains.get(session_id) is finished:
+                self._background_chains.pop(session_id, None)
+
+        task.add_done_callback(_done)
 
     async def wait_for_background(self) -> None:
         """Wait for post-turn work to finish (tests, shutdown)."""
@@ -169,6 +190,8 @@ class StreamingService:
         if session_id in self._active_turns:
             raise SessionError("A turn is already running in this session")
         self._session_leases[session_id] = lease
+        # The reserved session must stay cached for the call's lifetime.
+        self._sessions.pin(session_id)
         try:
             ctx = await self._sessions.ensure_owned_session(session_id, principal.id)
             if ctx.get("pending_tool_call_id"):
@@ -182,6 +205,7 @@ class StreamingService:
     def release_session(self, session_id: str, lease: str) -> None:
         if self._session_leases.get(session_id) == lease:
             self._session_leases.pop(session_id)
+            self._sessions.unpin(session_id)
 
     async def cancel_reserved_work(self, session_id: str, lease: str, principal: Principal) -> None:
         """Drain a transport-owned turn and resolve pending host calls as interrupted."""
@@ -273,6 +297,8 @@ class StreamingService:
         """Queue steering behind a live stream, or promote it to run now: ``queued``/``promoted``."""
         if not request.is_steering:
             raise SessionError("Only steering requests can be accepted")
+        # A voice call owns its session: ordinary steering must not reach it.
+        self.check_session_available(request.session_id)
         session_context = await self._sessions.get_context_if_exists_async(request.session_id)
         if session_context is None:
             raise SessionError(f"Steering rejected: session '{request.session_id}' does not exist")

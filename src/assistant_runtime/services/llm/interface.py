@@ -81,6 +81,14 @@ _LLM_RETRYABLE_EXCEPTIONS = _collect_retryable_llm_exceptions()
 _CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex/"
 
 
+_OPENAI_ALIAS_PREFIXES = ("openai-chat:", "openai-responses:")
+
+
+def _openai_alias(model_id: str) -> bool:
+    """Whether ``model_id`` names OpenAI through one of pydantic-ai's API-key aliases."""
+    return model_id.startswith(_OPENAI_ALIAS_PREFIXES)
+
+
 def _cerebras_model(model_name: str) -> Model:
     """A Cerebras model with every tool sent non-strict.
 
@@ -364,13 +372,22 @@ class LlmService:
                 repo = OAuthTokenRepository(session)
                 for provider_name in PROVIDER_ENV_VARS:
                     token = await repo.get(provider_name)
-                    if token is not None and token.encrypted_api_key:
-                        api_key = self._fernet.decrypt(token.encrypted_api_key.encode()).decode()
-                        providers.append(
-                            ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
-                        )
-                        self._db_providers[provider_name] = "database"
-                        logger.debug("Loaded API key from database", provider=provider_name)
+                    if token is None or not token.encrypted_api_key:
+                        continue
+                    if getattr(token, "encrypted_refresh_token", None) or getattr(
+                        token, "encrypted_id_token", None
+                    ):
+                        # A ChatGPT/Codex login: the OAuth service owns that row
+                        # and its access token is not an API key. Exporting it
+                        # would overwrite OPENAI_API_KEY (voice, image generation).
+                        logger.debug("Skipping OAuth session row", provider=provider_name)
+                        continue
+                    api_key = self._fernet.decrypt(token.encrypted_api_key.encode()).decode()
+                    providers.append(
+                        ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
+                    )
+                    self._db_providers[provider_name] = "database"
+                    logger.debug("Loaded API key from database", provider=provider_name)
         except Exception as exc:
             logger.warning("Failed to load provider keys from database", error=str(exc))
         return providers
@@ -400,7 +417,7 @@ class LlmService:
 
     def _effective_model(self, configured: str, defaults: dict[str, str]) -> str:
         provider = configured.split(":", 1)[0]
-        if self._config.codex_only and provider == "openai":
+        if self._config.codex_only and (provider == "openai" or _openai_alias(configured)):
             # Never turn a missing subscription into an API-provider fallback.
             return configured
         available = self._configured_provider_names() if self._started else []
@@ -447,8 +464,15 @@ class LlmService:
         """Whether this model goes through the ChatGPT/Codex subscription.
 
         Any ``openai:`` model does when a Codex session is connected, unless
-        ``LLMConfig.codex_models`` narrows the list.
+        ``LLMConfig.codex_models`` narrows the list. Under the guard the
+        upstream aliases ``openai-chat:`` and ``openai-responses:`` are
+        rejected: they name the same billing account through an API key.
         """
+        if self._config.codex_only and _openai_alias(resolved_model):
+            raise ProviderConfigError(
+                "Subscription-only routing needs the openai: prefix; "
+                f"'{resolved_model}' would use an API key"
+            )
         if not resolved_model.startswith("openai:"):
             # The guard is about OpenAI billing; another provider's key is its own choice.
             return False

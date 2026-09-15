@@ -1328,3 +1328,94 @@ class TestPostTurnWork:
         service._assistant_service.update_working_memory.assert_awaited_once()
         assert not service._background
         assert "sess-1" not in service._sessions._pinned
+
+
+class TestBackgroundOrdering:
+    """Post-turn work for one session runs in submission order."""
+
+    @pytest.mark.asyncio
+    async def test_a_later_extraction_waits_for_the_earlier_one(self) -> None:
+        service = _make_service()
+        await service.start()
+        order: list[str] = []
+        first_gate = asyncio.Event()
+
+        async def first() -> None:
+            await first_gate.wait()
+            order.append("first")
+
+        async def second() -> None:
+            order.append("second")
+
+        async def other_session() -> None:
+            order.append("other")
+
+        service._spawn_background(first(), session_id="s1")
+        service._spawn_background(second(), session_id="s1")
+        service._spawn_background(other_session(), session_id="s2")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert order == ["other"]  # s2 is independent; s1's second waits
+        first_gate.set()
+        await service.wait_for_background()
+        assert order == ["other", "first", "second"]
+        assert not service._background_chains
+
+
+class TestVoiceLeaseGuards:
+    @pytest.mark.asyncio
+    async def test_steering_is_refused_while_a_voice_call_holds_the_session(self) -> None:
+        from assistant_runtime.principal import LOCAL_PRINCIPAL
+
+        service = _make_service()
+        await service.start()
+        await service.run_message(_request(message_id="user-1"))
+        await service.reserve_session("sess-1", "lease-1", LOCAL_PRINCIPAL)
+        steering = _request(message_id="steer-1", content="focus", message_type="steering")
+        with pytest.raises(SessionError, match="reserved by a voice call"):
+            await service.accept_steering(steering, has_live_stream=False)
+        service.release_session("sess-1", "lease-1")
+        assert await service.accept_steering(steering, has_live_stream=False) == "promoted"
+
+    @pytest.mark.asyncio
+    async def test_a_reserved_session_is_pinned_for_the_calls_lifetime(self) -> None:
+        from assistant_runtime.principal import LOCAL_PRINCIPAL
+
+        service = _make_service()
+        await service.start()
+        await service.reserve_session("voice-1", "lease-1", LOCAL_PRINCIPAL)
+        assert service._sessions._pinned.get("voice-1") == 1
+        service.release_session("voice-1", "lease-1")
+        assert "voice-1" not in service._sessions._pinned
+
+
+class TestAuxiliaryUsageMerge:
+    @pytest.mark.asyncio
+    async def test_extraction_merges_into_the_rows_current_usage(self) -> None:
+        """A continuation that saved newer usage on the row is not overwritten."""
+        from assistant_runtime.app.streaming._runner import TurnRunner, _RunState
+
+        service = _make_service()
+        await service.start()
+        result = await service.run_message(_request(message_id="user-1"))
+        await service.wait_for_background()
+        sessions = service._sessions
+        # A continuation updated the row after the turn's snapshot was taken.
+        await sessions.update_message(
+            "sess-1", result.message_id, usage={"input_tokens": 50, "output_tokens": 5}
+        )
+        runner = service._runner
+        state = _RunState(stored_usage={"input_tokens": 5, "output_tokens": 1})
+        plan = MagicMock(
+            session_id="sess-1",
+            assistant_message_id=result.message_id,
+            session_context=sessions.get_context("sess-1"),
+            turn_number=1,
+        )
+        service._assistant_service.update_working_memory = AsyncMock(
+            return_value={"input_tokens": 3, "output_tokens": 2}
+        )
+        await TurnRunner._update_working_memory(runner, plan, state)
+        stored = sessions.get_message("sess-1", result.message_id)["usage"]
+        assert stored["input_tokens"] == 50
+        assert stored["auxiliary"]["working_memory"]["input_tokens"] == 3
