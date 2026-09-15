@@ -18,6 +18,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import AgentCapability
+from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.tools import Tool, ToolFuncEither
 
@@ -78,6 +79,24 @@ def _collect_retryable_llm_exceptions() -> tuple[type[Exception], ...]:
 _LLM_RETRYABLE_EXCEPTIONS = _collect_retryable_llm_exceptions()
 # The Codex CLI's backend; the same client id and device-auth flow (services/oauth).
 _CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex/"
+
+
+def _cerebras_model(model_name: str) -> Model:
+    """A Cerebras model with every tool sent non-strict.
+
+    Cerebras rejects a request whose tools carry different ``strict`` flags
+    ("Tools with mixed values for strict are not allowed"). Pydantic AI marks
+    each tool strict only when its schema qualifies, so a host action with a
+    numeric range next to a strict runtime tool fails every call. Turning
+    strict off for the provider makes the flags uniform; the partial profile
+    merges over the provider's own.
+    """
+    from pydantic_ai.models.cerebras import CerebrasModel
+    from pydantic_ai.profiles.openai import OpenAIModelProfile
+
+    return CerebrasModel(
+        model_name, profile=OpenAIModelProfile(openai_supports_strict_tool_definition=False)
+    )
 
 
 class LLMResult(BaseModel):
@@ -380,10 +399,10 @@ class LlmService:
         )
 
     def _effective_model(self, configured: str, defaults: dict[str, str]) -> str:
-        if self._config.codex_only:
+        provider = configured.split(":", 1)[0]
+        if self._config.codex_only and provider == "openai":
             # Never turn a missing subscription into an API-provider fallback.
             return configured
-        provider = configured.split(":", 1)[0]
         available = self._configured_provider_names() if self._started else []
         if not available:
             return configured
@@ -401,10 +420,14 @@ class LlmService:
         return fallback
 
     def _configured_provider_names(self) -> list[str]:
-        """Return provider names including active Codex-backed OpenAI auth."""
-        if self._config.codex_only:
-            return ["openai"] if self._get_codex_session() is not None else []
+        """Provider names with usable credentials, including Codex-backed OpenAI.
+
+        Under the subscription guard an OPENAI_API_KEY does not count: openai
+        is available only through a connected subscription.
+        """
         providers = {p.provider for p in self._providers}
+        if self._config.codex_only:
+            providers.discard("openai")
         if self._get_codex_session() is not None:
             providers.add("openai")
         return sorted(providers)
@@ -427,8 +450,7 @@ class LlmService:
         ``LLMConfig.codex_models`` narrows the list.
         """
         if not resolved_model.startswith("openai:"):
-            if self._config.codex_only:
-                raise ProviderConfigError("Subscription-only routing requires an openai: model")
+            # The guard is about OpenAI billing; another provider's key is its own choice.
             return False
         model_name = resolved_model.split(":", 1)[1]
         allowed = self._config.codex_models
@@ -448,18 +470,23 @@ class LlmService:
         self,
         resolved_model: str,
         settings: dict[str, Any] | Any,
+        *,
+        service_tier: str | None = None,
     ) -> dict[str, Any] | Any:
-        """Apply transport-specific defaults for certain providers."""
+        """Apply transport-specific defaults for certain providers.
+
+        ``service_tier`` is the turn's Codex tier (the tunable); unset falls
+        back to ``LLM__CODEX_SERVICE_TIER``.
+        """
         if not self._should_use_codex_provider(resolved_model):
             return settings
 
         # The subscription backend takes the Responses API settings but not the
         # sampling ones, max_output_tokens, or previous_response_id chaining.
         codex_settings: dict[str, Any] = {"openai_store": False}
-        if self._config.codex_service_tier is not None:
-            codex_settings["openai_service_tier"] = (
-                "priority" if self._config.codex_service_tier == "fast" else "default"
-            )
+        tier = service_tier or self._config.codex_service_tier
+        if tier is not None:
+            codex_settings["openai_service_tier"] = "priority" if tier == "fast" else "default"
         if isinstance(settings, dict):
             for key in (
                 "timeout",
@@ -518,8 +545,10 @@ class LlmService:
                 "Stale Codex HTTP client did not close cleanly", error=str(task.exception())
             )
 
-    def _resolve_agent_model(self, resolved_model: str) -> str | OpenAICodexResponsesModel:
+    def _resolve_agent_model(self, resolved_model: str) -> str | Model:
         """Resolve the actual Agent model object to use for a model id."""
+        if resolved_model.startswith("cerebras:"):
+            return _cerebras_model(resolved_model.split(":", 1)[1])
         if not self._should_use_codex_provider(resolved_model):
             return resolved_model
 
@@ -541,6 +570,7 @@ class LlmService:
         temperature: float | None = None,
         tools: Sequence[Tool[Any] | ToolFuncEither[Any, ...]] = (),
         capabilities: Sequence[AgentCapability[Any]] = (),
+        codex_service_tier: str | None = None,
     ) -> Agent:
         """Create a configured Pydantic AI Agent.
 
@@ -568,7 +598,9 @@ class LlmService:
             thinking_budget=thinking_budget,
             temperature=temperature,
         )
-        settings = self._apply_model_transport_defaults(resolved_model, settings)
+        settings = self._apply_model_transport_defaults(
+            resolved_model, settings, service_tier=codex_service_tier
+        )
         agent_model = self._resolve_agent_model(resolved_model)
 
         agent_kwargs: dict[str, Any] = {

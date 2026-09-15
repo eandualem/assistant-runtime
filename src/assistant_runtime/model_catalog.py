@@ -22,6 +22,7 @@ PROVIDER_ENV_VARS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
 }
 ALLOWED_PROVIDERS: list[str] = list(PROVIDER_ENV_VARS)
 
@@ -38,12 +39,14 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "openai": "openai:gpt-5.6-terra",
     "google": "google:gemini-3.1-pro-preview",
     "openrouter": "openrouter:x-ai/grok-4.1-fast",
+    "cerebras": "cerebras:gpt-oss-120b",
 }
 PROVIDER_DEFAULT_SUMMARIZATION_MODELS: dict[str, str] = {
     "anthropic": "anthropic:claude-haiku-4-5",
     "openai": "openai:gpt-5.6-luna",
     "google": "google:gemini-3.8-flash",
     "openrouter": "openrouter:x-ai/grok-4.1-fast",
+    "cerebras": "cerebras:qwen-3.8-27b",
 }
 
 
@@ -78,6 +81,7 @@ _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "openai": "OpenAI",
     "google": "Google",
     "openrouter": "OpenRouter",
+    "cerebras": "Cerebras",
     "runway": "Runway",
     "luma": "Luma",
 }
@@ -293,6 +297,25 @@ MODEL_CATALOG: list[ModelEntry] = [
         context_window=128_000,
         capabilities=["text"],
         description="Code-specialized Qwen variant",
+    ),
+    # --- Cerebras (open-weight models on Cerebras inference) ---
+    ModelEntry(
+        id="cerebras:gpt-oss-120b",
+        provider="cerebras",
+        name="GPT-OSS 120B",
+        capability="balanced",
+        context_window=128_000,
+        capabilities=["text", "thinking"],
+        description="OpenAI's open-weight reasoning model served by Cerebras at high speed",
+    ),
+    ModelEntry(
+        id="cerebras:qwen-3.8-27b",
+        provider="cerebras",
+        name="Qwen 3.8 27B",
+        capability="fast",
+        context_window=128_000,
+        capabilities=["text"],
+        description="Compact Qwen model served by Cerebras for low-latency tool calls",
     ),
     # --- OpenAI image generation ---
     ModelEntry(

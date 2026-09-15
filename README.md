@@ -31,7 +31,7 @@ What you get:
 git clone https://github.com/eandualem/assistant-runtime
 cd assistant-runtime
 uv sync
-export ANTHROPIC_API_KEY=sk-ant-...       # or OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY
+export ANTHROPIC_API_KEY=sk-ant-...       # or OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, CEREBRAS_API_KEY
 uv run assistant-runtime chat
 ```
 
@@ -65,6 +65,7 @@ checkout.
 | [concepts](docs/concepts.md) | sessions, turns, tools, host tools, host context, artifacts, envelopes |
 | [host contract](docs/host-contract.md) | the versioned `host_context`, attachments and action protocol a host uses |
 | [identity and access](docs/access.md) | authentication modes, session ownership, administration, CORS |
+| [deployments](docs/deployments.md) | one runtime per host application: the launch recipe, restart in place, what memory-only mode and the session TTL mean |
 | [persistence](docs/persistence.md) | what is stored, pending host actions across restarts, action outcomes, recovery and worker topology |
 | [getting-started](docs/getting-started.md) | install, one key, chat, server, a minimal client, Postgres, integrations |
 | [configuration](docs/configuration.md) | every setting, the three configuration tiers, secrets |
@@ -170,12 +171,15 @@ enter the code) or import an existing Codex CLI login
 model goes through the subscription (set `LLM__CODEX_MODELS` to a JSON
 list to narrow that); the backend decides what the plan allows. Other
 OpenAI features, such as image generation, still use an API key.
-For a subscription-only backend, set `LLM__CODEX_ONLY=true` at startup
-and choose `openai:` models for the primary, subagent, summarization and
-working-memory routes. This rejects non-OpenAI models, models excluded by
-`LLM__CODEX_MODELS`, and missing or expired OAuth before constructing an
-LLM request, even when API keys are present. The default is `false`, which
-retains API fallback when OAuth is unavailable. This guard covers the shared
+To make sure OpenAI is billed to the subscription and never to an API
+key, set `LLM__CODEX_ONLY=true` at startup: every `openai:` model then
+needs a connected subscription, models excluded by `LLM__CODEX_MODELS`
+and missing or expired OAuth are rejected before an LLM request is built,
+and an `OPENAI_API_KEY` does not make openai available. Other providers
+with a configured key (Anthropic, Google, OpenRouter, Cerebras) stay
+usable, and `ASSISTANT__REQUEST_MODELS` limits what a request may choose.
+The default is `false`, which retains API fallback when OAuth is
+unavailable. This guard covers the shared
 LLM service; voice audio and media generation have separate credentials and
 billing. Disable unwanted tools/providers separately. The Codex transport
 omits unsupported sampling, response-ID chaining, and `max_output_tokens`

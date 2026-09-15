@@ -47,6 +47,7 @@ class EffectiveConfig:
     default_video_model: str | None
     subagent_model: str | None
     subagent_thinking_budget: int | None
+    codex_service_tier: str | None
 
 
 assert {f.name for f in dataclasses.fields(EffectiveConfig)} == TUNABLE_FIELDS
@@ -218,6 +219,9 @@ def resolve_effective_config(
             if field in MODEL_FIELDS and allowed_models and requested not in allowed_models:
                 refused[field] = requested
                 return ceiling
+            if field == "codex_service_tier" and not frozen_config.request_service_tier:
+                refused[field] = requested
+                return ceiling
             if field in CEILING_FIELDS:
                 if ceiling is None:
                     # The host disabled this budget; a request cannot switch it on.
@@ -231,5 +235,5 @@ def resolve_effective_config(
     effective = EffectiveConfig(**{field: _pick(field) for field in TUNABLE_FIELDS})
     if refused:
         # One line per request: the request tier is untrusted and must not flood the log.
-        logger.info("Request models outside ASSISTANT__REQUEST_MODELS ignored", refused=refused)
+        logger.info("Request tunables outside the host's allowance ignored", refused=refused)
     return effective
