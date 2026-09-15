@@ -13,7 +13,7 @@ from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models import ModelRequestParameters
 
-from assistant_runtime.app.streaming._usage import merge_usage, usage_dict
+from assistant_runtime.app.assistant.usage import merge_usage, usage_dict
 from assistant_runtime.config import AppSettings
 from assistant_runtime.services.llm.config import LLMConfig
 from assistant_runtime.services.llm.interface import LlmService

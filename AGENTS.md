@@ -124,7 +124,12 @@ execution, history, serialization, or the upstream dependency; see
   `app/ingress`; `app/routes` and `app/socketio_server` are the HTTP and
   Socket.IO edges; `main`, `cli` and `config` (which composes every module's config model)
   are the top. `tests/unit/test_imports.py` asserts that nothing below the
-  top layer imports `app`; a new cross-package import must keep it green.
+  top layer imports `app` and that `_`-prefixed files stay inside their
+  module (what another module needs is re-exported from the module's
+  `__init__.py` or a public file such as `services/tools/request_context.py`);
+  a new cross-package import must keep it green. `main.py` builds nothing at
+  import: uvicorn runs the `create_asgi_app` factory, and loading `.env` is
+  the CLI's job.
 - **Configuration has three tiers**, resolved once per request by
   `resolve_effective_config()` (`app/settings.py`): frozen `AppSettings`
   from the environment and `.env` (`__` is the nesting delimiter) <
@@ -158,7 +163,7 @@ execution, history, serialization, or the upstream dependency; see
   definition's `timeout`), retries once on connection errors only when the
   definition says `idempotent=True`, and turns any failure into that dict.
   Request scope (session id, screenshot, Telegram binding) travels in
-  contextvars (`_request_context.py`); other dependencies are closed over
+  contextvars (`request_context.py`); other dependencies are closed over
   at registration.
 - **Host-native composition** uses `AssistantDefinition` through
   `create_app`, `create_asgi_app` or `create_runtime`. Native tools,

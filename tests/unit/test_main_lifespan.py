@@ -57,7 +57,6 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     monkeypatch.setattr("assistant_runtime.main.register_heartbeat", _register_heartbeat)
     monkeypatch.setattr("assistant_runtime.main.register_streaming", _register_streaming)
     monkeypatch.setattr("assistant_runtime.main.register_ingress", _register_ingress)
-    monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr("assistant_runtime.main.setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "assistant_runtime.main.RuntimeSettings.load_from_db",
@@ -115,7 +114,6 @@ async def test_runtime_cleans_up_when_startup_does_not_finish(monkeypatch, stage
     ):
         monkeypatch.setattr(f"assistant_runtime.main.register_{name}", AsyncMock())
     monkeypatch.setattr("assistant_runtime.main.register_database", register_components)
-    monkeypatch.setattr("assistant_runtime.main.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr("assistant_runtime.main.setup_logging", lambda **kwargs: None)
     monkeypatch.setattr("assistant_runtime.main.initialize_tracing", lambda: True)
     shutdown = MagicMock()

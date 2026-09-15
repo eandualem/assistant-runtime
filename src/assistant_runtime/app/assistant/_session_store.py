@@ -102,11 +102,6 @@ class SessionStore:
         )
         return path_records_to_model_history(path)
 
-    @property
-    def persistent(self) -> bool:
-        """Whether changes are written to a database (else memory only)."""
-        return self._db is not None
-
     def has_session(self, session_id: str) -> bool:
         return session_id in self._sessions
 
@@ -345,11 +340,6 @@ class SessionStore:
             raise LookupError("Session not found")
         return [ctx["steering_index"][gid] for gid in ctx["pending_steering_ids"]]
 
-    async def deliver_pending_steering(self, session_id: str) -> list[SteeringRecord]:
-        """Mark all currently pending steering as delivered."""
-        pending = await self.list_pending_steering(session_id)
-        return await self.mark_steering_delivered(session_id, [record["id"] for record in pending])
-
     async def mark_steering_delivered(
         self, session_id: str, steering_ids: list[str]
     ) -> list[SteeringRecord]:
@@ -378,28 +368,6 @@ class SessionStore:
             sid for sid in ctx["pending_steering_ids"] if sid not in selected
         ]
         return updated
-
-    async def mark_steering_promoted(self, session_id: str, steering_id: str) -> SteeringRecord:
-        """Mark a queued steering record as promoted for immediate idle delivery."""
-        ctx = await self.get_context_if_exists_async(session_id)
-        if ctx is None:
-            raise LookupError("Session not found")
-        if steering_id not in ctx["steering_index"]:
-            raise LookupError(f"Steering '{steering_id}' not found")
-
-        delivered_at = datetime.now(UTC)
-        record = dict(ctx["steering_index"][steering_id])
-        record["status"] = "promoted"
-        record["delivered_at"] = delivered_at
-        ctx["steering_index"][steering_id] = record
-        ctx["pending_steering_ids"] = [
-            gid for gid in ctx["pending_steering_ids"] if gid != steering_id
-        ]
-        if self._db is not None:
-            await self._db.mark_steering(
-                [steering_id], status="promoted", delivered_at=delivered_at
-            )
-        return record
 
     async def get_display_steering(self, session_id: str) -> list[SteeringRecord]:
         """Return delivered/promoted steering ordered for display."""

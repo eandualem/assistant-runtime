@@ -104,7 +104,10 @@ curl -s -X POST localhost:7100/api/chat -H 'content-type: application/json' \
 and only pages served from this machine may call it from a browser
 ([identity and access](access.md)). Put it behind your own reverse proxy
 with auth before exposing it. `--host 0.0.0.0 --port 8080` changes the binding,
-`--reload` restarts on source changes (`make dev` is the same thing).
+`--reload` restarts on source changes (`make dev` is the same thing). The
+`assistant-runtime` command loads `.env` before it starts; a host that
+embeds the runtime through `create_asgi_app` or `create_runtime` owns its
+own environment (see [composition](composition.md)).
 If a previous assistant-runtime still holds the port (recognised by its
 `/health` answer), `serve` stops it and takes over, so a new configuration
 takes effect with one command; anything else on the port is left alone and

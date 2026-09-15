@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 
-from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
+from assistant_runtime.app.access.exceptions import AuthenticationError
 from assistant_runtime.app.access.interface import AccessService
 from assistant_runtime.principal import Credentials, Principal
 
@@ -42,8 +42,3 @@ async def require_admin(principal: Annotated[Principal, Depends(get_principal)])
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 AdminDep = Annotated[Principal, Depends(require_admin)]
-
-
-def http_error(exc: AccessDeniedError | AuthenticationError) -> HTTPException:
-    status = 401 if isinstance(exc, AuthenticationError) else 403
-    return HTTPException(status_code=status, detail=str(exc))

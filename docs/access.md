@@ -110,7 +110,7 @@ rollback, delete) and session reassignment.
 ## Inside a turn
 
 Tools see the trusted principal through
-`assistant_runtime.services.tools._request_context.get_current_principal()`;
+`assistant_runtime.services.tools.request_context.get_current_principal()`;
 artifact policies are evaluated for the `assistant` actor, so a model
 cannot escalate through a tool either. Host context and attachments are
 application context only; see [the host contract](host-contract.md).

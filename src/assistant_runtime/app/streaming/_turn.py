@@ -41,11 +41,12 @@ from pydantic_ai.messages import (
 )
 
 from assistant_runtime.app.access.exceptions import AccessDeniedError
-from assistant_runtime.app.assistant._serialization import (
+from assistant_runtime.app.access.interface import AccessService
+from assistant_runtime.app.assistant import (
     assistant_record_to_flat_messages,
+    find_tool_entry,
     path_records_to_model_history,
 )
-from assistant_runtime.app.assistant._stale_tools import find_tool_entry
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import (
     AssistantRequest,
@@ -54,10 +55,10 @@ from assistant_runtime.app.assistant.models import (
 )
 from assistant_runtime.app.streaming._host_tool import clear_stale_pending_call
 from assistant_runtime.app.streaming.exceptions import StreamSetupError
-from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal, can_access_session
+from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant._session_store import SessionStore
+    from assistant_runtime.app.assistant import SessionStore
 
 TurnKind = Literal["message", "continuation", "steering"]
 
@@ -132,9 +133,9 @@ class TurnPlanner:
         except Exception as e:
             raise StreamSetupError(f"Turn setup failed: {e}") from e
 
-    def _authorize(self, session_context: dict[str, Any], principal: Principal, session_id: str):
-        if not can_access_session(principal, session_context.get("owner_id")):
-            raise AccessDeniedError(f"Session '{session_id}' belongs to another principal")
+    @staticmethod
+    def _authorize(session_context: dict[str, Any], principal: Principal, session_id: str) -> None:
+        AccessService.check_session(principal, session_context.get("owner_id"), session_id)
 
     async def _plan_message(self, request: AssistantRequest, principal: Principal) -> TurnPlan:
         session_id = request.session_id

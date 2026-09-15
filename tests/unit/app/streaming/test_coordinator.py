@@ -144,7 +144,7 @@ class TestCoordinatorTrackDebug:
         coord = EventCoordinator(max_events=100)
         coord.track_debug({"type": "debug_request"})
         coord.track_debug({"type": "debug_system_prompt"})
-        assert coord.debug_event_count == 2
+        assert coord._debug_event_count == 2
 
     def test_track_debug_does_not_increment_event_count(self):
         coord = EventCoordinator(max_events=100)
@@ -157,23 +157,23 @@ class TestCoordinatorTrackDebug:
         # This should NOT raise even though we're over the regular event limit
         event = coord.track_debug({"type": "debug_request"})
         assert event is not None
-        assert coord.debug_event_count == 1
+        assert coord._debug_event_count == 1
 
     def test_debug_event_count_initial(self):
         coord = EventCoordinator(max_events=100)
-        assert coord.debug_event_count == 0
+        assert coord._debug_event_count == 0
 
 
 class TestCoordinatorStreamingFlags:
     def test_initial_state_false(self):
         coord = EventCoordinator(max_events=100)
-        assert coord.has_streamed_text is False
-        assert coord.has_streamed_thinking is False
+        assert coord._streamed_text is False
+        assert coord._streamed_thinking is False
 
     def test_emit_text_delta_sets_flag(self):
         coord = EventCoordinator(max_events=100)
         event = coord.emit_text_delta("hello")
-        assert coord.has_streamed_text is True
+        assert coord._streamed_text is True
         assert event["type"] == "text_delta"
         assert event["content"] == "hello"
         assert event["segment_id"] == "segment_0"
@@ -190,7 +190,7 @@ class TestCoordinatorStreamingFlags:
     def test_emit_thinking_delta_sets_flag(self):
         coord = EventCoordinator(max_events=100)
         event = coord.emit_thinking_delta("reasoning")
-        assert coord.has_streamed_thinking is True
+        assert coord._streamed_thinking is True
         assert event["type"] == "thinking_delta"
         assert event["content"] == "reasoning"
         assert event["segment_id"] == "segment_0"
@@ -208,7 +208,7 @@ class TestCoordinatorStreamingFlags:
         coord = EventCoordinator(max_events=100)
         first = coord.emit_text_delta("a")
         second = coord.emit_text_delta("b")
-        assert coord.has_streamed_text is True
+        assert coord._streamed_text is True
         assert coord.event_count == 2
         assert first["segment_id"] == second["segment_id"]
         assert second["delta_index"] == 1
@@ -217,15 +217,15 @@ class TestCoordinatorStreamingFlags:
     def test_flags_are_independent(self):
         coord = EventCoordinator(max_events=100)
         coord.emit_text_delta("text")
-        assert coord.has_streamed_text is True
-        assert coord.has_streamed_thinking is False
+        assert coord._streamed_text is True
+        assert coord._streamed_thinking is False
 
     def test_both_flags_set(self):
         coord = EventCoordinator(max_events=100)
         thinking = coord.emit_thinking_delta("think")
         text = coord.emit_text_delta("text")
-        assert coord.has_streamed_text is True
-        assert coord.has_streamed_thinking is True
+        assert coord._streamed_text is True
+        assert coord._streamed_thinking is True
         assert thinking["segment_id"] != text["segment_id"]
         assert text["segment_index"] == 1
 

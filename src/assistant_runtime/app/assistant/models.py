@@ -265,8 +265,6 @@ class AssistantRequest(BaseModel):
 
         return data
 
-        return data
-
 
 class AssistantResult(BaseModel):
     """The final answer of one turn (the non-streaming form of ``final_response``)."""

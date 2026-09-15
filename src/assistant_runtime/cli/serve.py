@@ -39,8 +39,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
         args.host, args.port
     ):
         return 1
+    # A factory, so importing the package builds nothing: the app is created
+    # here, after the CLI has loaded ``.env``.
     uvicorn.run(
-        "assistant_runtime.main:app",
+        "assistant_runtime.main:create_asgi_app",
+        factory=True,
         host=args.host,
         port=args.port,
         reload=bool(args.reload),

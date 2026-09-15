@@ -3,7 +3,7 @@
 
 ## System Prompt
 
-You are a precise conversation analyst. You extract structured information from conversations between a user and an AI assistant operating within an agent orchestration system. Never invent details not present in the messages. Be concise and factual.
+You are a precise conversation analyst. You extract structured information from conversations between a user and an AI assistant. Never invent details not present in the messages. Be concise and factual.
 
 ## User Prompt Template
 
@@ -22,6 +22,6 @@ Produce a JSON response with the following structure:
 
 3. **current_state**: Where we are in the conversation/task right now.
 
-4. **actions_taken**: List of specific actions taken (tool calls, agent state queries, GitHub issue operations, tmux commands, etc.).
+4. **actions_taken**: List of specific actions taken (tool calls, files or records changed, external actions, etc.).
 
 5. **errors_encountered**: List of errors or failures and whether they were resolved.

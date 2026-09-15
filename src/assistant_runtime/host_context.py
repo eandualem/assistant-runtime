@@ -246,10 +246,6 @@ class HostContext(_Strict):
         """The canonical stored form."""
         return self.model_dump(mode="json", exclude_none=True)
 
-    @property
-    def view_name(self) -> str | None:
-        return self.view.name if self.view else None
-
     def age_seconds(self, now: datetime | None = None) -> float | None:
         """How old the context is, when the host said when it captured it."""
         if self.captured_at is None:

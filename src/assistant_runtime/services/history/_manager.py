@@ -56,6 +56,15 @@ class HistoryManager:
         """Forward runtime settings to summarizer dependency."""
         self._summarizer.set_runtime_settings(runtime_settings)
 
+    @property
+    def summarizer(self) -> HistorySummarizer:
+        """The summariser the service delegates working-memory extraction to."""
+        return self._summarizer
+
+    def estimate_tokens(self, history: list[ModelMessage]) -> int:
+        """The token estimate the policy uses (``chars / 4`` over the text parts)."""
+        return self._estimate_tokens(history)
+
     async def prepare_history(
         self,
         history: list[ModelMessage],

@@ -10,7 +10,6 @@ from typing import Any
 
 from loguru import logger
 
-from assistant_runtime.services.tools._request_context import get_current_assistant_session_id
 from assistant_runtime.services.tools.providers._local_sessions import (
     MAX_SESSION_NAME_LENGTH,
     SESSION_NAME_PATTERN,
@@ -22,6 +21,7 @@ from assistant_runtime.services.tools.providers.backbone._client import (
     backbone_request,
 )
 from assistant_runtime.services.tools.providers.backbone._registry_cache import get_registry_cache
+from assistant_runtime.services.tools.request_context import get_current_assistant_session_id
 
 __all__ = ["MAX_SESSION_NAME_LENGTH", "SESSION_NAME_PATTERN", "BackbonePeers"]
 

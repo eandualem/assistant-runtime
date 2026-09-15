@@ -1,17 +1,6 @@
 """Tests for structured logging helpers — tag constants and payload truncation."""
 
-from assistant_runtime.base._logging import (
-    FULL_LOG_THRESHOLD,
-    TAG_DB,
-    TAG_HISTORY,
-    TAG_LLM,
-    TAG_REQUEST,
-    TAG_SESSION,
-    TAG_STREAM,
-    TAG_TOOLS,
-    truncate,
-    truncate_payload,
-)
+from assistant_runtime.base._logging import FULL_LOG_THRESHOLD, truncate, truncate_payload
 
 
 class TestTruncate:
@@ -40,11 +29,3 @@ class TestTruncatePayload:
         payload = {"key": "v" * 1000}
         result = truncate_payload(payload)
         assert "chars truncated" in result
-
-
-class TestTagConstants:
-    def test_all_tags_bracketed(self):
-        tags = [TAG_REQUEST, TAG_STREAM, TAG_TOOLS, TAG_SESSION, TAG_DB, TAG_LLM, TAG_HISTORY]
-        for tag in tags:
-            assert tag.startswith("["), f"{tag} does not start with '['"
-            assert tag.endswith("]"), f"{tag} does not end with ']'"

@@ -12,7 +12,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from assistant_runtime.main import AssistantDefinition, create_runtime
 from assistant_runtime.services.llm.interface import LlmService
-from assistant_runtime.services.tools._request_context import record_current_telegram_chat_binding
+from assistant_runtime.services.tools.request_context import record_current_telegram_chat_binding
 
 from .test_execution import assert_terminal, calls, register_lookup, request
 

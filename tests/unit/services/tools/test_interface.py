@@ -210,15 +210,6 @@ class TestSubagentIntegration:
 
         assert count_with == count_without + 1
 
-    async def test_get_subagent_toolsets(self):
-        """get_subagent_toolsets returns toolsets without run_subagent."""
-        mock_llm = MagicMock()
-        svc = ToolService(config=ToolConfig(), llm_service=mock_llm)
-        await svc.start()
-
-        toolsets = svc.get_subagent_toolsets()
-        assert isinstance(toolsets, list)
-
     async def test_runtime_settings_reach_run_subagent(self):
         """Settings attached after start are read by the subagent tool on each call."""
         from unittest.mock import AsyncMock, patch
@@ -257,3 +248,39 @@ class TestPrivilegedCapabilities:
         )
         await service.start()
         assert "approve_plan" in service._registry.get_tool_names()
+
+
+class TestSubagentScopeAndBudget:
+    """A subagent gets the turn's page-scoped tools and the host's per-turn ceilings."""
+
+    async def test_subagent_toolset_follows_the_page_scope(self):
+        from assistant_runtime.services.tools.request_context import assistant_request_context
+
+        service = ToolService(
+            config=ToolConfig(page_scopes={"tasks": ["get_time"]}), llm_service=MagicMock()
+        )
+        await service.start()
+        everything = service._registry.build_subagent_toolset(None)
+        scoped_context = {"view": {"name": "tasks"}}
+        with assistant_request_context("s", host_context=scoped_context):
+            scoped = service._registry.build_subagent_toolset(scoped_context)
+        names_all = {name for ts in everything for name in ts.tools}
+        names_scoped = {name for ts in scoped for name in ts.tools}
+        assert "run_subagent" not in names_all
+        assert "look_at_screen" in names_all
+        assert names_scoped == {"get_time"}
+
+    def test_budget_limits_become_native_usage_limits(self):
+        from pydantic_ai.usage import UsageLimits
+
+        from assistant_runtime.app.assistant.config import UsageBudget
+        from assistant_runtime.services.tools.factory import _budget_limits
+
+        assert _budget_limits(UsageBudget()) is None
+        assert _budget_limits(UsageBudget(tool_calls=0)).tool_calls_limit == 0
+        assert _budget_limits(UsageBudget(cost_usd=0.25)).cost_limit == 0.25
+        limits = _budget_limits(UsageBudget(tool_calls=4, total_tokens=50_000, cost_usd=1.5))
+        assert isinstance(limits, UsageLimits)
+        assert limits.tool_calls_limit == 4
+        assert limits.total_tokens_limit == 50_000
+        assert limits.cost_limit == 1.5

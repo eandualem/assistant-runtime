@@ -183,67 +183,6 @@ class TestGetAgentInfo:
 # ---------------------------------------------------------------------------
 
 
-class TestGetWorkingDirectory:
-    async def test_returns_home_field(self):
-        cache = AgentRegistryCache()
-        cache._agents = SAMPLE_AGENTS
-
-        home = cache.get_working_directory("leo")
-
-        assert home == "/srv/agents/leo"
-
-    async def test_returns_none_when_no_home(self):
-        cache = AgentRegistryCache()
-        cache._agents = [{"name": "minimal", "session": "minimal", "type": "entity"}]
-
-        home = cache.get_working_directory("minimal")
-
-        assert home is None
-
-    async def test_returns_none_for_unknown_session(self):
-        cache = AgentRegistryCache()
-        cache._agents = SAMPLE_AGENTS
-
-        home = cache.get_working_directory("nonexistent")
-
-        assert home is None
-
-
-# ---------------------------------------------------------------------------
-# TestBuildEcosystemLines
-# ---------------------------------------------------------------------------
-
-
-class TestBuildEcosystemLines:
-    async def test_builds_lines_from_agents(self):
-        cache = AgentRegistryCache()
-        cache._agents = SAMPLE_AGENTS
-
-        lines = cache.build_ecosystem_lines()
-
-        assert len(lines) == 4  # header + 3 agents
-        assert lines[0] == "Agents and systems you work with:"
-        assert "Leo" in lines[1]
-        assert "Strategy Co-Architect" in lines[1]
-        assert "entity" in lines[1]
-        assert "[session: leo]" in lines[1]
-        assert "Ike" in lines[2]
-        assert "Agent Backbone" in lines[3]
-        assert "coding-agent" in lines[3]
-
-    async def test_empty_when_no_cache(self):
-        cache = AgentRegistryCache()
-
-        lines = cache.build_ecosystem_lines()
-
-        assert lines == []
-
-
-# ---------------------------------------------------------------------------
-# TestModuleSingleton
-# ---------------------------------------------------------------------------
-
-
 class TestModuleSingleton:
     async def test_get_registry_cache_returns_same_instance(self):
         first = get_registry_cache()

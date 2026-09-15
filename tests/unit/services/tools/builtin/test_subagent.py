@@ -48,8 +48,6 @@ class TestSubagentDefinition:
         assert defn.name == "Test Agent"
         assert defn.description == "A test subagent"
         assert defn.system_prompt == "You are a test agent."
-        assert defn.default_model is None
-        assert defn.default_thinking_budget is None
         assert defn.max_iterations == 10
 
     def test_custom_values(self):
@@ -58,16 +56,12 @@ class TestSubagentDefinition:
             name="Custom Agent",
             description="A custom subagent",
             system_prompt="You are custom.",
-            default_model="openai:gpt-4o",
-            default_thinking_budget=5000,
             max_iterations=25,
         )
         assert defn.id == "custom"
         assert defn.name == "Custom Agent"
         assert defn.description == "A custom subagent"
         assert defn.system_prompt == "You are custom."
-        assert defn.default_model == "openai:gpt-4o"
-        assert defn.default_thinking_budget == 5000
         assert defn.max_iterations == 25
 
 

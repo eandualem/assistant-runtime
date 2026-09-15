@@ -99,6 +99,8 @@ app = create_asgi_app(assistant=assistant, settings=settings)
 ```
 
 Run `uvicorn store_assistant:app --host 127.0.0.1 --port 7100` from your host
+(the runtime reads settings from the process environment; load a `.env` file
+yourself, with `python-dotenv` for example, before building the app if you use one)
 environment. The existing HTTP and Socket.IO contracts apply. You can mount
 the ASGI application in a host server; that host must also manage the
 runtime application's lifespan. `create_app` returns the underlying FastAPI

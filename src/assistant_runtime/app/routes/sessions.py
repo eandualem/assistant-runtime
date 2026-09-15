@@ -9,15 +9,17 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from assistant_runtime.app.access.deps import AdminDep, PrincipalDep
-from assistant_runtime.app.assistant._serialization import (
+from assistant_runtime.app.access.exceptions import AccessDeniedError
+from assistant_runtime.app.access.interface import AccessService
+from assistant_runtime.app.assistant import (
+    find_tool_entry,
     merge_display_messages,
     tree_messages_to_tree,
 )
-from assistant_runtime.app.assistant._stale_tools import find_tool_entry
 from assistant_runtime.app.assistant.deps import AssistantServiceDep
 from assistant_runtime.app.streaming.deps import StreamingServiceDep
 from assistant_runtime.app.voice.deps import OptionalVoiceServiceDep
-from assistant_runtime.principal import Principal, can_access_session
+from assistant_runtime.principal import Principal
 
 if TYPE_CHECKING:
     from assistant_runtime.services.database.interface import DatabaseService
@@ -38,10 +40,10 @@ async def _get_session_context(session_id: str, sessions: Any, principal: Princi
 
 
 def _authorize(ctx: dict, principal: Principal, session_id: str) -> None:
-    if not can_access_session(principal, ctx.get("owner_id")):
-        raise HTTPException(
-            status_code=403, detail=f"Session '{session_id}' belongs to another principal"
-        )
+    try:
+        AccessService.check_session(principal, ctx.get("owner_id"), session_id)
+    except AccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 class OwnerUpdate(BaseModel):

@@ -89,7 +89,7 @@ configuration lists the providers.
 | issues | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
 | messaging | `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
 | media | `generate_image`, `generate_video` | an image provider key; the `[video]` extra and a Runway or Luma key |
-| subagent | `run_subagent` | nothing (uses the configured model) |
+| subagent | `run_subagent` | nothing (uses the configured model); the subagent gets the turn's page-scoped backend tools and stays within the host's `ASSISTANT__BUDGET__*` ceilings |
 
 A tool whose call fails returns a structured error
 (`{"success": false, "error": ..., "error_code": ...}`) instead of
