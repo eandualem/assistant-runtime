@@ -22,6 +22,7 @@ from assistant_runtime.app.access.exceptions import AccessDeniedError, Authentic
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.host_context import host_context_from_payload
 from assistant_runtime.principal import Credentials, Principal
+from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -221,6 +222,11 @@ class AssistantNamespace(socketio.AsyncNamespace):
     async def _start_request(self, sid: str, request: AssistantRequest) -> None:
         """Start a request while its session's transport ownership is locked."""
         session_id = request.session_id
+        try:
+            self._streaming_service.validate_profile(request.profile)
+        except UnknownProfileError as exc:
+            await self.emit("assistant:error", {"type": "validation", "message": str(exc)}, to=sid)
+            return
 
         if request.is_steering:
             active_task = self._active_streams.get(session_id)

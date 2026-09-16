@@ -1,80 +1,80 @@
 # Deployments
 
-One runtime process serves one host application. Everything a host needs
-to vary per conversation is a request-time choice, so there is never a
-reason to run a second copy of the runtime for a second kind of request.
-This page is the recipe: the environment file, the launch command, how to
-restart, and what to expect without Postgres.
+Start the runtime independently, then start each host application. Several apps
+can connect to one runtime. An app's development command should check its
+configured runtime URL and fail with “Start the backend first” if it is offline.
+It must never launch, replace or stop the backend, including when the app exits.
 
-## One instance per host
+## Start once, connect from each app
 
-A host application talks to one runtime on one port. What differs between
-its conversations is sent with the request, not baked into a process:
-
-| Per request (`config` on the message body) | Startup (environment) |
-|---|---|
-| `default_model`, `thinking_budget`, `temperature` | the provider keys, `LLM__PRIMARY_MODEL`, `LLM__CODEX_ONLY` |
-| `codex_service_tier` (`default` or `fast`) | `LLM__CODEX_SERVICE_TIER` as the fallback; `ASSISTANT__REQUEST_SERVICE_TIER=false` pins it |
-| `subagent_model`, `subagent_thinking_budget`, the summarisation and working-memory models | the same names under `ASSISTANT__` and `HISTORY__` as defaults |
-| `host_context` (what the host shows, the actions it declares) | `ASSISTANT__PROFILE` (the prompt artifacts), `TOOLS__*` |
-| a separate `session_id` per conversation | `VOICE__*` (one voice service in the same process) |
-
-A deployment restricts the request tier with `ASSISTANT__REQUEST_MODELS`
-(the models a request may pick) and `ASSISTANT__REQUEST_SERVICE_TIER`;
-development leaves both open.
-
-## The recipe
-
-Keep the environment file in the host application's repository, without
-secrets; the keys live in the runtime's own `.env` or the process
-environment. A file for an application that uses the ChatGPT/Codex
-subscription for `openai:` models, a second provider for cheaper calls,
-a checked-in prompt, and voice in the same process:
+Configure provider credentials and optional services in the runtime's own `.env`.
+Register the profiles supplied by your apps there:
 
 ```bash
-# app/runtime.env — no secrets here; CEREBRAS_API_KEY, OPENAI_API_KEY and
-# OAUTH__ENCRYPTION_KEY come from the runtime's .env or the environment.
-LLM__CODEX_ONLY=true                 # openai: models only through the subscription
-OAUTH__CODEX_AUTO_SYNC=true          # import the local Codex CLI login at startup
-LLM__PRIMARY_MODEL=openai:gpt-5.6-sol
-LLM__SUMMARIZATION_MODEL=openai:gpt-5.6-luna
-HISTORY__WORKING_MEMORY_MODEL=openai:gpt-5.6-luna
-ASSISTANT__SUBAGENT_MODEL=cerebras:qwen-3.8-27b
-ASSISTANT__THINKING_BUDGET=4000
-ASSISTANT__ENABLE_WORKING_MEMORY=false
-ASSISTANT__PROFILE=/absolute/path/to/app/profiles/assistant.toml
-TOOLS__BUILTIN_TOOLS='["time","screen"]'   # JSON values need quoting in an env file
+# Runtime .env: registered names come from the TOML files, not their filenames.
+ASSISTANT__PROFILES='["/absolute/path/to/editor/profiles/assistant.toml","/absolute/path/to/viewer/profiles/assistant.toml"]'
+# Optional voice support. Keys stay in the runtime environment.
 VOICE__ENABLED=true
 VOICE__DELEGATION_ENABLED=false
-VOICE__CONVERSATION_INSTRUCTIONS_FILE=/absolute/path/to/app/profiles/live-instructions.md
 ```
 
-Launch it from the runtime checkout (or an installed package) with the
-file applied to the environment:
+From the runtime checkout, run `make dev` (HTTP and Socket.IO on
+`http://127.0.0.1:7100`). Then run each app's development command in its own
+terminal. The app configures its runtime URL and sends its registered profile
+name. `GET /health` checks backend availability; `GET /api/artifacts/profile`
+returns `available_profiles` for checking the app's profile registration.
+Authentication failures must be reported as such, not treated as permission
+to replace the server. Missing optional voice configuration should affect the
+voice feature rather than block text chat.
 
-```bash
-uv run --env-file app/runtime.env assistant-runtime serve --host 127.0.0.1 --port 7100
-```
+CORS controls which browser origins can contact the backend; it does not start
+or stop processes. The default allows localhost, `127.0.0.1` and `[::1]` on
+any port, so two local apps need no CORS change. Keep the runtime bound to
+loopback for local development. For remote hosting configure trusted origins
+and host authentication as described in [access](access.md); CORS is not
+user authentication. App server proxies still need to forward configured
+credentials and enforce their own browser access rules.
 
-`serve` loads the runtime's own `.env` first, then the process environment
-(which `--env-file` filled) wins. Check `GET /health` for the providers,
-the profile and `voice_service.enabled`, and `GET /api/settings` for the
-effective tunables.
+## App choices and runtime controls
 
-## Restart in place
+Each chat request, steering message and host-tool continuation can send
+`profile: "editor"` at the top level. This must be a registered profile name;
+requests cannot load a file. Send it consistently on every request. Omitting
+it selects `AssistantDefinition.profile`, else `ASSISTANT__PROFILE`, else
+`neutral`; the selector is not persisted as a session binding. Keep separate
+session IDs for each app/conversation. Profiles scope prompt artifacts, not
+identity or authorization: the existing principal and session ownership rules
+still apply.
 
-To apply a runtime change, restart the same process: `serve` recognises a
-previous runtime on its port through `/health` and replaces it, so the
-command above is also the restart command. Do not start a second copy on
-another port for a new configuration and point the application at it: that
-is how a host ends up with several half-configured runtimes and
-environment files. `--reload` is for editing the runtime, not for serving
-a demo; a file save restarts the process and, without Postgres, clears its
-memory.
+Artifact endpoints accept `?profile=editor`, including discovery, reads,
+proposals, updates and activation. Both the system prompt and `manage_artifacts`
+use the request's selected profile. App-specific persona and actions remain in
+the app's profile and host contract; the runtime needs no app-specific code.
 
-Something a restart must not lose belongs in Postgres (`make db-up &&
-make db-upgrade`, or `assistant-runtime migrate`): sessions, artifact
-versions, runtime settings and the inbox all survive a restart there.
+Model and thinking choices remain in request `config`; the operator can restrict
+them with `ASSISTANT__REQUEST_MODELS`, budget ceilings and
+`ASSISTANT__REQUEST_SERVICE_TIER`. Provider keys, subscription authentication,
+optional tools, voice enablement and resource limits remain startup configuration.
+For subscription-only OpenAI models set `LLM__CODEX_ONLY=true` and configure
+OAuth as documented in [configuration](configuration.md).
+
+A voice creation request can send `instructions` (1–16,000 nonblank characters)
+and `profile` for its delegated backend turns. Omitted instructions use the
+startup mode-specific defaults. Conversation-only calls always retain the
+runtime's no-delegation guard. Call instructions cannot enable voice, bypass
+the delegation ceiling or change credentials, model or resource limits.
+`GET /api/voice/status` advertises `call_instructions_supported: true`.
+See [voice](voice.md) for the complete contract.
+
+## Runtime restarts belong to the operator
+
+Only the operator restarts the runtime to apply startup configuration. The
+`serve` command replaces a prior runtime on its port by default; pass
+`--no-replace` to refuse an occupied port. Apps should never invoke it.
+`--reload` watches runtime source changes and is for development. Without
+Postgres a restart clears process memory; use `make db-up && make db-upgrade`
+(or `assistant-runtime migrate`) when sessions and artifact versions must
+survive restarts.
 
 ## Memory-only mode and the session TTL
 
@@ -94,13 +94,3 @@ saved activity and expired rows are deleted at startup, so raise it for a
 demo that is meant to keep yesterday's conversation. In memory-only mode
 the TTL does not apply: a session stays in the cache until it is evicted
 or the process stops.
-
-## One profile per application
-
-`ASSISTANT__PROFILE` names a built-in profile or a TOML file whose
-artifacts hold the assistant's instructions ([concepts](concepts.md)).
-The file's text is the default for each artifact until a version is
-activated, so a prompt checked into the application's repository is the
-prompt the runtime starts with; no `PATCH /api/artifacts/...` after
-start is needed. Voice prompts come from files the same way
-(`VOICE__INSTRUCTIONS_FILE`, `VOICE__CONVERSATION_INSTRUCTIONS_FILE`).

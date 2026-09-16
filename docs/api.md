@@ -105,6 +105,7 @@ response is Server-Sent Events encoded by Pydantic AI's `AGUIEventStream`
 | `tools` | request-declared host actions (`host_context.actions`) for this run only: every AG-UI request carries its own host context, so a tool not sent again is not available (unlike `host_context` omitted on the message body, which reuses the session's last context); the model's call ends the run with `TOOL_CALL_*` events and the client answers with a `tool` message in its next run |
 | `context` | `host_context.background` (`description` → `value`) |
 | `state` | the host context itself when it carries `version: 1`; otherwise `host_context.extensions.state` |
+| `forwardedProps.profile` | registered assistant profile name (same as top-level `profile` on chat); send on continuations too |
 | `forwardedProps.config` | the per-request tunable overrides (same fields as `config` in the message body) |
 | `image` and `document` user content (and legacy `binary`) | reference attachments for the model (data URIs or URLs); `audio` and `video` content is not mapped |
 | client disconnect | cancels the turn (partial work is saved, as for any consumer that goes away) |
@@ -309,3 +310,13 @@ An active call reserves its runtime session: ordinary turns, cancellation,
 repair, deletion and reassignment return `409`. A call does not use the
 ordinary chat continuation endpoint. Backend stream events are nested inside
 voice SSE envelopes, preserving the same event shapes and saved message tree.
+
+### Profile selection
+
+Chat requests accept top-level `profile`, a startup-registered name from
+`GET /api/artifacts/profile` → `available_profiles`. Send it on every turn,
+steering message and host-tool continuation; omission selects the startup
+default. Unknown names reject chat with HTTP 409 before turn admission, voice
+creation with 422 before allocation, and artifact queries with 404. Invalid
+name syntax returns 422 for HTTP request validation. Artifact routes select
+the same scope through `?profile=<name>`. See [deployments](deployments.md).

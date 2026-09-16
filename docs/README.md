@@ -11,7 +11,7 @@ An installed runtime prints these pages with `assistant-runtime docs <page>`
 | [api](api.md) | HTTP endpoints, the Socket.IO streaming contract and the AG-UI endpoint |
 | [host contract](host-contract.md) | The versioned `host_context`, attachments and the action protocol a host uses |
 | [identity and access](access.md) | Authentication modes, session ownership, administration, CORS |
-| [deployments](deployments.md) | One runtime per host application: launch recipe, restart in place, memory-only mode and the session TTL |
+| [deployments](deployments.md) | Independent startup, multiple apps and profiles, runtime controls, memory-only mode |
 | [persistence](persistence.md) | What is stored, pending host actions across restarts, action outcomes, recovery and worker topology |
 | [composition](composition.md) | Native Pydantic AI extensions and request dependencies in a Python host |
 | [compatibility](compatibility.md) | Tested dependency versions and migration boundaries |

@@ -249,7 +249,8 @@ execution, history, serialization, or the upstream dependency; see
   `app/streaming` and owns the GPT-Live sideband; the browser owns WebRTC audio.
   Conversation-only calls create no backend worker and reject tool-result
   admission; `VOICE__DELEGATION_ENABLED=false` is the startup ceiling.
-  Voice configuration is startup-only and its API key is environment-only,
+  Voice enablement, credentials and resource ceilings are startup-only; call creation
+  may select bounded `instructions` and a registered backend `profile`. Its API key is environment-only,
   independent of the backend model and subscription authentication. One call
   reserves its backend session; session administration excludes reservation
   throughout asynchronous mutations. Client delegations use the normal planner
@@ -265,7 +266,10 @@ execution, history, serialization, or the upstream dependency; see
   and working memory. Stable fragments come first so provider prompt
   caching works; dynamic fragments go last. The profile comes from
   `AssistantDefinition.profile`, else `ASSISTANT__PROFILE` (a built-in name
-  or a TOML path), else the neutral built-in; the example texts ship in
+  or a TOML path), else the neutral built-in. `ASSISTANT__PROFILES` registers additional profiles;
+  top-level request `profile` selects one by name on every turn/continuation.
+  Artifact routes use `?profile=`, and the tool follows the turn context.
+  This is artifact scoping, not an authorization boundary. The example texts ship in
   `profiles/technical_operator/`. `services/artifacts` owns versions and
   enforces each artifact's `ArtifactPolicy` in code for the `assistant`
   and `host` actors (Postgres when reachable, process memory otherwise,

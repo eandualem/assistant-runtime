@@ -64,6 +64,13 @@ class AssistantConfig(BaseModel):
             "of a TOML profile file. None = neutral. An AssistantDefinition.profile wins."
         ),
     )
+    profiles: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional assistant profiles registered at startup: built-in names or TOML paths. "
+            "Requests select registered profile names, never file paths."
+        ),
+    )
     session_ttl_hours: int = Field(
         default=24,
         ge=1,

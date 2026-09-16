@@ -83,6 +83,9 @@ def build_assistant_requests(
     base: dict[str, Any] = {
         "session_id": run_input.thread_id,
         "host_context": _host_context(run_input),
+        "profile": (run_input.forwarded_props or {}).get("profile")
+        if isinstance(run_input.forwarded_props, dict)
+        else None,
     }
     config = _forwarded_config(run_input)
     if config is not None:
@@ -123,6 +126,9 @@ def build_assistant_request(
     base: dict[str, Any] = {
         "session_id": run_input.thread_id,
         "host_context": _host_context(run_input),
+        "profile": (run_input.forwarded_props or {}).get("profile")
+        if isinstance(run_input.forwarded_props, dict)
+        else None,
     }
     config = _forwarded_config(run_input)
     if config is not None:

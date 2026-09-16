@@ -159,6 +159,8 @@ class AssistantRequest(BaseModel):
     # Ids are stored in 64-character columns; a longer one is a 422, not a database error.
     id: str = Field(min_length=1, max_length=64)
     session_id: str = Field(min_length=1, max_length=64)
+    profile: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    """A startup-registered profile name; omitted means the runtime default."""
     parent_id: str | None = Field(default=None, max_length=64)
     message_type: Literal["standard", "steering"] = Field(default="standard")
     content: str

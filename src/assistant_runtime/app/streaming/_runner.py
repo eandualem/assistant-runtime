@@ -605,6 +605,7 @@ class TurnRunner:
                     assistant_request_context(
                         session_id,
                         screenshot=plan.screenshot,
+                        profile_name=plan.request.profile,
                         principal=plan.principal,
                         host_context=plan.session_context.get("last_host_context"),
                     ),
