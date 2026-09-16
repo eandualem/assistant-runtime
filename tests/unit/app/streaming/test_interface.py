@@ -1498,6 +1498,48 @@ class TestAdmissionExclusion:
             )
 
 
+class TestReservationOwnership:
+    async def test_queued_reservation_rechecks_owner_and_releases_failed_lease(self) -> None:
+        from assistant_runtime.app.access.exceptions import AccessDeniedError
+        from assistant_runtime.principal import Principal
+
+        service = _make_service()
+        await service.start()
+        sessions = service._sessions
+        await sessions.register_user_message(_request(message_id="original"), owner_id="former")
+        authorized = asyncio.Event()
+        original_authorize = service._authorize
+
+        async def mark_authorized(session_id, principal):
+            await original_authorize(session_id, principal)
+            authorized.set()
+
+        service._authorize = mark_authorized
+        try:
+            async with service._admission_lock("sess-1"):
+                reservation = asyncio.create_task(
+                    service.reserve_session("sess-1", "former-lease", Principal("former"))
+                )
+                await authorized.wait()
+                assert not reservation.done()
+                with service.session_mutation("sess-1"):
+                    await sessions.set_owner("sess-1", "current")
+                await sessions.register_user_message(
+                    _request(message_id="private", content="current owner's message"),
+                    owner_id="current",
+                )
+            with pytest.raises(AccessDeniedError):
+                await reservation
+            assert "sess-1" not in service._session_leases
+            assert "sess-1" not in sessions._pinned
+            history = await service.reserve_session("sess-1", "current-lease", Principal("current"))
+            assert history[-1]["content"] == "current owner's message"
+        finally:
+            service.release_session("sess-1", "former-lease")
+            service.release_session("sess-1", "current-lease")
+            await service.stop()
+
+
 class TestAdmissionLockLifetime:
     async def test_unknown_session_ids_do_not_accumulate_locks(self) -> None:
         service = _make_service()
