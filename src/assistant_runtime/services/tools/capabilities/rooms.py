@@ -59,7 +59,7 @@ def register_rooms_tools(registry: ToolRegistry, provider: RoomsProvider) -> Non
                     "participants": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of participant session names (e.g. ['leo', 'ike'])",
+                        "description": "List of participant session names (e.g. ['planner', 'reviewer'])",
                     },
                     "description": {
                         "type": "string",

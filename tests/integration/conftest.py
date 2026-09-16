@@ -86,6 +86,17 @@ def _make_mock_agent_run(output: Any = "Test response") -> Any:
     return _MockRun()
 
 
+@pytest.fixture(autouse=True)
+def _no_working_memory(monkeypatch):
+    """Working memory is an extra model call scheduled after the turn.
+
+    These tests patch the agent only for the request itself, so the
+    extraction would build a real agent outside the patch; it is not what
+    the integration tests exercise (``tests/compatibility/test_usage.py`` is).
+    """
+    monkeypatch.setenv("ASSISTANT__ENABLE_WORKING_MEMORY", "false")
+
+
 @pytest.fixture
 def app_state():
     """Simple namespace to mimic FastAPI app.state."""

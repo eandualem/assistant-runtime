@@ -1,217 +1,109 @@
 # Assistant Runtime
 
-A Python assistant backend built on [Pydantic AI](https://pydantic.dev/ai/).
-It brings conversation state, application context, tools, and streaming
-together behind an application you already have. It receives messages,
-runs the configured agent, and streams results over Socket.IO or returns
-them over HTTP. The server uses FastAPI and python-socketio, works with
-Anthropic, OpenAI, Google and OpenRouter models, and integrates with
-[agent-backbone](https://github.com/eandualem/agent-backbone) for
-managing terminal AI agents.
+[![PyPI](https://img.shields.io/pypi/v/assistant-runtime)](https://pypi.org/project/assistant-runtime/)
+[![Downloads](https://img.shields.io/pypi/dm/assistant-runtime)](https://pypistats.org/packages/assistant-runtime)
+[![CI](https://github.com/eandualem/assistant-runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/eandualem/assistant-runtime/actions/workflows/ci.yml)
 
-What you get:
+An assistant backend for the application you already have: it holds the conversation, understands what is on screen, and asks your app to act.
 
-- A conversation model that survives real use: sessions as message trees,
-  mid-turn steering, history compaction, working memory, and a versioned
-  system prompt you edit at runtime.
-- A tool system: built-in tools, capabilities (notes, a document
-  library, peers, rooms, reminders, issues, messaging, ...) served by
-  whichever providers you configure, MCP servers, and **host tools**:
-  actions your own application performs when the model asks.
-- A streaming contract designed for user interfaces: thinking, text, tool
-  calls and results as ordered events, with a continuation protocol for
-  tools the host executes. Cancelling a turn retains partial text and
-  completed tool results in its session.
-- A terminal chat, so you can try all of it with one API key and no
-  separate user interface.
+![Design Studio showing a design document, Mermaid diagram and assistant actions](https://raw.githubusercontent.com/eandualem/design-studio/main/public/screenshot.png)
 
-## Quick start
+*Design Studio: the assistant edits a document through actions the application provides.*
+<!-- Elias records this -->
+<!-- Replace the screenshot above with ![Assistant Runtime in the two studios](docs/media/demo.gif) and a recording caption. -->
+
+**Contents** · [What it enables](#what-it-enables) · [See it in an application](#see-it-in-an-application) · [Getting started](#getting-started) · [How it works](#how-it-works) · [How it relates to other tools](#how-it-relates-to-other-tools) · [Documentation](#documentation) · [Development](#development)
+
+## What it enables
+
+- **A conversation people can keep working in.** Branch from an earlier message, steer a turn while it runs, retain working memory, and edit the assistant's versioned system prompt.
+- **An assistant that can use your application.** Send what is on screen and declare actions such as editing a document or moving an object. The runtime requests an action; your app performs it and returns the result to continue the turn.
+- **A UI that follows the work.** Thinking, text, tool calls and results arrive as ordered events. Cancellation saves partial text and completed work.
+- **A second model role in parallel.** A silent controller can return one application action or a structured hold with `output_mode: host_tools`, while another model handles the conversation.
+- **Voice with the same application context.** GPT-Live carries the conversation over WebRTC and can delegate tasks into the shared tool pipeline, or speak alongside an independent controller.
+
+One runtime can serve several applications, each with its own registered profile and host actions.
+
+## See it in an application
+
+### Design Studio
+
+[Design Studio](https://github.com/eandualem/design-studio) is a Markdown and Mermaid editor with an assistant beside the document. Describe a system by talking or typing; the assistant writes and revises the design. The screenshot above shows its distinguishing loop: the app returns diagram-rendering results with each edit, so the assistant can repair a diagram that fails to render. [Run the integration](https://github.com/eandualem/assistant-runtime/blob/main/docs/reference-app.md).
+
+### Avatar Studio
+
+[Avatar Studio](https://github.com/eandualem/avatar-studio) is a 3D character you can talk to. Voice and body share one runtime: GPT-Live speaks while a separate controller chooses movement, and the app applies it to the character. It demonstrates parallel model roles and physical actions with execution receipts. [Run the studio](https://github.com/eandualem/avatar-studio#running-it).
+
+![Avatar Studio showing its 3D character, conversation and voice controls](https://raw.githubusercontent.com/eandualem/assistant-runtime/main/docs/media/avatar-studio.jpg)
+
+*Avatar Studio after a request to wave: the app applies movement and displays the conversation.*
+
+## Getting started
+
+You need Python 3.12 or newer, [uv](https://docs.astral.sh/uv/), and one provider API key.
 
 ```bash
-git clone https://github.com/eandualem/assistant-runtime
-cd assistant-runtime
-uv sync
-export ANTHROPIC_API_KEY=sk-ant-...       # or OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY
-uv run assistant-runtime chat
+uv tool install assistant-runtime
+export ANTHROPIC_API_KEY=your-api-key
+assistant-runtime chat
 ```
 
-`chat` runs the runtime in-process and streams the reply to the terminal.
-`uv run assistant-runtime serve` runs the HTTP and Socket.IO server on
-`127.0.0.1:7100`, replacing a previous runtime left on that port; `doctor`
-reports what is configured. Postgres is
-optional: without it sessions and prompt-artifact versions live in memory.
-With it (`make db-up && make db-upgrade`) sessions, artifact versions,
-settings and a host action waiting for its result persist across restarts
-(see [docs/persistence.md](docs/persistence.md)). The assistant's artifacts (its instructions, what it may
-rewrite about itself) come from a profile: the neutral built-in,
-`ASSISTANT__PROFILE=technical_operator` for the example operator assistant,
-a TOML file, or `AssistantDefinition(profile=...)` in host code.
+This opens a terminal conversation. OpenAI, Google, OpenRouter and Cerebras keys also work; see [provider configuration](https://github.com/eandualem/assistant-runtime/blob/main/docs/configuration.md).
 
-The full walkthrough is in [docs/getting-started.md](docs/getting-started.md).
+For a browser app, exit chat and run `assistant-runtime serve`. Point the app at `http://127.0.0.1:7100`, then start the app in another terminal. Apps connect to the backend and report if it is missing; they do not start or stop it. Follow the [Design Studio recipe](https://github.com/eandualem/assistant-runtime/blob/main/docs/reference-app.md) for a complete first integration.
+
+Postgres is optional; it persists conversations and pending host actions, including while background memory updates run: [persistence](https://github.com/eandualem/assistant-runtime/blob/main/docs/persistence.md).
+Register application profiles to share a runtime: [deployments](https://github.com/eandualem/assistant-runtime/blob/main/docs/deployments.md).
+Voice needs the `[voice]` extra, an OpenAI API key and explicit enablement; each call reserves a session the caller is authorized to access: [voice setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/voice.md).
+Local ChatGPT/Codex subscription authentication is also supported for backend models: [subscription setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/subscription.md).
+
+The server defaults to localhost and trusts the local operator. Before exposing it to other people, configure authentication and allowed browser origins: [identity and access](https://github.com/eandualem/assistant-runtime/blob/main/docs/access.md).
+
+## How it works
+
+Your application sends a message, its current context and the actions it can perform. The runtime builds the assistant from its profile, calls the model through Pydantic AI, and streams the turn over Socket.IO or returns it over HTTP. An optional AG-UI endpoint exposes the same pipeline.
+
+When the model requests a host action, the runtime saves the pending call and returns it to your application. Your app validates and executes it, then sends back the matching result. The conversation resumes from that result. The app owns its interface and side effects; the runtime owns conversation state, model execution and continuation tracking.
+
+Add another app by supplying a profile, context and actions. No runtime code needs to know the app's name. Python hosts can also compose native tools, capabilities and dependencies through `AssistantDefinition`: [composition](https://github.com/eandualem/assistant-runtime/blob/main/docs/composition.md).
+
+## How it relates to other tools
+
+[Pydantic AI](https://ai.pydantic.dev/) is the agent library underneath: models, typed tools, execution and streaming. Assistant Runtime is the running service around it that your application calls, with sessions, host-action continuations, profiles and voice already connected.
+
+[Vercel AI SDK](https://ai-sdk.dev/docs/introduction) provides TypeScript model and tool APIs plus UI bindings; [AG-UI](https://docs.ag-ui.com/introduction) defines an event protocol between agents and interfaces. They help build the client/server connection. This runtime supplies the application state and server behavior behind that connection, and offers an AG-UI adapter.
+
+[LangGraph's Agent Server](https://docs.langchain.com/langsmith/agent-server) supplies deployment, persistent threads and runs for graphs. The [OpenAI Agents SDK](https://developers.openai.com/api/docs/guides/agents/sdk) supplies an agent loop, tools and orchestration inside your own application. Both can support application integrations; Assistant Runtime packages a specific profile/context/action-result contract for apps that own the actions.
+
+A FastAPI service around Pydantic AI is the closest alternative: you choose the session model, streaming protocol, persistence and UI action lifecycle yourself. This project supplies those choices as a backend you can run or extend.
 
 ## Documentation
 
-The pages ship with the package: `assistant-runtime docs` lists them and
-`assistant-runtime docs <page>` prints one, so nothing here needs a
-checkout.
+Start with [getting started](https://github.com/eandualem/assistant-runtime/blob/main/docs/getting-started.md), then [concepts](https://github.com/eandualem/assistant-runtime/blob/main/docs/concepts.md), the [host contract](https://github.com/eandualem/assistant-runtime/blob/main/docs/host-contract.md) and the [API](https://github.com/eandualem/assistant-runtime/blob/main/docs/api.md). The [documentation index](https://github.com/eandualem/assistant-runtime/blob/main/docs/README.md) links configuration, deployment, access, persistence and composition references.
 
-| Page | What it covers |
-|---|---|
-| [concepts](docs/concepts.md) | sessions, turns, tools, host tools, host context, artifacts, envelopes |
-| [host contract](docs/host-contract.md) | the versioned `host_context`, attachments and action protocol a host uses |
-| [identity and access](docs/access.md) | authentication modes, session ownership, administration, CORS |
-| [persistence](docs/persistence.md) | what is stored, pending host actions across restarts, action outcomes, recovery and worker topology |
-| [getting-started](docs/getting-started.md) | install, one key, chat, server, a minimal client, Postgres, integrations |
-| [configuration](docs/configuration.md) | every setting, the three configuration tiers, secrets |
-| [api](docs/api.md) | HTTP endpoints, the Socket.IO streaming contract and the AG-UI endpoint |
-| [composition](docs/composition.md) | native tools, capabilities and dependencies in a host-owned Python application |
-| [compatibility](docs/compatibility.md) | tested Pydantic AI versions and migration boundaries |
+`assistant-runtime --version` prints the installed release; the OpenAPI schema reports the same version.
 
-## Putting it behind your application
-
-For a Python host, pass an `AssistantDefinition` with native Pydantic AI
-tools, toolsets, capabilities and a dependency factory to `create_asgi_app`
-or `create_runtime`. Both accept the same `AppSettings` and use the same
-turn pipeline. See [composing an assistant](docs/composition.md) for a complete
-server and in-process example.
-
-Stop an active turn through `POST /api/chat/{session_id}/cancel`, Socket.IO
-`assistant_cancel`, or the in-process `cancel_session` method. Cancellation
-saves the work completed so far and drains running tools before the next
-turn starts. A Socket.IO disconnect leaves the turn running; reconnect and
-read the session to recover its saved state. See [turn control](docs/api.md#turn-control).
-
-The runtime knows nothing about any particular host. Your application
-describes itself in two ways, both optional:
-
-- **Host context**, sent with a message: what the user is looking at, as
-  a small versioned JSON object (`host`, `view`, `navigation`,
-  `attachments`, `background`, `extensions`). It goes into the system
-  prompt and can select which tools apply to the current view.
-- **Host actions**, declared in configuration or per request: actions your
-  application performs. The model calls them like any tool; the runtime
-  emits a `tool_call` event, ends the turn with a pending call, and resumes
-  when your application sends the result back.
-
-A client needs a Socket.IO connection to the `/assistant` namespace, a
-`join_session`, and a `message`. The events it receives are listed in
-[docs/api.md](docs/api.md); the host contract in
-[docs/host-contract.md](docs/host-contract.md).
-
-## Configuration in one screen
-
-Standalone commands read configuration from the environment or a `.env` file
-(`.env.example` lists every variable). The essentials:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-...                     # at least one provider key
-LLM__PRIMARY_MODEL=anthropic:claude-opus-5       # chat model (default)
-LLM__SUMMARIZATION_MODEL=anthropic:claude-haiku-4-5
-
-DATABASE__HOST=localhost                          # optional Postgres
-DATABASE__PORT=5434
-
-BACKBONE_URL=http://127.0.0.1:7120                # optional: agent-backbone tools
-GITHUB_TOKEN=... GITHUB_REPO_OWNER=... GITHUB_REPO_NAME=...   # optional: issue tools
-TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=...          # optional: Telegram tools
-
-TOOLS__HOST_TOOLS='{"navigate": {"description": "...", "parameters": {...}}}'   # optional: host tools
-TOOLS__PAGE_SCOPES='{"tasks": ["create_issue", "get_time"]}'                   # optional: page-scoped tools
-```
-
-Three tiers apply at request time: the environment, a runtime overlay
-changed through `PATCH /api/settings`, and per-request overrides in the
-message. Details, defaults and the optional extras (`[video]`,
-`[tracing]`) are in [docs/configuration.md](docs/configuration.md).
-
-### OpenAI through a ChatGPT/Codex subscription
-
-For local personal use, the runtime can authenticate the same way the
-Codex CLI does instead of using a usage-billed `OPENAI_API_KEY`. Set
-`OAUTH__ENCRYPTION_KEY` to a Fernet key (`python -c "from
-cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`),
-start the server, and either run the device flow
-(`POST /api/oauth/openai/device-code`, then open the returned URL and
-enter the code) or import an existing Codex CLI login
-(`codex login`, then `POST /api/oauth/openai/codex-cli/sync`).
-`GET /api/oauth/openai/status` shows the connection;
-`DELETE /api/oauth/openai` disconnects. While connected, every `openai:`
-model goes through the subscription (set `LLM__CODEX_MODELS` to a JSON
-list to narrow that); the backend decides what the plan allows. Other
-OpenAI features, such as image generation, still use an API key.
-`assistant-runtime doctor` reports the state of this path. It is not
-intended for multi-user hosted services.
-
-## Security
-
-By default every caller is the local operator and CORS is open: bind to
-localhost (the default). To serve several people, put the server behind
-a reverse proxy that authenticates and sets `X-Assistant-Principal`
-(`ACCESS__MODE=header`), or plug your own identity system in with
-`AssistantDefinition(authenticate=...)` (`ACCESS__MODE=host`), and
-restrict `ACCESS__CORS_ORIGINS`. Sessions belong to the principal that
-created them; administration (settings, provider keys, artifact
-mutations, ingress, debugging) needs the `admin` role. See
-[identity and access](docs/access.md). Secrets are read from the
-environment only; the one stored secret is the encrypted provider-key
-store behind `PUT /api/providers/{provider}/api-key`.
+The pages ship with the package: `assistant-runtime docs` lists them and `assistant-runtime docs <page>` prints one without a checkout.
 
 ## Development
 
-Planned Pydantic AI reuse and assistant-framework generalization are tracked
-in [#83](https://github.com/eandualem/assistant-runtime/issues/83).
-The [compatibility baseline](docs/compatibility.md) records tested versions,
-public API replacement boundaries, and offline regression cases. Streamed
-tool arguments are preserved in session history and host continuations,
-including when the provider represents them as JSON strings.
-
 ```bash
-uv sync --locked --extra dev       # install runtime + test/lint tools from uv.lock
-make check                        # ruff check + format check + pytest; the CI gate
-make test                         # pytest only; no services needed
-make dev                          # uvicorn with reload on port 7100
-make db-up / db-upgrade / db-migrate MSG="..."   # Postgres in Docker, migrations
+git clone https://github.com/eandualem/assistant-runtime && cd assistant-runtime
+uv sync --locked --extra dev
+make check
+make dev
 ```
 
-Python 3.12 or 3.13. Tests run without Postgres or network access.
-[AGENTS.md](AGENTS.md) documents the module skeleton, the startup order,
-the layering and the invariants a change must keep. Pull requests target
-`develop`; CodeRabbit reviews every one.
-
-### Working with coding agents
-
-[AGENTS.md](AGENTS.md) is the shared source of project instructions. Codex
-loads it automatically; [CLAUDE.md](CLAUDE.md) imports it for Claude Code.
-With another CLI, ask it to read `AGENTS.md` before working if it does not
-discover the file itself. Edit shared guidance in `AGENTS.md` so it stays
-consistent across tools.
-
-Start a new agent session from this checkout after changing the instructions.
-These files provide project context; CLI credentials, permissions, MCP
-connections, plugins, and private conversation memory remain configured
-separately in each tool. Keep durable project knowledge in the repository
-docs so future sessions can use it.
-
-### Layout
+`make check` runs Ruff and the tests without API keys, Postgres or a running server. Pull requests target `develop`; [AGENTS.md](https://github.com/eandualem/assistant-runtime/blob/main/AGENTS.md) defines the architecture and contribution checks.
 
 ```text
-src/assistant_runtime/
-  base/          lifecycle manager, protocols, resilience, exceptions
-  services/      database, llm, history, tools, media, mcp, oauth, tracing
-  app/           assistant (prompt, sessions), streaming (the turn pipeline), routes
-  cli/           chat, serve, doctor, docs
-  help/          the documentation, when installed from a wheel
-  artifacts.py   assistant profiles: the artifact schema, built-ins, TOML loading
-  host_context.py  the host contract: versioned context, attachments, actions
-  principal.py   trusted principals, credentials, the ownership rule
-  profiles/      the example technical_operator texts
-  model_catalog.py  providers, key variables, fallback models, the model list
-  config.py      AppSettings, composed from every module's config
-  main.py        the FastAPI app, lifespan and Socket.IO wrapper
-docs/            the documentation pages
-alembic/         database migrations
+src/assistant_runtime/base/       lifecycle and shared protocols
+src/assistant_runtime/services/  models, history, tools and integrations
+src/assistant_runtime/app/       conversations, streaming, voice and routes
+src/assistant_runtime/cli/       chat, serve, doctor, docs and migrations
+docs/ and alembic/               documentation and database migrations
 ```
 
 ## License
 
-See [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/eandualem/assistant-runtime/blob/main/LICENSE).

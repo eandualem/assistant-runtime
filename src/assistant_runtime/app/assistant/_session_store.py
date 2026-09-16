@@ -55,6 +55,9 @@ class SessionStore:
         )
         self._pending_db_loads: dict[str, asyncio.Task[dict[str, Any] | None]] = {}
         self._pending_db_loads_lock = asyncio.Lock()
+        # Sessions with a running turn or post-turn work (a count per holder);
+        # never evicted from the cache while the count is above zero.
+        self._pinned: dict[str, int] = {}
 
     # --- contexts -----------------------------------------------------------
 
@@ -99,18 +102,36 @@ class SessionStore:
         )
         return path_records_to_model_history(path)
 
-    @property
-    def persistent(self) -> bool:
-        """Whether changes are written to a database (else memory only)."""
-        return self._db is not None
-
     def has_session(self, session_id: str) -> bool:
         return session_id in self._sessions
 
     def session_count(self) -> int:
         return len(self._sessions)
 
+    def pin(self, session_id: str) -> None:
+        """Keep the session cached while a turn (or its post-turn work) uses it.
+
+        Reference counted: every ``pin`` needs one ``unpin``.
+        """
+        self._pinned[session_id] = self._pinned.get(session_id, 0) + 1
+
+    def unpin(self, session_id: str) -> None:
+        count = self._pinned.get(session_id, 0) - 1
+        if count > 0:
+            self._pinned[session_id] = count
+        else:
+            self._pinned.pop(session_id, None)
+
     # --- messages -----------------------------------------------------------
+
+    async def ensure_owned_session(self, session_id: str, owner_id: str) -> dict[str, Any]:
+        """Create an empty owned conversation for a long-lived host transport."""
+        ctx = await self.get_context_async(session_id)
+        if ctx.get("owner_id") is None:
+            ctx["owner_id"] = owner_id
+        if self._db is not None:
+            await self._db.ensure_session(session_id, ctx.get("title"), ctx.get("owner_id"))
+        return ctx
 
     async def register_user_message(
         self, request: AssistantRequest, *, owner_id: str | None = None
@@ -256,6 +277,13 @@ class SessionStore:
             )
         return record
 
+    def get_message(self, session_id: str, message_id: str) -> MessageRecord | None:
+        """The cached record of one message, or None when the session or message is not cached."""
+        ctx = self._sessions.get(session_id)
+        if ctx is None:
+            return None
+        return ctx["message_index"].get(message_id)
+
     async def get_message_path(
         self,
         session_id: str,
@@ -303,6 +331,7 @@ class SessionStore:
             "id": request.id,
             "session_id": session_id,
             "content": request.content,
+            "profile": request.profile,
             "status": status,
             "created_at": datetime.now(UTC),
             "delivered_at": delivered_at,
@@ -312,17 +341,21 @@ class SessionStore:
         _add_steering(ctx, queued)
         return queued
 
-    async def list_pending_steering(self, session_id: str) -> list[SteeringRecord]:
-        """Return pending steering in submission order."""
+    async def list_pending_steering(
+        self, session_id: str, *, profile_name: str | None = None
+    ) -> list[SteeringRecord]:
+        """Return pending steering, optionally limited to the consuming profile.
+
+        Legacy and ingress records with no selector inherit whichever turn
+        consumes them. Explicit selectors remain pending for a matching turn.
+        """
         ctx = await self.get_context_if_exists_async(session_id)
         if ctx is None:
             raise LookupError("Session not found")
-        return [ctx["steering_index"][gid] for gid in ctx["pending_steering_ids"]]
-
-    async def deliver_pending_steering(self, session_id: str) -> list[SteeringRecord]:
-        """Mark all currently pending steering as delivered."""
-        pending = await self.list_pending_steering(session_id)
-        return await self.mark_steering_delivered(session_id, [record["id"] for record in pending])
+        pending = [ctx["steering_index"][gid] for gid in ctx["pending_steering_ids"]]
+        if profile_name is None:
+            return pending
+        return [record for record in pending if record.get("profile") in (None, profile_name)]
 
     async def mark_steering_delivered(
         self, session_id: str, steering_ids: list[str]
@@ -352,28 +385,6 @@ class SessionStore:
             sid for sid in ctx["pending_steering_ids"] if sid not in selected
         ]
         return updated
-
-    async def mark_steering_promoted(self, session_id: str, steering_id: str) -> SteeringRecord:
-        """Mark a queued steering record as promoted for immediate idle delivery."""
-        ctx = await self.get_context_if_exists_async(session_id)
-        if ctx is None:
-            raise LookupError("Session not found")
-        if steering_id not in ctx["steering_index"]:
-            raise LookupError(f"Steering '{steering_id}' not found")
-
-        delivered_at = datetime.now(UTC)
-        record = dict(ctx["steering_index"][steering_id])
-        record["status"] = "promoted"
-        record["delivered_at"] = delivered_at
-        ctx["steering_index"][steering_id] = record
-        ctx["pending_steering_ids"] = [
-            gid for gid in ctx["pending_steering_ids"] if gid != steering_id
-        ]
-        if self._db is not None:
-            await self._db.mark_steering(
-                [steering_id], status="promoted", delivered_at=delivered_at
-            )
-        return record
 
     async def get_display_steering(self, session_id: str) -> list[SteeringRecord]:
         """Return delivered/promoted steering ordered for display."""
@@ -447,6 +458,8 @@ class SessionStore:
         everything (administration).
         """
         if self._db is None:
+            # Most recently used first, like the database's ``updated_at desc``:
+            # ``_touch_session`` moves a used session to the end of the dict.
             sessions = [
                 {
                     "session_id": sid,
@@ -456,7 +469,7 @@ class SessionStore:
                     "message_count": ctx.get("message_count", 0),
                     "created_at": None,
                 }
-                for sid, ctx in self._sessions.items()
+                for sid, ctx in reversed(list(self._sessions.items()))
                 if owner_id is None or ctx.get("owner_id") == owner_id
             ]
             return sessions[offset : offset + limit]
@@ -488,6 +501,7 @@ class SessionStore:
         tool_name: str,
         assistant_message_id: str,
         batch: list[str] | None = None,
+        output_mode: str = "text",
     ) -> None:
         """Record the one host-tool call the session now waits on, in memory and on the row.
 
@@ -499,6 +513,7 @@ class SessionStore:
         ctx["pending_tool_name"] = tool_name
         ctx["pending_assistant_message_id"] = assistant_message_id
         ctx["pending_tool_batch"] = list(batch) if batch else [tool_call_id]
+        ctx["pending_output_mode"] = output_mode
         await self.save_session_state_async(session_id)
 
     async def clear_pending_action(self, session_id: str) -> dict[str, Any] | None:
@@ -521,6 +536,7 @@ class SessionStore:
             "pending_tool_name",
             "pending_assistant_message_id",
             "pending_tool_batch",
+            "pending_output_mode",
         ):
             ctx.pop(key, None)
         await self.save_session_state_async(session_id)
@@ -569,11 +585,18 @@ class SessionStore:
         if len(self._sessions) <= _MAX_MEMORY_SESSIONS:
             return
         evict_count = len(self._sessions) // 2
-        for key in list(self._sessions.keys())[:evict_count]:
+        evicted = 0
+        for key in list(self._sessions.keys()):
+            if evicted >= evict_count:
+                break
+            if key in self._pinned:
+                continue  # a turn is running on it; its writes must keep landing
             del self._sessions[key]
+            evicted += 1
         logger.info(
             "[SESSION] Evicted in-memory sessions",
-            evicted=evict_count,
+            evicted=evicted,
+            pinned=len(self._pinned),
             remaining=len(self._sessions),
         )
 
@@ -694,6 +717,9 @@ def _restore_pending_action(
             already_answered=entry is not None and "output" in entry,
         )
         return None
+    ctx["pending_output_mode"] = (
+        "host_tools" if pending.get("output_mode") == "host_tools" else "text"
+    )
     ctx["pending_tool_call_id"] = str(tool_call_id)
     ctx["pending_tool_name"] = pending.get("tool_name") or str(entry.get("name", ""))
     ctx["pending_assistant_message_id"] = assistant_message_id

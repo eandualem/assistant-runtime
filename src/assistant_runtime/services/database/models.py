@@ -56,6 +56,18 @@ class SessionORM(Base):
     )
 
 
+class VoiceCallORM(Base):
+    """Checkpointed voice transcript/usage; delegated turns remain normal messages."""
+
+    __tablename__ = "voice_calls"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
 class MessageORM(Base):
     """Tree-structured conversation messages."""
 
@@ -113,6 +125,7 @@ class SteeringORM(Base):
         String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -124,6 +137,8 @@ class TraceORM(Base):
     """Debug trace storage — one row per assistant request (stream)."""
 
     __tablename__ = "traces"
+    # Retention deletes by age; without this the startup cleanup scans the table.
+    __table_args__ = (Index("ix_traces_created_at", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     session_id: Mapped[str] = mapped_column(
@@ -133,7 +148,8 @@ class TraceORM(Base):
     user_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_continuation: Mapped[bool] = mapped_column(Boolean, default=False)
     duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
-    screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The table still has a nullable ``screenshot`` column; migration 0024 cleared
+    # it and nothing maps it, so a screenshot can no longer end up in a trace.
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -185,6 +201,7 @@ class UserSettingsORM(Base):
     default_video_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     subagent_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     subagent_thinking_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    codex_service_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

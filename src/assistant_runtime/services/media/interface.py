@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from loguru import logger
 
 from assistant_runtime.services.media._cache import ImageCache
@@ -22,16 +24,28 @@ from assistant_runtime.services.media.models import (
     VideoStatusResponse,
 )
 
-# Provider prefix → generator function (images)
-_PROVIDER_GENERATORS: dict[str, object] = {
-    "openai": generate_openai,
-    "google": generate_google,
+# The provider functions are looked up by name at call time (see ``_call_provider``),
+# so the module attributes below can be replaced by tests and hosts.
+__all__ = ["MediaService"]
+_PROVIDER_FUNCTIONS = (
+    generate_google,
+    generate_openai,
+    poll_luma,
+    poll_runway,
+    submit_luma,
+    submit_runway,
+)
+
+# Provider prefix → the generator function's name in this module (images).
+_PROVIDER_GENERATORS: dict[str, str] = {
+    "openai": "generate_openai",
+    "google": "generate_google",
 }
 
-# Provider prefix → (submit_fn, poll_fn) for video
-_VIDEO_PROVIDERS: dict[str, tuple] = {
-    "runway": (submit_runway, poll_runway),
-    "luma": (submit_luma, poll_luma),
+# Provider prefix → (submit function name, poll function name) for video
+_VIDEO_PROVIDERS: dict[str, tuple[str, str]] = {
+    "runway": ("submit_runway", "poll_runway"),
+    "luma": ("submit_luma", "poll_luma"),
 }
 
 
@@ -289,48 +303,34 @@ class MediaService:
         return provider, model_name
 
     @staticmethod
-    async def _submit_video(
-        provider: str,
-        model_name: str,
-        prompt: str,
-        duration: int,
-    ) -> str:
-        """Dispatch video submission to the appropriate provider. Returns provider job ID."""
-        if provider == "runway":
-            return await submit_runway(prompt=prompt, model_name=model_name, duration=duration)
-        if provider == "luma":
-            return await submit_luma(prompt=prompt, model_name=model_name, duration=duration)
-        raise ProviderError(f"No video handler for provider '{provider}'")
+    async def _submit_video(provider: str, model_name: str, prompt: str, duration: int) -> str:
+        """Submit to the provider from the table. Returns the provider's job id."""
+        submit, _poll = _video_provider(provider)
+        return await submit(prompt=prompt, model_name=model_name, duration=duration)
 
     @staticmethod
     def _get_video_poll_fn(provider: str):
-        """Return the poll function for the given video provider."""
-        if provider == "runway":
-            return poll_runway
-        if provider == "luma":
-            return poll_luma
-        raise ProviderError(f"No video poll handler for provider '{provider}'")
+        """The poll function for the provider, from the table."""
+        return _video_provider(provider)[1]
 
     @staticmethod
     async def _call_provider(
-        provider: str,
-        model_name: str,
-        prompt: str,
-        size: str,
-        quality: str,
+        provider: str, model_name: str, prompt: str, size: str, quality: str
     ) -> GeneratedImage:
-        """Dispatch to the appropriate provider function."""
-        if provider == "openai":
-            return await generate_openai(
-                prompt=prompt,
-                model_name=model_name,
-                size=size,
-                quality=quality,
-            )
+        """Generate through the image provider from the table."""
+        name = _PROVIDER_GENERATORS.get(provider)
+        if name is None:
+            raise ProviderError(f"No handler for provider '{provider}'")
+        generate = globals()[name]
         if provider == "google":
-            return await generate_google(
-                prompt=prompt,
-                model_name=model_name,
-                size=size,
-            )
-        raise ProviderError(f"No handler for provider '{provider}'")
+            # Imagen has no quality parameter.
+            return await generate(prompt=prompt, model_name=model_name, size=size)
+        return await generate(prompt=prompt, model_name=model_name, size=size, quality=quality)
+
+
+def _video_provider(provider: str) -> tuple[Any, Any]:
+    names = _VIDEO_PROVIDERS.get(provider)
+    if names is None:
+        raise ProviderError(f"No video handler for provider '{provider}'")
+    # Resolved at call time so the module attributes can be replaced (tests, hosts).
+    return globals()[names[0]], globals()[names[1]]

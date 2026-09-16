@@ -24,7 +24,7 @@ async def execute_subagent(
     usage: RunUsage | None = None,
     model_override: str | None = None,
     thinking_budget_override: int | None = None,
-    max_iterations_override: int | None = None,
+    usage_limits: UsageLimits | None = None,
 ) -> dict[str, Any]:
     """Execute a subagent with the given definition and task.
 
@@ -37,10 +37,10 @@ async def execute_subagent(
     """
     start_time = time.monotonic()
 
-    # Resolve configuration
-    model = model_override or definition.default_model
-    thinking_budget = thinking_budget_override or definition.default_thinking_budget
-    max_iterations = max_iterations_override or definition.max_iterations
+    # Resolve configuration: the runtime overrides, else the service defaults.
+    model = model_override
+    thinking_budget = thinking_budget_override
+    max_iterations = definition.max_iterations
 
     # Build system prompt with optional context
     system_prompt = definition.system_prompt
@@ -65,7 +65,7 @@ async def execute_subagent(
         result = await agent.run(
             task,
             usage=usage_tracker,
-            usage_limits=UsageLimits(request_limit=max_iterations),
+            usage_limits=_subagent_limits(usage_limits, max_iterations),
         )
 
         # Extract metadata from message history
@@ -102,6 +102,25 @@ async def execute_subagent(
             "error_code": "SUBAGENT_EXECUTION_ERROR",
             "subagent_id": definition.id,
         }
+
+
+def _subagent_limits(host: UsageLimits | None, max_iterations: int) -> UsageLimits:
+    """The host's per-turn ceilings, with the subagent's own request limit on top."""
+    if host is None:
+        return UsageLimits(request_limit=max_iterations)
+    request_limit = (
+        min(max_iterations, host.request_limit)
+        if host.request_limit is not None
+        else max_iterations
+    )
+    return UsageLimits(
+        request_limit=request_limit,
+        tool_calls_limit=host.tool_calls_limit,
+        input_tokens_limit=host.input_tokens_limit,
+        output_tokens_limit=host.output_tokens_limit,
+        total_tokens_limit=host.total_tokens_limit,
+        cost_limit=host.cost_limit,
+    )
 
 
 def _extract_metadata(messages: list, duration: float) -> dict[str, Any]:

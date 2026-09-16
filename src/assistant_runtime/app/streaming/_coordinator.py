@@ -52,21 +52,6 @@ class EventCoordinator:
         """Number of protocol events emitted so far."""
         return self._event_count
 
-    @property
-    def debug_event_count(self) -> int:
-        """Number of debug events emitted so far."""
-        return self._debug_event_count
-
-    @property
-    def has_streamed_text(self) -> bool:
-        """Whether any text_delta events were emitted via emit_text_delta."""
-        return self._streamed_text
-
-    @property
-    def has_streamed_thinking(self) -> bool:
-        """Whether any thinking_delta events were emitted via emit_thinking_delta."""
-        return self._streamed_thinking
-
     def try_started(self) -> dict[str, Any] | None:
         """Emit agent_status(started) if not already emitted."""
         if self._started_emitted:
@@ -102,6 +87,7 @@ class EventCoordinator:
         error_type: str | None = None,
         usage: dict[str, int] | None = None,
         pending_tool_call: dict[str, Any] | None = None,
+        decision: str | None = None,
     ) -> dict[str, Any] | None:
         """Emit final_response if not already emitted.
 
@@ -129,6 +115,7 @@ class EventCoordinator:
             error_type=error_type,
             usage=usage,
             pending_tool_call=pending_tool_call,
+            decision=decision,
         )
         self._event_count += 1  # count but never raise
         return event

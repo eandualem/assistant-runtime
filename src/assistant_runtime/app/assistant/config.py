@@ -1,5 +1,7 @@
 """Configuration for the assistant module."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -62,11 +64,49 @@ class AssistantConfig(BaseModel):
             "of a TOML profile file. None = neutral. An AssistantDefinition.profile wins."
         ),
     )
+    profiles: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional assistant profiles registered at startup: built-in names or TOML paths. "
+            "Requests select registered profile names, never file paths."
+        ),
+    )
     session_ttl_hours: int = Field(
         default=24,
         ge=1,
         le=168,
         description="Session TTL in hours.",
+    )
+    codex_service_tier: Literal["default", "fast"] | None = Field(
+        default=None,
+        description=(
+            "Default Codex service tier for a turn (the tunable); unset falls back to "
+            "LLM__CODEX_SERVICE_TIER. A request may choose its own unless request_service_tier "
+            "is false. Only Codex-authenticated openai: models are affected."
+        ),
+    )
+    request_service_tier: bool = Field(
+        default=True,
+        description=(
+            "Whether a request's config may pick the Codex service tier. True, the "
+            "development default, lets a host ask for fast processing per turn; a deployment "
+            "sets false to pin the configured tier (fast costs more subscription credits)."
+        ),
+    )
+    subagent_model: str | None = Field(
+        default=None,
+        description="Model for run_subagent (provider:name); unset uses the primary model.",
+    )
+    subagent_thinking_budget: int | None = Field(
+        default=None, ge=1, le=100_000, description="Thinking budget for run_subagent."
+    )
+    request_models: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Model ids a request's config may select (every *_model tunable). Empty, the "
+            "development default, allows any model; a deployment lists the ones its callers "
+            "may use, and a request naming another keeps the host's value."
+        ),
     )
 
 
@@ -91,6 +131,7 @@ class TunableOverrides(BaseModel):
     default_video_model: str | None = None
     subagent_model: str | None = None
     subagent_thinking_budget: int | None = Field(default=None, ge=1, le=100_000)
+    codex_service_tier: Literal["default", "fast"] | None = None
 
 
 TUNABLE_FIELDS: frozenset[str] = frozenset(TunableOverrides.model_fields)

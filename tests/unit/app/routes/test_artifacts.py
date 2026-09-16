@@ -184,3 +184,89 @@ class TestWrites:
             "durable": False,
         }
         assert (await client.delete("/artifacts/policies")).status_code == 403
+
+
+class TestProfileSelection:
+    @pytest.fixture
+    async def artifacts(self):
+        other = AssistantProfile(
+            name="clinic",
+            artifacts=(
+                ArtifactDefinition(name="instructions", default="Clinic help"),
+                ArtifactDefinition(name="policies", policy=ArtifactPolicy(host_edit=False)),
+            ),
+        )
+        service = ArtifactService(ArtifactsConfig(), PROFILE, profiles=[other])
+        await service.start()
+        yield service
+        await service.stop()
+
+    async def test_discovery_and_mutations_are_scoped(self, client, artifacts):
+        for params, selected in [({}, "shop"), ({"profile": "clinic"}, "clinic")]:
+            response = await client.get("/artifacts/profile", params=params)
+            assert response.status_code == 200
+            assert response.json()["name"] == selected
+            assert response.json()["available_profiles"] == ["shop", "clinic"]
+        params = {"profile": "clinic"}
+        response = await client.post(
+            "/artifacts/instructions/propose", params=params, json={"content": "Clinic v1"}
+        )
+        assert response.status_code == 201
+        assert (await client.get("/artifacts/instructions", params=params)).json()[
+            "content"
+        ] == "Clinic help"
+        assert (
+            await client.post("/artifacts/instructions/approve/1", params=params)
+        ).status_code == 200
+        assert (
+            await client.patch(
+                "/artifacts/instructions", params=params, json={"content": "Clinic v2"}
+            )
+        ).status_code == 200
+        history = await client.get("/artifacts/instructions/history", params=params)
+        assert [row["content"] for row in history.json()] == ["Clinic v2", "Clinic v1"]
+        assert (
+            await client.post("/artifacts/instructions/rollback/1", params=params)
+        ).status_code == 200
+        assert (await client.get("/artifacts/instructions", params=params)).json()[
+            "content"
+        ] == "Clinic v1"
+        assert (
+            await client.post(
+                "/artifacts/instructions/actions",
+                params=params,
+                json={"action": "update", "content": "Clinic v3"},
+            )
+        ).status_code == 200
+        assert (await client.get("/artifacts", params=params)).json()[0]["content"] == "Clinic v3"
+        assert (await client.get("/artifacts")).json() == []
+        assert (await artifacts.active_texts())["instructions"] == "Help"
+        assert (
+            await client.patch("/artifacts/policies", params=params, json={"content": "Changed"})
+        ).status_code == 403
+        assert (await client.delete("/artifacts/instructions", params=params)).status_code == 200
+        assert (await client.get("/artifacts/instructions", params=params)).json()[
+            "content"
+        ] == "Clinic help"
+
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("get", "/artifacts", None),
+            ("get", "/artifacts/profile", None),
+            ("get", "/artifacts/instructions", None),
+            ("get", "/artifacts/instructions/history", None),
+            ("post", "/artifacts/instructions/propose", {"content": "x"}),
+            ("patch", "/artifacts/instructions", {"content": "x"}),
+            ("post", "/artifacts/instructions/approve/1", None),
+            ("post", "/artifacts/instructions/rollback/1", None),
+            ("post", "/artifacts/instructions/actions", {"action": "update", "content": "x"}),
+            ("delete", "/artifacts/instructions", None),
+        ],
+    )
+    async def test_unknown_profile_is_404_without_default_fallback(
+        self, client, method, path, body
+    ):
+        response = await client.request(method, path, params={"profile": "missing"}, json=body)
+        assert response.status_code == 404
+        assert "Unknown assistant profile" in response.json()["detail"]

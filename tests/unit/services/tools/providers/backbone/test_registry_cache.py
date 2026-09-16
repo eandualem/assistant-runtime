@@ -17,20 +17,20 @@ MODULE = "assistant_runtime.services.tools.providers.backbone._registry_cache"
 
 SAMPLE_AGENTS = [
     {
-        "name": "leo",
-        "display_name": "Leo",
+        "name": "planner",
+        "display_name": "Planner",
         "role": "Strategy Co-Architect",
-        "session": "leo",
+        "session": "planner",
         "type": "entity",
-        "home": "/srv/agents/leo",
+        "home": "/srv/agents/planner",
     },
     {
-        "name": "ike",
-        "display_name": "Ike",
+        "name": "reviewer",
+        "display_name": "Reviewer",
         "role": "Core Orchestrator",
-        "session": "ike",
+        "session": "reviewer",
         "type": "entity",
-        "home": "/srv/agents/ike",
+        "home": "/srv/agents/reviewer",
     },
     {
         "name": "agent-backbone",
@@ -156,10 +156,10 @@ class TestGetAgentInfo:
         cache = AgentRegistryCache()
         cache._agents = SAMPLE_AGENTS
 
-        info = cache.get_agent_info("ike")
+        info = cache.get_agent_info("reviewer")
 
         assert info is not None
-        assert info["name"] == "ike"
+        assert info["name"] == "reviewer"
         assert info["role"] == "Core Orchestrator"
 
     async def test_returns_none_for_unknown(self):
@@ -173,74 +173,13 @@ class TestGetAgentInfo:
     async def test_returns_none_when_cache_empty(self):
         cache = AgentRegistryCache()
 
-        info = cache.get_agent_info("leo")
+        info = cache.get_agent_info("planner")
 
         assert info is None
 
 
 # ---------------------------------------------------------------------------
 # TestGetWorkingDirectory
-# ---------------------------------------------------------------------------
-
-
-class TestGetWorkingDirectory:
-    async def test_returns_home_field(self):
-        cache = AgentRegistryCache()
-        cache._agents = SAMPLE_AGENTS
-
-        home = cache.get_working_directory("leo")
-
-        assert home == "/srv/agents/leo"
-
-    async def test_returns_none_when_no_home(self):
-        cache = AgentRegistryCache()
-        cache._agents = [{"name": "minimal", "session": "minimal", "type": "entity"}]
-
-        home = cache.get_working_directory("minimal")
-
-        assert home is None
-
-    async def test_returns_none_for_unknown_session(self):
-        cache = AgentRegistryCache()
-        cache._agents = SAMPLE_AGENTS
-
-        home = cache.get_working_directory("nonexistent")
-
-        assert home is None
-
-
-# ---------------------------------------------------------------------------
-# TestBuildEcosystemLines
-# ---------------------------------------------------------------------------
-
-
-class TestBuildEcosystemLines:
-    async def test_builds_lines_from_agents(self):
-        cache = AgentRegistryCache()
-        cache._agents = SAMPLE_AGENTS
-
-        lines = cache.build_ecosystem_lines()
-
-        assert len(lines) == 4  # header + 3 agents
-        assert lines[0] == "Agents and systems you work with:"
-        assert "Leo" in lines[1]
-        assert "Strategy Co-Architect" in lines[1]
-        assert "entity" in lines[1]
-        assert "[session: leo]" in lines[1]
-        assert "Ike" in lines[2]
-        assert "Agent Backbone" in lines[3]
-        assert "coding-agent" in lines[3]
-
-    async def test_empty_when_no_cache(self):
-        cache = AgentRegistryCache()
-
-        lines = cache.build_ecosystem_lines()
-
-        assert lines == []
-
-
-# ---------------------------------------------------------------------------
-# TestModuleSingleton
 # ---------------------------------------------------------------------------
 
 
@@ -257,3 +196,15 @@ class TestModuleSingleton:
         second = get_registry_cache()
 
         assert first is not second
+
+
+def test_a_fresh_process_gets_a_cache_without_a_reset():
+    """The module-level singleton must exist before the first lookup (a NameError shipped once)."""
+    import importlib
+
+    from assistant_runtime.services.tools.providers.backbone import _registry_cache
+
+    module = importlib.reload(_registry_cache)
+    assert module._instance is None
+    assert isinstance(module.get_registry_cache(), module.AgentRegistryCache)
+    module._reset_registry_cache()

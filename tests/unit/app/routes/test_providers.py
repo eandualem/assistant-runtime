@@ -206,219 +206,96 @@ class TestListProviders:
 
 
 # ---------------------------------------------------------------------------
-# PUT /api/providers/{provider}/api-key
+# PUT / DELETE /api/providers/{provider}/api-key — through LlmService's key store
 # ---------------------------------------------------------------------------
+
+
+def _llm_with_key_store(*, store_error: Exception | None = None, deleted: bool = True):
+    llm = _make_mock_llm_service()
+    llm.store_provider_key = AsyncMock(side_effect=store_error)
+    llm.delete_provider_key = AsyncMock(side_effect=store_error, return_value=deleted)
+    return llm
 
 
 class TestSetApiKey:
     @pytest.mark.asyncio
-    async def test_set_api_key_stores_and_reloads(self):
-        """PUT encrypts, stores in DB, and hot-reloads the LLM service."""
-        fernet = Fernet(Fernet.generate_key())
-        oauth = _make_mock_oauth_service(configured=True, fernet=fernet)
-        db = _make_mock_db()
-        llm = _make_mock_llm_service()
-
-        app = _make_app(llm_service=llm, oauth_service=oauth, db_service=db)
-
-        with pytest.MonkeyPatch.context() as mp:
-            mock_repo_cls = MagicMock()
-            mock_repo_inst = MagicMock()
-            mock_repo_inst.upsert = AsyncMock()
-            mock_repo_cls.return_value = mock_repo_inst
-            mp.setattr(
-                "assistant_runtime.services.database.repositories.OAuthTokenRepository",
-                mock_repo_cls,
+    async def test_set_api_key_stores_through_the_service(self):
+        llm = _llm_with_key_store()
+        app = _make_app(llm_service=llm)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.put(
+                "/api/providers/anthropic/api-key", json={"api_key": "sk-ant-test-key-1234"}
             )
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                response = await c.put(
-                    "/api/providers/anthropic/api-key",
-                    json={"api_key": "sk-ant-test-key-1234"},
-                )
-
         assert response.status_code == 200
-        data = response.json()
-        assert data["provider"] == "anthropic"
-        assert data["status"] == "configured"
-        assert data["api_key_preview"] == "...1234"
-
-        # Verify the repo was called with an encrypted value
-        upsert_kwargs = mock_repo_inst.upsert.call_args.kwargs
-        assert upsert_kwargs["provider"] == "anthropic"
-        # The encrypted_api_key should be a Fernet token — decryptable
-        decrypted = fernet.decrypt(upsert_kwargs["encrypted_api_key"].encode()).decode()
-        assert decrypted == "sk-ant-test-key-1234"
-
-        # Verify the session was committed
-        db._mock_session.commit.assert_awaited_once()
-
-        # Verify hot-reload was called
-        llm.reload_provider_key.assert_awaited_once_with("anthropic", "sk-ant-test-key-1234")
+        assert response.json() == {
+            "provider": "anthropic",
+            "status": "configured",
+            "api_key_preview": "...1234",
+        }
+        llm.store_provider_key.assert_awaited_once_with("anthropic", "sk-ant-test-key-1234")
 
     @pytest.mark.asyncio
     async def test_set_api_key_rejects_unknown_provider(self):
-        """PUT with an invalid provider name returns 400."""
-        oauth = _make_mock_oauth_service()
-        db = _make_mock_db()
-        app = _make_app(oauth_service=oauth, db_service=db)
-
+        llm = _llm_with_key_store()
+        app = _make_app(llm_service=llm)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.put(
-                "/api/providers/invalid-provider/api-key",
-                json={"api_key": "sk-test"},
-            )
-
+            response = await c.put("/api/providers/bedrock/api-key", json={"api_key": "sk-test"})
         assert response.status_code == 400
         assert "Unknown provider" in response.json()["detail"]
-
-    @pytest.mark.asyncio
-    async def test_set_api_key_requires_encryption(self):
-        """PUT returns 503 when OAuth service is not configured (no encryption)."""
-        db = _make_mock_db()
-        # No oauth_service on app.state at all
-        app = _make_app(db_service=db)
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.put(
-                "/api/providers/anthropic/api-key",
-                json={"api_key": "sk-test"},
-            )
-
-        assert response.status_code == 503
-        assert "Encryption not configured" in response.json()["detail"]
+        llm.store_provider_key.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_set_api_key_rejects_empty_key(self):
-        """PUT with empty api_key returns 422 (Pydantic validation)."""
-        oauth = _make_mock_oauth_service()
-        db = _make_mock_db()
-        app = _make_app(oauth_service=oauth, db_service=db)
-
+        app = _make_app(llm_service=_llm_with_key_store())
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.put(
-                "/api/providers/anthropic/api-key",
-                json={"api_key": ""},
-            )
-
+            response = await c.put("/api/providers/anthropic/api-key", json={"api_key": ""})
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_set_api_key_503_when_fernet_is_none(self):
-        """PUT returns 503 when oauth is configured=True but _fernet is None."""
-        oauth = SimpleNamespace(configured=True, _fernet=None)
-        db = _make_mock_db()
-        app = _make_app(oauth_service=oauth, db_service=db)
+    async def test_set_api_key_503_when_the_store_is_unavailable(self):
+        from assistant_runtime.services.llm.exceptions import ProviderKeyStoreUnavailableError
 
+        llm = _llm_with_key_store(
+            store_error=ProviderKeyStoreUnavailableError("Database not reachable")
+        )
+        app = _make_app(llm_service=llm)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.put(
-                "/api/providers/anthropic/api-key",
-                json={"api_key": "sk-test"},
-            )
-
+            response = await c.put("/api/providers/anthropic/api-key", json={"api_key": "sk-x"})
         assert response.status_code == 503
-        assert "cipher not initialized" in response.json()["detail"]
-
-    @pytest.mark.asyncio
-    async def test_set_api_key_503_when_no_db(self):
-        """PUT returns 503 when database_service is not available."""
-        oauth = _make_mock_oauth_service()
-        # No db_service
-        app = _make_app(oauth_service=oauth)
-
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.put(
-                "/api/providers/anthropic/api-key",
-                json={"api_key": "sk-test"},
-            )
-
-        assert response.status_code == 503
-        assert "Database service not available" in response.json()["detail"]
-
-
-# ---------------------------------------------------------------------------
-# DELETE /api/providers/{provider}/api-key
-# ---------------------------------------------------------------------------
+        assert "Database not reachable" in response.json()["detail"]
 
 
 class TestDeleteApiKey:
     @pytest.mark.asyncio
-    async def test_delete_api_key_removes_from_db_and_service(self):
-        """DELETE removes the key from the database and the LLM service."""
-        db = _make_mock_db()
-        llm = _make_mock_llm_service()
-
-        app = _make_app(llm_service=llm, db_service=db)
-
-        with pytest.MonkeyPatch.context() as mp:
-            mock_repo_cls = MagicMock()
-            mock_repo_inst = MagicMock()
-            mock_repo_inst.delete = AsyncMock(return_value=True)
-            mock_repo_cls.return_value = mock_repo_inst
-            mp.setattr(
-                "assistant_runtime.services.database.repositories.OAuthTokenRepository",
-                mock_repo_cls,
-            )
-
+    async def test_delete_api_key_reports_whether_one_was_stored(self):
+        for deleted in (True, False):
+            llm = _llm_with_key_store(deleted=deleted)
+            app = _make_app(llm_service=llm)
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 response = await c.delete("/api/providers/anthropic/api-key")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["provider"] == "anthropic"
-        assert data["status"] == "removed"
-        assert data["was_stored"] is True
-
-        # Verify DB commit
-        db._mock_session.commit.assert_awaited_once()
-
-        # Verify LLM service was told to remove the key
-        llm.remove_provider_key.assert_awaited_once_with("anthropic")
+            assert response.status_code == 200
+            assert response.json() == {
+                "provider": "anthropic",
+                "status": "removed",
+                "was_stored": deleted,
+            }
+            llm.delete_provider_key.assert_awaited_once_with("anthropic")
 
     @pytest.mark.asyncio
     async def test_delete_api_key_rejects_unknown_provider(self):
-        """DELETE with an invalid provider name returns 400."""
-        db = _make_mock_db()
-        app = _make_app(db_service=db)
-
+        app = _make_app(llm_service=_llm_with_key_store())
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.delete("/api/providers/not-a-provider/api-key")
-
+            response = await c.delete("/api/providers/bedrock/api-key")
         assert response.status_code == 400
-        assert "Unknown provider" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_delete_api_key_when_not_stored(self):
-        """DELETE when the key didn't exist returns was_stored=False."""
-        db = _make_mock_db()
-        llm = _make_mock_llm_service()
+    async def test_delete_api_key_503_when_the_store_is_unavailable(self):
+        from assistant_runtime.services.llm.exceptions import ProviderKeyStoreUnavailableError
 
-        app = _make_app(llm_service=llm, db_service=db)
-
-        with pytest.MonkeyPatch.context() as mp:
-            mock_repo_cls = MagicMock()
-            mock_repo_inst = MagicMock()
-            mock_repo_inst.delete = AsyncMock(return_value=False)
-            mock_repo_cls.return_value = mock_repo_inst
-            mp.setattr(
-                "assistant_runtime.services.database.repositories.OAuthTokenRepository",
-                mock_repo_cls,
-            )
-
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                response = await c.delete("/api/providers/openai/api-key")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["was_stored"] is False
-
-    @pytest.mark.asyncio
-    async def test_delete_api_key_503_when_no_db(self):
-        """DELETE returns 503 when database_service is not available."""
-        app = _make_app()  # no db_service
-
+        llm = _llm_with_key_store(
+            store_error=ProviderKeyStoreUnavailableError("Encryption not configured")
+        )
+        app = _make_app(llm_service=llm)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.delete("/api/providers/anthropic/api-key")
-
         assert response.status_code == 503
-        assert "Database service not available" in response.json()["detail"]

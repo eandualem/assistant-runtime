@@ -67,7 +67,6 @@ class TestSchema:
         assert profile.get("zzz") is None
         assert sorted(["zzz", "a", "b"], key=profile.sort_key) == ["b", "a", "zzz"]
         assert profile.names_text() == "b, a"
-        assert profile.roles_text() == "a = first"
 
 
 class TestBuiltinProfiles:

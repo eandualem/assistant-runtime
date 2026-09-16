@@ -86,6 +86,38 @@ def _all_offenders(forbidden: tuple[str, ...], allowed_top_level: tuple[str, ...
     return result
 
 
+def _module_of(parts: tuple[str, ...]) -> str:
+    """The module a file or import path belongs to: ``app/<name>``, ``services/<name>``, or the top dir."""
+    if parts[0] in ("app", "services") and len(parts) > 1:
+        return f"{parts[0]}/{parts[1]}"
+    return parts[0]
+
+
+def _private_cross_module_imports() -> list[str]:
+    """``_x`` files are private to their module; another module may not import them."""
+    result: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        rel = path.relative_to(SRC)
+        owner = _module_of(rel.parts)
+        for imported in _imported_modules(path):
+            if not imported.startswith(PACKAGE + "."):
+                continue
+            # Public package metadata, not a private module (exported in __all__).
+            if imported == f"{PACKAGE}.__version__":
+                continue
+            parts = imported.removeprefix(PACKAGE + ".").split(".")
+            private = [p for p in parts if p.startswith("_") and p != "__init__"]
+            if not private or _module_of(tuple(parts)) == owner:
+                continue
+            result.append(f"{rel}: {imported}")
+    return result
+
+
+def test_private_modules_stay_inside_their_module() -> None:
+    """A ``_``-prefixed file is imported only by files of the same module (AGENTS.md)."""
+    assert _private_cross_module_imports() == []
+
+
 def test_only_the_top_layer_imports_app() -> None:
     assert _all_offenders((f"{PACKAGE}.app",), APP_IMPORTERS) == []
 

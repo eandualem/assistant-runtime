@@ -9,9 +9,9 @@ a client knows whether versions survive a restart.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,7 @@ from assistant_runtime.services.artifacts.exceptions import (
     ArtifactPermissionError,
     ArtifactVersionNotFoundError,
     UnknownArtifactError,
+    UnknownProfileError,
 )
 from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.artifacts.models import Actor, MutationResult
@@ -56,6 +57,7 @@ class ArtifactActionRequest(BaseModel):
 
 _STATUS = {
     UnknownArtifactError: 422,
+    UnknownProfileError: 404,
     ArtifactPermissionError: 403,
     ArtifactConflictError: 409,
     ArtifactVersionNotFoundError: 404,
@@ -64,6 +66,20 @@ _STATUS = {
 
 def _http_error(exc: ArtifactError) -> HTTPException:
     return HTTPException(status_code=_STATUS.get(type(exc), 400), detail=str(exc))
+
+
+def _scoped_artifacts(
+    request: Request,
+    principal: PrincipalDep,
+    profile: str | None = Query(None, description="Registered assistant profile name"),
+) -> ArtifactService:
+    try:
+        return get_artifact_service(request).for_profile(profile)
+    except ArtifactError as exc:
+        raise _http_error(exc) from exc
+
+
+ScopedArtifactDep = Annotated[ArtifactService, Depends(_scoped_artifacts)]
 
 
 def _mutation_response(result: MutationResult, *, message: str) -> dict[str, Any]:
@@ -132,9 +148,8 @@ async def _activate(
 
 
 @router.get("")
-async def list_artifacts(request: Request, principal: PrincipalDep) -> list[dict]:
+async def list_artifacts(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> list[dict]:
     """Active versions of the profile's artifacts, in prompt order."""
-    artifacts = get_artifact_service(request)
     try:
         return [row.to_dict() for row in await artifacts.list_active()]
     except Exception as e:
@@ -143,9 +158,8 @@ async def list_artifacts(request: Request, principal: PrincipalDep) -> list[dict
 
 
 @router.get("/profile")
-async def get_profile(request: Request, principal: PrincipalDep) -> dict:
+async def get_profile(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> dict:
     """The profile: every artifact, its role, policy and whether a version is active."""
-    artifacts = get_artifact_service(request)
     try:
         active = {row.name: row.version for row in await artifacts.list_active()}
     except Exception as e:
@@ -154,6 +168,7 @@ async def get_profile(request: Request, principal: PrincipalDep) -> dict:
     profile = artifacts.profile
     return {
         "name": profile.name,
+        "available_profiles": list(artifacts.available_profiles),
         "durable": artifacts.durable,
         "artifacts": [
             {
@@ -173,9 +188,8 @@ async def get_profile(request: Request, principal: PrincipalDep) -> dict:
 
 
 @router.get("/{name}")
-async def get_artifact(name: str, request: Request, principal: PrincipalDep) -> dict:
+async def get_artifact(name: str, artifacts: ScopedArtifactDep, principal: PrincipalDep) -> dict:
     """The active version of an artifact, or its default text when none is active."""
-    artifacts = get_artifact_service(request)
     try:
         row = await artifacts.get_active(name)
     except ArtifactError as e:
@@ -201,12 +215,11 @@ async def get_artifact(name: str, request: Request, principal: PrincipalDep) -> 
 @router.get("/{name}/history")
 async def get_artifact_history(
     name: str,
-    request: Request,
+    artifacts: ScopedArtifactDep,
     principal: PrincipalDep,
     limit: int = Query(20, ge=1, le=100),
 ) -> list[dict]:
     """Version history for an artifact, newest first."""
-    artifacts = get_artifact_service(request)
     try:
         return [row.to_dict() for row in await artifacts.history(name, limit=limit)]
     except ArtifactError as e:
@@ -218,10 +231,9 @@ async def get_artifact_history(
 
 @router.post("/{name}/propose", status_code=201)
 async def propose_artifact(
-    name: str, body: ProposeRequest, request: Request, admin: AdminDep
+    name: str, body: ProposeRequest, artifacts: ScopedArtifactDep, admin: AdminDep
 ) -> dict:
     """Propose a new version of an artifact (inactive until approved)."""
-    artifacts = get_artifact_service(request)
     try:
         return await _propose(artifacts, name, body.content, admin.id, body.expected_version)
     except ArtifactError as e:
@@ -233,10 +245,9 @@ async def propose_artifact(
 
 @router.patch("/{name}")
 async def update_artifact(
-    name: str, body: UpdateRequest, request: Request, admin: AdminDep
+    name: str, body: UpdateRequest, artifacts: ScopedArtifactDep, admin: AdminDep
 ) -> dict:
     """Write a new version and activate it at once."""
-    artifacts = get_artifact_service(request)
     try:
         return await _update(artifacts, name, body.content, admin.id, body.expected_version)
     except ArtifactError as e:
@@ -247,9 +258,10 @@ async def update_artifact(
 
 
 @router.post("/{name}/approve/{version}")
-async def approve_artifact(name: str, version: int, request: Request, admin: AdminDep) -> dict:
+async def approve_artifact(
+    name: str, version: int, artifacts: ScopedArtifactDep, admin: AdminDep
+) -> dict:
     """Approve (activate) a specific version of an artifact."""
-    artifacts = get_artifact_service(request)
     try:
         return await _activate(artifacts, name, version, admin.id, rollback=False)
     except ArtifactError as e:
@@ -260,9 +272,10 @@ async def approve_artifact(name: str, version: int, request: Request, admin: Adm
 
 
 @router.post("/{name}/rollback/{version}")
-async def rollback_artifact(name: str, version: int, request: Request, admin: AdminDep) -> dict:
+async def rollback_artifact(
+    name: str, version: int, artifacts: ScopedArtifactDep, admin: AdminDep
+) -> dict:
     """Reactivate an earlier version of an artifact."""
-    artifacts = get_artifact_service(request)
     try:
         return await _activate(artifacts, name, version, admin.id, rollback=True)
     except ArtifactError as e:
@@ -274,10 +287,9 @@ async def rollback_artifact(name: str, version: int, request: Request, admin: Ad
 
 @router.post("/{name}/actions")
 async def artifact_action(
-    name: str, body: ArtifactActionRequest, request: Request, admin: AdminDep
+    name: str, body: ArtifactActionRequest, artifacts: ScopedArtifactDep, admin: AdminDep
 ) -> dict:
     """Unified action endpoint: approve, rollback, propose or update a named artifact."""
-    artifacts = get_artifact_service(request)
     try:
         if body.action in ("approve", "rollback"):
             if body.version is None:
@@ -301,9 +313,8 @@ async def artifact_action(
 
 
 @router.delete("/{name}")
-async def delete_artifact(name: str, request: Request, admin: AdminDep) -> dict:
+async def delete_artifact(name: str, artifacts: ScopedArtifactDep, admin: AdminDep) -> dict:
     """Delete every stored version; the profile's default text applies again."""
-    artifacts = get_artifact_service(request)
     try:
         count = await artifacts.delete(name, actor=Actor("host", admin.id))
     except ArtifactError as e:

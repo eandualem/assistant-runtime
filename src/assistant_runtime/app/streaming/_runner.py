@@ -25,21 +25,35 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic_ai import DeferredToolRequests, capture_run_messages
 from pydantic_ai.exceptions import RunCancelled, UsageLimitExceeded
-from pydantic_ai.messages import ModelMessage, ModelRequest, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.usage import RunUsage
 
-from assistant_runtime.app.assistant._serialization import (
-    build_assistant_message_content,
-)
-from assistant_runtime.app.assistant._stale_tools import ActionStatus
+from assistant_runtime.app.access.exceptions import AccessDeniedError
+from assistant_runtime.app.assistant import ActionStatus, build_assistant_message_content
 from assistant_runtime.app.assistant.exceptions import SessionError
+from assistant_runtime.app.assistant.models import HoldDecision
+from assistant_runtime.app.assistant.usage import (
+    cache_counts,
+    merge_usage,
+    response_service_tiers,
+    usage_dict,
+    with_auxiliary,
+)
 from assistant_runtime.app.streaming._agent_run import TurnPolicy, iterate_run
 from assistant_runtime.app.streaming._control import TurnControl
 from assistant_runtime.app.streaming._coordinator import EventCoordinator
@@ -56,22 +70,16 @@ from assistant_runtime.app.streaming._event_builder import (
     make_error_event,
 )
 from assistant_runtime.app.streaming._host_tool import pending_call_payloads, queued_payload
-from assistant_runtime.app.streaming._usage import (
-    cache_counts,
-    merge_usage,
-    usage_dict,
-    with_auxiliary,
-)
-from assistant_runtime.app.streaming.exceptions import StreamingError
+from assistant_runtime.app.streaming.exceptions import InvalidDecisionError, StreamingError
 from assistant_runtime.services.llm.exceptions import LLMCallError, classify_llm_error
-from assistant_runtime.services.tools._request_context import (
+from assistant_runtime.services.tools.request_context import (
     assistant_request_context,
     get_current_telegram_chat_binding,
 )
 from assistant_runtime.services.tracing import create_request_trace
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant._session_store import SessionStore
+    from assistant_runtime.app.assistant import SessionStore
     from assistant_runtime.app.assistant.interface import AssistantService
     from assistant_runtime.app.assistant.models import AgentSetupContext
     from assistant_runtime.app.streaming._turn import TurnPlan
@@ -97,17 +105,46 @@ def format_error_message(message: str, trace_id: str | None) -> str:
     return f"{message} [trace_id: {trace_id}]"
 
 
-def _describe_error(exc: Exception) -> tuple[str, str, bool]:
-    """``(message, error_type, retry_allowed)`` for an exception raised by the run."""
+def _describe_error(exc: Exception, *, detail: bool = True) -> tuple[str, str, bool]:
+    """``(message, error_type, retry_allowed)`` for an exception raised by the run.
+
+    ``detail`` (``STREAMING__CLIENT_ERROR_DETAIL``) decides whether the
+    exception text itself reaches the client; the log always has it.
+    """
+    if isinstance(exc, InvalidDecisionError):
+        return str(exc), "invalid_decision", False
     if isinstance(exc, LLMCallError):
         llm_error: LLMCallError | None = exc
     else:
         classified = classify_llm_error(exc)
         llm_error = None if classified.error_category == "UNKNOWN" else classified
     if llm_error is None:
-        return f"Request failed: {exc.__class__.__name__}: {exc}", "internal", False
+        message = f"Request failed: {exc.__class__.__name__}: {exc}" if detail else "Request failed"
+        return message, "internal", False
     error_type = _LLM_ERROR_TYPES.get(llm_error.error_category, "provider_error")
-    return str(llm_error), error_type, llm_error.retry_allowed
+    message = str(llm_error) if detail else f"LLM call failed ({llm_error.error_category})"
+    return message, error_type, llm_error.retry_allowed
+
+
+def _keep_row_auxiliary(
+    usage: dict[str, Any] | None, row: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Keep row-owned memory totals and auxiliary sections missing from a snapshot."""
+    existing = ((row or {}).get("usage") or {}).get("auxiliary") or {}
+    for name, part in existing.items():
+        auxiliary = (usage or {}).get("auxiliary") or {}
+        if name == "working_memory" and name in auxiliary:
+            # Background extraction owns this cumulative total; the turn's
+            # earlier copy must neither overwrite it nor be added a second time.
+            usage = {**usage, "auxiliary": {**auxiliary, name: part}}
+        elif name not in auxiliary:
+            usage = with_auxiliary(usage, name, part)
+    return usage
+
+
+def _persistence_failure(what: str, exc: BaseException, *, detail: bool) -> str:
+    """The client-visible text for a snapshot that could not be saved."""
+    return f"{what} could not be saved: {exc}" if detail else f"{what} could not be saved"
 
 
 @dataclass
@@ -119,6 +156,7 @@ class _RunState:
     assistant_segments: list[dict[str, Any]] | None = None
     run_usage: Any = None
     usage: dict[str, int] | None = None
+    service_tiers: list[dict[str, Any]] | None = None
     output: Any = None
     final_output: str | None = None
     pending_tool_call: dict[str, Any] | None = None
@@ -143,6 +181,7 @@ class TurnRunner:
         history: HistoryService,
         assistant_service: AssistantService,
         database_service: DatabaseService | None,
+        background: Callable[..., None] | None = None,
     ) -> None:
         self._config = config
         self._sessions = sessions
@@ -150,6 +189,8 @@ class TurnRunner:
         self._history = history
         self._assistant = assistant_service
         self._db = database_service
+        # Schedules post-turn work; without it the work runs inline before ``completed``.
+        self._background = background
 
     async def run(
         self, plan: TurnPlan, *, control: TurnControl | None = None
@@ -157,7 +198,7 @@ class TurnRunner:
         """Execute a turn, persisting cancellation before its terminal envelope."""
         control = control or TurnControl()
         coordinator = EventCoordinator(self._config.max_events_per_stream)
-        emit_debug = self._config.emit_debug_events
+        emit_debug = self._config.emit_debug_events and plan.request.output_mode != "host_tools"
         started_at = time.monotonic()
         trace_id = str(uuid.uuid4())
         request = plan.request
@@ -190,6 +231,7 @@ class TurnRunner:
                     tool_name=plan.next_pending["tool_name"],
                     assistant_message_id=plan.assistant_message_id,
                     batch=plan.pending_batch,
+                    output_mode=request.output_mode,
                 )
                 state.pending_tool_call = plan.next_pending
                 control.accepting_cancel = False
@@ -200,6 +242,20 @@ class TurnRunner:
                     message_id=plan.assistant_message_id,
                     usage=state.stored_usage or state.usage,
                     pending_tool_call=plan.next_pending,
+                    decision="pending" if request.output_mode == "host_tools" else None,
+                )
+                if final:
+                    yield final
+                return
+            if plan.receipt_only:
+                control.accepting_cancel = False
+                final = coordinator.try_final_response(
+                    None,
+                    resolved_model,
+                    session_id=session_id,
+                    message_id=plan.assistant_message_id,
+                    usage=state.stored_usage or state.usage,
+                    decision="completed",
                 )
                 if final:
                     yield final
@@ -221,7 +277,11 @@ class TurnRunner:
             )
             control.check_cancelled()
             resolved_model = ctx.resolved_model
-            state.history = self._history.processor(session_context)
+            state.history = (
+                None
+                if request.output_mode == "host_tools"
+                else self._history.processor(session_context)
+            )
             if emit_debug:
                 for event in self._setup_debug_events(ctx, session_id):
                     yield coordinator.track_debug(event)
@@ -274,6 +334,9 @@ class TurnRunner:
                 message_id=plan.assistant_message_id,
                 usage=state.stored_usage or state.usage,
                 pending_tool_call=state.pending_tool_call,
+                decision=("pending" if state.pending_tool_call else "hold")
+                if request.output_mode == "host_tools"
+                else None,
             )
             if final:
                 yield final
@@ -286,10 +349,12 @@ class TurnRunner:
                 logger.exception(
                     "Cancelled turn snapshot could not be saved", session_id=session_id
                 )
-                events = self._terminal_error_events(
+                events = self._outcome_events(
                     coordinator,
                     session_id=session_id,
-                    message=f"Cancelled turn could not be saved: {exc}",
+                    message=_persistence_failure(
+                        "Cancelled turn", exc, detail=self._config.client_error_detail
+                    ),
                     error_type="persistence_error",
                     retry_allowed=False,
                     trace_id=trace_id,
@@ -299,7 +364,7 @@ class TurnRunner:
                 )
             else:
                 if isinstance(cancellation, TimeoutError):
-                    events = self._terminal_error_events(
+                    events = self._outcome_events(
                         coordinator,
                         session_id=session_id,
                         message=f"Request timed out after {self._config.stream_timeout_seconds}s",
@@ -311,14 +376,19 @@ class TurnRunner:
                         emit_debug=emit_debug,
                     )
                 else:
-                    events = self._cancelled_events(
+                    events = self._outcome_events(
                         coordinator,
-                        plan,
-                        state,
-                        model=resolved_model,
+                        session_id=session_id,
+                        message="Request cancelled",
+                        error_type="cancelled",
+                        retry_allowed=False,
                         trace_id=trace_id,
+                        model=resolved_model,
                         phase=phase,
                         emit_debug=emit_debug,
+                        message_id=plan.assistant_message_id,
+                        content="",
+                        usage=state.usage,
                     )
             for event in events:
                 yield event
@@ -330,10 +400,12 @@ class TurnRunner:
                 await self._persist_cancelled(plan, state, interrupted=False)
             except Exception as persist_exc:
                 logger.exception("Usage-limited turn could not be saved", session_id=session_id)
-                events = self._terminal_error_events(
+                events = self._outcome_events(
                     coordinator,
                     session_id=session_id,
-                    message=f"Usage-limited turn could not be saved: {persist_exc}",
+                    message=_persistence_failure(
+                        "Usage-limited turn", persist_exc, detail=self._config.client_error_detail
+                    ),
                     error_type="persistence_error",
                     retry_allowed=False,
                     trace_id=trace_id,
@@ -346,34 +418,54 @@ class TurnRunner:
                 logger.info(
                     "[STREAM] Turn stopped by usage limit", session_id=session_id, error=str(exc)
                 )
-                events = self._exhausted_events(
+                events = self._outcome_events(
                     coordinator,
-                    plan,
-                    state,
+                    session_id=session_id,
                     message=str(exc),
-                    model=resolved_model,
+                    error_type="usage_limit",
+                    retry_allowed=False,
                     trace_id=trace_id,
+                    model=resolved_model,
                     phase=phase,
                     emit_debug=emit_debug,
+                    message_id=plan.assistant_message_id,
+                    content="",
+                    usage=state.stored_usage,
                 )
             for event in events:
                 yield event
         except StreamingError:
             raise
         except Exception as exc:
+            detail = self._config.client_error_detail
             if phase == "setup":
                 is_session_error = isinstance(exc, SessionError)
-                message = f"Setup failed: {exc}"
-                error_type = "session_error" if is_session_error else "setup_error"
-                retry_allowed = not is_session_error
+                # A session or access error describes the client's own request; its
+                # text stays whatever the detail setting (as in the setup envelope).
+                own_request = isinstance(exc, SessionError | AccessDeniedError)
+                message = f"Setup failed: {exc}" if detail or own_request else "Setup failed"
+                error_type = (
+                    "session_error"
+                    if is_session_error
+                    else "forbidden"
+                    if isinstance(exc, AccessDeniedError)
+                    else "setup_error"
+                )
+                retry_allowed = not own_request
             else:
-                message, error_type, retry_allowed = _describe_error(exc)
-            logger.warning("[STREAM] Turn failed", session_id=session_id, error=message)
+                message, error_type, retry_allowed = _describe_error(exc, detail=detail)
+            # The log always carries the exception; only the client text is redacted.
+            logger.warning(
+                "[STREAM] Turn failed",
+                session_id=session_id,
+                error_type=error_type,
+                error=f"{exc.__class__.__name__}: {exc}",
+            )
             # Calls the model made but nobody answered would block every later
             # prompt ("unprocessed tool calls"); resolve them like a cancellation.
             with contextlib.suppress(Exception):
                 await self._resolve_unanswered_calls(plan, state)
-            for event in self._terminal_error_events(
+            for event in self._outcome_events(
                 coordinator,
                 session_id=session_id,
                 message=message,
@@ -388,25 +480,16 @@ class TurnRunner:
         finally:
             control.accepting_cancel = False
             session_context.pop("current_assistant_message_id", None)
-            if (
+            update_memory = (
                 state.persisted
                 and not state.cancelled
                 and not control.token.cancelled
                 and plan.update_working_memory
                 and ctx is not None
                 and ctx.effective_config.enable_working_memory
-            ):
-                memory_usage = await self._assistant.update_working_memory(
-                    session_id, session_context, plan.turn_number
-                )
-                if memory_usage is not None:
-                    state.stored_usage = with_auxiliary(
-                        state.stored_usage, "working_memory", memory_usage
-                    )
-                    with contextlib.suppress(Exception):
-                        await self._sessions.update_message(
-                            session_id, plan.assistant_message_id, usage=state.stored_usage
-                        )
+            )
+            if update_memory and self._background is None:
+                await self._update_working_memory(plan, state)
             if emit_debug:
                 coordinator.flush_thinking()
                 if coordinator.accumulated_response:
@@ -429,11 +512,45 @@ class TurnRunner:
                 trace_id=trace_id,
                 user_message=plan.input_message,
                 duration_ms=duration_ms,
-                screenshot=request.images[0] if request.images else None,
             )
             completed = coordinator.try_completed()
             if completed:
                 yield completed
+            if update_memory and self._background is not None:
+                # An extra model call; the client already has its answer and
+                # the terminal event, so it runs after them. The session stays
+                # pinned until it is done so its context is the cached one.
+                self._sessions.pin(session_id)
+                self._background(
+                    self._update_working_memory(plan, state, release_pin=True),
+                    session_id=session_id,
+                )
+
+    async def _update_working_memory(
+        self, plan: TurnPlan, state: _RunState, *, release_pin: bool = False
+    ) -> None:
+        """Extract the working-memory delta and account its usage on the assistant row."""
+        try:
+            memory_usage = await self._assistant.update_working_memory(
+                plan.session_id,
+                plan.session_context,
+                plan.turn_number,
+                leaf_id=plan.assistant_message_id,
+            )
+            if memory_usage is None:
+                return
+            # Merge into the row's usage as it is now: a continuation may have
+            # added its own requests since this turn saved its snapshot.
+            current = self._sessions.get_message(plan.session_id, plan.assistant_message_id)
+            base = current.get("usage") if current is not None else state.stored_usage
+            state.stored_usage = with_auxiliary(base, "working_memory", memory_usage)
+            with contextlib.suppress(Exception):
+                await self._sessions.update_message(
+                    plan.session_id, plan.assistant_message_id, usage=state.stored_usage
+                )
+        finally:
+            if release_pin:
+                self._sessions.unpin(plan.session_id)
 
     async def _clear_pending(self, plan: TurnPlan) -> None:
         """Clear the turn's pending host action, in memory and on the session row."""
@@ -482,101 +599,6 @@ class TurnRunner:
         state.assistant_messages.append(ModelRequest(parts=interrupted))
         return True
 
-    @staticmethod
-    def _exhausted_events(
-        coordinator: EventCoordinator,
-        plan: TurnPlan,
-        state: _RunState,
-        *,
-        message: str,
-        model: str,
-        trace_id: str,
-        phase: str,
-        emit_debug: bool,
-    ) -> list[dict[str, Any]]:
-        """A turn stopped by a usage limit: saved work, one final/error/completed lifecycle."""
-        final = coordinator.try_final_response(
-            "",
-            model,
-            session_id=plan.session_id,
-            message_id=plan.assistant_message_id,
-            trace_id=trace_id,
-            error=True,
-            error_type="usage_limit",
-            usage=state.stored_usage,
-        )
-        debug = make_debug_error_event(
-            message,
-            error_type="usage_limit",
-            retry_allowed=False,
-            trace_id=trace_id,
-            model=model,
-            phase=phase,
-        )
-        coordinator.track_debug(debug)
-        events = [debug] if emit_debug else []
-        if final:
-            events.append(final)
-        events.append(
-            coordinator.track(
-                make_error_event(
-                    format_error_message(message, trace_id),
-                    error_type="usage_limit",
-                    trace_id=trace_id,
-                    terminal=True,
-                    retry_allowed=False,
-                )
-            )
-        )
-        return events
-
-    @staticmethod
-    def _cancelled_events(
-        coordinator: EventCoordinator,
-        plan: TurnPlan,
-        state: _RunState,
-        *,
-        model: str,
-        trace_id: str,
-        phase: str,
-        emit_debug: bool,
-    ) -> list[dict[str, Any]]:
-        """A saved cancellation is one final/error/completed lifecycle."""
-        final = coordinator.try_final_response(
-            # Only native event middleware may decide what text reaches clients.
-            # The saved snapshot can contain deliberately suppressed content.
-            "",
-            model,
-            session_id=plan.session_id,
-            message_id=plan.assistant_message_id,
-            trace_id=trace_id,
-            error=True,
-            error_type="cancelled",
-            usage=state.usage,
-        )
-        debug = make_debug_error_event(
-            "Request cancelled",
-            error_type="cancelled",
-            retry_allowed=False,
-            trace_id=trace_id,
-            model=model,
-            phase=phase,
-        )
-        coordinator.track_debug(debug)
-        events = [debug] if emit_debug else []
-        if final:
-            events.append(final)
-        events.append(
-            make_error_event(
-                "Request cancelled",
-                error_type="cancelled",
-                trace_id=trace_id,
-                terminal=True,
-                retry_allowed=False,
-            )
-        )
-        return events
-
     # --- pieces -----------------------------------------------------------------
 
     async def _run_agent(
@@ -600,7 +622,11 @@ class TurnRunner:
             async with asyncio.timeout(self._config.stream_timeout_seconds):
                 with (
                     assistant_request_context(
-                        session_id, screenshot=plan.screenshot, principal=plan.principal
+                        session_id,
+                        screenshot=plan.screenshot,
+                        profile_name=plan.request.profile,
+                        principal=plan.principal,
+                        host_context=plan.session_context.get("last_host_context"),
                     ),
                     capture_run_messages() as captured,
                 ):
@@ -613,8 +639,15 @@ class TurnRunner:
                             usage=usage,
                             deps=ctx.deps,
                             cancellation_token=control.token,
-                            capabilities=[
-                                TurnPolicy(self._sessions, session_id, plan.session_context),
+                            capabilities=[]
+                            if plan.request.output_mode == "host_tools"
+                            else [
+                                TurnPolicy(
+                                    self._sessions,
+                                    session_id,
+                                    plan.session_context,
+                                    profile_name=ctx.profile_name,
+                                ),
                                 *([state.history.capability()] if state.history else []),
                             ],
                         ) as run:
@@ -623,7 +656,9 @@ class TurnRunner:
                                 coordinator,
                                 config=self._config,
                                 tools=self._tools,
-                                emit_debug=self._config.emit_debug_events,
+                                emit_debug=self._config.emit_debug_events
+                                and plan.request.output_mode != "host_tools",
+                                silent=plan.request.output_mode == "host_tools",
                                 suppress_tool_call_ids=plan.suppress_tool_call_ids,
                                 host_tool_names=_host_tool_names(ctx),
                                 native_sink=control.native_sink,
@@ -674,11 +709,27 @@ class TurnRunner:
         state.assistant_messages.extend(new_messages)
         state.run_usage = result.usage
         state.usage = merge_usage(plan.prior_usage, usage_dict(result))
+        # Counts are cumulative within a turn; tiers arrive per response. Restored host
+        # history may lack provider_details, so retain the prior usage prefix explicitly.
+        if state.service_tiers is None:
+            state.service_tiers = list((plan.prior_usage or {}).get("service_tiers") or [])
+        state.service_tiers.extend(response_service_tiers(new_messages))
+        if state.usage is not None and state.service_tiers:
+            state.usage["service_tiers"] = list(state.service_tiers)
         if not isinstance(result, RunCancelled):
             state.output = result.output
 
     async def _persist(self, plan: TurnPlan, state: _RunState) -> None:
         """Create or extend the assistant row with everything run so far."""
+        if plan.request.output_mode == "host_tools":
+            state.assistant_messages = [
+                replace(
+                    m, parts=[p for p in m.parts if not isinstance(p, (TextPart, ThinkingPart))]
+                )
+                if isinstance(m, ModelResponse)
+                else m
+                for m in state.assistant_messages
+            ]
         content, segments, timestamp = build_assistant_message_content(
             state.assistant_messages, interrupted_status=state.interrupted_status
         )
@@ -691,6 +742,12 @@ class TurnRunner:
             else None
         )
         state.stored_usage = with_auxiliary(state.usage, "summarization", summarisation)
+        # Auxiliary sections already on the row (a background extraction that
+        # finished after this turn took its snapshot) are kept, not erased.
+        state.stored_usage = _keep_row_auxiliary(
+            state.stored_usage,
+            self._sessions.get_message(plan.session_id, plan.assistant_message_id),
+        )
         if plan.assistant_parent_id is not None and not state.persisted:
             await self._sessions.register_assistant_message(
                 plan.session_id,
@@ -724,8 +781,12 @@ class TurnRunner:
         session_context = plan.session_context
         if await self._take_output(plan, state, ctx):
             return
+        if plan.request.output_mode == "host_tools":
+            return
         while session_context.get("pending_steering_ids"):
-            pending = await self._sessions.list_pending_steering(plan.session_id)
+            pending = await self._sessions.list_pending_steering(
+                plan.session_id, profile_name=ctx.profile_name
+            )
             if not pending:
                 break
             async for event in self._run_agent(
@@ -758,6 +819,10 @@ class TurnRunner:
                 assistant_segments=state.assistant_segments,
                 host_tool_names=_host_tool_names(ctx),
             )
+            if plan.request.output_mode == "host_tools" and len(payloads) != 1:
+                raise InvalidDecisionError(
+                    "host_tools requires exactly one host action per decision"
+                )
             batch = [payload["call_id"] for payload in payloads]
             await self._sessions.set_pending_action(
                 plan.session_id,
@@ -765,13 +830,19 @@ class TurnRunner:
                 tool_name=payloads[0]["tool_name"],
                 assistant_message_id=plan.assistant_message_id,
                 batch=batch,
+                output_mode=plan.request.output_mode,
             )
             state.pending_tool_call = queued_payload(payloads[0], batch[1:])
             state.final_output = None
             return True
         session_context.pop("pending_assistant_message_id", None)
         state.pending_tool_call = None
-        state.final_output = str(state.output)
+        if plan.request.output_mode == "host_tools":
+            if not isinstance(state.output, HoldDecision):
+                raise InvalidDecisionError("host_tools requires a host action or structured hold")
+            state.final_output = None
+        else:
+            state.final_output = str(state.output)
         return False
 
     @staticmethod
@@ -839,7 +910,7 @@ class TurnRunner:
         )
 
     @staticmethod
-    def _terminal_error_events(
+    def _outcome_events(
         coordinator: EventCoordinator,
         *,
         session_id: str,
@@ -850,20 +921,30 @@ class TurnRunner:
         model: str,
         phase: str,
         emit_debug: bool,
+        message_id: str | None = None,
+        content: str | None = None,
+        usage: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """``final_response(error)`` + terminal ``error``; the debug error is always traced."""
-        events: list[dict[str, Any]] = []
+        """The one terminal lifecycle of a turn that did not finish normally.
+
+        ``final_response(error=True)``, the debug error (always traced, sent
+        only with ``emit_debug``) and the terminal ``error``. A saved snapshot
+        (cancellation, usage limit) names its ``message_id`` and ``usage``;
+        ``content`` stays empty, only native middleware decides what text a
+        client sees. Like the other terminal events, the error is not counted
+        against the event limit: the client must always receive it.
+        """
         final = coordinator.try_final_response(
-            None,
+            content,
             model,
             session_id=session_id,
+            message_id=message_id,
             trace_id=trace_id,
             error=True,
             error_type=error_type,
+            usage=usage,
         )
-        if final:
-            events.append(final)
-        debug_error = coordinator.track_debug(
+        debug = coordinator.track_debug(
             make_debug_error_event(
                 message,
                 error_type=error_type,
@@ -873,19 +954,19 @@ class TurnRunner:
                 phase=phase,
             )
         )
+        events: list[dict[str, Any]] = []
+        if final:
+            events.append(final)
         if emit_debug:
-            events.append(debug_error)
-        events.append(
-            coordinator.track(
-                make_error_event(
-                    format_error_message(message, trace_id),
-                    error_type=error_type,
-                    trace_id=trace_id,
-                    terminal=True,
-                    retry_allowed=retry_allowed,
-                )
-            )
+            events.append(debug)
+        error = make_error_event(
+            format_error_message(message, trace_id),
+            error_type=error_type,
+            trace_id=trace_id,
+            terminal=True,
+            retry_allowed=retry_allowed,
         )
+        events.append(error)
         return events
 
     async def save_trace(
@@ -896,9 +977,8 @@ class TurnRunner:
         trace_id: str | None = None,
         user_message: str | None = None,
         duration_ms: float | None = None,
-        screenshot: str | None = None,
     ) -> None:
-        """Persist collected debug events as a trace row. Best-effort."""
+        """Persist collected debug events as a trace row (never the screenshot). Best-effort."""
         if self._db is None or not trace_events:
             return
         try:
@@ -911,7 +991,6 @@ class TurnRunner:
                     events=trace_events,
                     user_message=user_message,
                     duration_ms=duration_ms,
-                    screenshot=screenshot,
                 )
         except Exception as e:
             logger.warning("Failed to persist trace", session_id=session_id, error=str(e))

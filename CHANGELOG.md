@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 — 2026-09-16
+
+- GPT-Live voice over WebRTC, with optional delegation into the shared turn
+  pipeline or conversation-only calls alongside an independent controller.
+- One independently started runtime can serve multiple applications using
+  registered profiles, request-selected artifacts and per-call voice instructions.
+- Silent host decisions return one action or a structured hold; execution receipts
+  can be saved without another model call.
+- Local ChatGPT/Codex subscription authentication works without Postgres, with
+  subscription-only routing, requested Fast mode and observed response tiers.
+- Safer localhost origin defaults, authenticated health detail and runtime controls
+  for model requests, delegated work and tool execution.
+- Corrected session eviction, cancellation, working-memory ordering and usage,
+  admission locking, provider retry behavior and credential handling.
+- Generic prompts and tool descriptions, a demos-first README, packaged setup
+  guides and the CLI `--version` flag.
+
+### Upgrading from 0.1.0
+
+Install `assistant-runtime[voice]==0.2.0` if the application uses voice; enable
+voice and configure its API key separately from backend model authentication.
+Start the runtime yourself before starting applications. Register application
+profile paths with `ASSISTANT__PROFILES`; clients select the registered name.
+See [deployment](https://github.com/eandualem/assistant-runtime/blob/main/docs/deployments.md)
+and [voice](https://github.com/eandualem/assistant-runtime/blob/main/docs/voice.md).
+
+Postgres users must run `assistant-runtime migrate` before restarting the runtime;
+the migration chain now ends at `0026` (voice calls, trace indexing, service-tier
+settings and steering profile selection). Migration `0024` permanently clears
+historical screenshot payloads from traces; it does not delete conversations.
+Memory-only installations need no database migration.
+Review [access configuration](https://github.com/eandualem/assistant-runtime/blob/main/docs/access.md)
+if the application is served from a non-local origin.
+
 ## 0.1.0
 
 First public release.

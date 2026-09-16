@@ -76,13 +76,6 @@ async def _github_request(
 
     url = f"{GITHUB_API_BASE}{path}"
 
-    @retry_with_backoff(
-        max_attempts=3,
-        min_wait=0.5,
-        max_wait=10.0,
-        retry_on=_GITHUB_RETRYABLE,
-        name="github_request",
-    )
     async def _request() -> tuple[int, Any]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.request(
@@ -94,8 +87,20 @@ async def _github_request(
             )
             return (response.status_code, response.json())
 
+    # Only a read is retried: a POST that timed out may already have created
+    # the issue or comment, and a retry would create it twice.
+    send = _request
+    if method.upper() == "GET":
+        send = retry_with_backoff(
+            max_attempts=3,
+            min_wait=0.5,
+            max_wait=10.0,
+            retry_on=_GITHUB_RETRYABLE,
+            name="github_request",
+        )(_request)
+
     try:
-        return await _request()
+        return await send()
     except httpx.TimeoutException:
         return (
             -1,
@@ -121,11 +126,6 @@ def _request_error(payload: dict[str, Any]) -> str:
     return payload.get("error", payload.get("message", "Request failed"))
 
 
-def _has_label_prefix(labels: list[str], prefix: str) -> bool:
-    """Check if any label starts with the given prefix."""
-    return any(label.startswith(prefix) for label in labels)
-
-
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------
@@ -144,18 +144,6 @@ async def create_issue(
 
     if not title or not title.strip():
         return {"error": "Title cannot be empty", "success": False}
-
-    if not labels:
-        return {
-            "error": "Labels are required (must include from: and for: labels)",
-            "success": False,
-        }
-
-    if not _has_label_prefix(labels, "from:"):
-        return {"error": "Labels must include at least one 'from:' label", "success": False}
-
-    if not _has_label_prefix(labels, "for:"):
-        return {"error": "Labels must include at least one 'for:' label", "success": False}
 
     issue_labels = list(labels)
     if priority and priority in ("blocking", "non-blocking"):
@@ -190,7 +178,7 @@ async def search_issues(
     text: str = "",
     limit: int = 20,
 ) -> dict[str, Any]:
-    """Search issues in the orchestration repo."""
+    """Search issues in the configured repository."""
     config_error = _repo_config_error()
     if config_error:
         return config_error

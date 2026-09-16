@@ -71,6 +71,7 @@ class TestSteeringORM:
             "id",
             "session_id",
             "content",
+            "profile",
             "status",
             "created_at",
             "delivered_at",

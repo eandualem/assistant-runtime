@@ -23,7 +23,7 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
 )
 
-from assistant_runtime.app.assistant._serialization import (
+from assistant_runtime.app.assistant import (
     SteeringRecord,
     build_steering_request,
     sanitize_image_tool_returns,
@@ -36,7 +36,7 @@ from assistant_runtime.app.streaming._event_builder import (
 )
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant._session_store import SessionStore
+    from assistant_runtime.app.assistant import SessionStore
     from assistant_runtime.app.streaming.config import StreamingConfig
     from assistant_runtime.services.tools.interface import ToolService
 
@@ -48,10 +48,18 @@ class TurnPolicy(AbstractCapability):
     only supplies its queue and retention policy through public hooks.
     """
 
-    def __init__(self, sessions: SessionStore, session_id: str, session_context: dict[str, Any]):
+    def __init__(
+        self,
+        sessions: SessionStore,
+        session_id: str,
+        session_context: dict[str, Any],
+        *,
+        profile_name: str | None = None,
+    ):
         self.sessions = sessions
         self.session_id = session_id
         self.session_context = session_context
+        self.profile_name = profile_name
         self.pending_image_sanitize = False
         self._enqueued_steering: dict[str, list[str]] = {}
         self._inflight_steering: set[str] = set()
@@ -74,6 +82,7 @@ class TurnPolicy(AbstractCapability):
             self.session_context,
             run=ctx,
             exclude_ids=self._inflight_steering,
+            profile_name=self.profile_name,
         )
         if enqueue_id is not None:
             ids = [record["id"] for record in records]
@@ -112,17 +121,22 @@ async def iterate_run(
     suppress_tool_call_ids: set[str] | None = None,
     host_tool_names: set[str] | None = None,
     native_sink: Callable[[Any], None] | None = None,
+    silent: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Translate native events without executing or inspecting graph nodes.
 
     ``host_tool_names`` are the host tools of this turn (configured ones
     plus those the request declared); calls to them are ``category: host``.
     ``native_sink`` receives every native event unchanged, before mapping.
+    Silent host decisions consume the stream without publishing native events
+    or previews; only the validated final decision authorizes host work.
     """
     suppressed = suppress_tool_call_ids or set()
     host_names = host_tool_names if host_tool_names is not None else set()
     tool_started: dict[str, float] = {}
     async for event in stream:
+        if silent:
+            continue
         if native_sink is not None:
             native_sink(event)
         if isinstance(event, PartStartEvent):
@@ -201,11 +215,12 @@ async def enqueue_pending_steering(
     *,
     run: Any,
     exclude_ids: set[str] | None = None,
+    profile_name: str | None = None,
 ) -> tuple[str | None, list[SteeringRecord]]:
     """Enqueue pending records; acknowledge only after their model request succeeds."""
     if not session_context.get("pending_steering_ids"):
         return None, []
-    pending = await sessions.list_pending_steering(session_id)
+    pending = await sessions.list_pending_steering(session_id, profile_name=profile_name)
     records = [record for record in pending if record["id"] not in (exclude_ids or set())]
     if not records:
         return None, []

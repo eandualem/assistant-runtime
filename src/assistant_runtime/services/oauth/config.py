@@ -36,10 +36,6 @@ class OAuthConfig(BaseModel):
         default="https://auth.openai.com/codex/device",
         description="Verification URL the user opens during device auth",
     )
-    scopes: str = Field(
-        default="openid profile email offline_access model.request api.responses.write",
-        description="Space-separated OAuth scopes",
-    )
     refresh_buffer_seconds: int = Field(
         default=3600,
         description="Refresh if expiry is within this window (seconds)",

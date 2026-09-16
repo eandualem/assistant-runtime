@@ -32,12 +32,12 @@ class ActivityProvider(Protocol):
 
 
 def register_activity_tools(registry: ToolRegistry, provider: ActivityProvider) -> None:
-    """Register backbone telemetry and delivery status tools."""
+    """Register telemetry and delivery status tools."""
     registry.register_backend_tool(
         ToolDefinition(
             name="get_delivery_status",
             description=(
-                "Get backbone delivery health summary: total attempts and counts for "
+                "Get the message delivery health summary: total attempts and counts for "
                 "delivered, failed, deferred, and offline outcomes."
             ),
             parameters_schema={"type": "object", "properties": {}},
@@ -50,7 +50,7 @@ def register_activity_tools(registry: ToolRegistry, provider: ActivityProvider) 
         ToolDefinition(
             name="get_recent_deliveries",
             description=(
-                "List recent backbone delivery attempts with issue number, target entity, "
+                "List recent message delivery attempts with issue number, target entity, "
                 "session, outcome, and timestamp."
             ),
             parameters_schema={
@@ -71,7 +71,7 @@ def register_activity_tools(registry: ToolRegistry, provider: ActivityProvider) 
     registry.register_backend_tool(
         ToolDefinition(
             name="get_failed_deliveries",
-            description=("List failed, deferred, or offline delivery attempts from the backbone."),
+            description=("List failed, deferred, or offline delivery attempts."),
             parameters_schema={
                 "type": "object",
                 "properties": {
@@ -90,9 +90,7 @@ def register_activity_tools(registry: ToolRegistry, provider: ActivityProvider) 
     registry.register_backend_tool(
         ToolDefinition(
             name="get_agent_activity",
-            description=(
-                "Get recent recorded activity for a specific agent session from the backbone."
-            ),
+            description=("Get recent recorded activity for a specific agent session."),
             parameters_schema={
                 "type": "object",
                 "properties": {
@@ -121,7 +119,7 @@ def register_activity_tools(registry: ToolRegistry, provider: ActivityProvider) 
         ToolDefinition(
             name="get_activity_timeline",
             description=(
-                "Get the system-wide backbone activity timeline across deliveries, telemetry, "
+                "Get the activity timeline from the configured provider across deliveries, telemetry, "
                 "actions, and heartbeats."
             ),
             parameters_schema={

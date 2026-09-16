@@ -94,7 +94,10 @@ class TestAppStartup:
         """create_app() produces a valid FastAPI instance."""
         app = create_app()
         assert app.title == "Assistant Runtime"
-        assert app.version == "0.1.0"
+        from assistant_runtime import __version__
+
+        assert app.version == __version__
+        assert app.openapi()["info"]["version"] == __version__
 
     def test_all_routes_registered(self):
         """App exposes all expected route paths (via the OpenAPI schema, which
@@ -189,7 +192,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_long_session_id(self, full_app_client):
-        """Very long session_id is handled without error."""
+        """A session id longer than its 64-character column is refused up front (422)."""
         client, app = full_app_client
         long_id = "s" * 1000
         mock_agent = _make_mock_agent("Long session OK")
@@ -208,8 +211,8 @@ class TestEdgeCases:
                 ),
             )
 
-        assert response.status_code == 200
-        assert response.json()["session_id"] == long_id
+        assert response.status_code == 422
+        assert "session_id" in str(response.json()["detail"])
 
     @pytest.mark.asyncio
     async def test_sequential_requests_same_session(self, full_app_client):

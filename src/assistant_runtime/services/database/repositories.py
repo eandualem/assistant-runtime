@@ -276,6 +276,7 @@ class SteeringRepository:
         session_id: str,
         content: str,
         status: str,
+        profile: str | None = None,
         delivered_at: datetime | None = None,
     ) -> SteeringORM:
         result = await self._session.execute(
@@ -283,6 +284,7 @@ class SteeringRepository:
             .values(
                 id=steering_id,
                 session_id=session_id,
+                profile=profile,
                 content=content,
                 status=status,
                 delivered_at=delivered_at,
@@ -333,7 +335,6 @@ class TraceRepository:
         user_message: str | None = None,
         is_continuation: bool = False,
         duration_ms: float | None = None,
-        screenshot: str | None = None,
     ) -> TraceORM:
         """Create a new trace row."""
         result = await self._session.execute(
@@ -345,12 +346,17 @@ class TraceRepository:
                 user_message=user_message,
                 is_continuation=is_continuation,
                 duration_ms=duration_ms,
-                screenshot=screenshot,
             )
             .returning(TraceORM)
         )
         await self._session.flush()
         return result.scalar_one()
+
+    async def delete_older_than(self, cutoff: datetime) -> int:
+        """Delete traces created before ``cutoff``. Returns the number of rows removed."""
+        result = await self._session.execute(delete(TraceORM).where(TraceORM.created_at < cutoff))
+        await self._session.flush()
+        return result.rowcount or 0
 
     async def list_by_session(
         self, session_id: str, limit: int = 50, offset: int = 0

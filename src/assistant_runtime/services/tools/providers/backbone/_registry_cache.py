@@ -70,34 +70,6 @@ class AgentRegistryCache:
                 return agent
         return None
 
-    def get_working_directory(self, session: str) -> str | None:
-        """Resolve working directory (home field) for a session."""
-        info = self.get_agent_info(session)
-        if info is None:
-            return None
-        return info.get("home")
-
-    def build_ecosystem_lines(self) -> list[str]:
-        """Build ecosystem description lines for the prompt builder."""
-        if self._agents is None:
-            return []
-        lines: list[str] = ["Agents and systems you work with:"]
-        for agent in self._agents:
-            display_name = agent.get("display_name") or agent.get("name", "Unknown")
-            role = agent.get("role", "")
-            agent_type = agent.get("type", "")
-            session = agent.get("session", "")
-            parts = [f"- {display_name}"]
-            if role:
-                parts[0] += f" ({role})"
-            parts[0] += f": {agent_type}" if agent_type else ""
-            if session:
-                parts[0] += f" [session: {session}]"
-            lines.append(parts[0])
-        return lines
-
-
-# --- Module-level singleton ---
 
 _instance: AgentRegistryCache | None = None
 

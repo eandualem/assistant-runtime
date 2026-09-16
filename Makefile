@@ -5,6 +5,7 @@
 # --- Directories ---
 SRC_DIR := src/assistant_runtime
 TESTS_DIR := tests
+CHECK_DIRS := $(SRC_DIR) $(TESTS_DIR) smoke
 
 # --- Color Codes ---
 GREEN  := $(shell tput -Txterm setaf 2)
@@ -23,23 +24,23 @@ install:
 # --- Development ---
 dev:
 	@echo "${CYAN}Starting dev server...${RESET}"
-	uv run uvicorn assistant_runtime.main:app --reload --host 0.0.0.0 --port $${PORT:-7100}
+	uv run assistant-runtime serve --reload --host $${HOST:-127.0.0.1} --port $${PORT:-7100}
 
 # --- Code Quality ---
 lint:
 	@echo "${CYAN}Running linter...${RESET}"
-	uv run ruff check $(SRC_DIR) $(TESTS_DIR)
+	uv run ruff check $(CHECK_DIRS)
 	@echo "${GREEN}Lint complete.${RESET}"
 
 format:
 	@echo "${CYAN}Formatting code...${RESET}"
-	uv run ruff format $(SRC_DIR) $(TESTS_DIR)
+	uv run ruff format $(CHECK_DIRS)
 	@echo "${GREEN}Format complete.${RESET}"
 
 fix:
 	@echo "${CYAN}Auto-fixing issues...${RESET}"
-	uv run ruff check --fix $(SRC_DIR) $(TESTS_DIR)
-	uv run ruff format $(SRC_DIR) $(TESTS_DIR)
+	uv run ruff check --fix $(CHECK_DIRS)
+	uv run ruff format $(CHECK_DIRS)
 	@echo "${GREEN}Fix complete.${RESET}"
 
 # --- Testing ---
@@ -55,8 +56,8 @@ test-file:
 # --- CI Gate ---
 check:
 	@echo "${CYAN}Running full CI gate...${RESET}"
-	uv run ruff check $(SRC_DIR) $(TESTS_DIR)
-	uv run ruff format --check $(SRC_DIR) $(TESTS_DIR)
+	uv run ruff check $(CHECK_DIRS)
+	uv run ruff format --check $(CHECK_DIRS)
 	uv run pytest $(TESTS_DIR) -v
 	@echo "${GREEN}All checks passed.${RESET}"
 

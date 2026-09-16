@@ -17,6 +17,7 @@ from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.artifacts.models import Actor, ArtifactVersion, MutationResult
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
+from assistant_runtime.services.tools.request_context import get_current_profile_name
 
 ASSISTANT = Actor(kind="assistant")
 ACTIONS = ("list", "view", "history", "propose", "update", "activate")
@@ -78,14 +79,15 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
                 "success": False,
             }
         try:
+            scoped = artifacts.for_profile(get_current_profile_name())
             if action == "list":
-                return await _list(artifacts)
+                return await _list(scoped)
             if action == "view":
-                return await _view(artifacts, name)
+                return await _view(scoped, name)
             if action == "history":
-                return await _history(artifacts, name)
+                return await _history(scoped, name)
             if action == "propose":
-                result = await artifacts.propose(
+                result = await scoped.propose(
                     name, content, actor=ASSISTANT, expected_version=expected_version
                 )
                 message = (
@@ -95,7 +97,7 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
                 )
                 return _mutation_dict(result, message)
             if action == "update":
-                result = await artifacts.update(
+                result = await scoped.update(
                     name, content, actor=ASSISTANT, expected_version=expected_version
                 )
                 message = (
@@ -110,7 +112,7 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
                     "error_code": "missing_version",
                     "success": False,
                 }
-            result = await artifacts.activate(name, version, actor=ASSISTANT)
+            result = await scoped.activate(name, version, actor=ASSISTANT)
             return _mutation_dict(result, f"Version {version} of '{name}' is now active.")
         except ArtifactError as e:
             return {"error": str(e), "error_code": e.error_code, "success": False}
@@ -167,7 +169,7 @@ async def _history(artifacts: ArtifactService, name: str) -> dict[str, Any]:
 
 def register_artifact_tools(registry: ToolRegistry, artifacts: ArtifactService | None) -> None:
     """Register the artifact management tool, described from the profile."""
-    if artifacts is not None:
+    if artifacts is not None and len(artifacts.available_profiles) == 1:
         profile = artifacts.profile
         lines = [
             f"{a.name} ({a.role or 'no role given'}; you may "
@@ -177,7 +179,7 @@ def register_artifact_tools(registry: ToolRegistry, artifacts: ArtifactService |
         catalog = "Artifacts: " + "; ".join(lines) + ". "
         names = profile.names_text()
     else:
-        catalog = ""
+        catalog = "Use list to discover the current profile’s artifacts and permissions. "
         names = ""
 
     registry.register_backend_tool(

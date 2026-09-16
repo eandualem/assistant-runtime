@@ -1,5 +1,7 @@
 """Configuration for the LLM service module."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from assistant_runtime.model_catalog import ALLOWED_PROVIDERS
@@ -12,9 +14,6 @@ class ProviderConfig(BaseModel):
 
     provider: str = Field(..., description="Provider name (anthropic, openai, google, openrouter)")
     api_key: SecretStr = Field(..., description="Provider API key")
-    base_url: str | None = Field(default=None, description="Custom base URL for the provider API")
-    timeout: float = Field(default=120.0, gt=0, description="Request timeout in seconds")
-    max_retries: int = Field(default=3, ge=0, description="Maximum retry attempts")
 
     @field_validator("provider")
     @classmethod
@@ -47,5 +46,24 @@ class LLMConfig(BaseModel):
             "OpenAI model names routed through the ChatGPT/Codex subscription when it is "
             "connected. Empty (the default) routes every openai: model that way; the backend "
             "decides what the subscription allows."
+        ),
+    )
+    codex_only: bool = Field(
+        default=False,
+        description=(
+            "The subscription guard: every openai: model must go through the ChatGPT/Codex "
+            "subscription, never an OPENAI_API_KEY, and a disconnected subscription is an "
+            "error rather than an API fallback. Other providers with a configured key stay "
+            "routable; ASSISTANT__REQUEST_MODELS limits what a request may pick. "
+            "Does not govern separate voice or media services."
+        ),
+    )
+
+    codex_service_tier: Literal["default", "fast"] | None = Field(
+        default=None,
+        description=(
+            "Requested Codex subscription service tier. Unset omits the wire field; "
+            "fast requests priority processing with higher subscription credit consumption. "
+            "Only affects Codex-authenticated LLM calls, not API-key or voice/media calls."
         ),
     )

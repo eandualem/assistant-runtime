@@ -1,10 +1,14 @@
-"""Token usage snapshots from pydantic-ai run results."""
+"""Token usage snapshots from pydantic-ai run results.
+
+Shared by the assistant service (working memory) and the turn runner.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from loguru import logger
+from pydantic_ai.messages import ModelResponse
 
 
 def _usage_value(usage: Any, *names: str) -> int:
@@ -16,7 +20,7 @@ def _usage_value(usage: Any, *names: str) -> int:
     return 0
 
 
-def usage_dict(result_or_usage: Any) -> dict[str, int] | None:
+def usage_dict(result_or_usage: Any) -> dict[str, Any] | None:
     """Extract ``input/output/total_tokens`` from a run result or a ``RunUsage``.
 
     ``AgentRunResult`` exposes ``.usage`` as a property; a bare ``RunUsage``
@@ -42,7 +46,29 @@ def usage_dict(result_or_usage: Any) -> dict[str, int] | None:
         # None, not 0: a provider or model without a known price has no cost figure.
         "cost_usd": _cost(usage),
     }
+    new_messages = getattr(result_or_usage, "new_messages", None)
+    if callable(new_messages) and (tiers := response_service_tiers(new_messages())):
+        snapshot["service_tiers"] = tiers
     return snapshot
+
+
+def response_service_tiers(messages: Any) -> list[dict[str, Any]]:
+    """Tier observations follow native responses, separately from cumulative counts."""
+    tiers = []
+    for message in messages:
+        if not isinstance(message, ModelResponse):
+            continue
+        tier = (message.provider_details or {}).get("codex_service_tier")
+        if isinstance(tier, dict):
+            tiers.append(
+                {
+                    "provider_response_id": message.provider_response_id,
+                    "model": message.model_name,
+                    "requested": tier.get("requested"),
+                    "actual": tier.get("actual"),
+                }
+            )
+    return tiers
 
 
 def _cost(usage: Any) -> float | None:
@@ -67,11 +93,13 @@ def merge_usage(*usage_dicts: dict[str, Any] | None) -> dict[str, Any] | None:
     merged: dict[str, Any] = dict.fromkeys(COUNTED_KEYS, 0)
     cost: float | None = 0.0
     auxiliary: dict[str, Any] = {}
+    service_tiers: list[dict[str, Any]] = []
     saw_usage = False
     for usage in usage_dicts:
         if not isinstance(usage, dict) or not usage:
             continue
         saw_usage = True
+        service_tiers.extend(usage.get("service_tiers") or [])
         for key in COUNTED_KEYS:
             value = usage.get(key)
             if isinstance(value, int):
@@ -83,6 +111,8 @@ def merge_usage(*usage_dicts: dict[str, Any] | None) -> dict[str, Any] | None:
     if not saw_usage:
         return None
     merged["cost_usd"] = cost
+    if service_tiers:
+        merged["service_tiers"] = service_tiers
     if auxiliary:
         merged["auxiliary"] = auxiliary
     return merged

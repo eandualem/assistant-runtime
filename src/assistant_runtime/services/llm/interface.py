@@ -6,6 +6,7 @@ LLM calls, and manages provider lifecycle (API key loading and export).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import Sequence
@@ -17,6 +18,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import AgentCapability
+from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.tools import Tool, ToolFuncEither
 
@@ -26,10 +28,14 @@ from assistant_runtime.model_catalog import (
     PROVIDER_DEFAULT_SUMMARIZATION_MODELS,
     PROVIDER_ENV_VARS,
 )
-from assistant_runtime.services.llm._codex_model import OpenAICodexResponsesModel
+from assistant_runtime.services.llm._codex_model import CodexResponses, OpenAICodexResponsesModel
 from assistant_runtime.services.llm._settings import build_model_settings, validate_model_id
 from assistant_runtime.services.llm.config import LLMConfig, ProviderConfig
-from assistant_runtime.services.llm.exceptions import ProviderConfigError, classify_llm_error
+from assistant_runtime.services.llm.exceptions import (
+    ProviderConfigError,
+    ProviderKeyStoreUnavailableError,
+    classify_llm_error,
+)
 from assistant_runtime.services.tracing import create_span
 
 
@@ -75,6 +81,32 @@ _LLM_RETRYABLE_EXCEPTIONS = _collect_retryable_llm_exceptions()
 _CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex/"
 
 
+_OPENAI_ALIAS_PREFIXES = ("openai-chat:", "openai-responses:")
+
+
+def _openai_alias(model_id: str) -> bool:
+    """Whether ``model_id`` names OpenAI through one of pydantic-ai's API-key aliases."""
+    return model_id.startswith(_OPENAI_ALIAS_PREFIXES)
+
+
+def _cerebras_model(model_name: str) -> Model:
+    """A Cerebras model with every tool sent non-strict.
+
+    Cerebras rejects a request whose tools carry different ``strict`` flags
+    ("Tools with mixed values for strict are not allowed"). Pydantic AI marks
+    each tool strict only when its schema qualifies, so a host action with a
+    numeric range next to a strict runtime tool fails every call. Turning
+    strict off for the provider makes the flags uniform; the partial profile
+    merges over the provider's own.
+    """
+    from pydantic_ai.models.cerebras import CerebrasModel
+    from pydantic_ai.profiles.openai import OpenAIModelProfile
+
+    return CerebrasModel(
+        model_name, profile=OpenAIModelProfile(openai_supports_strict_tool_definition=False)
+    )
+
+
 class LLMResult(BaseModel):
     """Result of a standalone LLM call."""
 
@@ -92,9 +124,13 @@ class LlmService:
         self._db_service: Any | None = None
         self._fernet: Any | None = None
         self._db_providers: dict[str, str] = {}  # provider → "database" (tracks DB-sourced keys)
+        # Environment values this service replaced, so removing a stored key
+        # restores what the operator had configured (None: the variable was unset).
+        self._env_backup: dict[str, str | None] = {}
         self._codex_provider: OpenAIProvider | None = None
         self._codex_provider_identity: tuple[str, str] | None = None
         self._codex_http_clients: list[httpx.AsyncClient] = []
+        self._codex_close_tasks: set[asyncio.Task[None]] = set()
         self._started = False
 
     def set_oauth_service(self, oauth_service: Any) -> None:
@@ -147,12 +183,19 @@ class LlmService:
                         ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
                     )
 
-        # 3. Export keys for Pydantic AI auto-detection
+        # 3. Export keys for Pydantic AI auto-detection. A stored (database) key
+        # is the operator's explicit choice and overrides the environment; the
+        # value it replaces is kept so removing the stored key restores it.
         for provider in providers:
             env_var = PROVIDER_ENV_VARS.get(provider.provider)
-            if env_var and not os.getenv(env_var):
+            if not env_var:
+                continue
+            if provider.provider in self._db_providers:
+                self._env_backup.setdefault(provider.provider, os.environ.get(env_var))
                 os.environ[env_var] = provider.api_key.get_secret_value()
-                logger.debug("Exported API key for Pydantic AI", provider=provider.provider)
+            elif not os.getenv(env_var):
+                os.environ[env_var] = provider.api_key.get_secret_value()
+            logger.debug("Exported API key for Pydantic AI", provider=provider.provider)
 
         self._providers = providers
         self._started = True
@@ -171,6 +214,9 @@ class LlmService:
 
     async def stop(self) -> None:
         """Shutdown the LLM service."""
+        if self._codex_close_tasks:
+            await asyncio.gather(*self._codex_close_tasks, return_exceptions=True)
+            self._codex_close_tasks.clear()
         for client in self._codex_http_clients:
             await client.aclose()
         self._codex_http_clients.clear()
@@ -186,6 +232,8 @@ class LlmService:
             "healthy": self._started and len(providers) > 0,
             "providers": providers,
             "primary_model": self.effective_primary_model(),
+            "codex_only": self._config.codex_only,
+            "codex_service_tier": self._config.codex_service_tier,
         }
 
     async def reload_provider_key(self, provider: str, api_key: str) -> None:
@@ -205,22 +253,85 @@ class LlmService:
         # Track as DB-sourced and export to env var for Pydantic AI
         self._db_providers[provider] = "database"
         env_var = PROVIDER_ENV_VARS[provider]
+        self._env_backup.setdefault(provider, os.environ.get(env_var))
         os.environ[env_var] = api_key
         logger.info("Provider API key reloaded", provider=provider)
 
     async def remove_provider_key(self, provider: str) -> None:
-        """Remove a provider API key from in-memory state and env var.
+        """Forget a stored provider key; a key from the environment stays in force.
 
-        Called by the providers route after deleting the key from the DB.
+        The environment variable is restored to what it was before this service
+        set it, so deleting a key that was never stored changes nothing.
         """
+        from pydantic import SecretStr
+
         if provider not in PROVIDER_ENV_VARS:
             raise ProviderConfigError(f"Unknown provider: {provider}")
 
         self._providers = [p for p in self._providers if p.provider != provider]
         self._db_providers.pop(provider, None)
         env_var = PROVIDER_ENV_VARS[provider]
-        os.environ.pop(env_var, None)
-        logger.info("Provider API key removed", provider=provider)
+        if provider in self._env_backup:
+            previous = self._env_backup.pop(provider)
+            if previous is None:
+                os.environ.pop(env_var, None)
+            else:
+                os.environ[env_var] = previous
+        remaining = os.environ.get(env_var)
+        if remaining:
+            self._providers.append(ProviderConfig(provider=provider, api_key=SecretStr(remaining)))
+        logger.info("Provider API key removed", provider=provider, environment_key=bool(remaining))
+
+    # --- stored provider keys (the one persisted secret) ---------------------
+
+    def _key_store(self) -> Any:
+        """The database service, when stored keys can be read and written."""
+        if self._fernet is None:
+            raise ProviderKeyStoreUnavailableError(
+                "Encryption not configured — set OAUTH__ENCRYPTION_KEY to enable API key storage"
+            )
+        if self._db_service is None or not getattr(self._db_service, "healthy", False):
+            raise ProviderKeyStoreUnavailableError(
+                "Database not reachable; stored keys need Postgres"
+            )
+        return self._db_service
+
+    async def store_provider_key(self, provider: str, api_key: str) -> None:
+        """Encrypt and persist ``api_key`` for ``provider``, then activate it.
+
+        Raises:
+            ProviderConfigError: Unknown provider.
+            ProviderKeyStoreUnavailableError: No encryption key or no database.
+        """
+        if provider not in PROVIDER_ENV_VARS:
+            raise ProviderConfigError(f"Unknown provider: {provider}")
+        db = self._key_store()
+        from assistant_runtime.services.database.repositories import OAuthTokenRepository
+
+        encrypted = self._fernet.encrypt(api_key.encode()).decode()
+        try:
+            async with db.session_context() as session:
+                await OAuthTokenRepository(session).upsert(
+                    provider=provider, encrypted_api_key=encrypted
+                )
+        except Exception as exc:
+            raise ProviderKeyStoreUnavailableError(f"Storing the key failed: {exc}") from exc
+        await self.reload_provider_key(provider, api_key)
+
+    async def delete_provider_key(self, provider: str) -> bool:
+        """Delete the stored key for ``provider``; returns whether one was stored."""
+        if provider not in PROVIDER_ENV_VARS:
+            raise ProviderConfigError(f"Unknown provider: {provider}")
+        db = self._key_store()
+        from assistant_runtime.services.database.repositories import OAuthTokenRepository
+
+        try:
+            async with db.session_context() as session:
+                deleted = await OAuthTokenRepository(session).delete(provider)
+        except Exception as exc:
+            raise ProviderKeyStoreUnavailableError(f"Deleting the key failed: {exc}") from exc
+        await self.remove_provider_key(provider)
+        return deleted
 
     def get_provider_status(self) -> list[dict[str, Any]]:
         """Return provider auth status for each known provider."""
@@ -261,13 +372,22 @@ class LlmService:
                 repo = OAuthTokenRepository(session)
                 for provider_name in PROVIDER_ENV_VARS:
                     token = await repo.get(provider_name)
-                    if token is not None and token.encrypted_api_key:
-                        api_key = self._fernet.decrypt(token.encrypted_api_key.encode()).decode()
-                        providers.append(
-                            ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
-                        )
-                        self._db_providers[provider_name] = "database"
-                        logger.debug("Loaded API key from database", provider=provider_name)
+                    if token is None or not token.encrypted_api_key:
+                        continue
+                    if getattr(token, "encrypted_refresh_token", None) or getattr(
+                        token, "encrypted_id_token", None
+                    ):
+                        # A ChatGPT/Codex login: the OAuth service owns that row
+                        # and its access token is not an API key. Exporting it
+                        # would overwrite OPENAI_API_KEY (voice, image generation).
+                        logger.debug("Skipping OAuth session row", provider=provider_name)
+                        continue
+                    api_key = self._fernet.decrypt(token.encrypted_api_key.encode()).decode()
+                    providers.append(
+                        ProviderConfig(provider=provider_name, api_key=SecretStr(api_key))
+                    )
+                    self._db_providers[provider_name] = "database"
+                    logger.debug("Loaded API key from database", provider=provider_name)
         except Exception as exc:
             logger.warning("Failed to load provider keys from database", error=str(exc))
         return providers
@@ -297,6 +417,9 @@ class LlmService:
 
     def _effective_model(self, configured: str, defaults: dict[str, str]) -> str:
         provider = configured.split(":", 1)[0]
+        if self._config.codex_only and (provider == "openai" or _openai_alias(configured)):
+            # Never turn a missing subscription into an API-provider fallback.
+            return configured
         available = self._configured_provider_names() if self._started else []
         if not available:
             return configured
@@ -314,8 +437,14 @@ class LlmService:
         return fallback
 
     def _configured_provider_names(self) -> list[str]:
-        """Return provider names including active Codex-backed OpenAI auth."""
+        """Provider names with usable credentials, including Codex-backed OpenAI.
+
+        Under the subscription guard an OPENAI_API_KEY does not count: openai
+        is available only through a connected subscription.
+        """
         providers = {p.provider for p in self._providers}
+        if self._config.codex_only:
+            providers.discard("openai")
         if self._get_codex_session() is not None:
             providers.add("openai")
         return sorted(providers)
@@ -335,31 +464,55 @@ class LlmService:
         """Whether this model goes through the ChatGPT/Codex subscription.
 
         Any ``openai:`` model does when a Codex session is connected, unless
-        ``LLMConfig.codex_models`` narrows the list.
+        ``LLMConfig.codex_models`` narrows the list. Under the guard the
+        upstream aliases ``openai-chat:`` and ``openai-responses:`` are
+        rejected: they name the same billing account through an API key.
         """
+        if self._config.codex_only and _openai_alias(resolved_model):
+            raise ProviderConfigError(
+                "Subscription-only routing needs the openai: prefix; "
+                f"'{resolved_model}' would use an API key"
+            )
         if not resolved_model.startswith("openai:"):
+            # The guard is about OpenAI billing; another provider's key is its own choice.
             return False
         model_name = resolved_model.split(":", 1)[1]
         allowed = self._config.codex_models
         if allowed and model_name not in allowed:
+            if self._config.codex_only:
+                raise ProviderConfigError("Model is excluded by LLM__CODEX_MODELS")
             return False
-        return self._get_codex_session() is not None
+        connected = self._get_codex_session() is not None
+        if self._config.codex_only and not connected:
+            raise ProviderConfigError(
+                "Subscription-only routing requires a connected, unexpired Codex session; "
+                "sync or reconnect OAuth. API fallback is disabled."
+            )
+        return connected
 
     def _apply_model_transport_defaults(
         self,
         resolved_model: str,
         settings: dict[str, Any] | Any,
+        *,
+        service_tier: str | None = None,
     ) -> dict[str, Any] | Any:
-        """Apply transport-specific defaults for certain providers."""
+        """Apply transport-specific defaults for certain providers.
+
+        ``service_tier`` is the turn's Codex tier (the tunable); unset falls
+        back to ``LLM__CODEX_SERVICE_TIER``.
+        """
         if not self._should_use_codex_provider(resolved_model):
             return settings
 
         # The subscription backend takes the Responses API settings but not the
-        # sampling ones (temperature, top_p) or previous_response_id chaining.
+        # sampling ones, max_output_tokens, or previous_response_id chaining.
         codex_settings: dict[str, Any] = {"openai_store": False}
+        tier = service_tier or self._config.codex_service_tier
+        if tier is not None:
+            codex_settings["openai_service_tier"] = "priority" if tier == "fast" else "default"
         if isinstance(settings, dict):
             for key in (
-                "max_tokens",
                 "timeout",
                 "extra_headers",
                 "extra_body",
@@ -381,18 +534,45 @@ class LlmService:
 
         http_client = httpx.AsyncClient(timeout=120.0)
         self._codex_http_clients.append(http_client)
+        self._close_stale_codex_clients()
         openai_client = AsyncOpenAI(
             api_key=session.access_token,
             base_url=_CODEX_BACKEND_BASE_URL,
             default_headers={"ChatGPT-Account-Id": session.account_id},
             http_client=http_client,
         )
+        openai_client.responses = CodexResponses(openai_client)
         self._codex_provider = OpenAIProvider(openai_client=openai_client)
         self._codex_provider_identity = identity
         return self._codex_provider
 
-    def _resolve_agent_model(self, resolved_model: str) -> str | OpenAICodexResponsesModel:
+    def _close_stale_codex_clients(self, keep: int = 2) -> None:
+        """Close clients older than the current and previous one.
+
+        Tokens rotate about hourly; the previous client may still serve an
+        in-flight request, anything older is closed in the background.
+        """
+        while len(self._codex_http_clients) > keep:
+            stale = self._codex_http_clients.pop(0)
+            try:
+                task = asyncio.get_running_loop().create_task(stale.aclose())
+            except RuntimeError:  # no running loop: close at stop()
+                self._codex_http_clients.insert(0, stale)
+                return
+            self._codex_close_tasks.add(task)
+            task.add_done_callback(self._codex_client_closed)
+
+    def _codex_client_closed(self, task: asyncio.Task[None]) -> None:
+        self._codex_close_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "Stale Codex HTTP client did not close cleanly", error=str(task.exception())
+            )
+
+    def _resolve_agent_model(self, resolved_model: str) -> str | Model:
         """Resolve the actual Agent model object to use for a model id."""
+        if resolved_model.startswith("cerebras:"):
+            return _cerebras_model(resolved_model.split(":", 1)[1])
         if not self._should_use_codex_provider(resolved_model):
             return resolved_model
 
@@ -414,6 +594,7 @@ class LlmService:
         temperature: float | None = None,
         tools: Sequence[Tool[Any] | ToolFuncEither[Any, ...]] = (),
         capabilities: Sequence[AgentCapability[Any]] = (),
+        codex_service_tier: str | None = None,
     ) -> Agent:
         """Create a configured Pydantic AI Agent.
 
@@ -441,7 +622,9 @@ class LlmService:
             thinking_budget=thinking_budget,
             temperature=temperature,
         )
-        settings = self._apply_model_transport_defaults(resolved_model, settings)
+        settings = self._apply_model_transport_defaults(
+            resolved_model, settings, service_tier=codex_service_tier
+        )
         agent_model = self._resolve_agent_model(resolved_model)
 
         agent_kwargs: dict[str, Any] = {

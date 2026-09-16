@@ -37,7 +37,7 @@ async def get_oauth_status(service: OAuthServiceDep) -> dict[str, Any]:
 
 
 @router.delete("/openai")
-async def disconnect_oauth(service: OAuthServiceDep) -> dict[str, str]:
-    """Disconnect OpenAI OAuth — delete tokens and clear API key."""
-    await service.disconnect()
-    return {"status": "disconnected"}
+async def disconnect_oauth(service: OAuthServiceDep) -> dict[str, Any]:
+    """Disconnect locally and report whether persisted-token deletion completed."""
+    deleted = await service.disconnect()
+    return {"status": "disconnected", "persisted_deleted": deleted}

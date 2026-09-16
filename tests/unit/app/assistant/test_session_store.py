@@ -137,7 +137,7 @@ class TestRegisterUserMessage:
             _request(
                 message_id="user-2",
                 parent_id="user-1",
-                content="Actually, inspect Leo only",
+                content="Actually, inspect Planner only",
             )
         )
 
@@ -152,7 +152,7 @@ class TestRegisterUserMessage:
             await store.register_user_message(
                 _request(
                     message_id="steering-1",
-                    content="Focus on Leo",
+                    content="Focus on Planner",
                     message_type="steering",
                 )
             )
@@ -204,7 +204,7 @@ class TestSteeringMessages:
             "sess-1",
             _request(
                 message_id="steering-1",
-                content="Focus on Leo only",
+                content="Focus on Planner only",
                 message_type="steering",
             ),
         )
@@ -212,7 +212,7 @@ class TestSteeringMessages:
             "sess-1",
             _request(
                 message_id="steering-2",
-                content="Skip Ada",
+                content="Skip Builder",
                 message_type="steering",
             ),
         )
@@ -229,7 +229,7 @@ class TestSteeringMessages:
             "sess-1",
             _request(
                 message_id="steering-1",
-                content="Focus on Leo only",
+                content="Focus on Planner only",
                 message_type="steering",
             ),
         )
@@ -237,12 +237,15 @@ class TestSteeringMessages:
             "sess-1",
             _request(
                 message_id="steering-2",
-                content="Skip Ada",
+                content="Skip Builder",
                 message_type="steering",
             ),
         )
 
-        delivered = await store.deliver_pending_steering("sess-1")
+        pending = await store.list_pending_steering("sess-1")
+        delivered = await store.mark_steering_delivered(
+            "sess-1", [record["id"] for record in pending]
+        )
         ctx = store.get_context("sess-1")
         path = await store.get_message_path("sess-1")
         display_steering = await store.get_display_steering("sess-1")
@@ -254,24 +257,6 @@ class TestSteeringMessages:
         assert [message["id"] for message in path] == ["user-1", "assistant-1"]
         assert [record["id"] for record in display_steering] == ["steering-1", "steering-2"]
 
-    async def test_marks_steering_promoted_for_idle_delivery(self) -> None:
-        store = SessionStore()
-        await _seed_basic_turn(store)
-        await store.queue_steering(
-            "sess-1",
-            _request(
-                message_id="steering-1",
-                content="Focus on Leo only",
-                message_type="steering",
-            ),
-        )
-
-        promoted = await store.mark_steering_promoted("sess-1", "steering-1")
-
-        assert promoted["status"] == "promoted"
-        assert promoted["delivered_at"] is not None
-        assert store.get_context("sess-1")["pending_steering_ids"] == []
-
 
 class TestMessagePathResolution:
     async def test_get_message_path_defaults_to_latest_leaf(self) -> None:
@@ -281,7 +266,7 @@ class TestMessagePathResolution:
             _request(
                 message_id="user-2",
                 parent_id="assistant-1",
-                content="Show me Ada too",
+                content="Show me Builder too",
             )
         )
 
@@ -450,3 +435,39 @@ class TestOwnership:
         await store.set_owner("sess-1", "bob")
         assert store.get_context("sess-1")["owner_id"] == "bob"
         db.set_owner.assert_awaited_once_with("sess-1", "bob")
+
+
+class TestMemoryModeListingAndPinning:
+    async def test_memory_listing_is_most_recently_used_first(self) -> None:
+        """The ingress picks ``list_sessions(limit=1)[0]`` as the newest session."""
+        store = SessionStore()
+        for sid in ("old", "middle", "new"):
+            store.get_context(sid)
+        store.get_context("old")  # used again: now the most recent
+        listed = [s["session_id"] for s in await store.list_sessions()]
+        assert listed == ["old", "new", "middle"]
+        assert (await store.list_sessions(limit=1))[0]["session_id"] == "old"
+
+    def test_pinned_sessions_survive_eviction(self) -> None:
+        from assistant_runtime.app.assistant import _session_store
+
+        store = SessionStore()
+        for n in range(_session_store._MAX_MEMORY_SESSIONS + 1):
+            store.get_context(f"s{n}")
+        store.pin("s0")
+        store.get_context("overflow")  # over the cap: evicts the older half
+        assert store.has_session("s0")
+        assert not store.has_session("s1")
+        store.unpin("s0")
+        assert "s0" not in store._pinned
+
+    def test_pins_are_reference_counted(self) -> None:
+        store = SessionStore()
+        store.pin("s")
+        store.pin("s")  # the turn and its post-turn work
+        store.unpin("s")
+        assert store._pinned == {"s": 1}
+        store.unpin("s")
+        assert "s" not in store._pinned
+        store.unpin("s")  # extra unpins are harmless
+        assert "s" not in store._pinned

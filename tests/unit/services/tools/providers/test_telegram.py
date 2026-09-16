@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._request_context import assistant_request_context
 from assistant_runtime.services.tools.capabilities.messaging import register_messaging_tools
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.providers.telegram import (
     TelegramMessaging,
     respond_telegram,
 )
+from assistant_runtime.services.tools.request_context import assistant_request_context
 
 
 class TestRespondTelegram:

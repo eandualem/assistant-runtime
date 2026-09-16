@@ -1,8 +1,13 @@
 """Configuration for the access module."""
 
+import re
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+LOCALHOST_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+"""Browser origins on this machine, any port: the development default."""
 
 
 class AccessConfig(BaseModel):
@@ -27,6 +32,41 @@ class AccessConfig(BaseModel):
         description="Header carrying comma-separated roles in header mode; 'admin' administers.",
     )
     cors_origins: list[str] = Field(
-        default=["*"],
-        description="Allowed CORS origins. Restrict this whenever the server is exposed.",
+        default_factory=list,
+        description=(
+            "Browser origins allowed exactly, for HTTP and Socket.IO. '*' allows every "
+            "origin (credentials are then refused); an empty list relies on cors_origin_regex."
+        ),
     )
+    cors_origin_regex: str | None = Field(
+        default=LOCALHOST_ORIGIN_REGEX,
+        description=(
+            "Regular expression for allowed origins. The default admits localhost on any "
+            "port, so a page on another host cannot call the runtime. Unset it (empty) when "
+            "exposing the server and list the real origins in cors_origins."
+        ),
+    )
+    local_token: str = Field(
+        default="",
+        description=(
+            "trusted_local only. When set, every caller must present it as "
+            "'Authorization: Bearer <token>' (HTTP) or as auth.token (Socket.IO connect); "
+            "a request without it is unauthenticated. Empty (the default) trusts every caller."
+        ),
+    )
+
+    def origin_allowed(self, origin: str | None) -> bool:
+        """Whether a browser ``Origin`` may reach the runtime under this configuration."""
+        if not origin:
+            return False
+        if "*" in self.cors_origins or origin in self.cors_origins:
+            return True
+        if self.cors_origin_regex:
+            return _compiled(self.cors_origin_regex).fullmatch(origin) is not None
+        return False
+
+
+@lru_cache(maxsize=8)
+def _compiled(pattern: str) -> re.Pattern[str]:
+    """The origin regex, compiled once; the check runs on every Socket.IO request."""
+    return re.compile(pattern)

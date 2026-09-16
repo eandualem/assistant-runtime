@@ -14,8 +14,8 @@ from loguru import logger
 from pydantic_ai.messages import BinaryContent
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._request_context import get_current_screenshot
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
+from assistant_runtime.services.tools.request_context import get_current_screenshot
 
 
 async def look_at_screen() -> BinaryContent | dict[str, str]:
@@ -55,6 +55,7 @@ def register_screen_tools(registry: ToolRegistry) -> None:
             ),
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,
+            idempotent=True,
         ),
         look_at_screen,
     )

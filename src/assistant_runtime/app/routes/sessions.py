@@ -9,13 +9,17 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from assistant_runtime.app.access.deps import AdminDep, PrincipalDep
-from assistant_runtime.app.assistant._serialization import (
+from assistant_runtime.app.access.exceptions import AccessDeniedError
+from assistant_runtime.app.access.interface import AccessService
+from assistant_runtime.app.assistant import (
+    find_tool_entry,
     merge_display_messages,
     tree_messages_to_tree,
 )
-from assistant_runtime.app.assistant._stale_tools import find_tool_entry
 from assistant_runtime.app.assistant.deps import AssistantServiceDep
-from assistant_runtime.principal import Principal, can_access_session
+from assistant_runtime.app.streaming.deps import StreamingServiceDep
+from assistant_runtime.app.voice.deps import OptionalVoiceServiceDep
+from assistant_runtime.principal import Principal
 
 if TYPE_CHECKING:
     from assistant_runtime.services.database.interface import DatabaseService
@@ -36,10 +40,10 @@ async def _get_session_context(session_id: str, sessions: Any, principal: Princi
 
 
 def _authorize(ctx: dict, principal: Principal, session_id: str) -> None:
-    if not can_access_session(principal, ctx.get("owner_id")):
-        raise HTTPException(
-            status_code=403, detail=f"Session '{session_id}' belongs to another principal"
-        )
+    try:
+        AccessService.check_session(principal, ctx.get("owner_id"), session_id)
+    except AccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 class OwnerUpdate(BaseModel):
@@ -142,25 +146,37 @@ async def get_session_tree(
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(
-    session_id: str, service: AssistantServiceDep, principal: PrincipalDep
+    session_id: str,
+    service: AssistantServiceDep,
+    principal: PrincipalDep,
+    streaming: StreamingServiceDep,
+    voice: OptionalVoiceServiceDep,
 ) -> dict:
     """Delete a session and all its context."""
     sessions = service.get_session_store()
-    await _get_session_context(session_id, sessions, principal)
-    await sessions.delete_session(session_id)
+    with streaming.session_mutation(session_id):
+        await _get_session_context(session_id, sessions, principal)
+        await sessions.delete_session(session_id)
+        if voice is not None:
+            voice.forget_session(session_id)
     return {"session_id": session_id, "deleted": True}
 
 
 @router.patch("/sessions/{session_id}/owner")
 async def set_session_owner(
-    session_id: str, body: OwnerUpdate, service: AssistantServiceDep, admin: AdminDep
+    session_id: str,
+    body: OwnerUpdate,
+    service: AssistantServiceDep,
+    admin: AdminDep,
+    streaming: StreamingServiceDep,
 ) -> dict:
     """Assign a session to a principal (administration; null makes it unowned)."""
     sessions = service.get_session_store()
     if sessions is None:
         raise HTTPException(status_code=404, detail="Session not found")
     try:
-        await sessions.set_owner(session_id, body.owner_id)
+        with streaming.session_mutation(session_id):
+            await sessions.set_owner(session_id, body.owner_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     return {"session_id": session_id, "owner_id": body.owner_id}
@@ -168,7 +184,10 @@ async def set_session_owner(
 
 @router.post("/sessions/{session_id}/repair")
 async def repair_session(
-    session_id: str, service: AssistantServiceDep, principal: PrincipalDep
+    session_id: str,
+    service: AssistantServiceDep,
+    principal: PrincipalDep,
+    streaming: StreamingServiceDep,
 ) -> dict:
     """Resolve host tools stuck in a session as ``unknown``.
 
@@ -176,10 +195,10 @@ async def repair_session(
     every tool without a result a synthetic one, so the session can continue.
     """
     sessions = service.get_session_store()
-    await _get_session_context(session_id, sessions, principal)
-
     try:
-        report = await sessions.repair_stale_host_tools(session_id)
+        with streaming.session_mutation(session_id):
+            await _get_session_context(session_id, sessions, principal)
+            report = await sessions.repair_stale_host_tools(session_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -214,7 +233,6 @@ async def get_session_traces(
                     "user_message": row.user_message,
                     "is_continuation": row.is_continuation,
                     "duration_ms": row.duration_ms,
-                    "screenshot": row.screenshot,
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                 }
                 for row in rows

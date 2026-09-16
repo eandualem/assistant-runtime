@@ -14,10 +14,10 @@ from assistant_runtime.principal import (
 
 class TestPrincipal:
     def test_roles_are_a_frozenset_and_admin_is_a_role(self):
-        principal = Principal(id="u1", roles=["viewer", "admin"], label="Ada")
+        principal = Principal(id="u1", roles=["viewer", "admin"], label="Builder")
         assert principal.roles == frozenset({"viewer", "admin"})
         assert principal.is_admin
-        assert principal.to_dict() == {"id": "u1", "roles": ["admin", "viewer"], "label": "Ada"}
+        assert principal.to_dict() == {"id": "u1", "roles": ["admin", "viewer"], "label": "Builder"}
         assert not Principal(id="u2").is_admin
 
     @pytest.mark.parametrize("bad", ["", "   "])
