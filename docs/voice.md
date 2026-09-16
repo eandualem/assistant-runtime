@@ -51,6 +51,8 @@ Use HTTPS outside localhost for microphone access. Create a dedicated runtime
 session id or reuse a conversation that has no active turn or pending host action.
 An active call reserves that session: ordinary chat, steering, ordinary cancel,
 repair, deletion and owner reassignment are rejected with `409` until it closes.
+Ownership is checked again after reservation admission, before any history is
+returned, so a queued request cannot retain access after owner reassignment.
 Use the voice control endpoints during a call.
 
 1. Create an `RTCPeerConnection`, attach the microphone track and create the

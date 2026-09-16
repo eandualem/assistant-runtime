@@ -215,6 +215,9 @@ class StreamingService:
             # The reserved session must stay cached for the call's lifetime.
             self._sessions.pin(session_id)
         try:
+            # Ownership may change while admission waits. The lease now blocks
+            # administrative mutations, so authorize again before reading history.
+            await self._authorize(session_id, principal)
             ctx = await self._sessions.ensure_owned_session(session_id, principal.id)
             if ctx.get("pending_tool_call_id"):
                 raise SessionError("Resolve the pending host action before starting voice")
