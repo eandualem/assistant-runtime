@@ -260,7 +260,7 @@ class TestAssistantNamespaceMessages:
             {
                 "id": "steering-1",
                 "session_id": "sess-1",
-                "content": "Focus on Leo",
+                "content": "Focus on Planner",
                 "message_type": "steering",
             },
         )
@@ -294,7 +294,7 @@ class TestAssistantNamespaceMessages:
             {
                 "id": "steering-1",
                 "session_id": "sess-1",
-                "content": "Focus on Leo",
+                "content": "Focus on Planner",
                 "message_type": "steering",
             },
         )

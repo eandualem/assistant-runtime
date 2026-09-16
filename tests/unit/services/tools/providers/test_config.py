@@ -40,12 +40,12 @@ class TestProvidersConfig:
         config = ProvidersConfig.from_env(
             {
                 "BACKBONE_URL": "http://127.0.0.1:7120",
-                "BACKBONE_INFRASTRUCTURE_SESSIONS": "gateway, ngrok,",
+                "BACKBONE_INFRASTRUCTURE_SESSIONS": "service-a, service-b,",
                 "AGENT_STATE_DIR": "~/.claude/state",
             }
         )
         assert config.backbone_url == "http://127.0.0.1:7120"
-        assert config.backbone_infrastructure_sessions == frozenset({"gateway", "ngrok"})
+        assert config.backbone_infrastructure_sessions == frozenset({"service-a", "service-b"})
         assert config.agent_state_dir == Path("~/.claude/state").expanduser()
         assert config.configured() == ["backbone", "claude_code"]
 

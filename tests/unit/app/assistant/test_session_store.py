@@ -137,7 +137,7 @@ class TestRegisterUserMessage:
             _request(
                 message_id="user-2",
                 parent_id="user-1",
-                content="Actually, inspect Leo only",
+                content="Actually, inspect Planner only",
             )
         )
 
@@ -152,7 +152,7 @@ class TestRegisterUserMessage:
             await store.register_user_message(
                 _request(
                     message_id="steering-1",
-                    content="Focus on Leo",
+                    content="Focus on Planner",
                     message_type="steering",
                 )
             )
@@ -204,7 +204,7 @@ class TestSteeringMessages:
             "sess-1",
             _request(
                 message_id="steering-1",
-                content="Focus on Leo only",
+                content="Focus on Planner only",
                 message_type="steering",
             ),
         )
@@ -212,7 +212,7 @@ class TestSteeringMessages:
             "sess-1",
             _request(
                 message_id="steering-2",
-                content="Skip Ada",
+                content="Skip Builder",
                 message_type="steering",
             ),
         )
@@ -229,7 +229,7 @@ class TestSteeringMessages:
             "sess-1",
             _request(
                 message_id="steering-1",
-                content="Focus on Leo only",
+                content="Focus on Planner only",
                 message_type="steering",
             ),
         )
@@ -237,7 +237,7 @@ class TestSteeringMessages:
             "sess-1",
             _request(
                 message_id="steering-2",
-                content="Skip Ada",
+                content="Skip Builder",
                 message_type="steering",
             ),
         )
@@ -266,7 +266,7 @@ class TestMessagePathResolution:
             _request(
                 message_id="user-2",
                 parent_id="assistant-1",
-                content="Show me Ada too",
+                content="Show me Builder too",
             )
         )
 

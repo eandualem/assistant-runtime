@@ -28,7 +28,7 @@ REQUIRED_ARTIFACTS = {
     "soul": "The assistant exists to increase the operator's leverage in a live AI workbench.",
     "persona": "You are the assistant, the operational assistant.",
     "communication_protocol": "Messages may arrive with envelope tags.",
-    "ecosystem": "Agents: Leo, Ike, Feynman.",
+    "ecosystem": "Agents: Planner, Reviewer, Researcher.",
 }
 # Most cases below describe the example technical profile's artifact set.
 build_system_prompt = partial(_build_system_prompt, profile=technical_operator_profile())
@@ -247,7 +247,7 @@ class TestHostContextFragment:
         ctx = {
             "view": {
                 "name": "agents",
-                "data": {"sessions": [{"name": "leo", "state": "idle"}]},
+                "data": {"sessions": [{"name": "planner", "state": "idle"}]},
                 "state": {
                     "list": {
                         "current": "loaded",
@@ -441,7 +441,7 @@ class TestBuildSystemPrompt:
             host_context={
                 "page": {
                     "name": "agents",
-                    "data": {"sessions": [{"name": "leo", "state": "idle"}]},
+                    "data": {"sessions": [{"name": "planner", "state": "idle"}]},
                 },
             },
             artifacts=REQUIRED_ARTIFACTS,
@@ -509,7 +509,7 @@ class TestBuildSystemPrompt:
             host_context={
                 "page": {
                     "name": "agents",
-                    "data": {"sessions": [{"name": "leo", "state": "idle"}]},
+                    "data": {"sessions": [{"name": "planner", "state": "idle"}]},
                 },
             },
             artifacts=REQUIRED_ARTIFACTS,
@@ -567,7 +567,7 @@ class TestBuildSystemPrompt:
         )
         fragment_names = [f["name"] for f in result.fragments]
         assert "ecosystem" in fragment_names
-        assert "Leo" in result.content
+        assert "Planner" in result.content
 
     def test_required_artifacts_follow_catalog_order(self):
         result = build_system_prompt(

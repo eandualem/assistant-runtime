@@ -238,6 +238,12 @@ variables:
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | messaging (`respond_telegram`) | a Telegram bot and the chat it answers in |
 | `AGENT_STATE_DIR` | approvals (`list_agent_plans`, `approve_plan`, `reject_plan`), registered only when `TOOLS__PROVIDER_CAPABILITIES` names `approvals`; also enriches peers | a directory of agent state files (the Claude Code layout, `~/.claude/state`) |
 
+The GitHub issue tools accept arbitrary repository labels, including an empty
+list. They do not require agent-routing prefixes or a particular issue-body
+template. Put workflow conventions in the assistant profile; existing `from:`
+and `for:` labels continue to work when supplied. The optional `priority`
+argument still adds its `blocking` or `non-blocking` label.
+
 ## Integrations
 
 | Variable | Used by |

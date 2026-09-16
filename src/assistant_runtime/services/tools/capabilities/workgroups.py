@@ -68,12 +68,12 @@ class WorkgroupsProvider(Protocol):
 
 
 def register_workgroups_tools(registry: ToolRegistry, provider: WorkgroupsProvider) -> None:
-    """Register backbone swarm management tools."""
+    """Register swarm management tools."""
     registry.register_backend_tool(
         ToolDefinition(
             name="create_swarm",
             description=(
-                "Create a new coding swarm in the backbone with its lead session and optional "
+                "Create a coding swarm through the configured provider with its lead session and optional "
                 "worker registrations."
             ),
             parameters_schema={
@@ -121,7 +121,7 @@ def register_workgroups_tools(registry: ToolRegistry, provider: WorkgroupsProvid
         ToolDefinition(
             name="list_swarms",
             description=(
-                "List swarms known to the backbone, optionally filtered by repository or "
+                "List swarms known to the configured provider, optionally filtered by repository or "
                 "swarm status/phase."
             ),
             parameters_schema={
