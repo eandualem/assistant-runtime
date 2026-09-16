@@ -42,7 +42,11 @@ Each chat request, steering message and host-tool continuation can send
 requests cannot load a file. Send it consistently on every request. Omitting
 it selects `AssistantDefinition.profile`, else `ASSISTANT__PROFILE`, else
 `neutral`; the selector is not persisted as a session binding. Keep separate
-session IDs for each app/conversation. Profiles scope prompt artifacts, not
+session IDs for each app/conversation. Explicitly scoped queued steering stays
+pending until a turn using that profile consumes it, including after cancellation.
+Steering without a profile (including ingress messages) inherits the consuming
+turn; promoted steering without a profile uses the startup default.
+Profiles scope prompt artifacts, not
 identity or authorization: the existing principal and session ownership rules
 still apply.
 

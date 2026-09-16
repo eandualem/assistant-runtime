@@ -116,8 +116,9 @@ tool results so far are saved on the assistant message. See
 | `cache_ttl_seconds` | `5` | how long prompts reuse active texts read from the store; mutations invalidate at once |
 | `history_limit` | `20` | versions returned by history reads |
 
-The default assistant profile is `ASSISTANT__PROFILE`. Register additional ones
-with `ASSISTANT__PROFILES`; see [deployments](deployments.md).
+The default assistant profile is `AssistantDefinition.profile` when set, then
+`ASSISTANT__PROFILE`, then `neutral`. Register additional profiles with
+`ASSISTANT__PROFILES`; see [deployments](deployments.md).
 
 ### History (`HISTORY__*`)
 

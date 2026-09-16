@@ -116,6 +116,7 @@ class SessionPersistence:
             await SteeringRepository(db_session).create(
                 steering_id=record["id"],
                 session_id=record["session_id"],
+                profile=record.get("profile"),
                 content=record["content"],
                 status=record["status"],
                 delivered_at=record["delivered_at"],
@@ -216,6 +217,7 @@ class SessionPersistence:
                         {
                             "id": s.id,
                             "session_id": s.session_id,
+                            "profile": s.profile,
                             "content": s.content,
                             "status": s.status,
                             "created_at": s.created_at,

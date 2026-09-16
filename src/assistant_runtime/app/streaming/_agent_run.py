@@ -48,10 +48,18 @@ class TurnPolicy(AbstractCapability):
     only supplies its queue and retention policy through public hooks.
     """
 
-    def __init__(self, sessions: SessionStore, session_id: str, session_context: dict[str, Any]):
+    def __init__(
+        self,
+        sessions: SessionStore,
+        session_id: str,
+        session_context: dict[str, Any],
+        *,
+        profile_name: str | None = None,
+    ):
         self.sessions = sessions
         self.session_id = session_id
         self.session_context = session_context
+        self.profile_name = profile_name
         self.pending_image_sanitize = False
         self._enqueued_steering: dict[str, list[str]] = {}
         self._inflight_steering: set[str] = set()
@@ -74,6 +82,7 @@ class TurnPolicy(AbstractCapability):
             self.session_context,
             run=ctx,
             exclude_ids=self._inflight_steering,
+            profile_name=self.profile_name,
         )
         if enqueue_id is not None:
             ids = [record["id"] for record in records]
@@ -206,11 +215,12 @@ async def enqueue_pending_steering(
     *,
     run: Any,
     exclude_ids: set[str] | None = None,
+    profile_name: str | None = None,
 ) -> tuple[str | None, list[SteeringRecord]]:
     """Enqueue pending records; acknowledge only after their model request succeeds."""
     if not session_context.get("pending_steering_ids"):
         return None, []
-    pending = await sessions.list_pending_steering(session_id)
+    pending = await sessions.list_pending_steering(session_id, profile_name=profile_name)
     records = [record for record in pending if record["id"] not in (exclude_ids or set())]
     if not records:
         return None, []

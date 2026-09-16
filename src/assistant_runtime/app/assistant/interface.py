@@ -281,6 +281,7 @@ class AssistantService:
             effective_config=effective,
             mcp_summary=mcp_summary,
             deps=deps,
+            profile_name=artifacts_service.profile.name,
         )
 
     async def update_working_memory(

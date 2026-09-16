@@ -227,6 +227,9 @@ execution, history, serialization, or the upstream dependency; see
   drain the producer; Socket.IO disconnects leave it running. External
   `CancelledError` keeps propagating. Steering remains pending until a
   successful model response consumes it, so interrupted delivery can retry.
+  A steering record persists its optional profile selector; explicit selectors
+  are consumed only by matching profiles, while unprofiled legacy/ingress
+  steering inherits the consuming turn.
 - **Streaming events are dicts with a `type`.** They are built only by
   `app/streaming/_event_builder.py` and mapped to `assistant:*` Socket.IO
   events by `_EVENT_TYPE_MAP` in `app/socketio_server.py`;

@@ -316,7 +316,8 @@ voice SSE envelopes, preserving the same event shapes and saved message tree.
 Chat requests accept top-level `profile`, a startup-registered name from
 `GET /api/artifacts/profile` → `available_profiles`. Send it on every turn,
 steering message and host-tool continuation; omission selects the startup
-default. Unknown names reject chat with HTTP 409 before turn admission, voice
+default. Queued steering with an explicit profile is delivered only to matching
+turns; unprofiled queued steering inherits its consuming turn. Unknown names reject chat with HTTP 409 before turn admission, voice
 creation with 422 before allocation, and artifact queries with 404. Invalid
 name syntax returns 422 for HTTP request validation. Artifact routes select
 the same scope through `?profile=<name>`. See [deployments](deployments.md).
