@@ -94,7 +94,10 @@ class TestAppStartup:
         """create_app() produces a valid FastAPI instance."""
         app = create_app()
         assert app.title == "Assistant Runtime"
-        assert app.version == "0.1.0"
+        from assistant_runtime import __version__
+
+        assert app.version == __version__
+        assert app.openapi()["info"]["version"] == __version__
 
     def test_all_routes_registered(self):
         """App exposes all expected route paths (via the OpenAPI schema, which

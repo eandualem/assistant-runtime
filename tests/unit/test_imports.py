@@ -102,6 +102,9 @@ def _private_cross_module_imports() -> list[str]:
         for imported in _imported_modules(path):
             if not imported.startswith(PACKAGE + "."):
                 continue
+            # Public package metadata, not a private module (exported in __all__).
+            if imported == f"{PACKAGE}.__version__":
+                continue
             parts = imported.removeprefix(PACKAGE + ".").split(".")
             private = [p for p in parts if p.startswith("_") and p != "__init__"]
             if not private or _module_of(tuple(parts)) == owner:
