@@ -13,7 +13,6 @@ from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.providers.github import (
     GitHubIssues,
     _github_request,
-    _has_label_prefix,
     close_issue,
     comment_on_issue,
     create_issue,
@@ -32,7 +31,7 @@ MODULE = "assistant_runtime.services.tools.providers.github"
 def _repo_env(monkeypatch):
     """The issue tools need a target repository; point them at a test repo."""
     monkeypatch.setenv("GITHUB_REPO_OWNER", "example-org")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "orchestration")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "sample-app")
 
 
 class TestRepoConfig:
@@ -50,25 +49,6 @@ class TestRepoConfig:
         assert result["error_code"] == "GITHUB_REPO_MISSING"
         assert "GITHUB_REPO_NAME" in result["error"]
         assert "GITHUB_REPO_OWNER" not in result["error"]
-
-
-# ---------------------------------------------------------------------------
-# TestHasLabelPrefix
-# ---------------------------------------------------------------------------
-
-
-class TestHasLabelPrefix:
-    def test_has_from_label(self):
-        assert _has_label_prefix(["from:coding-agent", "for:ike", "task"], "from:") is True
-
-    def test_has_for_label(self):
-        assert _has_label_prefix(["from:coding-agent", "for:ike"], "for:") is True
-
-    def test_missing_prefix(self):
-        assert _has_label_prefix(["task", "bug"], "from:") is False
-
-    def test_empty_labels(self):
-        assert _has_label_prefix([], "from:") is False
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +144,7 @@ class TestCreateIssue:
             201,
             {
                 "number": 99,
-                "html_url": "https://github.com/example-org/orchestration/issues/99",
+                "html_url": "https://github.com/example-org/sample-app/issues/99",
                 "title": "Test issue",
             },
         )
@@ -172,11 +152,11 @@ class TestCreateIssue:
         result = await create_issue(
             title="[task] Test issue",
             body="## Context\nTest",
-            labels=["from:coding-agent", "for:ike", "task"],
+            labels=["from:coding-agent", "for:reviewer", "task"],
         )
         assert result["success"] is True
         assert result["number"] == 99
-        assert result["url"] == "https://github.com/example-org/orchestration/issues/99"
+        assert result["url"] == "https://github.com/example-org/sample-app/issues/99"
         assert result["title"] == "Test issue"
 
     async def test_missing_title(self):
@@ -184,20 +164,26 @@ class TestCreateIssue:
         assert result["success"] is False
         assert "empty" in result["error"].lower()
 
-    async def test_missing_from_label(self):
-        result = await create_issue(title="Test", body="body", labels=["for:ike", "task"])
-        assert result["success"] is False
-        assert "from:" in result["error"]
+    @pytest.mark.parametrize(
+        "labels",
+        [[], ["bug"], ["from:reporter"], ["for:reviewer"], ["from:reporter", "for:reviewer"]],
+    )
+    @patch(f"{MODULE}._github_request")
+    async def test_repository_labels_are_forwarded_without_routing_requirements(
+        self, mock_req, labels
+    ):
+        mock_req.return_value = (201, {"number": 1, "html_url": "url", "title": "Test"})
+        original_labels = list(labels)
 
-    async def test_missing_for_label(self):
-        result = await create_issue(title="Test", body="body", labels=["from:coding-agent", "task"])
-        assert result["success"] is False
-        assert "for:" in result["error"]
+        result = await create_issue(title="Test", body="body", labels=labels)
 
-    async def test_empty_labels(self):
-        result = await create_issue(title="Test", body="body", labels=[])
-        assert result["success"] is False
-        assert "required" in result["error"].lower()
+        assert result["success"] is True
+        mock_req.assert_awaited_once_with(
+            "POST",
+            "/repos/example-org/sample-app/issues",
+            json_body={"title": "Test", "body": "body", "labels": original_labels},
+        )
+        assert labels == original_labels
 
     @patch(f"{MODULE}._github_request")
     async def test_priority_added(self, mock_req):
@@ -206,7 +192,7 @@ class TestCreateIssue:
         await create_issue(
             title="Test",
             body="body",
-            labels=["from:coding-agent", "for:ike"],
+            labels=["from:coding-agent", "for:reviewer"],
             priority="blocking",
         )
 
@@ -221,7 +207,7 @@ class TestCreateIssue:
         await create_issue(
             title="Test",
             body="body",
-            labels=["from:coding-agent", "for:ike"],
+            labels=["from:coding-agent", "for:reviewer"],
             priority="urgent",
         )
 
@@ -273,11 +259,11 @@ class TestSearchIssues:
     async def test_with_labels(self, mock_req):
         mock_req.return_value = (200, [])
 
-        await search_issues(labels=["for:ike", "task"])
+        await search_issues(labels=["for:reviewer", "task"])
 
         call_args = mock_req.call_args
         params = call_args.kwargs.get("params") or call_args[1].get("params")
-        assert params["labels"] == "for:ike,task"
+        assert params["labels"] == "for:reviewer,task"
 
     @patch(f"{MODULE}._github_request")
     async def test_with_text_query(self, mock_req):
@@ -323,7 +309,7 @@ class TestSearchIssues:
                     "number": 10,
                     "title": "Test Issue",
                     "state": "open",
-                    "labels": [{"name": "task"}, {"name": "for:ike"}],
+                    "labels": [{"name": "task"}, {"name": "for:reviewer"}],
                     "created_at": "2026-02-01T00:00:00Z",
                 },
             ],
@@ -335,7 +321,7 @@ class TestSearchIssues:
         assert issue["title"] == "Test Issue"
         assert issue["state"] == "open"
         assert "task" in issue["labels"]
-        assert "for:ike" in issue["labels"]
+        assert "for:reviewer" in issue["labels"]
         assert issue["created_at"] == "2026-02-01T00:00:00Z"
 
 
@@ -361,7 +347,11 @@ class TestGetIssueDetails:
             (
                 200,
                 [
-                    {"user": {"login": "ike"}, "body": "Working on it", "created_at": "2026-02-01"},
+                    {
+                        "user": {"login": "reviewer"},
+                        "body": "Working on it",
+                        "created_at": "2026-02-01",
+                    },
                 ],
             ),
         ]
@@ -371,7 +361,7 @@ class TestGetIssueDetails:
         assert result["number"] == 42
         assert result["body"] == "Issue body"
         assert len(result["comments"]) == 1
-        assert result["comments"][0]["author"] == "ike"
+        assert result["comments"][0]["author"] == "reviewer"
 
     @patch(f"{MODULE}._github_request")
     async def test_not_found(self, mock_req):

@@ -74,7 +74,7 @@ def test_path_records_to_model_history_expands_assistant_turns() -> None:
                 "parent_id": "user-1",
                 "role": "assistant",
                 "message_type": "standard",
-                "content": "Leo is idle.",
+                "content": "Planner is idle.",
                 "segments": [
                     {"kind": "thinking", "text": "Inspecting."},
                     {
@@ -84,11 +84,11 @@ def test_path_records_to_model_history_expands_assistant_turns() -> None:
                                 "id": "call-1",
                                 "name": "get_active_agents",
                                 "input": {"scope": "all"},
-                                "output": [{"name": "leo", "state": "idle"}],
+                                "output": [{"name": "planner", "state": "idle"}],
                             }
                         ],
                     },
-                    {"kind": "text", "text": "Leo is idle."},
+                    {"kind": "text", "text": "Planner is idle."},
                 ],
                 "usage": {"input_tokens": 5, "output_tokens": 7},
                 "created_at": created_at,
@@ -201,14 +201,14 @@ def test_steering_records_to_display_filters_pending_records() -> None:
         [
             {
                 "id": "steering-1",
-                "content": "Focus on Leo",
+                "content": "Focus on Planner",
                 "status": "pending",
                 "created_at": created_at,
                 "delivered_at": None,
             },
             {
                 "id": "steering-2",
-                "content": "Skip Ada",
+                "content": "Skip Builder",
                 "status": "delivered",
                 "created_at": created_at,
                 "delivered_at": delivered_at,
@@ -220,7 +220,7 @@ def test_steering_records_to_display_filters_pending_records() -> None:
         {
             "id": "steering-2",
             "role": "steering",
-            "text": "Skip Ada",
+            "text": "Skip Builder",
             "message_type": "steering",
             "status": "delivered",
             "timestamp": delivered_at.isoformat(),
@@ -257,7 +257,7 @@ def test_merge_display_messages_inserts_steering_by_delivery_time() -> None:
         [
             {
                 "id": "steering-1",
-                "content": "Focus on Leo",
+                "content": "Focus on Planner",
                 "status": "delivered",
                 "created_at": user_time,
                 "delivered_at": steering_time,
@@ -273,14 +273,14 @@ def test_build_steering_request_frames_each_steering_item() -> None:
         [
             {
                 "id": "steering-1",
-                "content": "Focus on Leo",
+                "content": "Focus on Planner",
                 "status": "delivered",
                 "created_at": datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
                 "delivered_at": None,
             },
             {
                 "id": "steering-2",
-                "content": "Skip Ada",
+                "content": "Skip Builder",
                 "status": "delivered",
                 "created_at": datetime(2026, 3, 21, 12, 1, tzinfo=UTC),
                 "delivered_at": None,
@@ -291,7 +291,7 @@ def test_build_steering_request_frames_each_steering_item() -> None:
     assert len(request.parts) == 2
     assert all(isinstance(part, UserPromptPart) for part in request.parts)
     assert "Additional user steering" in request.parts[0].content
-    assert request.parts[1].content.endswith("Skip Ada")
+    assert request.parts[1].content.endswith("Skip Builder")
 
 
 def test_build_assistant_message_content_collects_segments_and_usage() -> None:

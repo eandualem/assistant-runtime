@@ -45,9 +45,9 @@ def register_peers_tools(registry: ToolRegistry, provider: PeersProvider) -> Non
         ToolDefinition(
             name="list_agents",
             description=(
-                "List ALL tmux sessions, including infrastructure and support services. "
+                "List all sessions exposed by the configured provider, including support services. "
                 "Returns session names, state, entity, runtime, role, type, and home "
-                "directory. This is a low-level tmux view. Prefer get_active_agents for "
+                "directory. This is the complete session view. Prefer get_active_agents for "
                 "normal 'agent status' requests."
             ),
             parameters_schema={"type": "object", "properties": {}},
@@ -62,10 +62,9 @@ def register_peers_tools(registry: ToolRegistry, provider: PeersProvider) -> Non
             description=(
                 "List active AI agents — the PRIMARY tool for 'agent status', "
                 "'what agents are running', or similar requests. Returns only real "
-                "agents (named entities + coding agents) that are online, excluding "
-                "infrastructure sessions like gateway, prefect, ngrok, and workers. "
+                "agents that are online, excluding configured infrastructure sessions. "
                 "Use this instead of list_agents unless the user explicitly wants the "
-                "full tmux session list. Each agent includes session_name, display_name, "
+                "full session list. Each agent includes session_name, display_name, "
                 "role, type, state, runtime, and current_issue."
             ),
             parameters_schema={"type": "object", "properties": {}},
@@ -86,7 +85,7 @@ def register_peers_tools(registry: ToolRegistry, provider: PeersProvider) -> Non
                 "properties": {
                     "session_name": {
                         "type": "string",
-                        "description": "Name of the tmux session to check",
+                        "description": "Name of the agent session to check",
                     },
                 },
                 "required": ["session_name"],
@@ -100,9 +99,9 @@ def register_peers_tools(registry: ToolRegistry, provider: PeersProvider) -> Non
         ToolDefinition(
             name="start_agent",
             description=(
-                "Start a new AI agent in a tmux session. Delegates to the backbone "
-                "start endpoint which handles working directory resolution and session "
-                "creation. Supports runtime selection, model override, and resume mode. "
+                "Start an AI agent through the configured provider, which handles "
+                "working directory resolution and session creation. Supports runtime "
+                "selection, model override, and resume mode. "
                 "Optionally sends an initial prompt after the CLI starts. The result of "
                 "this tool is authoritative for whether the start succeeded, so do not "
                 "navigate or call look_at_screen just to confirm unless the user "
@@ -114,7 +113,7 @@ def register_peers_tools(registry: ToolRegistry, provider: PeersProvider) -> Non
                 "properties": {
                     "session_name": {
                         "type": "string",
-                        "description": "Name for the new tmux session (must be a known agent)",
+                        "description": "Session name of a known agent to start",
                     },
                     "runtime": {
                         "type": "string",
@@ -150,7 +149,7 @@ def register_peers_tools(registry: ToolRegistry, provider: PeersProvider) -> Non
         ToolDefinition(
             name="stop_agent",
             description=(
-                "Stop a running AI agent by killing its tmux session. "
+                "Stop a running AI agent session. "
                 "Returns the agent's previous state before termination."
             ),
             parameters_schema={
@@ -158,7 +157,7 @@ def register_peers_tools(registry: ToolRegistry, provider: PeersProvider) -> Non
                 "properties": {
                     "session_name": {
                         "type": "string",
-                        "description": "Name of the tmux session to stop",
+                        "description": "Name of the agent session to stop",
                     },
                 },
                 "required": ["session_name"],
@@ -183,7 +182,7 @@ def register_peers_tools(registry: ToolRegistry, provider: PeersProvider) -> Non
                 "properties": {
                     "session_name": {
                         "type": "string",
-                        "description": "Name of the target tmux session",
+                        "description": "Name of the target agent session",
                     },
                     "message": {
                         "type": "string",

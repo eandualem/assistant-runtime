@@ -17,20 +17,20 @@ MODULE = "assistant_runtime.services.tools.providers.backbone._registry_cache"
 
 SAMPLE_AGENTS = [
     {
-        "name": "leo",
-        "display_name": "Leo",
+        "name": "planner",
+        "display_name": "Planner",
         "role": "Strategy Co-Architect",
-        "session": "leo",
+        "session": "planner",
         "type": "entity",
-        "home": "/srv/agents/leo",
+        "home": "/srv/agents/planner",
     },
     {
-        "name": "ike",
-        "display_name": "Ike",
+        "name": "reviewer",
+        "display_name": "Reviewer",
         "role": "Core Orchestrator",
-        "session": "ike",
+        "session": "reviewer",
         "type": "entity",
-        "home": "/srv/agents/ike",
+        "home": "/srv/agents/reviewer",
     },
     {
         "name": "agent-backbone",
@@ -156,10 +156,10 @@ class TestGetAgentInfo:
         cache = AgentRegistryCache()
         cache._agents = SAMPLE_AGENTS
 
-        info = cache.get_agent_info("ike")
+        info = cache.get_agent_info("reviewer")
 
         assert info is not None
-        assert info["name"] == "ike"
+        assert info["name"] == "reviewer"
         assert info["role"] == "Core Orchestrator"
 
     async def test_returns_none_for_unknown(self):
@@ -173,7 +173,7 @@ class TestGetAgentInfo:
     async def test_returns_none_when_cache_empty(self):
         cache = AgentRegistryCache()
 
-        info = cache.get_agent_info("leo")
+        info = cache.get_agent_info("planner")
 
         assert info is None
 

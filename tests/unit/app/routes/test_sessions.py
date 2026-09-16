@@ -231,7 +231,7 @@ class TestGetSessionMessages:
             "sess-1",
             _request(
                 message_id="steering-1",
-                content="Focus on Leo",
+                content="Focus on Planner",
                 message_type="steering",
             ),
         )

@@ -48,17 +48,17 @@ def _write_state(state_dir, session_name, state_data):
 
 class TestReadAllStateFiles:
     def test_reads_valid_files(self, state_dir):
-        _write_state(state_dir, "leo", {"state": "idle"})
-        _write_state(state_dir, "ike", {"state": "processing"})
+        _write_state(state_dir, "planner", {"state": "idle"})
+        _write_state(state_dir, "reviewer", {"state": "processing"})
 
         results = _read_all_state_files()
         assert len(results) == 2
         names = {name for name, _ in results}
-        assert "leo" in names
-        assert "ike" in names
+        assert "planner" in names
+        assert "reviewer" in names
 
     def test_skips_invalid_json(self, state_dir):
-        _write_state(state_dir, "leo", {"state": "idle"})
+        _write_state(state_dir, "planner", {"state": "idle"})
         (state_dir / "broken.json").write_text("not json {{{")
 
         results = _read_all_state_files()
@@ -81,9 +81,9 @@ class TestReadAllStateFiles:
 
 class TestGetAgentState:
     def test_valid_state(self, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting", "plan_title": "Test plan"})
+        _write_state(state_dir, "planner", {"state": "plan_waiting", "plan_title": "Test plan"})
 
-        result = _get_agent_state("leo")
+        result = _get_agent_state("planner")
         assert result is not None
         assert result["state"] == "plan_waiting"
 
@@ -106,7 +106,7 @@ class TestListAgentPlans:
     async def test_has_pending_plans(self, state_dir):
         _write_state(
             state_dir,
-            "leo",
+            "planner",
             {
                 "state": "plan_waiting",
                 "plan_title": "Implement feature X",
@@ -114,19 +114,19 @@ class TestListAgentPlans:
                 "ts": int(time.time()) - 300,  # 5 minutes ago
             },
         )
-        _write_state(state_dir, "ike", {"state": "idle"})
+        _write_state(state_dir, "reviewer", {"state": "idle"})
 
         result = await list_agent_plans()
         assert result["success"] is True
         assert result["count"] == 1
-        assert result["plans"][0]["session_name"] == "leo"
+        assert result["plans"][0]["session_name"] == "planner"
         assert result["plans"][0]["plan_title"] == "Implement feature X"
         assert result["plans"][0]["plan_file"] == "/path/to/plan.md"
         assert result["plans"][0]["waiting_since"] is not None
 
     async def test_no_pending_plans(self, state_dir):
-        _write_state(state_dir, "leo", {"state": "idle"})
-        _write_state(state_dir, "ike", {"state": "processing"})
+        _write_state(state_dir, "planner", {"state": "idle"})
+        _write_state(state_dir, "reviewer", {"state": "processing"})
 
         result = await list_agent_plans()
         assert result["success"] is True
@@ -134,7 +134,7 @@ class TestListAgentPlans:
         assert result["plans"] == []
 
     async def test_malformed_state_files(self, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting", "plan_title": "Test"})
+        _write_state(state_dir, "planner", {"state": "plan_waiting", "plan_title": "Test"})
         (state_dir / "broken.json").write_text("not json")
 
         result = await list_agent_plans()
@@ -144,26 +144,26 @@ class TestListAgentPlans:
     async def test_mixed_states(self, state_dir):
         _write_state(
             state_dir,
-            "leo",
+            "planner",
             {"state": "plan_waiting", "plan_title": "Plan A", "ts": int(time.time())},
         )
-        _write_state(state_dir, "ike", {"state": "idle"})
+        _write_state(state_dir, "reviewer", {"state": "idle"})
         _write_state(
             state_dir,
-            "ada",
+            "builder",
             {"state": "plan_waiting", "plan_title": "Plan B", "ts": int(time.time())},
         )
-        _write_state(state_dir, "feynman", {"state": "processing"})
+        _write_state(state_dir, "researcher", {"state": "processing"})
 
         result = await list_agent_plans()
         assert result["count"] == 2
         names = {p["session_name"] for p in result["plans"]}
-        assert names == {"leo", "ada"}
+        assert names == {"planner", "builder"}
 
     async def test_waiting_since_hours(self, state_dir):
         _write_state(
             state_dir,
-            "leo",
+            "planner",
             {
                 "state": "plan_waiting",
                 "plan_title": "Plan",
@@ -183,17 +183,17 @@ class TestListAgentPlans:
 class TestApprovePlan:
     @patch(f"{MODULE}._run_command")
     async def test_success(self, mock_run, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting", "plan_title": "Test"})
+        _write_state(state_dir, "planner", {"state": "plan_waiting", "plan_title": "Test"})
         # has-session, send-keys
         mock_run.side_effect = [
             (0, "", ""),
             (0, "", ""),
         ]
 
-        result = await approve_plan("leo")
+        result = await approve_plan("planner")
         assert result["success"] is True
         assert result["approved"] is True
-        assert result["session_name"] == "leo"
+        assert result["session_name"] == "planner"
 
         # Verify the Shift+Tab escape sequence was sent
         send_call = mock_run.call_args_list[1]
@@ -201,9 +201,9 @@ class TestApprovePlan:
         assert "\\e[Z" in args
 
     async def test_not_in_plan_waiting(self, state_dir):
-        _write_state(state_dir, "leo", {"state": "idle"})
+        _write_state(state_dir, "planner", {"state": "idle"})
 
-        result = await approve_plan("leo")
+        result = await approve_plan("planner")
         assert result["success"] is False
         assert "not in plan_waiting" in result["error"]
 
@@ -213,10 +213,10 @@ class TestApprovePlan:
 
     @patch(f"{MODULE}._run_command")
     async def test_session_does_not_exist(self, mock_run, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting"})
+        _write_state(state_dir, "planner", {"state": "plan_waiting"})
         mock_run.return_value = (1, "", "session not found")
 
-        result = await approve_plan("leo")
+        result = await approve_plan("planner")
         assert result["success"] is False
         assert "does not exist" in result["error"]
 
@@ -227,13 +227,13 @@ class TestApprovePlan:
 
     @patch(f"{MODULE}._run_command")
     async def test_send_keys_failure(self, mock_run, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting"})
+        _write_state(state_dir, "planner", {"state": "plan_waiting"})
         mock_run.side_effect = [
             (0, "", ""),  # has-session
             (1, "", "send-keys failed"),  # send-keys
         ]
 
-        result = await approve_plan("leo")
+        result = await approve_plan("planner")
         assert result["success"] is False
         assert "Failed to send" in result["error"]
 
@@ -246,7 +246,7 @@ class TestApprovePlan:
 class TestRejectPlan:
     @patch(f"{MODULE}._run_command")
     async def test_success(self, mock_run, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting"})
+        _write_state(state_dir, "planner", {"state": "plan_waiting"})
         # has-session, send-keys -l, send-keys Enter
         mock_run.side_effect = [
             (0, "", ""),
@@ -254,7 +254,7 @@ class TestRejectPlan:
             (0, "", ""),
         ]
 
-        result = await reject_plan("leo", "Needs more detail on testing approach")
+        result = await reject_plan("planner", "Needs more detail on testing approach")
         assert result["success"] is True
         assert result["rejected"] is True
         assert result["reason"] == "Needs more detail on testing approach"
@@ -266,14 +266,14 @@ class TestRejectPlan:
         assert "Needs more detail on testing approach" in args
 
     async def test_empty_reason(self, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting"})
-        result = await reject_plan("leo", "")
+        _write_state(state_dir, "planner", {"state": "plan_waiting"})
+        result = await reject_plan("planner", "")
         assert result["success"] is False
         assert "empty" in result["error"].lower()
 
     async def test_not_in_plan_waiting(self, state_dir):
-        _write_state(state_dir, "leo", {"state": "idle"})
-        result = await reject_plan("leo", "bad plan")
+        _write_state(state_dir, "planner", {"state": "idle"})
+        result = await reject_plan("planner", "bad plan")
         assert result["success"] is False
         assert "not in plan_waiting" in result["error"]
 
@@ -283,22 +283,22 @@ class TestRejectPlan:
 
     @patch(f"{MODULE}._run_command")
     async def test_session_does_not_exist(self, mock_run, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting"})
+        _write_state(state_dir, "planner", {"state": "plan_waiting"})
         mock_run.return_value = (1, "", "session not found")
 
-        result = await reject_plan("leo", "reason")
+        result = await reject_plan("planner", "reason")
         assert result["success"] is False
         assert "does not exist" in result["error"]
 
     @patch(f"{MODULE}._run_command")
     async def test_send_text_failure(self, mock_run, state_dir):
-        _write_state(state_dir, "leo", {"state": "plan_waiting"})
+        _write_state(state_dir, "planner", {"state": "plan_waiting"})
         mock_run.side_effect = [
             (0, "", ""),  # has-session
             (1, "", "send failed"),  # send-keys -l
         ]
 
-        result = await reject_plan("leo", "reason")
+        result = await reject_plan("planner", "reason")
         assert result["success"] is False
         assert "Failed to send" in result["error"]
 

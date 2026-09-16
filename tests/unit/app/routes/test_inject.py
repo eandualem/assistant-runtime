@@ -36,12 +36,12 @@ class TestInjectMessage:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.post(
                 "/assistant/inject",
-                json={"from": "leo", "via": "tmux", "message": "Done", "sessionId": "sess-1"},
+                json={"from": "planner", "via": "tmux", "message": "Done", "sessionId": "sess-1"},
             )
         assert response.status_code == 201
         assert response.json()["status"] == "delivered"
         assert ingress.deliver.await_args.kwargs == {
-            "from_agent": "leo",
+            "from_agent": "planner",
             "via": "tmux",
             "message": "Done",
             "session_id": "sess-1",
