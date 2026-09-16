@@ -52,7 +52,7 @@ This opens a terminal conversation. OpenAI, Google, OpenRouter and Cerebras keys
 
 For a browser app, exit chat and run `assistant-runtime serve`. Point the app at `http://127.0.0.1:7100`, then start the app in another terminal. Apps connect to the backend and report if it is missing; they do not start or stop it. Follow the [Design Studio recipe](https://github.com/eandualem/assistant-runtime/blob/main/docs/reference-app.md) for a complete first integration.
 
-Postgres is optional; add it when conversations must survive restarts: [persistence](https://github.com/eandualem/assistant-runtime/blob/main/docs/persistence.md).
+Postgres is optional; it persists conversations and pending host actions, including while background memory updates run: [persistence](https://github.com/eandualem/assistant-runtime/blob/main/docs/persistence.md).
 Register application profiles to share a runtime: [deployments](https://github.com/eandualem/assistant-runtime/blob/main/docs/deployments.md).
 Voice needs the `[voice]` extra, an OpenAI API key and explicit enablement; each call reserves a session the caller is authorized to access: [voice setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/voice.md).
 Local ChatGPT/Codex subscription authentication is also supported for backend models: [subscription setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/subscription.md).
