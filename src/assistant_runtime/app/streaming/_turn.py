@@ -352,6 +352,8 @@ class TurnPlanner:
             await self._sessions.queue_steering(session_id, request)
         elif steering_record.get("status") == "delivered":
             raise SessionError(f"Steering '{request.id}' was already delivered by another turn")
+        elif steering_record.get("profile") != request.profile:
+            raise SessionError(f"Steering '{request.id}' must keep its original profile selector")
 
         extends_assistant = active_leaf.get("role") == "assistant"
         assistant_message_id = active_leaf_id if extends_assistant else str(uuid.uuid4())

@@ -1,4 +1,4 @@
-"""ArtifactService — the evolving prompt artifacts of one assistant profile.
+"""ArtifactService — registered profiles and their evolving prompt artifacts.
 
 Public facade for the artifacts module. Implements LifecycleAware.
 
@@ -12,6 +12,7 @@ every result says so (``durable=False``).
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
@@ -29,6 +30,7 @@ from assistant_runtime.services.artifacts.exceptions import (
     ArtifactPermissionError,
     ArtifactVersionNotFoundError,
     UnknownArtifactError,
+    UnknownProfileError,
 )
 from assistant_runtime.services.artifacts.models import Actor, ArtifactVersion, MutationResult
 
@@ -46,6 +48,8 @@ class ArtifactService:
         config: ArtifactsConfig,
         profile: AssistantProfile,
         database_service: DatabaseService | None = None,
+        *,
+        profiles: Sequence[AssistantProfile] = (),
     ) -> None:
         self._config = config
         self._profile = profile
@@ -54,15 +58,47 @@ class ArtifactService:
         self._cache: dict[str, str] | None = None
         self._cached_at = 0.0
         self._started = False
+        self._owner = self
+        self._views: dict[str, ArtifactService] = {profile.name: self}
+        for additional in profiles:
+            if additional.name in self._views:
+                raise ValueError(f"Duplicate assistant profile name: {additional.name!r}")
+            view = ArtifactService(config, additional, database_service)
+            view._owner = self
+            view._views = self._views
+            self._views[additional.name] = view
+
+    @property
+    def available_profiles(self) -> tuple[str, ...]:
+        """Registered profile names, with the default first."""
+        return tuple(self._views)
+
+    def for_profile(self, name: str | None) -> ArtifactService:
+        """Return the stable scoped view; omitted names select the startup default."""
+        if name is None:
+            return self._owner
+        try:
+            return self._views[name]
+        except KeyError:
+            raise UnknownProfileError(
+                f"Unknown assistant profile {name!r}. "
+                f"Available profiles: {', '.join(self.available_profiles)}."
+            ) from None
 
     async def start(self) -> None:
         """Choose the store: Postgres when reachable, else process memory."""
+        if self is not self._owner:
+            await self._owner.start()
+            return
+        if self._started:
+            return
         database = self._database_service
         if database is not None and getattr(database, "healthy", False):
             self._store = DatabaseArtifactStore(database)
         else:
             self._store = InMemoryArtifactStore()
-        self._cache = None
+        for view in self._views.values():
+            view.invalidate()
         self._started = True
         logger.info(
             "Artifact service started",
@@ -72,17 +108,21 @@ class ArtifactService:
         )
 
     async def stop(self) -> None:
+        if self is not self._owner:
+            await self._owner.stop()
+            return
         self._store = None
-        self._cache = None
+        for view in self._views.values():
+            view.invalidate()
         self._started = False
         logger.info("Artifact service stopped")
 
     async def health_check(self) -> dict[str, Any]:
         return {
-            "healthy": self._started,
+            "healthy": self._owner._started,
             "profile": self._profile.name,
             "artifacts": len(self._profile.artifacts),
-            "durable": self._store.durable if self._store is not None else None,
+            "durable": self._owner._store.durable if self._owner._store is not None else None,
         }
 
     @property
@@ -205,9 +245,9 @@ class ArtifactService:
     # --- Internals ---
 
     def _require_store(self) -> ArtifactStore:
-        if self._store is None:
+        if self._owner._store is None:
             raise ArtifactError("Artifact service not started")
-        return self._store
+        return self._owner._store
 
     def _definition(self, name: str) -> ArtifactDefinition:
         artifact = self._profile.get(name)

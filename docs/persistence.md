@@ -191,3 +191,11 @@ with provider finalization unconfirmed; neither provider connections nor tool
 execution resume automatically. Reading cached records also requires access to
 the current parent session. These snapshots are observation records, not durable
 execution checkpoints or proof of audio playback.
+
+## Queued steering profiles
+
+Queued steering stores its optional profile selector. An explicit selector
+remains pending across cancellation and restart until a turn with that profile
+consumes it. Unprofiled legacy and ingress records inherit the consuming turn.
+Existing Postgres installations must apply migration `0026` with
+`assistant-runtime migrate` (or `make db-upgrade`) before running this version.

@@ -109,7 +109,8 @@ class TestMessageRepository:
 
 
 class TestSteeringRepository:
-    async def test_create_persists_steering_fields(self, mock_session: AsyncMock) -> None:
+    @pytest.mark.parametrize("profile", [None, "editor"])
+    async def test_create_persists_steering_fields(self, mock_session: AsyncMock, profile) -> None:
         row = SteeringORM(
             id="steering-1",
             session_id="sess-1",
@@ -125,11 +126,14 @@ class TestSteeringRepository:
             session_id="sess-1",
             content="Focus on Planner",
             status="pending",
+            profile=profile,
         )
 
         assert created.id == "steering-1"
         assert created.status == "pending"
         mock_session.flush.assert_awaited_once()
+        statement = mock_session.execute.await_args.args[0]
+        assert statement.compile(dialect=postgresql.dialect()).params["profile"] == profile
 
     async def test_mark_status_is_noop_for_empty_id_list(self, mock_session: AsyncMock) -> None:
         await SteeringRepository(mock_session).mark_status(

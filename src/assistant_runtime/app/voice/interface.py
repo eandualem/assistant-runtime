@@ -27,6 +27,7 @@ from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.models import VoiceContext, VoiceOffer, VoiceToolResult
 from assistant_runtime.principal import Principal, can_access_session
+from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 from assistant_runtime.services.database.interface import DatabaseService
 
 
@@ -69,6 +70,7 @@ class VoiceService:
             "enabled": self.config.enabled,
             "delegation_enabled": self.config.delegation_enabled,
             "conversation_mode_supported": True,
+            "call_instructions_supported": True,
             "configured": bool(os.getenv(self.config.api_key_env)),
             "model": self.config.model,
             "active_calls": sum(not c.done.is_set() for c in self._calls.values()),
@@ -84,6 +86,11 @@ class VoiceService:
             raise VoiceError(
                 "Voice delegation is disabled by startup policy", 409, allocation_status="rejected"
             )
+        if offer.profile is not None:
+            try:
+                self._streaming.validate_profile(offer.profile)
+            except UnknownProfileError as exc:
+                raise VoiceError(str(exc), 422, allocation_status="rejected") from exc
         key = os.getenv(self.config.api_key_env)
         if not key:
             raise VoiceError(
@@ -145,9 +152,13 @@ class VoiceService:
                     remaining -= len(content.encode())
                     if remaining <= 0:
                         break
-                instructions = self.config.instructions
+                instructions = offer.instructions or (
+                    self.config.conversation_instructions
+                    if call.mode == "conversation"
+                    else self.config.instructions
+                )
                 if call.mode == "conversation":
-                    instructions = self.config.conversation_instructions + (
+                    instructions += (
                         "\nThis call is conversation-only. Do not delegate work or call tools. "
                         "Independent application controls handle actions. Acknowledge requests "
                         "without claiming actions have started or completed until the application "
@@ -588,6 +599,7 @@ class VoiceService:
             content=content,
             host_context=call.offer.host_context.to_dict() if call.offer.host_context else None,
             config=call.offer.config,
+            profile=call.offer.profile,
             **(result.model_dump() if result else {}),
         )
 

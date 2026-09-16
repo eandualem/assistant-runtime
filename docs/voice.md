@@ -26,9 +26,10 @@ uv run assistant-runtime serve
 With Postgres, apply migrations through `uv run assistant-runtime migrate`
 before serving. The integration also works in memory without Postgres.
 `GET /api/voice/status` reports `enabled`, `delegation_enabled`, `configured`, `model`, `active_calls`
-and lifecycle `healthy`. It also reports `conversation_mode_supported: true`,
-so hosts can reject an older runtime before opening the microphone or allocating
-a provider session. `configured` means a key is present, not that model
+and lifecycle `healthy`. It also reports `conversation_mode_supported: true`
+and `call_instructions_supported: true`, so hosts can check the required call
+features before opening the microphone or allocating a provider session.
+`configured` means a key is present, not that model
 access has been tested. Disabled or unconfigured creation returns `503`.
 
 Voice requires a Live API key. This integration does not exchange Codex login
@@ -72,6 +73,22 @@ Use the voice control endpoints during a call.
    [host contract](host-contract.md) and per-request tunable validation.
    `config.default_model` selects the **backend** model. Omit it to use existing defaults.
    The example is illustrative; choose a backend model available to your provider.
+   Optional `instructions` supplies this call's voice persona: 1–16,000 characters,
+   with blank text rejected. It replaces the startup prompt for the selected mode
+   without changing other calls or global settings. Omit it to use
+   `VOICE__INSTRUCTIONS` for delegated calls or `VOICE__CONVERSATION_INSTRUCTIONS`
+   for conversation-only calls; their startup file overrides still apply.
+   The runtime always appends the conversation-only guard in that mode.
+
+   Optional `profile` selects a registered assistant profile by name for backend
+   delegations and their host-tool continuations. Names start with a lowercase
+   letter and contain only lowercase letters, digits and underscores, up to 64
+   characters. The operator registers available profiles at startup; requests
+   cannot supply a profile file path. An unknown name returns `422` before a
+   provider session is allocated. Omitting it retains the startup default.
+   `profile` affects backend work; `instructions` affects spoken conversation.
+   Neither field overrides startup voice enablement, the delegation ceiling,
+   provider model, voice, key or call limits.
 3. The `201` response contains `call_id`, `session_id`, `provider_session_id`,
    `transport: {type: "webrtc", sdp: "<answer>"}`, resolved `mode` and `events_url`.
    Apply `await pc.setRemoteDescription({type: "answer", sdp: result.transport.sdp})`.
@@ -104,6 +121,7 @@ this startup ceiling to `false` selects conversation mode and rejects explicit
 requests for delegated mode with `409`, before allocating a provider session.
 The resolved mode is fixed for the call and appears in creation responses and
 snapshots. A context PATCH cannot change it. Set the conversation persona with
+per-call `instructions`, or use the startup fallback
 `VOICE__CONVERSATION_INSTRUCTIONS` (default: helpful, concise conversation).
 Conversation calls never inherit `VOICE__INSTRUCTIONS`, which belongs to the
 delegated mode and defaults to requesting delegation. Keep custom conversation

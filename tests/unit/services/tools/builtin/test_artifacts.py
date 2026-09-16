@@ -192,3 +192,85 @@ class TestRegistration:
         registry = ToolRegistry(ToolConfig())
         register_artifact_tools(registry, None)
         assert "manage_artifacts" in registry.get_tool_names()
+
+
+class TestProfileScope:
+    async def test_concurrent_contexts_select_independent_profiles_and_policies(self):
+        import asyncio
+
+        from assistant_runtime.services.tools.request_context import (
+            assistant_request_context,
+            get_current_profile_name,
+        )
+
+        other = AssistantProfile(
+            name="clinic",
+            artifacts=(
+                ArtifactDefinition(
+                    name="scratchpad", default="Read only", policy=ArtifactPolicy("none")
+                ),
+            ),
+        )
+        artifacts = ArtifactService(ArtifactsConfig(), PROFILE, profiles=[other])
+        await artifacts.start()
+        manage = build_manage_artifacts(artifacts)
+        arrived = set()
+        ready = asyncio.Event()
+
+        async def use_profile(name):
+            with assistant_request_context(f"session-{name}", profile_name=name):
+                arrived.add(name)
+                if len(arrived) == 2:
+                    ready.set()
+                await ready.wait()
+                result = await manage(
+                    action="update", name="scratchpad", content=f"Note for {name}"
+                )
+                return result, await manage(action="view", name="scratchpad")
+
+        async with asyncio.timeout(5):
+            shop, clinic = await asyncio.gather(use_profile("shop"), use_profile("clinic"))
+        assert shop[0]["success"] is True
+        assert shop[1]["content"] == "Note for shop"
+        assert clinic[0]["error_code"] == "artifact_permission_denied"
+        assert clinic[1]["content"] == "Read only"
+        assert get_current_profile_name() is None
+        assert (await manage(action="view", name="scratchpad"))["content"] == "Note for shop"
+        with assistant_request_context("unknown", profile_name="unregistered"):
+            result = await manage(action="list")
+            assert result["error_code"] == "unknown_profile"
+            assert result["success"] is False
+        await artifacts.stop()
+
+    def test_multi_profile_description_requires_discovery(self):
+        other = AssistantProfile(
+            name="clinic", artifacts=(ArtifactDefinition(name="clinic_only", default="Help"),)
+        )
+        artifacts = ArtifactService(ArtifactsConfig(), PROFILE, profiles=[other])
+        registry = ToolRegistry(ToolConfig())
+        register_artifact_tools(registry, artifacts)
+        definition = registry.get_available_tools().backend_tools[0]
+        assert "Use list to discover" in definition.description
+        assert "persona" not in definition.description
+        assert "clinic_only" not in definition.description
+        assert (
+            "Known artifacts"
+            not in definition.parameters_schema["properties"]["name"]["description"]
+        )
+
+    def test_profile_context_resets_after_nested_failure(self):
+        from assistant_runtime.services.tools.request_context import (
+            assistant_request_context,
+            get_current_profile_name,
+        )
+
+        def fail_inside_profile():
+            with assistant_request_context("inner", profile_name="clinic"):
+                assert get_current_profile_name() == "clinic"
+                raise ValueError("stop")
+
+        with assistant_request_context("outer", profile_name="shop"):
+            with pytest.raises(ValueError, match="stop"):
+                fail_inside_profile()
+            assert get_current_profile_name() == "shop"
+        assert get_current_profile_name() is None

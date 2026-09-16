@@ -605,6 +605,7 @@ class TurnRunner:
                     assistant_request_context(
                         session_id,
                         screenshot=plan.screenshot,
+                        profile_name=plan.request.profile,
                         principal=plan.principal,
                         host_context=plan.session_context.get("last_host_context"),
                     ),
@@ -622,7 +623,12 @@ class TurnRunner:
                             capabilities=[]
                             if plan.request.output_mode == "host_tools"
                             else [
-                                TurnPolicy(self._sessions, session_id, plan.session_context),
+                                TurnPolicy(
+                                    self._sessions,
+                                    session_id,
+                                    plan.session_context,
+                                    profile_name=ctx.profile_name,
+                                ),
                                 *([state.history.capability()] if state.history else []),
                             ],
                         ) as run:
@@ -753,7 +759,9 @@ class TurnRunner:
         if plan.request.output_mode == "host_tools":
             return
         while session_context.get("pending_steering_ids"):
-            pending = await self._sessions.list_pending_steering(plan.session_id)
+            pending = await self._sessions.list_pending_steering(
+                plan.session_id, profile_name=ctx.profile_name
+            )
             if not pending:
                 break
             async for event in self._run_agent(

@@ -130,7 +130,7 @@ async def test_voice_reservation_blocks_chat_repair_delete_and_reassignment(voic
 
 async def test_routes_enforce_owner_and_reject_provider_configuration(voice_client):
     client = voice_client
-    for field in ("api_key", "model", "instructions", "principal", "delegation"):
+    for field in ("api_key", "model", "voice", "principal", "delegation", "max_duration_seconds"):
         response = await client.post(
             "/api/voice/calls", json={"session_id": "x", "sdp": "offer", field: "untrusted"}
         )
@@ -147,6 +147,18 @@ async def test_routes_enforce_owner_and_reject_provider_configuration(voice_clie
         response = await client.request(method, f"/api/voice/calls/{call_id}{suffix}", json=body)
         assert response.status_code == 403
     client.app.dependency_overrides.clear()
+
+
+async def test_unknown_profile_is_rejected_before_live_allocation(voice_client):
+    response = await voice_client.post(
+        "/api/voice/calls",
+        json={"session_id": "unallocated", "sdp": "offer", "profile": "unregistered"},
+    )
+    assert response.status_code == 422
+    assert response.json()["allocation_status"] == "rejected"
+    assert not voice_client.transport.created
+    sessions = voice_client.app.state.assistant_service.get_session_store()
+    assert await sessions.get_context_if_exists_async("unallocated") is None
 
 
 async def test_cancel_pending_host_records_interrupted_not_failed(voice_client, script):

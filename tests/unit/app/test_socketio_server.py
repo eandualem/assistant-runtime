@@ -8,6 +8,7 @@ import socketio
 
 from assistant_runtime.app.socketio_server import _EVENT_TYPE_MAP, AssistantNamespace, create_sio
 from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 
 
 def _server_with_streaming_service(streaming_service: MagicMock) -> MagicMock:
@@ -209,6 +210,31 @@ class TestAssistantNamespaceMessages:
         streaming_service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
         streaming_service.wait_for_session.assert_awaited_once_with("sess-1")
         await namespace._active_streams["sess-1"]
+
+    async def test_unknown_profile_does_not_cancel_or_replace_active_stream(self) -> None:
+        namespace, service = _namespace_for_stream(MagicMock())
+        service.validate_profile.side_effect = UnknownProfileError("Unknown assistant profile")
+        old_task = asyncio.create_task(_never_finishes())
+        namespace._active_streams["sess-1"] = old_task
+        try:
+            await namespace.on_assistant_message(
+                "sid-1", {**_message("invalid-profile"), "profile": "unregistered"}
+            )
+            service.validate_profile.assert_called_once_with("unregistered")
+            service.cancel_session.assert_not_awaited()
+            service.wait_for_session.assert_not_awaited()
+            service.stream_message.assert_not_called()
+            assert namespace._active_streams["sess-1"] is old_task
+            assert not old_task.done()
+            assert old_task.cancelling() == 0
+            namespace.emit.assert_awaited_once_with(
+                "assistant:error",
+                {"type": "validation", "message": "Unknown assistant profile"},
+                to="sid-1",
+            )
+        finally:
+            old_task.cancel()
+            await asyncio.gather(old_task, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_continuation_does_not_cancel_active_stream(self) -> None:

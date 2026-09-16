@@ -29,6 +29,7 @@ _current_assistant_session_id: ContextVar[str | None] = ContextVar(
     "_current_assistant_session_id",
     default=None,
 )
+_current_profile_name: ContextVar[str | None] = ContextVar("_current_profile_name", default=None)
 _current_screenshot: ContextVar[str | None] = ContextVar("_current_screenshot", default=None)
 _current_principal: ContextVar[Principal | None] = ContextVar("_current_principal", default=None)
 _current_host_context: ContextVar[dict[str, Any] | None] = ContextVar(
@@ -47,21 +48,29 @@ def assistant_request_context(
     screenshot: str | None = None,
     principal: Principal | None = None,
     host_context: dict[str, Any] | None = None,
+    profile_name: str | None = None,
 ) -> Iterator[None]:
-    """Bind the request's session id, screenshot, principal and host context for tool handlers."""
+    """Bind session, profile, screenshot, principal and host context for tool handlers."""
     session_token = _current_assistant_session_id.set(session_id)
     screenshot_token = _current_screenshot.set(screenshot)
     principal_token = _current_principal.set(principal)
     host_token = _current_host_context.set(host_context)
+    profile_token = _current_profile_name.set(profile_name)
     telegram_token = _current_telegram_chat_binding.set(_TelegramChatBinding())
     try:
         yield
     finally:
         _current_telegram_chat_binding.reset(telegram_token)
+        _current_profile_name.reset(profile_token)
         _current_host_context.reset(host_token)
         _current_principal.reset(principal_token)
         _current_screenshot.reset(screenshot_token)
         _current_assistant_session_id.reset(session_token)
+
+
+def get_current_profile_name() -> str | None:
+    """The registered assistant profile selected for this turn, or the startup default."""
+    return _current_profile_name.get()
 
 
 def get_current_principal() -> Principal | None:
