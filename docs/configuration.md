@@ -86,6 +86,7 @@ sampling parameters are not sent a temperature.
 | `enable_working_memory` | `true` | extract working memory after each turn |
 | `session_ttl_hours` | `24` | sessions older than this are cleaned up |
 | `profile` | unset (neutral) | `neutral`, `technical_operator`, or the path of a TOML profile file; `AssistantDefinition.profile` takes precedence |
+| `profiles` | `[]` | Additional built-in names or TOML paths registered at startup; requests select the profile name with top-level `profile`, never a path. Duplicate names fail startup. |
 
 `max_turns`, `thinking_budget` and `subagent_thinking_budget` are ceilings:
 the runtime overlay (`PATCH /api/settings`, administration) may change
@@ -115,7 +116,9 @@ tool results so far are saved on the assistant message. See
 | `cache_ttl_seconds` | `5` | how long prompts reuse active texts read from the store; mutations invalidate at once |
 | `history_limit` | `20` | versions returned by history reads |
 
-The assistant profile itself is `ASSISTANT__PROFILE` (see below).
+The default assistant profile is `AssistantDefinition.profile` when set, then
+`ASSISTANT__PROFILE`, then `neutral`. Register additional profiles with
+`ASSISTANT__PROFILES`; see [deployments](deployments.md).
 
 ### History (`HISTORY__*`)
 
@@ -181,7 +184,10 @@ application's repository is the single source (an unreadable or empty file
 fails startup). `VOICE__CONVERSATION_INSTRUCTIONS` supplies the conversation-only persona
 (default: helpful, concise conversation); it is separate from delegated-mode
 `VOICE__INSTRUCTIONS`, whose default asks Live to delegate.
-See [conversation-only voice](voice.md#conversation-only-calls).
+Call creation may supply bounded `instructions` to replace the mode-specific
+startup prompt for that call, and `profile` for delegated backend work. The
+conversation guard and startup enablement, credentials and resource ceilings
+remain enforced. See [conversation-only voice](voice.md#conversation-only-calls).
 
 Optional GPT-Live provider policy, fixed at startup; these are not request
 or runtime-overlay tunables. Install `[voice]` and see [the frontend contract](voice.md).

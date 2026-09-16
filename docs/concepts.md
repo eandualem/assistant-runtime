@@ -137,6 +137,19 @@ listed get every tool.
 
 ## Prompt artifacts and profiles
 
+One runtime can register additional built-ins or TOML paths through
+`ASSISTANT__PROFILES`. Requests select a registered name with top-level
+`profile`; omitted names keep the default below. The selection is per request,
+including continuations, and does not bind the session. A queued steering
+record retains its explicit selector and waits for a matching turn. Unprofiled
+queued steering inherits the consuming turn; promoted unprofiled steering
+starts with the startup default. Artifact HTTP routes
+use `?profile=<name>`; `GET /api/artifacts/profile` lists `available_profiles`.
+The model's artifact tool uses its own turn's selection, so concurrent apps
+cannot accidentally edit each other's profile. Profiles do not replace access
+control; principals and admin roles retain their existing rules.
+
+
 The system prompt starts with named texts called artifacts. Which
 artifacts exist, in what order, with what default text and who may change
 them is an **assistant profile**:

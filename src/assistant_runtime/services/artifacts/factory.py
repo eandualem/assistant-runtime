@@ -21,6 +21,8 @@ async def register_artifacts(
 
     The profile comes from the assistant definition when one is attached,
     else from ``ASSISTANT__PROFILE``, else it is the neutral built-in.
+    ``ASSISTANT__PROFILES`` registers additional profiles at startup; request
+    selectors can only choose these names, never load files.
     """
     settings = settings if settings is not None else AppSettings()
     definition = getattr(app_state, "assistant_definition", None)
@@ -29,6 +31,7 @@ async def register_artifacts(
     service = ArtifactService(
         config=settings.artifacts,
         profile=profile,
+        profiles=[resolve_profile(value) for value in settings.assistant.profiles],
         database_service=getattr(app_state, "database_service", None),
     )
     app_state.artifact_service = service

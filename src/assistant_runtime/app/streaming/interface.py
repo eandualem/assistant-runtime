@@ -36,6 +36,7 @@ from assistant_runtime.app.streaming._turn import TurnPlanner
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.exceptions import StreamingError, StreamSetupError
 from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal
+from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant import SessionStore
@@ -287,6 +288,10 @@ class StreamingService:
         await self._authorize(session_id, principal)
         await self._assistant_service.warm_session(session_id, host_context)
 
+    def validate_profile(self, name: str | None) -> None:
+        """Validate a registered profile without starting work or allocating a call."""
+        self._assistant_service.validate_profile(name)
+
     async def accept_steering(
         self,
         request: AssistantRequest,
@@ -297,6 +302,10 @@ class StreamingService:
         """Queue steering behind a live stream, or promote it to run now: ``queued``/``promoted``."""
         if not request.is_steering:
             raise SessionError("Only steering requests can be accepted")
+        try:
+            self.validate_profile(request.profile)
+        except UnknownProfileError as exc:
+            raise SessionError(str(exc)) from exc
         # A voice call owns its session: ordinary steering must not reach it.
         self.check_session_available(request.session_id)
         session_context = await self._sessions.get_context_if_exists_async(request.session_id)
@@ -351,6 +360,10 @@ class StreamingService:
         """
         if not self._started:
             raise StreamingError("Streaming service not started")
+        try:
+            self.validate_profile(request.profile)
+        except UnknownProfileError as exc:
+            raise SessionError(str(exc)) from exc
         self.check_session_available(request.session_id, session_lease)
         while (previous := self._active_turns.get(request.session_id)) is not None:
             if not request.is_continuation and not request.is_steering:

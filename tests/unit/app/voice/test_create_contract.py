@@ -242,3 +242,39 @@ async def test_attach_cannot_reclassify_created_session_as_rejected(boundary):
     assert "provider_status_code" not in response.json()
     assert len(boundary.requests) == 1
     assert not boundary.backend.leases
+
+
+@pytest.mark.parametrize("instructions", ["", " \n\t", "x" * 16001])
+async def test_invalid_call_instructions_rejected_before_allocation(boundary, instructions):
+    response = await create(boundary, instructions=instructions)
+    assert response.status_code == 422
+    assert not boundary.requests
+    assert not boundary.backend.leases
+
+
+@pytest.mark.parametrize("profile", ["", "../profile", "/tmp/profile.toml", "Uppercase", "a" * 65])
+async def test_invalid_profile_name_rejected_before_allocation(boundary, profile):
+    response = await create(boundary, profile=profile)
+    assert response.status_code == 422
+    assert not boundary.requests
+    assert not boundary.backend.leases
+
+
+async def test_unknown_profile_rejected_before_allocation(boundary):
+    response = await create(boundary, profile="unregistered")
+    assert response.status_code == 422
+    assert response.json()["allocation_status"] == "rejected"
+    assert not boundary.requests
+    assert not boundary.backend.leases
+
+
+@pytest.mark.parametrize("instructions", [None, "x" * 16000])
+async def test_valid_call_instructions_accepted_without_overriding_policy(boundary, instructions):
+    response = await create(boundary, instructions=instructions)
+    assert response.status_code == 201
+    session = json.loads(boundary.requests[0].content)["session"]
+    expected = instructions or boundary.service.config.conversation_instructions
+    assert session["instructions"].startswith(expected)
+    assert "Do not delegate work or call tools" in session["instructions"][len(expected) :]
+    assert session["model"] == boundary.service.config.model
+    assert session["audio"]["output"]["voice"] == boundary.service.config.voice

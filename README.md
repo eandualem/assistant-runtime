@@ -47,6 +47,12 @@ rewrite about itself) come from a profile: the neutral built-in,
 `ASSISTANT__PROFILE=technical_operator` for the example operator assistant,
 a TOML file, or `AssistantDefinition(profile=...)` in host code.
 
+Start the runtime first, then start your host apps. Apps connect to it and
+report an unavailable backend; they do not start or stop it. Multiple apps can
+share one process: register their profile files with `ASSISTANT__PROFILES` and
+send `profile` on each request. Voice instructions can be selected per call.
+See [deployments](docs/deployments.md) for the shared setup.
+
 The full walkthrough is in [docs/getting-started.md](docs/getting-started.md).
 
 For an assistant inside an application, try [Design Studio](https://github.com/eandualem/design-studio),
@@ -65,7 +71,7 @@ checkout.
 | [concepts](docs/concepts.md) | sessions, turns, tools, host tools, host context, artifacts, envelopes |
 | [host contract](docs/host-contract.md) | the versioned `host_context`, attachments and action protocol a host uses |
 | [identity and access](docs/access.md) | authentication modes, session ownership, administration, CORS |
-| [deployments](docs/deployments.md) | one runtime per host application: the launch recipe, restart in place, what memory-only mode and the session TTL mean |
+| [deployments](docs/deployments.md) | independent startup, multiple apps and profiles, runtime controls, memory-only mode |
 | [persistence](docs/persistence.md) | what is stored, pending host actions across restarts, action outcomes, recovery and worker topology |
 | [getting-started](docs/getting-started.md) | install, one key, chat, server, a minimal client, Postgres, integrations |
 | [configuration](docs/configuration.md) | every setting, the three configuration tiers, secrets |

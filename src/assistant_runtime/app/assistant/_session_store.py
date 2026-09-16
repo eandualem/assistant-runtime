@@ -331,6 +331,7 @@ class SessionStore:
             "id": request.id,
             "session_id": session_id,
             "content": request.content,
+            "profile": request.profile,
             "status": status,
             "created_at": datetime.now(UTC),
             "delivered_at": delivered_at,
@@ -340,12 +341,21 @@ class SessionStore:
         _add_steering(ctx, queued)
         return queued
 
-    async def list_pending_steering(self, session_id: str) -> list[SteeringRecord]:
-        """Return pending steering in submission order."""
+    async def list_pending_steering(
+        self, session_id: str, *, profile_name: str | None = None
+    ) -> list[SteeringRecord]:
+        """Return pending steering, optionally limited to the consuming profile.
+
+        Legacy and ingress records with no selector inherit whichever turn
+        consumes them. Explicit selectors remain pending for a matching turn.
+        """
         ctx = await self.get_context_if_exists_async(session_id)
         if ctx is None:
             raise LookupError("Session not found")
-        return [ctx["steering_index"][gid] for gid in ctx["pending_steering_ids"]]
+        pending = [ctx["steering_index"][gid] for gid in ctx["pending_steering_ids"]]
+        if profile_name is None:
+            return pending
+        return [record for record in pending if record.get("profile") in (None, profile_name)]
 
     async def mark_steering_delivered(
         self, session_id: str, steering_ids: list[str]

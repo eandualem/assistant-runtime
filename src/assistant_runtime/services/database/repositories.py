@@ -276,6 +276,7 @@ class SteeringRepository:
         session_id: str,
         content: str,
         status: str,
+        profile: str | None = None,
         delivered_at: datetime | None = None,
     ) -> SteeringORM:
         result = await self._session.execute(
@@ -283,6 +284,7 @@ class SteeringRepository:
             .values(
                 id=steering_id,
                 session_id=session_id,
+                profile=profile,
                 content=content,
                 status=status,
                 delivered_at=delivered_at,

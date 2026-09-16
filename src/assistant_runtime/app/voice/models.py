@@ -25,6 +25,8 @@ class VoiceOffer(BaseModel):
     host_context: HostContext | None = None
     config: TunableOverrides | None = None
     mode: Literal["delegated", "conversation"] | None = None
+    instructions: str | None = Field(default=None, min_length=1, max_length=16000)
+    profile: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
     history: list[VoiceHistoryMessage] | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
@@ -36,10 +38,10 @@ class VoiceOffer(BaseModel):
             raise ValueError("history must contain at most 7000 UTF-8 bytes of text")
         return self
 
-    @field_validator("sdp", "session_id")
+    @field_validator("sdp", "session_id", "instructions")
     @classmethod
-    def nonblank(cls, value: str) -> str:
-        if not value.strip():
+    def nonblank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
             raise ValueError("must not be blank")
         return value
 

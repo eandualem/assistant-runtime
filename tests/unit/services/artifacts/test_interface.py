@@ -274,3 +274,71 @@ class TestScoping:
         assert await store.get_history("shop", "persona", 10) != await store.get_history(
             "clinic", "persona", 10
         )
+
+
+class TestRegisteredProfiles:
+    async def test_stable_views_share_lifecycle_but_keep_versions_and_caches_isolated(self):
+        service = ArtifactService(
+            ArtifactsConfig(cache_ttl_seconds=3600), _profile("shop"), profiles=[_profile("clinic")]
+        )
+        clinic = service.for_profile("clinic")
+        assert service.available_profiles == ("shop", "clinic")
+        assert service.for_profile(None) is service.for_profile("shop") is service
+        assert clinic.for_profile(None) is service
+        assert clinic.for_profile("clinic") is clinic
+        with pytest.raises(ArtifactError, match="not started"):
+            await clinic.active_texts()
+        await service.start()
+        await service.active_texts()
+        await clinic.active_texts()
+        await clinic.update("persona", "Clinic voice", actor=HOST)
+        assert (await clinic.active_texts())["persona"] == "Clinic voice"
+        assert (await service.active_texts())["persona"] == "Warm"
+        await service.update("persona", "Shop voice", actor=HOST)
+        assert (await service.active_texts())["persona"] == "Shop voice"
+        assert (await clinic.active_texts())["persona"] == "Clinic voice"
+        assert [v.content for v in await clinic.history("persona")] == ["Clinic voice"]
+        assert [v.content for v in await service.history("persona")] == ["Shop voice"]
+        assert (await clinic.health_check())["healthy"] is True
+        await service.stop()
+        with pytest.raises(ArtifactError, match="not started"):
+            await clinic.active_texts()
+        assert (await clinic.health_check())["healthy"] is False
+        await service.start()
+        assert service.for_profile("clinic") is clinic
+        assert (await clinic.active_texts())["persona"] == "Warm"
+        await service.stop()
+
+    async def test_selected_profile_policy_is_authoritative(self):
+        read_only = AssistantProfile(
+            name="read_only",
+            artifacts=(
+                ArtifactDefinition(
+                    name="persona", default="Fixed", policy=ArtifactPolicy("none", host_edit=False)
+                ),
+            ),
+        )
+        service = ArtifactService(ArtifactsConfig(), _profile(), profiles=[read_only])
+        await service.start()
+        await service.update("persona", "Editable", actor=ASSISTANT)
+        for actor in (HOST, ASSISTANT):
+            with pytest.raises(ArtifactPermissionError):
+                await service.for_profile("read_only").update("persona", "Changed", actor=actor)
+        assert (await service.for_profile("read_only").active_texts())["persona"] == "Fixed"
+        await service.stop()
+
+    @pytest.mark.parametrize("names", [("shop",), ("clinic", "clinic")])
+    def test_duplicate_profile_names_are_rejected(self, names):
+        with pytest.raises(ValueError, match="Duplicate assistant profile name"):
+            ArtifactService(
+                ArtifactsConfig(), _profile("shop"), profiles=[_profile(name) for name in names]
+            )
+
+    def test_unknown_name_never_loads_a_file(self, tmp_path):
+        from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
+
+        profile_file = tmp_path / "profile.toml"
+        profile_file.write_text('name = "unregistered"')
+        service = ArtifactService(ArtifactsConfig(), _profile())
+        with pytest.raises(UnknownProfileError, match="Available profiles: default"):
+            service.for_profile(str(profile_file))

@@ -15,7 +15,8 @@ from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.interface import VoiceService
 from assistant_runtime.app.voice.models import VoiceOffer, VoiceToolResult
 from assistant_runtime.principal import Principal
-from tests.voice_helpers import Transport, delegate, until
+from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
+from tests.voice_helpers import Connection, Transport, delegate, until
 
 OWNER = Principal("owner")
 OTHER = Principal("other")
@@ -30,6 +31,10 @@ class Backend:
         self.owners = {}
         self.runner = None
         self.cancel_reserved_work = AsyncMock()
+
+    def validate_profile(self, name):
+        if name not in {"neutral", "technical_operator"}:
+            raise UnknownProfileError(f"Unknown assistant profile: {name}")
 
     async def authorize_session(self, session_id, principal):
         if self.owners.get(session_id) != principal.id and not principal.is_admin:
@@ -525,12 +530,16 @@ async def test_conversation_mode_never_dispatches_and_keeps_lifecycle(setup, cei
     assert [item["type"] for item in transport.connection.sent] == ["session.close"]
 
 
-async def test_startup_delegation_ceiling_rejects_upgrade_before_allocation(setup):
+@pytest.mark.parametrize("instructions", [None, "Delegate every request."])
+async def test_startup_delegation_ceiling_rejects_upgrade_before_allocation(setup, instructions):
     service, backend, transport = setup
     service.config = service.config.model_copy(update={"delegation_enabled": False})
     with pytest.raises(VoiceError, match="disabled by startup policy"):
         await service.create(
-            VoiceOffer(session_id="conversation", sdp="offer", mode="delegated"), OWNER
+            VoiceOffer(
+                session_id="conversation", sdp="offer", mode="delegated", instructions=instructions
+            ),
+            OWNER,
         )
     assert not transport.created
     assert not backend.leases
@@ -605,3 +614,66 @@ async def test_conversation_persona_is_separate_from_delegation_instructions(set
     assert sent.startswith("You are the conversational guide.")
     assert "Delegate every request" not in sent
     assert "Do not delegate work or call tools" in sent
+
+
+@pytest.mark.parametrize("mode", ["conversation", "delegated"])
+async def test_call_instructions_are_isolated_and_startup_fallback_is_unchanged(setup, mode):
+    service, _, transport = setup
+    original = service.config.model_dump()
+    transport.attach.side_effect = [Connection(), Connection(), Connection()]
+    for index, instructions in enumerate(
+        ["You are a library guide.", "You are a travel guide.", None]
+    ):
+        await service.create(
+            VoiceOffer(
+                session_id=f"call-{index}", sdp="offer", mode=mode, instructions=instructions
+            ),
+            OWNER,
+        )
+    first, second, fallback = [item[1]["instructions"] for item in transport.created]
+    default = (
+        service.config.conversation_instructions
+        if mode == "conversation"
+        else service.config.instructions
+    )
+    if mode == "conversation":
+        guard = fallback[len(default) :]
+        assert "Do not delegate work or call tools" in guard
+        assert first == "You are a library guide." + guard
+        assert second == "You are a travel guide." + guard
+    else:
+        assert first == "You are a library guide."
+        assert second == "You are a travel guide."
+        assert fallback == default
+    assert service.config.model_dump() == original
+    assert (await service.health_check())["call_instructions_supported"] is True
+
+
+async def test_requested_profile_reaches_delegation_and_host_continuation(setup):
+    service, backend, transport = setup
+    backend.runner = pending_runner
+    response = await service.create(
+        VoiceOffer(session_id="conversation", sdp="offer", profile="technical_operator"), OWNER
+    )
+    call_id = response["call_id"]
+    delegate(transport.connection)
+    await until(lambda: service._calls[call_id].pending is not None)
+    await service.tool_result(
+        call_id, "item_1", VoiceToolResult(tool_call_id="host_1", tool_result="done"), OWNER
+    )
+    assert len(backend.requests) == 2
+    assert all(request.profile == "technical_operator" for request in backend.requests)
+
+
+async def test_call_instructions_do_not_override_startup_capacity(setup):
+    service, backend, transport = setup
+    service.config = service.config.model_copy(update={"max_sessions": 1})
+    await service.create(
+        VoiceOffer(session_id="first", sdp="offer", instructions="A custom guide."), OWNER
+    )
+    with pytest.raises(VoiceError, match="capacity"):
+        await service.create(
+            VoiceOffer(session_id="second", sdp="offer", instructions="Another guide."), OWNER
+        )
+    assert len(transport.created) == 1
+    assert set(backend.leases) == {"first"}

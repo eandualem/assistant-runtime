@@ -163,6 +163,11 @@ class AssistantService:
             duration_ms=(time.monotonic() - started_at) * 1000,
         )
 
+    def validate_profile(self, name: str | None) -> None:
+        """Reject selectors that were not registered by the runtime operator."""
+        if name is not None:
+            self._artifacts.for_profile(name)
+
     async def prepare_agent_context(
         self,
         request: AssistantRequest,
@@ -172,6 +177,11 @@ class AssistantService:
 
         Shared by both AssistantService and StreamingService to prevent drift.
         """
+        artifacts_service = (
+            self._artifacts.for_profile(request.profile)
+            if request.profile is not None
+            else self._artifacts
+        )
         with create_span("agent-setup"):
             host_context = (
                 request.host_context
@@ -210,7 +220,7 @@ class AssistantService:
             mcp_summary_task = asyncio.create_task(
                 asyncio.sleep(0, result=None) if host_only else self._tools.get_mcp_summary()
             )
-            artifacts_task = asyncio.create_task(self._artifacts.active_texts())
+            artifacts_task = asyncio.create_task(artifacts_service.active_texts())
 
             # 2. Config resolution can run while prompt inputs load.
             effective = resolve_effective_config(
@@ -232,7 +242,7 @@ class AssistantService:
                 host_context=host_context,
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
-                profile=self._artifacts.profile,
+                profile=artifacts_service.profile,
             )
 
             # 4. Build agent — use union output type when host tools are registered
@@ -271,6 +281,7 @@ class AssistantService:
             effective_config=effective,
             mcp_summary=mcp_summary,
             deps=deps,
+            profile_name=artifacts_service.profile.name,
         )
 
     async def update_working_memory(
