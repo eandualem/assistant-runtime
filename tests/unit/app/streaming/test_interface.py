@@ -1419,3 +1419,150 @@ class TestAuxiliaryUsageMerge:
         stored = sessions.get_message("sess-1", result.message_id)["usage"]
         assert stored["input_tokens"] == 50
         assert stored["auxiliary"]["working_memory"]["input_tokens"] == 3
+
+
+class TestExtractionSnapshot:
+    @pytest.mark.asyncio
+    async def test_extraction_reads_the_path_to_its_own_turn(self) -> None:
+        """A queued extraction sees its originating turn, not whatever leaf is active later."""
+        service = _make_service()
+        await service.start()
+        seen: list[list[str]] = []
+        sessions = service._sessions
+
+        async def extract(session_id, session_context, turn_number, *, leaf_id=None):
+            path = await sessions.get_message_path(session_id, leaf_id=leaf_id)
+            seen.append([m["id"] for m in path])
+            return
+
+        service._assistant_service.update_working_memory = AsyncMock(side_effect=extract)
+        first = await service.run_message(_request(message_id="user-1"))
+        second = await service.run_message(_request(message_id="user-2"))
+        await service.wait_for_background()
+        assert seen[0][-1] == first.message_id
+        assert seen[1][-1] == second.message_id
+
+
+class TestAuxiliaryKeptAtPersistence:
+    def test_row_sections_the_snapshot_lacks_are_kept(self) -> None:
+        from assistant_runtime.app.streaming._runner import _keep_row_auxiliary
+
+        row = {"usage": {"input_tokens": 9, "auxiliary": {"working_memory": {"input_tokens": 3}}}}
+        snapshot = {"input_tokens": 12, "auxiliary": {"summarization": {"input_tokens": 1}}}
+        merged = _keep_row_auxiliary(snapshot, row)
+        assert merged["input_tokens"] == 12
+        assert set(merged["auxiliary"]) == {"summarization", "working_memory"}
+        # The snapshot's own section wins over the row's copy of it.
+        row2 = {"usage": {"auxiliary": {"summarization": {"input_tokens": 99}}}}
+        assert (
+            _keep_row_auxiliary(snapshot, row2)["auxiliary"]["summarization"]["input_tokens"] == 1
+        )
+        assert _keep_row_auxiliary(None, None) is None
+
+
+class TestAdmissionExclusion:
+    @pytest.mark.asyncio
+    async def test_a_reservation_waits_for_an_admission_in_progress(self) -> None:
+        """The lease cannot appear while steering hydrates; the steering lands first."""
+        from assistant_runtime.principal import LOCAL_PRINCIPAL
+
+        service = _make_service()
+        await service.start()
+        await service.run_message(_request(message_id="user-1"))
+        sessions = service._sessions
+        gate = asyncio.Event()
+        original = sessions.get_context_if_exists_async
+
+        async def slow_hydration(session_id):
+            await gate.wait()
+            return await original(session_id)
+
+        sessions.get_context_if_exists_async = slow_hydration  # type: ignore[method-assign]
+        steering = _request(message_id="steer-1", content="focus", message_type="steering")
+        admission = asyncio.create_task(service.accept_steering(steering, has_live_stream=False))
+        await asyncio.sleep(0)
+        reservation = asyncio.create_task(
+            service.reserve_session("sess-1", "lease-1", LOCAL_PRINCIPAL)
+        )
+        await asyncio.sleep(0)
+        assert "sess-1" not in service._session_leases  # blocked behind the admission
+        gate.set()
+        assert await admission == "promoted"
+        await reservation
+        assert service._session_leases["sess-1"] == "lease-1"
+        # Once reserved, further steering is refused.
+        with pytest.raises(SessionError, match="reserved by a voice call"):
+            await service.accept_steering(
+                _request(message_id="steer-2", content="x", message_type="steering"),
+                has_live_stream=False,
+            )
+
+
+class TestAdmissionLockLifetime:
+    async def test_unknown_session_ids_do_not_accumulate_locks(self) -> None:
+        service = _make_service()
+        await service.start()
+        for index in range(200):
+            with pytest.raises(SessionError, match="does not exist"):
+                await service.accept_steering(
+                    _request(
+                        message_id=f"steer-{index}",
+                        session_id=f"missing-{index}",
+                        content="focus",
+                        message_type="steering",
+                    ),
+                    has_live_stream=False,
+                )
+        assert not service._admission_locks
+        await service.stop()
+        assert not service._admission_locks
+
+    async def test_waiters_share_one_lock_and_cancelled_waiters_release_it(self) -> None:
+        service = _make_service()
+        await service.start()
+        gate = asyncio.Event()
+        entered = []
+
+        async def admission(number):
+            async with service._admission_lock("session"):
+                entered.append(number)
+                if number == 0:
+                    await gate.wait()
+
+        holder = asyncio.create_task(admission(0))
+        await asyncio.sleep(0)
+        cancelled = asyncio.create_task(admission(1))
+        waiter = asyncio.create_task(admission(2))
+        await asyncio.sleep(0)
+        assert entered == [0]
+        assert len(service._admission_locks) == 1
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        assert len(service._admission_locks) == 1
+        gate.set()
+        await asyncio.gather(holder, waiter)
+        assert entered == [0, 2]
+        assert not service._admission_locks
+
+    async def test_stop_drains_admissions_and_rejects_new_lock_users(self) -> None:
+        from assistant_runtime.app.streaming.exceptions import StreamingError
+
+        service = _make_service()
+        await service.start()
+        gate = asyncio.Event()
+
+        async def admission():
+            async with service._admission_lock("session"):
+                await gate.wait()
+
+        holder = asyncio.create_task(admission())
+        await asyncio.sleep(0)
+        stopping = asyncio.create_task(service.stop())
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        with pytest.raises(StreamingError, match="not started"):
+            service._admission_lock("new-session")
+        gate.set()
+        await asyncio.gather(holder, stopping)
+        assert not service._admission_locks

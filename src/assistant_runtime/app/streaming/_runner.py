@@ -126,6 +126,17 @@ def _describe_error(exc: Exception, *, detail: bool = True) -> tuple[str, str, b
     return message, error_type, llm_error.retry_allowed
 
 
+def _keep_row_auxiliary(
+    usage: dict[str, Any] | None, row: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """``usage`` plus the auxiliary sections the stored row has and ``usage`` lacks."""
+    existing = ((row or {}).get("usage") or {}).get("auxiliary") or {}
+    for name, part in existing.items():
+        if name not in ((usage or {}).get("auxiliary") or {}):
+            usage = with_auxiliary(usage, name, part)
+    return usage
+
+
 def _persistence_failure(what: str, exc: BaseException, *, detail: bool) -> str:
     """The client-visible text for a snapshot that could not be saved."""
     return f"{what} could not be saved: {exc}" if detail else f"{what} could not be saved"
@@ -516,7 +527,10 @@ class TurnRunner:
         """Extract the working-memory delta and account its usage on the assistant row."""
         try:
             memory_usage = await self._assistant.update_working_memory(
-                plan.session_id, plan.session_context, plan.turn_number
+                plan.session_id,
+                plan.session_context,
+                plan.turn_number,
+                leaf_id=plan.assistant_message_id,
             )
             if memory_usage is None:
                 return
@@ -723,6 +737,12 @@ class TurnRunner:
             else None
         )
         state.stored_usage = with_auxiliary(state.usage, "summarization", summarisation)
+        # Auxiliary sections already on the row (a background extraction that
+        # finished after this turn took its snapshot) are kept, not erased.
+        state.stored_usage = _keep_row_auxiliary(
+            state.stored_usage,
+            self._sessions.get_message(plan.session_id, plan.assistant_message_id),
+        )
         if plan.assistant_parent_id is not None and not state.persisted:
             await self._sessions.register_assistant_message(
                 plan.session_id,

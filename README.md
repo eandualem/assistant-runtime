@@ -127,8 +127,9 @@ with WebRTC; the runtime creates the Live session and delegates tasks into
 its existing Pydantic AI pipeline, including backend and host tools. Alternatively,
 `mode: "conversation"` disables runtime delegation for that call;
 `VOICE__DELEGATION_ENABLED=false` enforces it for the instance. An independent
-controller can use separate chat sessions. The
-backend can still use the local Codex subscription provider; the voice
+controller can use separate chat sessions. Each voice call reserves its backend
+session; concurrent steering admission and voice reservation cannot overlap.
+The backend can still use the local Codex subscription provider; the voice
 connection requires separate Live API access.
 Create failures retain the string `detail` and add safe allocation metadata:
 `allocation_status: "rejected"` for definite rejection, or `"unknown"` when

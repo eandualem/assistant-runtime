@@ -196,3 +196,15 @@ class TestModuleSingleton:
         second = get_registry_cache()
 
         assert first is not second
+
+
+def test_a_fresh_process_gets_a_cache_without_a_reset():
+    """The module-level singleton must exist before the first lookup (a NameError shipped once)."""
+    import importlib
+
+    from assistant_runtime.services.tools.providers.backbone import _registry_cache
+
+    module = importlib.reload(_registry_cache)
+    assert module._instance is None
+    assert isinstance(module.get_registry_cache(), module.AgentRegistryCache)
+    module._reset_registry_cache()
