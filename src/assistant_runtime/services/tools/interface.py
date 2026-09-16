@@ -9,10 +9,15 @@ from loguru import logger
 
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.builtin import register_builtin_tools
-from assistant_runtime.services.tools.capabilities import CAPABILITIES, register_capabilities
+from assistant_runtime.services.tools.capabilities import (
+    CAPABILITIES,
+    PRIVILEGED_CAPABILITIES,
+    register_capabilities,
+)
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.exceptions import ToolError
 from assistant_runtime.services.tools.models import ToolDefinition, ToolSet
+from assistant_runtime.services.tools.request_context import get_current_host_context
 
 
 class ToolService:
@@ -26,9 +31,14 @@ class ToolService:
         mcp_service: Any | None = None,
         artifact_service: Any | None = None,
         providers: dict[str, Any] | None = None,
+        subagent_usage_limits: Any | None = None,
+        subagent_defaults: dict[str, Any] | None = None,
     ) -> None:
         self._config = config
         self._providers = providers or {}
+        # The host's per-turn ceilings (native UsageLimits) a subagent run stays within.
+        self._subagent_usage_limits = subagent_usage_limits
+        self._subagent_defaults = subagent_defaults
         self._media_service = media_service
         self._llm_service = llm_service
         self._mcp_service = mcp_service
@@ -83,6 +93,11 @@ class ToolService:
         self._ensure_started()
         return self._registry.get_available_tools(host_context)
 
+    def host_action_tools(self, host_context: dict[str, Any] | None) -> tuple[ToolSet, list]:
+        """Build an isolated external toolset from host-context actions only."""
+        self._ensure_started()
+        return self._registry.host_action_tools(host_context)
+
     def warm_host_context(self, host_context: dict[str, Any] | None = None) -> None:
         """Precompute page-scoped tool availability and toolsets."""
         self._ensure_started()
@@ -102,11 +117,6 @@ class ToolService:
         """Register a backend tool with its handler."""
         self._ensure_started()
         self._registry.register_backend_tool(definition, handler)
-
-    def get_subagent_toolsets(self) -> list:
-        """Build toolsets for subagent execution (backend only, no run_subagent)."""
-        self._ensure_started()
-        return self._registry.build_subagent_toolset()
 
     def set_runtime_settings(self, runtime_settings: object | None) -> None:
         """Attach live runtime settings; the subagent tool reads them on each call."""
@@ -135,16 +145,34 @@ class ToolService:
             artifact_service=self._artifact_service,
             llm_service=self._llm_service,
             media_service=self._media_service,
-            backend_toolsets=self._registry.build_subagent_toolset,
+            # The subagent gets the turn's page-scoped tools, read from the request context.
+            backend_toolsets=lambda: self._registry.build_subagent_toolset(
+                get_current_host_context()
+            ),
             runtime_settings=lambda: self._runtime_settings,
+            subagent_usage_limits=self._subagent_usage_limits,
+            subagent_defaults=self._subagent_defaults,
             enabled=self._config.builtin_tools,
         )
         # Host tools from configuration (always available, bypass page scoping)
         self._registry.register_host_tools()
         selected = self._config.provider_capabilities
-        providers = (
-            self._providers
-            if selected is None
-            else {name: provider for name, provider in self._providers.items() if name in selected}
-        )
+        if selected is None:
+            # Every configured capability, except the privileged ones: those
+            # must be named explicitly in TOOLS__PROVIDER_CAPABILITIES.
+            skipped = sorted(PRIVILEGED_CAPABILITIES & self._providers.keys())
+            if skipped:
+                logger.warning(
+                    "Privileged capabilities need explicit TOOLS__PROVIDER_CAPABILITIES",
+                    skipped=skipped,
+                )
+            providers = {
+                name: provider
+                for name, provider in self._providers.items()
+                if name not in PRIVILEGED_CAPABILITIES
+            }
+        else:
+            providers = {
+                name: provider for name, provider in self._providers.items() if name in selected
+            }
         return register_capabilities(self._registry, providers)

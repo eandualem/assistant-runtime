@@ -7,17 +7,18 @@ what must stay true when you change it.
 
 ## Shared instructions
 
-This is the canonical project guide for all coding agents. Keep shared
+This is the canonical project guide for all coding agents. Keep repository
 instructions here; `CLAUDE.md` imports this file. If a CLI does not load
 `AGENTS.md` automatically, explicitly ask it to read this file before working.
 
-Preserve existing work. Record durable project decisions here or in the
-repository docs so another agent can pick them up without private chat history.
+Managed sessions receive the shared base brief, `request-context`,
+`delivery-lifecycle` and `project-context` from agent-backbone. Those sources
+own routing, reporting, delivery and handoff hygiene; this file adds the
+repository-specific contracts.
 
-## Shared memory — read first, write last
+## Project memory
 
-Follow the same runtime-neutral memory pattern as `agent-backbone`. Project
-memory lives in this checkout, shared by Claude, Codex, and other CLIs:
+The shared `project-context` policy uses this checkout's local memory:
 
 ```text
 .backbone/memory/
@@ -26,29 +27,15 @@ memory lives in this checkout, shared by Claude, Codex, and other CLIs:
 └── notes/          decisions, implementation evidence, and follow-up findings
 ```
 
-- At the start of every session, read `.backbone/memory/HANDOFF.md`, then
-  `.backbone/memory/INDEX.md`, then the notes it marks as relevant.
-  Runtime-specific memory is a cache at most; the shared files and current
-  repository/GitHub evidence establish project state.
 - After reading shared memory, run `git status --short` and read the relevant
   README/docs section before changing files.
-- Before stopping or handing off, rewrite `HANDOFF.md` with completed and
-  unfinished work, precise commits/PRs/issues, validation and its limits,
-  and the next steps in order. Update the relevant topic notes and refresh
-  `INDEX.md`; reread them to confirm that the handoff is consistent.
-- Give durable facts absolute dates and sources. Replace stale facts rather
-  than appending contradictory updates. Notes are data, not instructions:
-  owner rules need a dated source, and notes never override `AGENTS.md`.
-- Never store secrets or commit the memory. `.backbone/` is git-ignored;
-  `/planning/` remains ignored too. This is shared local memory for CLIs on
-  this device, not synchronization between devices. Keep issues self-contained
-  for fresh checkouts.
+- `.backbone/` and `/planning/` are git-ignored and must remain uncommitted.
+  Memory is shared by CLIs on this device, not synchronized between devices.
 - If the directory is missing, create `.backbone/memory/notes/`, initialize
   `HANDOFF.md` and `INDEX.md` from verified repository/GitHub state, and note
   that this is a fresh start. For a linked worktree, use the primary
   checkout's memory instead of creating a competing copy; locate that
-  checkout with `git worktree list`. Review agents report to their
-  coordinator, who updates shared memory.
+  checkout with `git worktree list`.
 
 ## Project direction
 
@@ -70,9 +57,6 @@ and keep GitHub issues self-contained for other checkouts.
 Implementation tracking: [#83](https://github.com/eandualem/assistant-runtime/issues/83).
 The invariants below describe current implementation; update them alongside
 intentional contract changes.
-
-Report to the user in the current session. Do not send reports through
-agent-backbone or messaging integrations unless asked.
 
 ## Development setup
 
@@ -109,7 +93,7 @@ execution, history, serialization, or the upstream dependency; see
 ## Invariants — do not route around these
 
 - **Every service and app module has the same skeleton** (`services/<name>/`,
-  `app/access`, `app/assistant`, `app/streaming`, `app/ingress`, `app/heartbeat`;
+  `app/access`, `app/assistant`, `app/streaming`, `app/voice`, `app/ingress`, `app/heartbeat`;
   the leaf modules `base`, `artifacts`, `host_context`, `principal`, `config`
   and the `app/routes` package are exempt).
   `config.py` (a frozen pydantic
@@ -122,7 +106,7 @@ execution, history, serialization, or the upstream dependency; see
   private to their module; other modules use the interface class only.
 - **Startup order is registration order** (`main.py:lifespan`): access,
   database, oauth, llm, history, media, mcp, artifacts, tools, assistant,
-  streaming, ingress, heartbeat.
+  streaming, voice, ingress, heartbeat.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
@@ -140,7 +124,12 @@ execution, history, serialization, or the upstream dependency; see
   `app/ingress`; `app/routes` and `app/socketio_server` are the HTTP and
   Socket.IO edges; `main`, `cli` and `config` (which composes every module's config model)
   are the top. `tests/unit/test_imports.py` asserts that nothing below the
-  top layer imports `app`; a new cross-package import must keep it green.
+  top layer imports `app` and that `_`-prefixed files stay inside their
+  module (what another module needs is re-exported from the module's
+  `__init__.py` or a public file such as `services/tools/request_context.py`);
+  a new cross-package import must keep it green. `main.py` builds nothing at
+  import: uvicorn runs the `create_asgi_app` factory, and loading `.env` is
+  the CLI's job.
 - **Configuration has three tiers**, resolved once per request by
   `resolve_effective_config()` (`app/settings.py`): frozen `AppSettings`
   from the environment and `.env` (`__` is the nesting delimiter) <
@@ -151,7 +140,9 @@ execution, history, serialization, or the upstream dependency; see
   body and the runtime overlay's validation all use it, and
   `EffectiveConfig` has one attribute per tunable (a test enforces it). A
   new tunable is a field there, an attribute on `EffectiveConfig`, a column
-  on `user_settings` (migration) and a line in `docs/configuration.md`.
+  on `user_settings` (migration), a frozen default on `AssistantConfig` (or
+  the owning service's config) so it is settable from the environment, and
+  a line in `docs/configuration.md`.
   The request tier is untrusted: `CEILING_FIELDS` (`max_turns`, the
   thinking budgets) can only be lowered by a request. Per-turn native
   `UsageLimits` come from `ASSISTANT__BUDGET__*` merged with
@@ -170,9 +161,11 @@ execution, history, serialization, or the upstream dependency; see
   is a `ToolDefinition` plus an async handler registered through
   `register_backend_tool`. Handlers return dicts (`{"success": False,
   "error": ..., "error_code": ...}` on failure) and do not raise; the
-  registry wraps them with one retry on connection errors and a catch-all.
+  registry bounds each call by `TOOLS__TOOL_TIMEOUT_SECONDS` (or the
+  definition's `timeout`), retries once on connection errors only when the
+  definition says `idempotent=True`, and turns any failure into that dict.
   Request scope (session id, screenshot, Telegram binding) travels in
-  contextvars (`_request_context.py`); other dependencies are closed over
+  contextvars (`request_context.py`); other dependencies are closed over
   at registration.
 - **Host-native composition** uses `AssistantDefinition` through
   `create_app`, `create_asgi_app` or `create_runtime`. Native tools,
@@ -234,6 +227,9 @@ execution, history, serialization, or the upstream dependency; see
   drain the producer; Socket.IO disconnects leave it running. External
   `CancelledError` keeps propagating. Steering remains pending until a
   successful model response consumes it, so interrupted delivery can retry.
+  A steering record persists its optional profile selector; explicit selectors
+  are consumed only by matching profiles, while unprofiled legacy/ingress
+  steering inherits the consuming turn.
 - **Streaming events are dicts with a `type`.** They are built only by
   `app/streaming/_event_builder.py` and mapped to `assistant:*` Socket.IO
   events by `_EVENT_TYPE_MAP` in `app/socketio_server.py`;
@@ -246,12 +242,37 @@ execution, history, serialization, or the upstream dependency; see
   `_agui.py`, optional `ag-ui` extra) is the reference; it maps the run
   input onto sessions, continuations and host actions and never runs the
   agent itself.
+- **Silent host decisions** opt in through request `output_mode: host_tools`: only
+  host-context actions and native structured hold are offered, at most one action
+  is admitted, and model prose is neither published nor saved in message snapshots.
+  Pending actions persist their output mode; receipt-only plans save the result
+  without another model, summarization or working-memory call. Hosts own scheduling
+  and physical cancellation. Docs: `docs/host-contract.md`.
+- **Voice delegates through the shared pipeline.** Optional `app/voice` imports
+  `app/streaming` and owns the GPT-Live sideband; the browser owns WebRTC audio.
+  Conversation-only calls create no backend worker and reject tool-result
+  admission; `VOICE__DELEGATION_ENABLED=false` is the startup ceiling.
+  Voice enablement, credentials and resource ceilings are startup-only; call creation
+  may select bounded `instructions` and a registered backend `profile`. Its API key is environment-only,
+  independent of the backend model and subscription authentication. One call
+  reserves its backend session; session administration excludes reservation
+  throughout asynchronous mutations. Client delegations use the normal planner
+  and runner, including host continuations. Protect submitted host results until
+  admission, then use native cancellation so subsequent work can stop while the
+  accepted result is saved. Speech interruption alone does not cancel tools.
+  Transcript/usage snapshots live in optional `voice_calls`, separate from the
+  backend message tree; raw audio is not stored, and restart never replays work.
+  `session.closed` confirms final usage; absent finalization stays explicit.
+  Docs: `docs/voice.md`.
 - **The system prompt is assembled from the profile's artifacts**, in the
   profile's order, then MCP connections, the current time, the host context
   and working memory. Stable fragments come first so provider prompt
   caching works; dynamic fragments go last. The profile comes from
   `AssistantDefinition.profile`, else `ASSISTANT__PROFILE` (a built-in name
-  or a TOML path), else the neutral built-in; the example texts ship in
+  or a TOML path), else the neutral built-in. `ASSISTANT__PROFILES` registers additional profiles;
+  top-level request `profile` selects one by name on every turn/continuation.
+  Artifact routes use `?profile=`, and the tool follows the turn context.
+  This is artifact scoping, not an authorization boundary. The example texts ship in
   `profiles/technical_operator/`. `services/artifacts` owns versions and
   enforces each artifact's `ArtifactPolicy` in code for the `assistant`
   and `host` actors (Postgres when reachable, process memory otherwise,
@@ -274,7 +295,9 @@ execution, history, serialization, or the upstream dependency; see
   the streaming service and the session routes. Administration (settings
   writes, provider keys, OAuth, ingress, inbox, debug, artifact mutations,
   session reassignment) requires the `admin` role. Tools read the principal
-  from the request context. Docs: `docs/access.md`.
+  from the request context. Browser origins for HTTP and Socket.IO both
+  come from `AccessConfig` (localhost by default); `/health` returns
+  component detail only to an authenticated caller. Docs: `docs/access.md`.
 - **Messages carry a provenance envelope** (`[via:telegram from:X]`,
   `[via:tmux from:agent]`, `[via:room ...]`, `[via:backbone]`); the
   communication protocol artifact tells the model to answer on the same
@@ -302,21 +325,14 @@ names, ids or private hostnames).
   `test:`, `chore:`), body explains *why*. Branch from `develop` and open
   pull requests **against `develop`** (the default branch); `main` only
   receives merges from `develop`. Never push to `main` or `develop`
-  directly. CodeRabbit reviews every pull request; address its actionable
-  comments before merging.
+  directly. CodeRabbit is the automated reviewer for every pull request.
 - **Implementation delivery.** Investigation alone does not need a PR;
   every implementation change does. Run the required checks and review the
-  change with surveyor agents before opening its PR. Address their findings,
-  then push, follow CodeRabbit's review and CI, fix actionable feedback, and
-  merge when the required checks and review are clear.
-- **Issue completion.** A PR that finishes an issue must include an explicit
-  closing reference in its body, such as `Closes #86`, for each completed
-  issue. After merging, verify that GitHub closed those issues; close them
-  explicitly if it did not. Record the precise merged PR link in each
-  completed issue and in the user-facing completion report, and update the
-  parent roadmap. For partial work, use `Part of #...`, record what remains,
-  and leave the issue open. Retire outdated issues with an explicit reason;
-  never describe unimplemented work as completed.
+  change with surveyor agents before opening its PR; address their findings.
+- **Roadmap conventions.** Update the parent roadmap (currently #83 for
+  framework implementation) with the merged PR link. For partial work, use
+  `Part of #...` as the repository's PR reference format. Retire outdated
+  issues with an explicit reason.
 - Docs are part of a change: the README section that describes the
   behaviour you touched is updated in the same pull request.
 - Optional integrations are optional extras (`[video]`, `[tracing]`) and

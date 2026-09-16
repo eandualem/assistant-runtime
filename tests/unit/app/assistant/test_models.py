@@ -71,7 +71,7 @@ class TestAssistantRequest:
                 "parentId": None,
                 "content": "Check agents",
                 "hostContext": {
-                    "page": {"name": "agents", "data": {"entities": [{"name": "leo"}]}}
+                    "page": {"name": "agents", "data": {"entities": [{"name": "planner"}]}}
                 },
                 "config": {"defaultModel": "openai/gpt-5.4"},
             }
@@ -84,7 +84,7 @@ class TestAssistantRequest:
             "view": {
                 "name": "agents",
                 "description": "",
-                "data": {"entities": [{"name": "leo"}]},
+                "data": {"entities": [{"name": "planner"}]},
                 "state": {},
             },
             "navigation": [],
@@ -129,7 +129,7 @@ class TestAssistantRequest:
         request = AssistantRequest(
             id="steering-1",
             session_id="sess-1",
-            content="Focus on Leo",
+            content="Focus on Planner",
             message_type="steering",
         )
 
@@ -143,7 +143,7 @@ class TestAssistantRequest:
                 id="steering-1",
                 session_id="sess-1",
                 parent_id="assistant-1",
-                content="Focus on Leo",
+                content="Focus on Planner",
                 message_type="steering",
             )
 
@@ -152,7 +152,7 @@ class TestAssistantRequest:
             AssistantRequest(
                 id="steering-1",
                 session_id="sess-1",
-                content="Focus on Leo",
+                content="Focus on Planner",
                 message_type="steering",
                 tool_call_id="call-1",
                 tool_result={"ok": True},
@@ -248,5 +248,7 @@ class TestAssistantResult:
             "session_id": "sess-1",
             "turn_number": 1,
             "message_id": None,
+            "usage": None,
             "pending_tool_call": None,
+            "decision": None,
         }

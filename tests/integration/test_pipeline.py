@@ -127,7 +127,7 @@ class TestAssistantPipeline:
                     host_context={
                         "page": {
                             "name": "agents",
-                            "data": {"sessions": [{"name": "leo", "state": "idle"}]},
+                            "data": {"sessions": [{"name": "planner", "state": "idle"}]},
                         },
                     },
                 )

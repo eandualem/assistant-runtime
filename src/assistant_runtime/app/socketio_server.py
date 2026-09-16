@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
@@ -16,10 +17,12 @@ from weakref import WeakValueDictionary
 import socketio
 from loguru import logger
 
+from assistant_runtime.app.access.config import AccessConfig
 from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.host_context import host_context_from_payload
 from assistant_runtime.principal import Credentials, Principal
+from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -29,6 +32,7 @@ if TYPE_CHECKING:
 # Maps event dict `type` to socket.io event name.
 # debug_* events are mapped dynamically (all → assistant:debug).
 _EVENT_TYPE_MAP: dict[str, str] = {
+    "voice": "assistant:voice",
     "agent_status": "assistant:status",
     "thinking_delta": "assistant:thinking_delta",
     "text_delta": "assistant:text_delta",
@@ -49,11 +53,48 @@ def socket_event_name(event: dict[str, Any]) -> str:
     return "assistant:debug" if event_type.startswith("debug_") else "assistant:unknown"
 
 
-def create_sio() -> socketio.AsyncServer:
-    """Create and configure the Socket.IO async server."""
-    sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+def create_sio(access: AccessConfig | None = None) -> socketio.AsyncServer:
+    """Create and configure the Socket.IO async server.
+
+    Browser origins are checked against the same ``AccessConfig`` as the HTTP
+    CORS middleware: the listed origins, the origin regex (localhost by
+    default) and the page's own origin. ``*`` in ``cors_origins`` opens it.
+    """
+    config = access or AccessConfig()
+    wildcard = "*" in config.cors_origins
+    sio = socketio.AsyncServer(
+        async_mode="asgi",
+        cors_allowed_origins="*" if wildcard else _origin_check(config),
+        # Like the HTTP middleware: every origin, or credentials, never both.
+        cors_credentials=not wildcard,
+    )
     sio.register_namespace(AssistantNamespace("/assistant"))
     return sio
+
+
+def _origin_check(config: AccessConfig) -> Callable[[str | None, dict[str, Any] | None], bool]:
+    """The Engine.IO origin callback for ``config``; the request's own origin always passes."""
+
+    def allowed(origin: str | None, environ: dict[str, Any] | None = None) -> bool:
+        if config.origin_allowed(origin):
+            return True
+        return bool(origin) and origin in _own_origins(environ or {})
+
+    return allowed
+
+
+def _own_origins(environ: dict[str, Any]) -> set[str]:
+    """The request's own origin, from the connection's scheme and ``Host``.
+
+    ``X-Forwarded-*`` headers are deliberately not consulted: a client can
+    send them too. Behind a reverse proxy, list the public origin in
+    ``ACCESS__CORS_ORIGINS`` (or keep the localhost regex when the proxy is
+    on this machine).
+    """
+    host = environ.get("HTTP_HOST")
+    if not host:
+        return set()
+    return {f"{environ.get('wsgi.url_scheme', 'http')}://{host}"}
 
 
 @dataclass
@@ -181,6 +222,11 @@ class AssistantNamespace(socketio.AsyncNamespace):
     async def _start_request(self, sid: str, request: AssistantRequest) -> None:
         """Start a request while its session's transport ownership is locked."""
         session_id = request.session_id
+        try:
+            self._streaming_service.validate_profile(request.profile)
+        except UnknownProfileError as exc:
+            await self.emit("assistant:error", {"type": "validation", "message": str(exc)}, to=sid)
+            return
 
         if request.is_steering:
             active_task = self._active_streams.get(session_id)

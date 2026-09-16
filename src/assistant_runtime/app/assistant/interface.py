@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from pydantic_ai import DeferredToolRequests
+from pydantic_ai import DeferredToolRequests, ToolOutput
 from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.app.assistant._budget import build_usage_limits
@@ -21,9 +21,14 @@ from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.assistant.definition import AssistantDefinition
 from assistant_runtime.app.assistant.exceptions import AssistantError
-from assistant_runtime.app.assistant.models import AgentSetupContext, AssistantRequest
+from assistant_runtime.app.assistant.models import (
+    AgentSetupContext,
+    AssistantRequest,
+    HoldDecision,
+    PromptResult,
+)
+from assistant_runtime.app.assistant.usage import usage_dict
 from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
-from assistant_runtime.app.streaming._usage import usage_dict
 from assistant_runtime.host_context import view_name_of
 from assistant_runtime.services.tracing import create_span
 
@@ -158,6 +163,11 @@ class AssistantService:
             duration_ms=(time.monotonic() - started_at) * 1000,
         )
 
+    def validate_profile(self, name: str | None) -> None:
+        """Reject selectors that were not registered by the runtime operator."""
+        if name is not None:
+            self._artifacts.for_profile(name)
+
     async def prepare_agent_context(
         self,
         request: AssistantRequest,
@@ -167,6 +177,11 @@ class AssistantService:
 
         Shared by both AssistantService and StreamingService to prevent drift.
         """
+        artifacts_service = (
+            self._artifacts.for_profile(request.profile)
+            if request.profile is not None
+            else self._artifacts
+        )
         with create_span("agent-setup"):
             host_context = (
                 request.host_context
@@ -180,12 +195,16 @@ class AssistantService:
                 session_context["last_request_config"] = request.config
 
             # 1. Tools
-            available_tools = self._tools.get_available_tools(host_context)
-            toolsets = self._tools.build_toolset(host_context)
+            host_only = request.output_mode == "host_tools"
+            if host_only:
+                available_tools, toolsets = self._tools.host_action_tools(host_context)
+            else:
+                available_tools = self._tools.get_available_tools(host_context)
+                toolsets = self._tools.build_toolset(host_context)
 
             native_options: dict[str, Any] = {}
             deps = None
-            if self._definition is not None:
+            if self._definition is not None and not host_only:
                 definition = self._definition
                 toolsets = [*toolsets, *definition.toolsets]
                 native_options = {
@@ -198,8 +217,10 @@ class AssistantService:
                     if inspect.isawaitable(deps):
                         deps = await deps
 
-            mcp_summary_task = asyncio.create_task(self._tools.get_mcp_summary())
-            artifacts_task = asyncio.create_task(self._artifacts.active_texts())
+            mcp_summary_task = asyncio.create_task(
+                asyncio.sleep(0, result=None) if host_only else self._tools.get_mcp_summary()
+            )
+            artifacts_task = asyncio.create_task(artifacts_service.active_texts())
 
             # 2. Config resolution can run while prompt inputs load.
             effective = resolve_effective_config(
@@ -221,12 +242,21 @@ class AssistantService:
                 host_context=host_context,
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
-                profile=self._artifacts.profile,
+                profile=artifacts_service.profile,
             )
 
             # 4. Build agent — use union output type when host tools are registered
-            output_type: type | list[type] = str
-            if available_tools.host_tools:
+            output_type: Any = str
+            if host_only:
+                output_type = [ToolOutput(HoldDecision, name="hold"), DeferredToolRequests]
+                prompt_result = PromptResult(
+                    content=prompt_result.content + "\n\nSelect exactly one supplied host action, "
+                    "or return hold with decision=hold when no action is needed. "
+                    "Produce no prose, narration, or visible reasoning. "
+                    "The host executes actions and records receipts independently.",
+                    fragments=prompt_result.fragments,
+                )
+            elif available_tools.host_tools:
                 output_type = [str, DeferredToolRequests]
 
             agent = self._llm.build_agent(
@@ -236,6 +266,7 @@ class AssistantService:
                 output_type=output_type,
                 thinking_budget=effective.thinking_budget,
                 temperature=effective.temperature,
+                codex_service_tier=effective.codex_service_tier,
                 **native_options,
             )
 
@@ -250,6 +281,7 @@ class AssistantService:
             effective_config=effective,
             mcp_summary=mcp_summary,
             deps=deps,
+            profile_name=artifacts_service.profile.name,
         )
 
     async def update_working_memory(
@@ -257,8 +289,14 @@ class AssistantService:
         session_id: str,
         session_context: dict[str, Any],
         turn_number: int,
+        *,
+        leaf_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Extract the working-memory delta from the recent path and persist it (best-effort).
+
+        ``leaf_id`` is the assistant message the extraction belongs to; the
+        path to it is read, not the session's active leaf, so a queued
+        extraction still sees its own turn once later turns have landed.
 
         Returns the usage of the extraction's model call, so the turn can
         account for it, or None when nothing ran.
@@ -270,7 +308,7 @@ class AssistantService:
             current_wm = session_context.get("working_memory") or WorkingMemory()
             sessions = self._sessions
             assert sessions is not None
-            path = await sessions.get_message_path(session_id)
+            path = await sessions.get_message_path(session_id, leaf_id=leaf_id)
 
             recent: list[dict[str, Any]] = []
             for message in path[-4:]:

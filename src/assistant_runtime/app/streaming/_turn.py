@@ -41,11 +41,12 @@ from pydantic_ai.messages import (
 )
 
 from assistant_runtime.app.access.exceptions import AccessDeniedError
-from assistant_runtime.app.assistant._serialization import (
+from assistant_runtime.app.access.interface import AccessService
+from assistant_runtime.app.assistant import (
     assistant_record_to_flat_messages,
+    find_tool_entry,
     path_records_to_model_history,
 )
-from assistant_runtime.app.assistant._stale_tools import find_tool_entry
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import (
     AssistantRequest,
@@ -54,10 +55,10 @@ from assistant_runtime.app.assistant.models import (
 )
 from assistant_runtime.app.streaming._host_tool import clear_stale_pending_call
 from assistant_runtime.app.streaming.exceptions import StreamSetupError
-from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal, can_access_session
+from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal
 
 if TYPE_CHECKING:
-    from assistant_runtime.app.assistant._session_store import SessionStore
+    from assistant_runtime.app.assistant import SessionStore
 
 TurnKind = Literal["message", "continuation", "steering"]
 
@@ -93,6 +94,7 @@ class TurnPlan:
     # Bookkeeping.
     turn_number: int = 0
     update_working_memory: bool = True
+    receipt_only: bool = False
     input_message: str = ""
     trace_metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -119,6 +121,8 @@ class TurnPlanner:
             else:
                 plan = await self._plan_message(request, principal)
             plan.principal = principal
+            if plan.request.output_mode == "host_tools":
+                plan.update_working_memory = False
             return plan
         except (SessionError, AccessDeniedError):
             raise
@@ -129,9 +133,9 @@ class TurnPlanner:
         except Exception as e:
             raise StreamSetupError(f"Turn setup failed: {e}") from e
 
-    def _authorize(self, session_context: dict[str, Any], principal: Principal, session_id: str):
-        if not can_access_session(principal, session_context.get("owner_id")):
-            raise AccessDeniedError(f"Session '{session_id}' belongs to another principal")
+    @staticmethod
+    def _authorize(session_context: dict[str, Any], principal: Principal, session_id: str) -> None:
+        AccessService.check_session(principal, session_context.get("owner_id"), session_id)
 
     async def _plan_message(self, request: AssistantRequest, principal: Principal) -> TurnPlan:
         session_id = request.session_id
@@ -174,6 +178,11 @@ class TurnPlanner:
             raise SessionError(f"Continuation rejected: session '{session_id}' does not exist")
         self._authorize(session_context, principal, session_id)
 
+        stored_mode = session_context.get("pending_output_mode", "text")
+        if stored_mode == "host_tools":
+            request = request.model_copy(update={"output_mode": "host_tools"})
+        elif request.output_mode == "host_tools":
+            raise SessionError("Continuation output_mode does not match the pending action")
         recorded = _recorded_call(session_context, request.tool_call_id or "")
         if recorded is not None and "output" in recorded:
             # The result of this call is already on the assistant row (a
@@ -299,6 +308,7 @@ class TurnPlanner:
                 if next_pending
                 else DeferredToolResults(calls={request.tool_call_id: deferred_result})
             ),
+            receipt_only=request.output_mode == "host_tools",
             next_pending=next_pending,
             pending_batch=batch,
             accepted_tool_result=ModelRequest(
@@ -342,6 +352,8 @@ class TurnPlanner:
             await self._sessions.queue_steering(session_id, request)
         elif steering_record.get("status") == "delivered":
             raise SessionError(f"Steering '{request.id}' was already delivered by another turn")
+        elif steering_record.get("profile") != request.profile:
+            raise SessionError(f"Steering '{request.id}' must keep its original profile selector")
 
         extends_assistant = active_leaf.get("role") == "assistant"
         assistant_message_id = active_leaf_id if extends_assistant else str(uuid.uuid4())

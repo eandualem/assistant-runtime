@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import re
 import tomllib
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -125,9 +124,6 @@ class AssistantProfile:
 
     def names_text(self) -> str:
         return ", ".join(self.names)
-
-    def roles_text(self) -> str:
-        return "; ".join(f"{a.name} = {a.role}" for a in self.artifacts if a.role)
 
 
 # --- Built-in profiles ---
@@ -281,10 +277,6 @@ def resolve_profile(
     if builder is not None:
         return builder()
     return load_profile_file(setting)
-
-
-def profile_names(profiles: Iterable[str] = BUILTIN_PROFILE_NAMES) -> str:
-    return ", ".join(profiles)
 
 
 __all__ = [

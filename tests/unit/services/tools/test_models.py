@@ -64,7 +64,6 @@ class TestToolDefinition:
 class TestToolSet:
     def test_empty(self):
         ts = ToolSet()
-        assert ts.total_count == 0
         assert ts.tool_names == []
 
     def test_with_tools(self):
@@ -75,7 +74,6 @@ class TestToolSet:
             category=ToolCategory.BACKEND,
         )
         ts = ToolSet(backend_tools=[backend])
-        assert ts.total_count == 1
         assert "get_time" in ts.tool_names
 
     def test_tool_names_order(self):

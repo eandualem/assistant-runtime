@@ -31,3 +31,7 @@ class EventLimitError(StreamingError):
         kwargs.setdefault("severity", "medium")
         kwargs.setdefault("retry_allowed", False)
         super().__init__(message, **kwargs)
+
+
+class InvalidDecisionError(AssistantRuntimeError):
+    """The model output cannot authorize a single host action or hold."""

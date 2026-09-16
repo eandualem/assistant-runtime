@@ -19,13 +19,27 @@ cd assistant-runtime
 uv sync                     # add --extra video --extra tracing for the optional features
 ```
 
-Or as a tool, once published: `uv tool install assistant-runtime`.
+Or install the released command-line tool: `uv tool install assistant-runtime`.
+The sections below show commands for each installation method; use the one
+that matches yours. To try a complete browser application, see the
+[reference-app guide](reference-app.md).
 
 ## 2. One key
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+From a checkout:
+
+```bash
 uv run assistant-runtime doctor
+```
+
+With the installed tool:
+
+```bash
+assistant-runtime doctor
 ```
 
 `doctor` prints one line per check: Python version, `.env`, provider keys,
@@ -41,8 +55,16 @@ the runtime uses that provider's default instead (`openai:gpt-5.6-terra`,
 
 ## 3. Talk to it
 
+From a checkout:
+
 ```bash
 uv run assistant-runtime chat
+```
+
+With the installed tool:
+
+```bash
+assistant-runtime chat
 ```
 
 This runs the runtime in-process, with the same services, tools and prompt
@@ -58,17 +80,34 @@ model carries on.
 
 ## 4. Run the server
 
+From a checkout:
+
 ```bash
 uv run assistant-runtime serve            # 127.0.0.1:7100
+```
+
+With the installed tool:
+
+```bash
+assistant-runtime serve                   # 127.0.0.1:7100
+```
+
+From another terminal, check the server and send a message:
+
+```bash
 curl -s localhost:7100/health
 curl -s -X POST localhost:7100/api/chat -H 'content-type: application/json' \
   -d '{"id":"m1","session_id":"s1","content":"What can you do?"}'
 ```
 
-`serve` binds to loopback by default. The API has no authentication and
-CORS is open, so keep it on localhost or put it behind your own reverse
-proxy with auth. `--host 0.0.0.0 --port 8080` changes the binding,
-`--reload` restarts on source changes (`make dev` is the same thing).
+`serve` binds to loopback by default, every caller is the local operator,
+and only pages served from this machine may call it from a browser
+([identity and access](access.md)). Put it behind your own reverse proxy
+with auth before exposing it. `--host 0.0.0.0 --port 8080` changes the binding,
+`--reload` restarts on source changes (`make dev` is the same thing). The
+`assistant-runtime` command loads `.env` before it starts; a host that
+embeds the runtime through `create_asgi_app` or `create_runtime` owns its
+own environment (see [composition](composition.md)).
 If a previous assistant-runtime still holds the port (recognised by its
 `/health` answer), `serve` stops it and takes over, so a new configuration
 takes effect with one command; anything else on the port is left alone and

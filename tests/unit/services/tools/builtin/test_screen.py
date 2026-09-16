@@ -8,12 +8,12 @@ import pytest
 from pydantic_ai.messages import BinaryContent
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._request_context import (
+from assistant_runtime.services.tools.builtin.screen import look_at_screen, register_screen_tools
+from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.request_context import (
     assistant_request_context,
     get_current_screenshot,
 )
-from assistant_runtime.services.tools.builtin.screen import look_at_screen, register_screen_tools
-from assistant_runtime.services.tools.config import ToolConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures

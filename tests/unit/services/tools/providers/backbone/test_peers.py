@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from assistant_runtime.services.tools._registry import ToolRegistry
-from assistant_runtime.services.tools._request_context import assistant_request_context
 from assistant_runtime.services.tools.capabilities.peers import register_peers_tools
 from assistant_runtime.services.tools.config import ToolConfig
 from assistant_runtime.services.tools.providers.backbone.peers import (
@@ -24,6 +23,7 @@ from assistant_runtime.services.tools.providers.backbone.peers import (
     start_agent,
     stop_agent,
 )
+from assistant_runtime.services.tools.request_context import assistant_request_context
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -72,19 +72,19 @@ class TestRunCommand:
 
 class TestReadStateFile:
     def test_valid_json(self, state_dir):
-        state_file = state_dir / "leo.json"
+        state_file = state_dir / "planner.json"
         state_file.write_text(
             json.dumps(
                 {
-                    "entity": "leo",
+                    "entity": "planner",
                     "state": "idle",
                     "issue": None,
                 }
             )
         )
-        result = _read_state_file("leo")
+        result = _read_state_file("planner")
         assert result is not None
-        assert result["entity"] == "leo"
+        assert result["entity"] == "planner"
         assert result["state"] == "idle"
 
     def test_missing_file(self, state_dir):
@@ -122,7 +122,7 @@ class TestValidateSessionName:
     @pytest.mark.parametrize(
         "name",
         [
-            "leo",
+            "planner",
             "agent-backbone",
             "platform-api",
             "test123",
@@ -159,10 +159,10 @@ class TestListAgents:
     @patch(f"{MODULE}._run_command")
     @patch(f"{MODULE}._read_state_file")
     async def test_with_sessions_and_state(self, mock_state, mock_run):
-        mock_run.return_value = (0, "leo\nike\nada", "")
+        mock_run.return_value = (0, "planner\nreviewer\nbuilder", "")
         mock_state.side_effect = [
-            {"entity": "leo", "state": "idle", "issue": None, "context": None},
-            {"entity": "ike", "state": "processing", "issue": 42, "context": "Working on #42"},
+            {"entity": "planner", "state": "idle", "issue": None, "context": None},
+            {"entity": "reviewer", "state": "processing", "issue": 42, "context": "Working on #42"},
             None,
         ]
 
@@ -212,19 +212,19 @@ class TestListAgents:
     @patch(f"{MODULE}._run_command")
     @patch(f"{MODULE}._read_state_file")
     async def test_enriches_from_registry_cache(self, mock_state, mock_run):
-        mock_run.return_value = (0, "leo\nunknown-session", "")
+        mock_run.return_value = (0, "planner\nunknown-session", "")
         mock_state.return_value = None
 
-        leo_info = {
-            "display_name": "Leo",
+        planner_info = {
+            "display_name": "Planner",
             "role": "Strategy Co-Architect",
             "type": "orchestrator",
-            "home": "/srv/agents/leo",
+            "home": "/srv/agents/planner",
         }
         mock_cache = MagicMock()
-        mock_cache.get_agents = AsyncMock(return_value=[{"session": "leo", **leo_info}])
+        mock_cache.get_agents = AsyncMock(return_value=[{"session": "planner", **planner_info}])
         mock_cache.get_agent_info = MagicMock(
-            side_effect=lambda name: leo_info if name == "leo" else None
+            side_effect=lambda name: planner_info if name == "planner" else None
         )
 
         with patch(f"{MODULE}.get_registry_cache", return_value=mock_cache):
@@ -232,11 +232,11 @@ class TestListAgents:
 
         assert result["success"] is True
         sessions_by_name = {s["session_name"]: s for s in result["sessions"]}
-        # leo is in registry cache — enriched with display_name, role, type, home
-        assert sessions_by_name["leo"]["display_name"] == "Leo"
-        assert sessions_by_name["leo"]["role"] == "Strategy Co-Architect"
-        assert sessions_by_name["leo"]["type"] == "orchestrator"
-        assert sessions_by_name["leo"]["home"] == "/srv/agents/leo"
+        # planner is in registry cache — enriched with display_name, role, type, home
+        assert sessions_by_name["planner"]["display_name"] == "Planner"
+        assert sessions_by_name["planner"]["role"] == "Strategy Co-Architect"
+        assert sessions_by_name["planner"]["type"] == "orchestrator"
+        assert sessions_by_name["planner"]["home"] == "/srv/agents/planner"
         # unknown-session is NOT in cache — no enrichment fields
         assert "display_name" not in sessions_by_name["unknown-session"]
         assert "role" not in sessions_by_name["unknown-session"]
@@ -255,8 +255,8 @@ class TestGetActiveAgents:
         mock_cache.get_agents = AsyncMock(
             return_value=[
                 {
-                    "session": "ike",
-                    "display_name": "Eisenhower",
+                    "session": "reviewer",
+                    "display_name": "Reviewer",
                     "role": "Core Orchestrator",
                     "type": "named_entity",
                     "state": "idle",
@@ -265,8 +265,8 @@ class TestGetActiveAgents:
                     "current_issue": None,
                 },
                 {
-                    "session": "gateway",
-                    "display_name": "gateway",
+                    "session": "service-a",
+                    "display_name": "service-a",
                     "role": "infra",
                     "type": "service",
                     "state": "unknown",
@@ -275,8 +275,8 @@ class TestGetActiveAgents:
                     "current_issue": None,
                 },
                 {
-                    "session": "leo",
-                    "display_name": "Vinci",
+                    "session": "planner",
+                    "display_name": "Planner",
                     "role": "Strategy Co-Architect",
                     "type": "named_entity",
                     "state": "offline",
@@ -304,8 +304,8 @@ class TestGetActiveAgents:
         assert result["count"] == 1
         assert result["agents"] == [
             {
-                "session_name": "ike",
-                "display_name": "Eisenhower",
+                "session_name": "reviewer",
+                "display_name": "Reviewer",
                 "role": "Core Orchestrator",
                 "type": "named_entity",
                 "state": "idle",
@@ -359,17 +359,17 @@ class TestCheckAgentState:
     @patch(f"{MODULE}._run_command")
     @patch(f"{MODULE}._read_state_file")
     async def test_exists_with_state(self, mock_state, mock_run):
-        mock_state.return_value = {"entity": "leo", "state": "idle", "issue": None}
+        mock_state.return_value = {"entity": "planner", "state": "idle", "issue": None}
         # has-session check, then capture-pane
         mock_run.side_effect = [
             (0, "", ""),
             (0, "$ claude\nHello!", ""),
         ]
 
-        result = await check_agent_state("leo")
+        result = await check_agent_state("planner")
         assert result["success"] is True
         assert result["session_exists"] is True
-        assert result["state"]["entity"] == "leo"
+        assert result["state"]["entity"] == "planner"
         assert "recent_output" in result
 
     @patch(f"{MODULE}._run_command")
@@ -381,7 +381,7 @@ class TestCheckAgentState:
             (0, "", ""),
         ]
 
-        result = await check_agent_state("leo")
+        result = await check_agent_state("planner")
         assert result["success"] is True
         assert result["state"] is None
         assert result["note"] == "No state file found"
@@ -411,7 +411,7 @@ class TestCheckAgentState:
             (0, "line1\nline2\nline3", ""),
         ]
 
-        result = await check_agent_state("leo")
+        result = await check_agent_state("planner")
         assert result["recent_output"] == "line1\nline2\nline3"
 
 
@@ -425,22 +425,22 @@ class TestStartAgent:
     async def test_success_basic(self, mock_backbone):
         mock_backbone.return_value = (
             200,
-            {"working_directory": "/srv/agents/leo", "session": "leo"},
+            {"working_directory": "/srv/agents/planner", "session": "planner"},
         )
 
-        result = await start_agent("leo")
+        result = await start_agent("planner")
         assert result["success"] is True
-        assert result["session_name"] == "leo"
+        assert result["session_name"] == "planner"
         assert result["runtime"] == "claude"
         assert result["model"] is None
         assert result["resume"] is False
-        assert result["working_directory"] == "/srv/agents/leo"
+        assert result["working_directory"] == "/srv/agents/planner"
         assert result["initial_prompt"] is None
 
         # Verify backbone was called with correct args
         mock_backbone.assert_awaited_once_with(
             "POST",
-            "/api/agents/leo/start",
+            "/api/agents/planner/start",
             json_body={"runtime": "claude"},
         )
 
@@ -448,17 +448,17 @@ class TestStartAgent:
     async def test_success_with_runtime_and_model(self, mock_backbone):
         mock_backbone.return_value = (
             200,
-            {"working_directory": "/srv/agents/leo"},
+            {"working_directory": "/srv/agents/planner"},
         )
 
-        result = await start_agent("leo", runtime="aider", model="sonnet")
+        result = await start_agent("planner", runtime="aider", model="sonnet")
         assert result["success"] is True
         assert result["runtime"] == "aider"
         assert result["model"] == "sonnet"
 
         mock_backbone.assert_awaited_once_with(
             "POST",
-            "/api/agents/leo/start",
+            "/api/agents/planner/start",
             json_body={"runtime": "aider", "model": "sonnet"},
         )
 
@@ -466,16 +466,16 @@ class TestStartAgent:
     async def test_success_with_resume(self, mock_backbone):
         mock_backbone.return_value = (
             200,
-            {"working_directory": "/srv/agents/leo"},
+            {"working_directory": "/srv/agents/planner"},
         )
 
-        result = await start_agent("leo", resume=True)
+        result = await start_agent("planner", resume=True)
         assert result["success"] is True
         assert result["resume"] is True
 
         mock_backbone.assert_awaited_once_with(
             "POST",
-            "/api/agents/leo/start",
+            "/api/agents/planner/start",
             json_body={"runtime": "claude", "resume": True},
         )
 
@@ -484,7 +484,7 @@ class TestStartAgent:
     async def test_success_with_initial_prompt(self, mock_backbone, mock_run):
         mock_backbone.return_value = (
             200,
-            {"working_directory": "/srv/agents/leo"},
+            {"working_directory": "/srv/agents/planner"},
         )
         mock_run.side_effect = [
             (0, "", ""),  # send-keys prompt
@@ -492,7 +492,7 @@ class TestStartAgent:
         ]
 
         with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await start_agent("leo", initial_prompt="do the thing")
+            result = await start_agent("planner", initial_prompt="do the thing")
             assert result["success"] is True
             assert result["initial_prompt"] == "do the thing"
             mock_sleep.assert_awaited_once_with(2)
@@ -501,10 +501,10 @@ class TestStartAgent:
     async def test_backbone_unavailable(self, mock_backbone):
         mock_backbone.return_value = (
             -1,
-            {"error": "Request timed out: POST /api/agents/leo/start", "success": False},
+            {"error": "Request timed out: POST /api/agents/planner/start", "success": False},
         )
 
-        result = await start_agent("leo")
+        result = await start_agent("planner")
         assert result["success"] is False
         assert "timed out" in result["error"].lower()
 
@@ -515,7 +515,7 @@ class TestStartAgent:
             {"error": "Unknown runtime 'zsh'. Available: claude, aider, gemini"},
         )
 
-        result = await start_agent("leo", runtime="zsh")
+        result = await start_agent("planner", runtime="zsh")
         assert result["success"] is False
         assert "Unknown runtime" in result["error"]
 
@@ -551,9 +551,9 @@ class TestStopAgent:
             (0, "", ""),
         ]
 
-        result = await stop_agent("leo")
+        result = await stop_agent("planner")
         assert result["success"] is True
-        assert result["session_name"] == "leo"
+        assert result["session_name"] == "planner"
         assert result["previous_state"] == "idle"
 
     @patch(f"{MODULE}._run_command")
@@ -628,7 +628,7 @@ class TestSendAgentMessage:
         ]
 
         with assistant_request_context("sess_abc123"):
-            result = await send_agent_message("leo", "check status")
+            result = await send_agent_message("planner", "check status")
         assert result["success"] is True
         assert result["message_sent"] == "check status"
         assert result["agent_state"] == "idle"
@@ -645,7 +645,7 @@ class TestSendAgentMessage:
         ]
 
         with assistant_request_context("sess_abc123"):
-            await send_agent_message("leo", "hello")
+            await send_agent_message("planner", "hello")
 
         # The second call is send-keys -l with the envelope
         send_call = mock_run.call_args_list[1]
@@ -659,7 +659,7 @@ class TestSendAgentMessage:
         mock_state.return_value = None
         mock_run.return_value = (0, "", "")
 
-        result = await send_agent_message("leo", "hello")
+        result = await send_agent_message("planner", "hello")
 
         assert result["success"] is False
         assert "assistant session context" in result["error"]
@@ -674,12 +674,12 @@ class TestSendAgentMessage:
         assert "does not exist" in result["error"]
 
     async def test_empty_message(self):
-        result = await send_agent_message("leo", "")
+        result = await send_agent_message("planner", "")
         assert result["success"] is False
         assert "empty" in result["error"]
 
     async def test_whitespace_only_message(self):
-        result = await send_agent_message("leo", "   ")
+        result = await send_agent_message("planner", "   ")
         assert result["success"] is False
         assert "empty" in result["error"]
 
@@ -694,7 +694,7 @@ class TestSendAgentMessage:
         ]
 
         with assistant_request_context("sess_busy"):
-            result = await send_agent_message("leo", "urgent question")
+            result = await send_agent_message("planner", "urgent question")
         assert result["success"] is True
         assert "warning" in result
         assert "processing" in result["warning"]
@@ -772,18 +772,18 @@ class TestBackbonePeersConfiguration:
         cache = MagicMock()
         cache.get_agents = AsyncMock(
             return_value=[
-                {"session": "gateway", "online": True, "state": "idle", "runtime": "x"},
-                {"session": "leo", "online": True, "state": "idle", "runtime": "claude"},
+                {"session": "service-a", "online": True, "state": "idle", "runtime": "x"},
+                {"session": "planner", "online": True, "state": "idle", "runtime": "claude"},
             ]
         )
         with patch(f"{MODULE}.get_registry_cache", return_value=cache):
             result = await BackbonePeers(
-                infrastructure_sessions=frozenset({"gateway"})
+                infrastructure_sessions=frozenset({"service-a"})
             ).get_active_agents()
-        assert [a["session_name"] for a in result["agents"]] == ["leo"]
+        assert [a["session_name"] for a in result["agents"]] == ["planner"]
 
     async def test_state_dir_is_read_for_agent_state(self, tmp_path):
-        (tmp_path / "leo.json").write_text('{"state": "processing"}')
+        (tmp_path / "planner.json").write_text('{"state": "processing"}')
         with patch(f"{MODULE}._run_command", new=AsyncMock(return_value=(0, "", ""))):
-            result = await BackbonePeers(state_dir=tmp_path).check_agent_state("leo")
+            result = await BackbonePeers(state_dir=tmp_path).check_agent_state("planner")
         assert result["state"] == {"state": "processing"}

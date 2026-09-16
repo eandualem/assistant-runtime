@@ -37,3 +37,9 @@ class ArtifactVersionNotFoundError(ArtifactError):
     """No stored version matches the request."""
 
     error_code = "artifact_version_not_found"
+
+
+class UnknownProfileError(ArtifactError):
+    """No assistant profile with this name was registered at startup."""
+
+    error_code = "unknown_profile"

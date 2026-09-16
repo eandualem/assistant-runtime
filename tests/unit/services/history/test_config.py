@@ -13,7 +13,6 @@ class TestHistoryConfigDefaults:
         assert config.retain_recent == 5
         assert config.protect_recent_tool_results == 3
         assert config.summarization_model is None
-        assert config.working_memory_enabled is True
         assert config.working_memory_model is None
         assert config.message_truncation_limit == 1000
         assert config.max_memory_entries == 15
@@ -24,7 +23,6 @@ class TestHistoryConfigDefaults:
             retain_recent=10,
             protect_recent_tool_results=5,
             summarization_model="openai:gpt-4o-mini",
-            working_memory_enabled=False,
             working_memory_model="openai:gpt-4o",
             message_truncation_limit=2000,
             max_memory_entries=20,
@@ -33,7 +31,6 @@ class TestHistoryConfigDefaults:
         assert config.retain_recent == 10
         assert config.protect_recent_tool_results == 5
         assert config.summarization_model == "openai:gpt-4o-mini"
-        assert config.working_memory_enabled is False
         assert config.working_memory_model == "openai:gpt-4o"
         assert config.message_truncation_limit == 2000
         assert config.max_memory_entries == 20

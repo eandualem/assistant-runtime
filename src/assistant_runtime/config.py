@@ -7,6 +7,7 @@ from assistant_runtime.app.access.config import AccessConfig
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.heartbeat.config import HeartbeatConfig
 from assistant_runtime.app.streaming.config import StreamingConfig
+from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.services.artifacts.config import ArtifactsConfig
 from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.history.config import HistoryConfig
@@ -37,6 +38,7 @@ class AppSettings(BaseSettings):
     assistant: AssistantConfig = AssistantConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     streaming: StreamingConfig = StreamingConfig()
+    voice: VoiceConfig = VoiceConfig()
 
     model_config = SettingsConfigDict(
         env_file=".env",

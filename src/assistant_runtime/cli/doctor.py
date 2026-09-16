@@ -51,7 +51,7 @@ def _providers() -> Line:
 
 def _models() -> list[Line]:
     from assistant_runtime.config import AppSettings
-    from assistant_runtime.services.llm._settings import validate_model_id
+    from assistant_runtime.services.llm import validate_model_id
 
     config = AppSettings().llm
     providers = set(configured_providers())

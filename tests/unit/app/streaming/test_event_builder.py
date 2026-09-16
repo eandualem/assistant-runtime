@@ -20,7 +20,18 @@ from assistant_runtime.app.streaming._event_builder import (
     make_tool_call_event,
     make_tool_error_event,
     make_tool_result_event,
+    make_voice_event,
 )
+
+
+def test_voice_envelope_preserves_nested_backend_event():
+    backend = make_text_delta_event("hello")
+    assert make_voice_event("call-1", "backend", {"event": backend}) == {
+        "type": "voice",
+        "call_id": "call-1",
+        "event": "backend",
+        "data": {"event": backend},
+    }
 
 
 class TestAgentStatusEvent:

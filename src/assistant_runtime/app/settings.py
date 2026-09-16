@@ -47,6 +47,7 @@ class EffectiveConfig:
     default_video_model: str | None
     subagent_model: str | None
     subagent_thinking_budget: int | None
+    codex_service_tier: str | None
 
 
 assert {f.name for f in dataclasses.fields(EffectiveConfig)} == TUNABLE_FIELDS
@@ -177,6 +178,18 @@ class RuntimeSettings:
 CEILING_FIELDS: frozenset[str] = frozenset(
     {"max_turns", "thinking_budget", "subagent_thinking_budget"}
 )
+# Model choices; a request may only pick from ``AssistantConfig.request_models`` when set.
+# Listed explicitly (a test checks every ``*_model`` tunable is here).
+MODEL_FIELDS: frozenset[str] = frozenset(
+    {
+        "default_model",
+        "summarization_model",
+        "working_memory_model",
+        "default_image_model",
+        "default_video_model",
+        "subagent_model",
+    }
+)
 
 
 def resolve_effective_config(
@@ -191,6 +204,8 @@ def resolve_effective_config(
     """
     request_values = per_request.model_dump(exclude_none=True) if per_request else {}
     runtime_values = runtime_settings.overrides if runtime_settings else {}
+    allowed_models = frozenset(frozen_config.request_models)
+    refused: dict[str, Any] = {}
 
     def _trusted(field: str) -> Any:
         if field in runtime_values:
@@ -201,6 +216,12 @@ def resolve_effective_config(
         if field in request_values:
             requested = request_values[field]
             ceiling = _trusted(field)
+            if field in MODEL_FIELDS and allowed_models and requested not in allowed_models:
+                refused[field] = requested
+                return ceiling
+            if field == "codex_service_tier" and not frozen_config.request_service_tier:
+                refused[field] = requested
+                return ceiling
             if field in CEILING_FIELDS:
                 if ceiling is None:
                     # The host disabled this budget; a request cannot switch it on.
@@ -211,4 +232,8 @@ def resolve_effective_config(
             return requested
         return _trusted(field)
 
-    return EffectiveConfig(**{field: _pick(field) for field in TUNABLE_FIELDS})
+    effective = EffectiveConfig(**{field: _pick(field) for field in TUNABLE_FIELDS})
+    if refused:
+        # One line per request: the request tier is untrusted and must not flood the log.
+        logger.info("Request tunables outside the host's allowance ignored", refused=refused)
+    return effective

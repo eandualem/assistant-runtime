@@ -50,6 +50,7 @@ class TestOAuthRoutes:
         data = response.json()
         assert data["connected"] is True
         assert data["source"] == "codex_cli"
+
         assert data["email"] == "assistant@example.com"
 
     @pytest.mark.asyncio
@@ -60,3 +61,62 @@ class TestOAuthRoutes:
         assert data["connected"] is True
         assert data["status"] == "authorized"
         assert data["source"] == "codex_cli"
+
+
+@pytest.mark.parametrize("endpoint", ["codex-cli/sync", "device-code"])
+async def test_disabled_oauth_returns_actionable_503_without_reading_auth_file(endpoint):
+    from unittest.mock import patch
+
+    from assistant_runtime.main import create_app
+    from assistant_runtime.services.oauth.config import OAuthConfig
+    from assistant_runtime.services.oauth.interface import OAuthService
+
+    service = OAuthService(OAuthConfig())
+    app = create_app()
+    app.state.oauth_service = service
+    with patch.object(service, "_read_codex_cli_auth") as read_auth:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(f"/api/oauth/openai/{endpoint}")
+    assert response.status_code == 503
+    assert response.json()["type"] == "OAuthNotConfiguredError"
+    assert "OAUTH__ENCRYPTION_KEY" in response.json()["error"]
+    read_auth.assert_not_called()
+
+
+@pytest.mark.parametrize("contents", [None, b"[]", b"null", b"invalid json", b"\xff"])
+async def test_invalid_auth_file_returns_distinct_400(tmp_path, contents):
+    from cryptography.fernet import Fernet
+
+    from assistant_runtime.main import create_app
+    from assistant_runtime.services.oauth.config import OAuthConfig
+    from assistant_runtime.services.oauth.interface import OAuthService
+
+    auth_file = tmp_path / "auth.json"
+    if contents is not None:
+        auth_file.write_bytes(contents)
+    service = OAuthService(
+        OAuthConfig(
+            encryption_key=Fernet.generate_key().decode(),
+            codex_auth_file=str(auth_file),
+        )
+    )
+    await service.start()
+    try:
+        app = create_app()
+        app.state.oauth_service = service
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/oauth/openai/codex-cli/sync")
+        assert response.status_code == 400
+        assert response.json()["type"] == "OAuthCodexSyncError"
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+async def test_disconnect_exposes_persisted_deletion_outcome(deleted):
+    service = SimpleNamespace(disconnect=AsyncMock(return_value=deleted))
+    app = _make_app(service)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.delete("/api/oauth/openai")
+    assert response.status_code == 200
+    assert response.json() == {"status": "disconnected", "persisted_deleted": deleted}

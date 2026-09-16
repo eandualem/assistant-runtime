@@ -5,6 +5,9 @@ from fastapi.responses import Response
 
 from assistant_runtime.services.media.deps import MediaServiceDep
 
+# No principal here on purpose: a browser fetches ``<img src="/api/media/...">``
+# without headers, so a token or proxy header cannot be required. The ids are
+# 128-bit random values that expire with the cache (capability URLs).
 router = APIRouter(prefix="/media", tags=["media"])
 
 

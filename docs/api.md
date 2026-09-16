@@ -11,7 +11,10 @@ Interactive OpenAPI docs are served at `/docs`.
 Every route and the Socket.IO connection establish a principal as
 configured by `ACCESS__MODE` (see [access](access.md)): the local
 operator by default, the `X-Assistant-Principal` / `X-Assistant-Roles`
-headers behind an authenticating proxy, or the host's callback. An
+headers behind an authenticating proxy, or the host's callback. The one
+exception is `GET /api/media/{id}`, which a browser fetches as an image
+without headers: it is an expiring capability URL (a random id) and
+establishes no principal. An
 unidentified caller gets `401` (a refused connection on Socket.IO); a
 session that belongs to someone else (or an unowned legacy session, for a non-administrator) `403` (`assistant:error` of type
 `forbidden`); administration without the `admin` role `403`.
@@ -20,14 +23,24 @@ the inbox, debugging, every artifact mutation and session reassignment.
 
 ## Health
 
-`GET /health`: `{"healthy": bool, "components": {name: {...}}}`, status
-200 or 503. Postgres being down does not make the runtime unhealthy.
+`GET /health`: `{"healthy": bool, "runtime": "assistant-runtime",
+"components": {name: {...}}}`, status 200 or 503. An anonymous caller
+gets each component's `healthy` flag only; an authenticated caller gets
+the full component detail. Every caller is authenticated in `trusted_local`
+unless `ACCESS__LOCAL_TOKEN` is set, in which case the token is required. `runtime` is
+the marker `serve` looks for before replacing a previous instance on its
+port. The rule is whether the runtime can answer a turn: with no
+provider key configured it reports 503, because it cannot. Optional
+dependencies do not make it unhealthy — Postgres being unreachable is
+reported as `database_service: {"healthy": true, "reachable": false}` and
+sessions live in memory, and an unconfigured integration reports
+`"status": "disabled"`. A service that failed to start is unhealthy.
 
 ## Chat (non-streaming)
 
 `POST /api/chat` with a message body (below) runs the same turn pipeline
 as the socket and returns `{"content", "model", "session_id",
-"turn_number", "message_id", "pending_tool_call"}` when the turn ends.
+"turn_number", "message_id", "pending_tool_call", "decision"}` when the turn ends.
 `pending_tool_call` is set when the turn stopped on a host tool call; answer
 it with a continuation body (`tool_call_id`, `tool_result`). A request
 that does not fit the session is a 409 and is not worth retrying: unknown
@@ -36,6 +49,10 @@ session or parent, duplicate message id, a continuation whose
 when the session has no conversation yet. A failed run is a 500. Both
 carry `{"error", "type"}`. Steering messages are rejected here
 (422); use the socket.
+
+For silent independent controllers, `output_mode: "host_tools"` returns
+`content: null` with `decision: "hold" | "pending" | "completed"`. Normal text
+turns have `decision: null`. See the [complete decision/receipt contract](host-contract.md#silent-host-decisions).
 
 ## Turn control
 
@@ -88,6 +105,7 @@ response is Server-Sent Events encoded by Pydantic AI's `AGUIEventStream`
 | `tools` | request-declared host actions (`host_context.actions`) for this run only: every AG-UI request carries its own host context, so a tool not sent again is not available (unlike `host_context` omitted on the message body, which reuses the session's last context); the model's call ends the run with `TOOL_CALL_*` events and the client answers with a `tool` message in its next run |
 | `context` | `host_context.background` (`description` → `value`) |
 | `state` | the host context itself when it carries `version: 1`; otherwise `host_context.extensions.state` |
+| `forwardedProps.profile` | registered assistant profile name (same as top-level `profile` on chat); send on continuations too |
 | `forwardedProps.config` | the per-request tunable overrides (same fields as `config` in the message body) |
 | `image` and `document` user content (and legacy `binary`) | reference attachments for the model (data URIs or URLs); `audio` and `video` content is not mapped |
 | client disconnect | cancels the turn (partial work is saved, as for any consumer that goes away) |
@@ -106,15 +124,16 @@ Keys may be camelCase; they are normalised.
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | string | client-generated message id |
-| `session_id` | string | created on first use |
+| `id` | string | client-generated message id, 1 to 64 characters (the stored column width; longer is a 422) |
+| `session_id` | string | created on first use; 1 to 64 characters. An AG-UI `threadId` is a session id and has the same limit |
 | `content` | string | the text; may be empty on a continuation |
-| `parent_id` | string, optional | the message to branch from; omitted, the message continues from the session's active leaf (the first message is the root) |
+| `parent_id` | string, optional, at most 64 characters | the message to branch from; omitted, the message continues from the session's active leaf (the first message is the root) |
+| `output_mode` | `text` (default) or `host_tools` | silent single host-action decision; receipts inherit the pending mode |
 | `message_type` | `standard` (default) or `steering` | see concepts |
 | `attachments` | list, optional | images, documents or text for the model, or a `screenshot` for `look_at_screen`; shape in [the host contract](host-contract.md) |
 | `images` | list of data URLs, optional | legacy: screenshots; a top-level `screenshot` is folded in |
 | `host_context` | object, optional | what the host shows, version 1 of [the host contract](host-contract.md); invalid content is a `422` |
-| `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model` |
+| `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model`. Budgets can only be lowered; when the host sets `ASSISTANT__REQUEST_MODELS`, a model outside that list keeps the host's value |
 | `tool_call_id`, `tool_result` | continuation only | the pending host tool's call id and its result |
 | `tool_outcome` | continuation only | `success` (default) or `failed`: the host could not perform the action; `tool_result` is then the failure the model reads |
 
@@ -278,3 +297,27 @@ default `neutral` profile defines `instructions` and `scratchpad`.
 | `GET /api/media/{image_id}` | a generated image from the cache |
 | `GET /api/media/video/{job_id}` | video job status |
 | `GET /api/debug/tools` | the complete tool registry and MCP server status |
+
+## Voice calls
+
+The optional [GPT-Live integration](voice.md) exposes authenticated
+`/api/voice/status` and `/api/voice/calls` endpoints. POST an SDP offer to
+create a call, GET its snapshot or `/events` SSE stream, POST `/close` to
+finalize it, POST `/cancel` to cancel delegated backend work, PATCH `/context`
+to update host context, and POST `/delegations/{id}/tool-result` for a pending
+host action. The voice guide specifies request/response and event shapes.
+An active call reserves its runtime session: ordinary turns, cancellation,
+repair, deletion and reassignment return `409`. A call does not use the
+ordinary chat continuation endpoint. Backend stream events are nested inside
+voice SSE envelopes, preserving the same event shapes and saved message tree.
+
+### Profile selection
+
+Chat requests accept top-level `profile`, a startup-registered name from
+`GET /api/artifacts/profile` → `available_profiles`. Send it on every turn,
+steering message and host-tool continuation; omission selects the startup
+default. Queued steering with an explicit profile is delivered only to matching
+turns; unprofiled queued steering inherits its consuming turn. Unknown names reject chat with HTTP 409 before turn admission, voice
+creation with 422 before allocation, and artifact queries with 404. Invalid
+name syntax returns 422 for HTTP request validation. Artifact routes select
+the same scope through `?profile=<name>`. See [deployments](deployments.md).

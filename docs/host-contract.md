@@ -130,3 +130,78 @@ or `attachments[].purpose` (the validators reject unknown values), a changed
 meaning of an existing field, a removed field — bumps the version, and a
 runtime rejects versions it does not speak. Clients should send the version
 they were written against.
+
+## Silent host decisions
+
+A host can run an independent controller with `output_mode: "host_tools"` on a
+normal chat or Socket.IO request. The same turn planner, ownership checks,
+budgets and native Pydantic AI execution apply. This mode offers only actions
+from the current `host_context` (or that session's last context), plus the native
+structured output tool `hold`. Configured host tools, backend tools, MCP tools,
+and tools/capabilities supplied by `AssistantDefinition` are excluded. The name
+`hold` is reserved in this mode; use another name for a host-executed no-op.
+
+```json
+{
+  "id": "decision-1",
+  "session_id": "controller-decision-1",
+  "output_mode": "host_tools",
+  "content": "Ordered visible conversation through the latest user utterance...",
+  "host_context": {
+    "actions": [{
+      "name": "set_position",
+      "description": "Set the controlled object's position",
+      "parameters": {
+        "type": "object",
+        "properties": {"x": {"type": "number"}},
+        "required": ["x"],
+        "additionalProperties": false
+      }
+    }],
+    "view": {"name": "scene", "data": {"current_x": 0, "revision": 3}}
+  }
+}
+```
+
+Use `config.default_model` and the normal thinking budget to select the backend.
+Authentication and provider routing are unchanged; this mode never enables an
+API fallback. The assistant profile and host context provide decision guidance.
+There are no summarization or working-memory model calls in this mode; the host
+must bound the context it supplies. Steering is unsupported.
+
+Successful `final_response` events and non-streaming results contain
+`content: null` and one of:
+
+- `decision: "hold"`: no host work to perform.
+- `decision: "pending"`: exactly one `pending_tool_call`, using the existing
+  `tool_name`, `call_id`, `arguments`, `queued` shape (`queued` is empty).
+- `decision: "completed"`: a host receipt has been recorded; no model ran.
+
+Only a successful final pending decision authorizes admission to the host
+executor. No model text, thinking, debug events, native adapter events or tool
+previews are published in this mode. Model prose is removed from saved assistant
+message snapshots, including cancellation and usage-limit snapshots. If the
+model proposes multiple host actions, the turn fails without an actionable
+pending call (`invalid_decision` in streaming errors). Native structured hold
+wins over co-emitted external actions; those actions are never admitted.
+
+After execution, submit a new request ID on the **same decision session** with
+`content: ""`, the matching `tool_call_id`, and `tool_result`. Set
+`tool_outcome: "failed"` for an engine-reported failure. The pending action stores
+its output mode, so omitting or changing `output_mode` on this receipt cannot
+cause model narration. The receipt extends the original assistant row and ends
+with `decision: "completed"` before agent setup. This acknowledges bookkeeping,
+not physical success: the recorded tool outcome remains authoritative. Duplicate,
+late and mismatched receipts return `409`. Postgres persists the mode inside
+`pending_action`; without Postgres it lasts only for the process lifetime.
+
+For independent decisions, use a fresh session ID per decision and a separate
+session for [conversation-only voice](voice.md#conversation-only-calls). The host
+owns revision correlation, coalescing, action priority, exclusive physical
+execution and rejection of stale results. Cancellation is session-scoped; it has
+no request-ID targeting or pre-arrival cancellation tombstones. A delayed request
+can still arrive after a cancel. Never reuse its session for newer decisions,
+and discard stale final results even if cancellation was requested. Cancelling
+model planning neither stops a physical action nor revokes an idle pending tool;
+stop the engine explicitly and report its actual outcome. Do not replay an
+unknown receipt or execute an action again merely because transport failed.

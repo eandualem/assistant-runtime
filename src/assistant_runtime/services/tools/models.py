@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ToolCategory(StrEnum):
@@ -22,7 +22,12 @@ class ToolDefinition(BaseModel):
     description: str
     parameters_schema: dict[str, Any]
     category: ToolCategory
-    timeout: float | None = None
+    timeout: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    """Seconds the handler may run; ``ToolConfig.tool_timeout_seconds`` when unset."""
+    idempotent: bool = False
+    """Whether a timed-out or disconnected call may be retried once. Only a read
+    with no side effect qualifies; a retried write (a message sent, an issue
+    created) can execute twice."""
 
 
 class ToolSet(BaseModel):
@@ -35,7 +40,7 @@ class ToolSet(BaseModel):
 
     @property
     def total_count(self) -> int:
-        """Total number of tools in this set."""
+        """Backend and host tools together."""
         return len(self.backend_tools) + len(self.host_tools)
 
     @property

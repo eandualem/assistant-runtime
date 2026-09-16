@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "assistant-runtime"
-version = "0.1.0"
+version = "0.2.0"
 description = "Assistant backend runtime built on FastAPI, Socket.IO and pydantic-ai, with a tool system that plugs into any work environment"
 requires-python = ">=3.12"
 license = {text = "MIT"}
@@ -52,6 +52,9 @@ Documentation = "https://github.com/eandualem/assistant-runtime/tree/main/docs"
 assistant-runtime = "assistant_runtime.cli:main"
 
 [project.optional-dependencies]
+voice = [
+    "websockets>=14.0",
+]
 # Video generation providers (services/media/_video_providers.py imports them lazily)
 video = [
     "runwayml>=1.0.0",
@@ -66,6 +69,7 @@ ag-ui = [
     "ag-ui-protocol>=0.1.10",
 ]
 dev = [
+    "websockets>=14.0",
     # The suite exercises every optional integration, so the dev extra carries
     # the SDKs the tests patch; the runtime itself still imports them lazily.
     "ag-ui-protocol>=0.1.10",

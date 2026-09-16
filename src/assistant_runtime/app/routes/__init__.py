@@ -14,6 +14,7 @@ from assistant_runtime.app.routes.oauth import router as oauth_router
 from assistant_runtime.app.routes.providers import router as providers_router
 from assistant_runtime.app.routes.sessions import router as sessions_router
 from assistant_runtime.app.routes.settings import router as settings_router
+from assistant_runtime.app.routes.voice import router as voice_router
 
 router = APIRouter()
 router.include_router(agui_router)
@@ -28,5 +29,6 @@ router.include_router(oauth_router)
 router.include_router(providers_router)
 router.include_router(sessions_router)
 router.include_router(settings_router)
+router.include_router(voice_router)
 
 __all__ = ["router"]

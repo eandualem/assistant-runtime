@@ -177,3 +177,33 @@ unanswered call is resolved as `unknown` otherwise; a recorded result is
 never applied twice; unanswered calls are
 distinguishable as `cancelled`, `superseded` or `unknown`; external effects
 are never assumed, never undone and never retried by the runtime.
+
+## Voice checkpoints
+
+Migration `0023` adds `voice_calls` with a JSON snapshot and a cascading
+foreign key to the backend session. The optional [voice bridge](voice.md)
+coalesces transcript, delegation and cumulative duration-usage checkpoints
+while connected and writes a final snapshot on close. Audio is not retained.
+Backend tool/message history still uses the normal native persistence path.
+Database outages leave the call usable in memory; a process crash can lose
+recent uncheckpointed fragments. Restored active calls are marked interrupted,
+with provider finalization unconfirmed; neither provider connections nor tool
+execution resume automatically. Reading cached records also requires access to
+the current parent session. These snapshots are observation records, not durable
+execution checkpoints or proof of audio playback.
+
+## Queued steering profiles
+
+Queued steering stores its optional profile selector. An explicit selector
+remains pending across cancellation and restart until a turn with that profile
+consumes it. Unprofiled legacy and ingress records inherit the consuming turn.
+Existing Postgres installations must apply migration `0026` with
+`assistant-runtime migrate` (or `make db-upgrade`) before running this version.
+
+### Background memory writes
+
+Working-memory extraction runs after the turn completes. Within one runtime,
+session metadata writes and updates to each message are serialized through
+transaction commit, so an older background write cannot replace a newer pending
+action or continuation usage total. Continuation snapshots retain the latest
+background-owned working-memory usage without counting it twice.

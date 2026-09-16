@@ -161,9 +161,11 @@ class TestBuildAssistantRequest:
 
     def test_forwarded_config_is_the_request_override(self):
         request = build_assistant_request(
-            run_input(forwardedProps={"config": {"max_turns": 2}, "other": 1}), None
+            run_input(forwardedProps={"config": {"max_turns": 2}, "profile": "editor", "other": 1}),
+            None,
         )
         assert request.config.max_turns == 2
+        assert request.profile == "editor"
 
     def test_invalid_host_action_is_a_validation_error(self):
         body = run_input(tools=[{"name": "bad name!", "description": "x", "parameters": {}}])

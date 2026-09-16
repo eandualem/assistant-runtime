@@ -21,7 +21,7 @@ most specific wins.
 The tunables, which exist in all three tiers: `default_model`,
 `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`,
 `summarization_model`, `working_memory_model`, `default_image_model`,
-`default_video_model`, `subagent_model`, `subagent_thinking_budget`.
+`default_video_model`, `subagent_model`, `subagent_thinking_budget`, `codex_service_tier`.
 `GET /api/settings` shows each value and which tier it came from.
 
 ## Providers and models
@@ -30,12 +30,15 @@ At least one provider must be usable.
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY` | Provider keys; set any combination |
-| `LLM__PROVIDERS_JSON` | Alternative: `[{"provider":"anthropic","api_key":"...","base_url":null,"timeout":120,"max_retries":3}]` |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY` | Provider keys; set any combination |
+| | Cerebras models are sent every tool non-strict: the provider rejects a request whose tools carry mixed `strict` flags, and a host action with a numeric range is never strict-compatible |
+| `LLM__PROVIDERS_JSON` | Alternative: `[{"provider":"anthropic","api_key":"..."}]` (provider and key only; other fields are rejected) |
 | `LLM__PRIMARY_MODEL` | Chat model, default `anthropic:claude-opus-5` |
 | `LLM__SUMMARIZATION_MODEL` | History summaries and lightweight tasks, default `anthropic:claude-haiku-4-5` |
 | `OAUTH__ENCRYPTION_KEY` | Fernet key; enables the ChatGPT/Codex OAuth path and the encrypted provider-key store (`PUT /api/providers/{provider}/api-key`) |
 | `LLM__CODEX_MODELS` | JSON list of OpenAI model names to route through the ChatGPT/Codex subscription when connected; empty routes every `openai:` model |
+| `LLM__CODEX_ONLY` | `false`; when `true`, the subscription guard: every `openai:` model must go through the ChatGPT/Codex subscription (a disconnected subscription is an error, never an `OPENAI_API_KEY` fallback), and an `OPENAI_API_KEY` does not make openai available. Other providers with a configured key stay routable; `ASSISTANT__REQUEST_MODELS` limits what a request may pick. Startup-only; voice and media have separate credentials |
+| `LLM__CODEX_SERVICE_TIER` | Unset by default (omit the wire field); `fast` maps to Codex wire `service_tier: "priority"`, `default` requests standard processing. The startup fallback for the `codex_service_tier` tunable, which a request or the runtime overlay can set per turn (see `ASSISTANT__REQUEST_SERVICE_TIER`). Applies to Codex-authenticated `openai:` calls only, including auxiliaries; fast consumes more subscription credits |
 
 If the primary or summarization model's provider has no credentials but
 another provider does, that provider's default is used instead and a
@@ -50,7 +53,7 @@ override when set, and otherwise the summarization model.
 
 Model ids are `provider:name`, lowercase. Providers: `anthropic`,
 `openai`, `google` (Gemini through the Google AI API), `google-cloud`
-(Vertex), `openrouter`. `GET /api/models` lists the catalog with each
+(Vertex), `openrouter`, `cerebras`. `GET /api/models` lists the catalog with each
 provider's status. Provider-specific settings are derived from the model:
 current Claude models get adaptive thinking with an effort level mapped
 from `thinking_budget`; older ones get a fixed budget; models that reject
@@ -63,7 +66,9 @@ sampling parameters are not sent a temperature.
 | `mode` | `trusted_local` | `trusted_local` (every caller is the local operator), `header` (an authenticating proxy sets the principal header) or `host` (`AssistantDefinition.authenticate` decides); see [access](access.md) |
 | `principal_header` | `X-Assistant-Principal` | header carrying the principal id in header mode |
 | `roles_header` | `X-Assistant-Roles` | comma-separated roles in header mode; `admin` administers |
-| `cors_origins` | `["*"]` | allowed browser origins; restrict when exposed |
+| `cors_origins` | `[]` | browser origins allowed exactly (HTTP and Socket.IO); `["*"]` allows every origin without credentials |
+| `cors_origin_regex` | localhost on any port | regular expression for allowed origins; clear it when exposing the server; see [access](access.md#browser-origins) |
+| `local_token` | unset | `trusted_local` only: when set, callers must present it as a bearer token or Socket.IO `auth.token` |
 
 ### Assistant (`ASSISTANT__*`)
 
@@ -72,10 +77,16 @@ sampling parameters are not sent a temperature.
 | `default_model` | unset (uses `LLM__PRIMARY_MODEL`) | model override |
 | `thinking_budget` | `10000` | thinking tokens; unset disables thinking |
 | `temperature` | `1.0` | sampling temperature where the model accepts one |
+| `subagent_model` | unset (the primary model) | model for `run_subagent`; the `subagent_model` tunable's startup default |
+| `subagent_thinking_budget` | unset | thinking budget for `run_subagent`; the tunable's startup default |
+| `codex_service_tier` | unset (uses `LLM__CODEX_SERVICE_TIER`) | the turn's Codex service tier; the tunable's startup default |
+| `request_service_tier` | `true` | whether a request's `config` may pick `codex_service_tier`; `false` pins the configured tier (fast costs more subscription credits) |
+| `request_models` | `[]` (any) | model ids a request's `config` may pick for any `*_model` tunable; a request naming another keeps the host's value. Empty allows any model: fine for development, list the allowed ones for a deployment |
 | `max_turns` | `10` | agent loop iterations per request |
 | `enable_working_memory` | `true` | extract working memory after each turn |
 | `session_ttl_hours` | `24` | sessions older than this are cleaned up |
 | `profile` | unset (neutral) | `neutral`, `technical_operator`, or the path of a TOML profile file; `AssistantDefinition.profile` takes precedence |
+| `profiles` | `[]` | Additional built-in names or TOML paths registered at startup; requests select the profile name with top-level `profile`, never a path. Duplicate names fail startup. |
 
 `max_turns`, `thinking_budget` and `subagent_thinking_budget` are ceilings:
 the runtime overlay (`PATCH /api/settings`, administration) may change
@@ -105,7 +116,9 @@ tool results so far are saved on the assistant message. See
 | `cache_ttl_seconds` | `5` | how long prompts reuse active texts read from the store; mutations invalidate at once |
 | `history_limit` | `20` | versions returned by history reads |
 
-The assistant profile itself is `ASSISTANT__PROFILE` (see below).
+The default assistant profile is `AssistantDefinition.profile` when set, then
+`ASSISTANT__PROFILE`, then `neutral`. Register additional profiles with
+`ASSISTANT__PROFILES`; see [deployments](deployments.md).
 
 ### History (`HISTORY__*`)
 
@@ -117,7 +130,6 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | `protect_recent_tool_results` | `3` | most recent tool results (counted individually) never cleared |
 | `message_truncation_limit` | `1000` | characters per message in summaries |
 | `summarization_model`, `working_memory_model` | unset | override the models for these tasks |
-| `working_memory_enabled` | `true` | |
 | `max_memory_entries` | `15` | key decisions kept in working memory |
 
 ### Streaming (`STREAMING__*`)
@@ -128,15 +140,17 @@ The assistant profile itself is `ASSISTANT__PROFILE` (see below).
 | `max_events_per_stream` | `10000` | safety limit |
 | `stream_timeout_seconds` | `300` | one turn |
 | `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for trusted clients: the events carry the system prompt and history of the caller's own sessions |
+| `client_error_detail` | `true` | include exception and provider text in errors sent to clients; set `false` on an exposed server, clients then get the error type and trace id only (the log keeps the detail). Session and access errors describe the client's own request and keep their text either way |
+| `trace_retention_hours` | `168` | debug trace rows older than this are deleted at startup (Postgres only); screenshots are no longer stored in traces |
 
 ### Tools (`TOOLS__*`)
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `max_tools_per_request` | `64` | warn above this many tools in one request |
-| `tool_timeout_seconds` | `30` | |
+| `tool_timeout_seconds` | `30` | seconds a backend tool may run per attempt; a `ToolDefinition.timeout` overrides it; the model gets a `TOOL_TIMEOUT` error. Only tools declared `idempotent` are retried once on a timeout or connection error |
 | `builtin_tools` | `["time", "screen", "artifacts", "subagent", "media", "video"]` | selected built-in groups; `[]` disables all, existing service requirements still apply |
-| `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup |
+| `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup. `approvals` is privileged (it types into other agents' terminals) and is registered only when named here |
 | `host_tools` | `{}` | tools the host executes: `{"name": {"description": "...", "parameters": <JSON schema>}}`; names must match `^[A-Za-z0-9_-]{1,64}$` |
 | `host_tools_path` | unset | a JSON file with the same shape, merged over `host_tools` |
 | `page_scopes` | `{}` | `{"page name": ["tool", ...]}`: backend tools allowed while the host shows that page; unlisted pages get every tool |
@@ -154,10 +168,44 @@ from native [Pydantic AI capabilities](composition.md).
 
 `default_image_model` (`openai:gpt-image-1`), `default_size`
 (`1024x1024`), `default_quality` (`medium`), `cache_ttl_seconds`,
-`cache_max_items`, `generation_timeout_seconds`; for video
+`cache_max_items`; for video
 `default_video_model` (`runway:gen4-turbo`), `video_poll_interval_seconds`,
 `video_timeout_seconds`, `video_max_concurrent_jobs`. Video needs the
 `[video]` extra and `RUNWAYML_API_SECRET` or `LUMAAI_API_KEY`.
+
+### Voice (`VOICE__*`)
+
+`VOICE__DELEGATION_ENABLED` defaults to `true`. Set it to `false` for an instance that
+only permits conversation-only calls; requests cannot override this ceiling.
+When enabled, callers can still opt into `mode: "conversation"` per call.
+`VOICE__INSTRUCTIONS_FILE` and `VOICE__CONVERSATION_INSTRUCTIONS_FILE` read the
+corresponding text from a file at startup, so a prompt checked into the host
+application's repository is the single source (an unreadable or empty file
+fails startup). `VOICE__CONVERSATION_INSTRUCTIONS` supplies the conversation-only persona
+(default: helpful, concise conversation); it is separate from delegated-mode
+`VOICE__INSTRUCTIONS`, whose default asks Live to delegate.
+Call creation may supply bounded `instructions` to replace the mode-specific
+startup prompt for that call, and `profile` for delegated backend work. The
+conversation guard and startup enablement, credentials and resource ceilings
+remain enforced. See [conversation-only voice](voice.md#conversation-only-calls).
+
+Optional GPT-Live provider policy, fixed at startup; these are not request
+or runtime-overlay tunables. Install `[voice]` and see [the frontend contract](voice.md).
+
+`enabled` (`false`), `model` (`gpt-live-1`), `voice` (`marin`), `api_key_env`
+(`OPENAI_API_KEY`, the name of an environment variable), `instructions`
+(neutral concise speech and backend delegation). Voice instructions are
+separate from the backend assistant's profile and artifacts.
+
+`max_sessions` (`4`, 1–100), `max_duration_seconds` (`1800`, 15–7200),
+`connect_timeout_seconds` (`20`, >0–60), `close_timeout_seconds` (`10`, >0–60),
+`max_transcript_chars` (`200000`, 1000–1000000), `context_chars` (`16000`,
+1000–24000), `retained_calls` (`100`, 1–1000), `event_buffer_size` (`512`,
+16–4096). Transcript context limits apply to delegated prompts; retained
+calls and replay events are bounded process-memory caches. Database
+checkpoints remain until their parent session is deleted. Transcript fragment
+and event-count bounds also close excessive calls. Limits are per process;
+use one owning runtime process or sticky routing for a call's full lifecycle.
 
 ### Heartbeat (`HEARTBEAT__*`)
 
@@ -194,7 +242,13 @@ variables:
 | `BACKBONE_INFRASTRUCTURE_SESSIONS` (comma-separated) | peers | session names to leave out of the active-agent list |
 | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` | issues (`create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue`) | GitHub, one repository |
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | messaging (`respond_telegram`) | a Telegram bot and the chat it answers in |
-| `AGENT_STATE_DIR` | approvals (`list_agent_plans`, `approve_plan`, `reject_plan`); also enriches peers | a directory of agent state files (the Claude Code layout, `~/.claude/state`) |
+| `AGENT_STATE_DIR` | approvals (`list_agent_plans`, `approve_plan`, `reject_plan`), registered only when `TOOLS__PROVIDER_CAPABILITIES` names `approvals`; also enriches peers | a directory of agent state files (the Claude Code layout, `~/.claude/state`) |
+
+The GitHub issue tools accept arbitrary repository labels, including an empty
+list. They do not require agent-routing prefixes or a particular issue-body
+template. Put workflow conventions in the assistant profile; existing `from:`
+and `for:` labels continue to work when supplied. The optional `priority`
+argument still adds its `blocking` or `non-blocking` label.
 
 ## Integrations
 
@@ -216,3 +270,50 @@ Provider keys and tokens are read from the environment only. The one
 place a key is stored is the encrypted provider-key store behind
 `PUT /api/providers/{provider}/api-key`, which needs `OAUTH__ENCRYPTION_KEY`
 and Postgres. Never commit `.env`.
+
+
+### Codex Fast mode and returned tier
+
+`LLM__CODEX_SERVICE_TIER=fast` is a startup default for Codex-authenticated shared
+LLM calls; `default` sends `service_tier: "default"`, and unset omits the field.
+It maps to `service_tier: "priority"` using Pydantic AI's supported
+`openai_service_tier` setting. It does not read or modify CLI `/fast` preferences,
+change model/reasoning effort, or configure separate voice/media services.
+`LLM__CODEX_ONLY=true` remains the independent guard against an OpenAI API fallback.
+The `codex_service_tier` tunable (request `config`, `PATCH /api/settings`, or
+`ASSISTANT__CODEX_SERVICE_TIER`) chooses the tier per turn; the startup value is
+the fallback when none is set.
+Unsupported tier errors propagate without retrying on a different tier/provider.
+The normal SDK retry policy for transient failures remains unchanged.
+
+See the [official Codex speed guide](https://learn.chatgpt.com/docs/agent-configuration/speed)
+for subscription credit tradeoffs and the
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+for Fast-to-priority mapping. Provider/model eligibility and processing may vary;
+measure whole-turn planning latency separately from host execution. No end-to-end
+speed multiplier is guaranteed.
+
+`/health` includes `components.llm_service.codex_service_tier`, the startup **request default**.
+Chat final-response and stored assistant usage can contain:
+
+```json
+{
+  "service_tiers": [
+    {
+      "provider_response_id": "resp_example",
+      "model": "gpt-5.6-sol",
+      "requested": "priority",
+      "actual": "priority"
+    }
+  ]
+}
+```
+
+Each entry describes one model response. `requested` is the actual outbound wire
+setting (`null` when omitted); `actual` is the recognized tier on a provider
+`response.completed` or `response.incomplete` event. Missing/unrecognized values,
+an interrupted stream, or a stream without such an event leave `actual: null`.
+Never infer actual priority from the requested value or a startup/created event.
+Host receipt continuations retain the original usage without adding a model call.
+Native model messages also retain `provider_details.codex_service_tier`; auxiliary
+helpers returning only aggregated token usage may not expose tier entries.

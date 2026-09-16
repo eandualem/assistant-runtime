@@ -150,6 +150,8 @@ async def test_working_memory_usage_lands_on_the_stored_message(
 
         monkeypatch.setattr(runtime._runner._history, "extract_memory_delta", extract)
         result = await runtime.run_message(AssistantRequest(id="m1", session_id="s", content="Hi"))
+        # Extraction runs after the answer; its usage lands on the row shortly after.
+        await runtime.wait_for_background()
         path = await runtime._sessions.get_message_path("s")
         stored = path[-1]["usage"]
         assert stored["auxiliary"]["working_memory"] == {

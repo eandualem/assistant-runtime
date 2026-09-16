@@ -148,6 +148,7 @@ def make_final_response_event(
     error_type: str | None = None,
     usage: dict[str, int] | None = None,
     pending_tool_call: dict[str, Any] | None = None,
+    decision: str | None = None,
 ) -> dict[str, Any]:
     """Create a final_response event.
 
@@ -177,6 +178,8 @@ def make_final_response_event(
         event["usage"] = usage
     if pending_tool_call is not None:
         event["pending_tool_call"] = pending_tool_call
+    if decision is not None:
+        event["decision"] = decision
     return event
 
 
@@ -377,3 +380,8 @@ def make_debug_completed_event(
         "type": "debug_completed",
         "duration_ms": round(duration_ms, 1),
     }
+
+
+def make_voice_event(call_id: str, event: str, data: dict) -> dict:
+    """Voice call events are distinct from delegated backend turn completion."""
+    return {"type": "voice", "call_id": call_id, "event": event, "data": data}

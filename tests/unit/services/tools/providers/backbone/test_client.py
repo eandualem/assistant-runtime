@@ -142,6 +142,30 @@ class TestBackboneRetry:
 
     @patch.dict(os.environ, {"BACKBONE_API_KEY": "test-key"})
     @patch(f"{MODULE}.httpx.AsyncClient")
+    async def test_a_post_is_never_retried(self, mock_client_cls):
+        """A write that timed out may have been applied; retrying would apply it twice."""
+        import httpx
+
+        calls = 0
+
+        async def _request_side_effect(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise httpx.TimeoutException("timed out")
+
+        mock_client = AsyncMock()
+        mock_client.request = _request_side_effect
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        status, data = await backbone_request("POST", "/api/tell", json_body={"text": "hi"})
+        assert status == -1
+        assert data["error_code"] == "BACKBONE_TIMEOUT"
+        assert calls == 1
+
+    @patch.dict(os.environ, {"BACKBONE_API_KEY": "test-key"})
+    @patch(f"{MODULE}.httpx.AsyncClient")
     async def test_retries_on_timeout_then_succeeds(self, mock_client_cls):
         """backbone_request retries on TimeoutException and succeeds."""
         import httpx

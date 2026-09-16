@@ -14,18 +14,16 @@ class TestProviderConfig:
         config = ProviderConfig(provider="anthropic", api_key=SecretStr("sk-test"))
         assert config.provider == "anthropic"
         assert config.api_key.get_secret_value() == "sk-test"
-        assert config.timeout == 120.0
-        assert config.max_retries == 3
-        assert config.base_url is None
 
     def test_valid_openrouter_provider(self):
-        config = ProviderConfig(
-            provider="openrouter",
-            api_key=SecretStr("sk-or-test"),
-            base_url="https://openrouter.ai/api/v1",
-        )
+        config = ProviderConfig(provider="openrouter", api_key=SecretStr("sk-or-test"))
         assert config.provider == "openrouter"
-        assert config.base_url == "https://openrouter.ai/api/v1"
+
+    def test_transport_fields_are_no_longer_accepted(self):
+        """base_url, timeout and max_retries were accepted and ignored; now they are refused."""
+        for field in ({"base_url": "https://x"}, {"timeout": 5}, {"max_retries": 1}):
+            with pytest.raises(ValidationError):
+                ProviderConfig(provider="anthropic", api_key=SecretStr("key"), **field)
 
     def test_all_allowed_providers(self):
         for provider in ALLOWED_PROVIDERS:
@@ -48,14 +46,6 @@ class TestProviderConfig:
     def test_extra_fields_rejected(self):
         with pytest.raises(ValidationError):
             ProviderConfig(provider="anthropic", api_key=SecretStr("key"), unknown_field="value")
-
-    def test_invalid_timeout(self):
-        with pytest.raises(ValidationError):
-            ProviderConfig(provider="anthropic", api_key=SecretStr("key"), timeout=0)
-
-    def test_negative_retries(self):
-        with pytest.raises(ValidationError):
-            ProviderConfig(provider="anthropic", api_key=SecretStr("key"), max_retries=-1)
 
 
 class TestLLMConfig:

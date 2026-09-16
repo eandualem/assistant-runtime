@@ -145,3 +145,43 @@ No dependency upgrade is required for these supported replacements. The
 history policy ([#87](https://github.com/eandualem/assistant-runtime/issues/87))
 and the recovery contract ([#92](https://github.com/eandualem/assistant-runtime/issues/92),
 [persistence](persistence.md)) are implemented on this baseline.
+
+## GPT-Live client delegation
+
+`tests/compatibility/test_voice.py` exercises the voice bridge with real
+Pydantic AI `FunctionModel` execution, native backend tools, deferred host
+results, saved history and cancellation. It also covers ownership and exclusion
+between an active voice reservation and asynchronous session administration.
+Only provider HTTP/WebSocket boundaries are faked. Unit tests cover the
+published Live protocol shapes, event replay, cumulative usage and finalization.
+The tests do not exercise a live OpenAI session, browser audio or provider billing.
+
+The installed OpenAI SDK has no Live client surface, and Pydantic AI's native
+Realtime API adapter is a different protocol. The optional `[voice]` transport
+therefore uses documented Live HTTP/WebSocket endpoints behind a private adapter.
+Backend execution continues exclusively through `StreamingService` and native
+Pydantic AI events/cancellation. Reevaluate the transport when upstream exposes
+Live client delegation; do not substitute a Realtime model based on its name.
+
+Codex subscription transport omits `max_output_tokens` (the runtime `max_tokens`
+model setting): the subscription endpoint rejects it, unlike the public Responses
+API. Numeric thinking budgets still map to reasoning effort. Native usage limits
+remain runtime checks, not a provider-side generation cap.
+
+Silent host decisions are exercised with native `ToolOutput` plus
+`DeferredToolRequests`, including hold/action output ordering, suppressed prose,
+receipt-only completion, rejected multiple actions, and native cancellation.
+Conversation-only voice uses the existing offline transport tests; no provider
+allocation is part of these checks.
+
+
+Codex Fast mode uses native `openai_service_tier` serialization. The subscription
+adapter observes the OpenAI SDK's already-decoded terminal response events through
+its public Responses resource and async stream interface, because Pydantic AI
+2.38 does not retain `Response.service_tier` in its public model response. A
+request-scoped observer adds only requested/actual tier metadata to the public
+`StreamedResponse.provider_details`; no custom SSE parsing or agent execution is
+introduced. `test_codex_fast.py` exercises real native execution and HTTP wire
+serialization with a fake provider, including concurrent requests, missing or
+downgraded actual tier and rejected priority requests. Remove this observation
+adapter when upstream preserves the field natively with equivalent evidence.

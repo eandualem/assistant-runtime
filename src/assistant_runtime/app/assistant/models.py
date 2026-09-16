@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.host_context import (
@@ -76,6 +76,7 @@ class AgentSetupContext:
     effective_config: Any  # EffectiveConfig
     mcp_summary: list[dict[str, Any]] | None
     deps: Any = None
+    profile_name: str | None = None
 
 
 # Keys under which a host may carry a screenshot data URI, at the top level
@@ -146,14 +147,25 @@ def strip_screenshot_from_tool_result(tool_result: Any) -> Any:
     return tool_result
 
 
+class HoldDecision(BaseModel):
+    """A silent decision to leave host state unchanged."""
+
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["hold"]
+
+
 class AssistantRequest(BaseModel):
     """Input for a single assistant interaction."""
 
-    id: str
-    session_id: str
-    parent_id: str | None = None
+    # Ids are stored in 64-character columns; a longer one is a 422, not a database error.
+    id: str = Field(min_length=1, max_length=64)
+    session_id: str = Field(min_length=1, max_length=64)
+    profile: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    """A startup-registered profile name; omitted means the runtime default."""
+    parent_id: str | None = Field(default=None, max_length=64)
     message_type: Literal["standard", "steering"] = Field(default="standard")
     content: str
+    output_mode: Literal["text", "host_tools"] = "text"
     images: list[str] = Field(default_factory=list)
     """Legacy: data URIs treated as screenshots. Prefer ``attachments``."""
     attachments: list[Attachment] = Field(default_factory=list)
@@ -196,6 +208,8 @@ class AssistantRequest(BaseModel):
             # because serialised requests (``model_dump()``) carry it explicitly.
             raise ValueError("tool_outcome requires tool_call_id (a continuation)")
         if self.is_steering:
+            if self.output_mode == "host_tools":
+                raise ValueError("host_tools decisions do not support steering")
             if self.parent_id is not None:
                 raise ValueError("Steering requests must not include parent_id")
             if self.tool_call_id is not None or self.tool_result is not None:
@@ -254,17 +268,19 @@ class AssistantRequest(BaseModel):
 
         return data
 
-        return data
-
 
 class AssistantResult(BaseModel):
     """The final answer of one turn (the non-streaming form of ``final_response``)."""
 
-    content: str = Field(description="Text response")
+    content: str | None = Field(description="Text response; null for silent host decisions")
+    decision: Literal["hold", "pending", "completed"] | None = None
     model: str = Field(description="Model used for this turn")
     session_id: str
     turn_number: int
     message_id: str | None = Field(default=None, description="Id of the assistant message row")
+    usage: dict[str, Any] | None = Field(
+        default=None, description="Usage from the shared turn stream"
+    )
     pending_tool_call: dict[str, Any] | None = Field(
         default=None,
         description="Set when the turn ended on a host tool call the client must answer",

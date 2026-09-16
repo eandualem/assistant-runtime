@@ -20,8 +20,8 @@ from assistant_runtime.services.database.models import InboxItemORM
 
 def _make_inbox_row(
     item_id: str = "item-1",
-    from_agent: str = "leo",
-    message: str = "Hello from Leo",
+    from_agent: str = "planner",
+    message: str = "Hello from Planner",
     severity: str = "info",
     context: dict | None = None,
     surfaced: bool = False,
@@ -86,13 +86,15 @@ class TestPostInbox:
             {"status": "delivered", "session_id": "s1", "delivery": "queued"}
         )
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.post("/inbox", json={"from": "leo", "message": "Hello from Leo"})
+            response = await c.post(
+                "/inbox", json={"from": "planner", "message": "Hello from Planner"}
+            )
         assert response.status_code == 201
         assert response.json()["status"] == "delivered"
         assert ingress.deliver.await_args.kwargs == {
-            "from_agent": "leo",
+            "from_agent": "planner",
             "via": "inbox",
-            "message": "Hello from Leo",
+            "message": "Hello from Planner",
             "session_id": None,
             "severity": "info",
         }
@@ -104,7 +106,7 @@ class TestPostInbox:
             response = await c.post(
                 "/inbox",
                 json={
-                    "from": "leo",
+                    "from": "planner",
                     "message": "Urgent",
                     "severity": "urgent",
                     "context": {"session_id": "s9", "via": "tmux"},
@@ -120,7 +122,7 @@ class TestPostInbox:
     async def test_validates_required_fields(self):
         app, _ = self._app_with_ingress({})
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            response = await c.post("/inbox", json={"from": "leo"})
+            response = await c.post("/inbox", json={"from": "planner"})
         assert response.status_code == 422
 
     @pytest.mark.asyncio

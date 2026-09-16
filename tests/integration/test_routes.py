@@ -88,6 +88,9 @@ async def integration_client(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client, app
 
+    # The streaming service is not lifecycle-managed here; stop it so post-turn
+    # work is drained before the loop goes away.
+    await streaming_service.stop()
     await lifecycle.stop_all()
 
 

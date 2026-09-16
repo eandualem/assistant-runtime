@@ -43,16 +43,13 @@ def register_approvals_tools(registry: ToolRegistry, provider: ApprovalsProvider
     registry.register_backend_tool(
         ToolDefinition(
             name="approve_plan",
-            description=(
-                "Approve a pending plan for an agent. Sends the Shift+Tab key "
-                "sequence to the agent's tmux session to trigger plan approval."
-            ),
+            description=("Approve a pending plan through the configured agent provider."),
             parameters_schema={
                 "type": "object",
                 "properties": {
                     "session_name": {
                         "type": "string",
-                        "description": "Name of the tmux session with a pending plan",
+                        "description": "Name of the agent session with a pending plan",
                     },
                 },
                 "required": ["session_name"],
@@ -65,16 +62,13 @@ def register_approvals_tools(registry: ToolRegistry, provider: ApprovalsProvider
     registry.register_backend_tool(
         ToolDefinition(
             name="reject_plan",
-            description=(
-                "Reject a pending plan for an agent. Sends the rejection reason "
-                "as text to the agent's tmux session."
-            ),
+            description=("Reject a pending plan and send the reason to the agent."),
             parameters_schema={
                 "type": "object",
                 "properties": {
                     "session_name": {
                         "type": "string",
-                        "description": "Name of the tmux session with a pending plan",
+                        "description": "Name of the agent session with a pending plan",
                     },
                     "reason": {
                         "type": "string",

@@ -20,6 +20,7 @@ def register_time_tools(registry: ToolRegistry) -> None:
             description="Get the current UTC time in ISO format.",
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,
+            idempotent=True,
         ),
         get_time,
     )

@@ -85,11 +85,11 @@ configuration lists the providers.
 | library | `list_documents`, `read_document` | `LIBRARY_PATHS` |
 | artifacts | `manage_artifacts` | Postgres |
 | peers, rooms, reminders, activity, workgroups, repositories | `list_agents`, `start_agent`, `send_agent_message`, `create_meeting_room`, `add_schedule_item`, `get_delivery_status`, `create_swarm`, `onboard_repo`, ... | `BACKBONE_URL` |
-| approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR` |
+| approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR`, and `approvals` named in `TOOLS__PROVIDER_CAPABILITIES` (it types into other agents' terminals) |
 | issues | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
 | messaging | `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
 | media | `generate_image`, `generate_video` | an image provider key; the `[video]` extra and a Runway or Luma key |
-| subagent | `run_subagent` | nothing (uses the configured model) |
+| subagent | `run_subagent` | nothing (uses the configured model); the subagent gets the turn's page-scoped backend tools and stays within the host's `ASSISTANT__BUDGET__*` ceilings |
 
 A tool whose call fails returns a structured error
 (`{"success": false, "error": ..., "error_code": ...}`) instead of
@@ -137,6 +137,19 @@ listed get every tool.
 
 ## Prompt artifacts and profiles
 
+One runtime can register additional built-ins or TOML paths through
+`ASSISTANT__PROFILES`. Requests select a registered name with top-level
+`profile`; omitted names keep the default below. The selection is per request,
+including continuations, and does not bind the session. A queued steering
+record retains its explicit selector and waits for a matching turn. Unprofiled
+queued steering inherits the consuming turn; promoted unprofiled steering
+starts with the startup default. Artifact HTTP routes
+use `?profile=<name>`; `GET /api/artifacts/profile` lists `available_profiles`.
+The model's artifact tool uses its own turn's selection, so concurrent apps
+cannot accidentally edit each other's profile. Profiles do not replace access
+control; principals and admin roles retain their existing rules.
+
+
 The system prompt starts with named texts called artifacts. Which
 artifacts exist, in what order, with what default text and who may change
 them is an **assistant profile**:
@@ -146,7 +159,7 @@ them is an **assistant profile**:
 - else `ASSISTANT__PROFILE`, a built-in name or the path of a TOML file
   (the shape is documented on `load_profile_file`; the profile `name`
   scopes stored artifact versions and must match `[a-z][a-z0-9_]{0,63}`,
-  so `design_studio`, not `design-studio`);
+  so `sample_app`, not `sample-app`);
 - else the built-in `neutral` profile: one required `instructions`
   artifact with a short neutral default, and an autonomous `scratchpad`.
 

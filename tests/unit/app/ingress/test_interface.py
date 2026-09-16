@@ -45,7 +45,7 @@ def _service(store: SessionStore | None, *, streaming=None, db=None, sio=None) -
 
 class TestEnvelope:
     def test_sender_and_channel(self):
-        assert envelope("telegram", "ada", "hi") == "[via:telegram from:ada] hi"
+        assert envelope("telegram", "builder", "hi") == "[via:telegram from:builder] hi"
 
     def test_channel_only_when_sender_is_the_channel(self):
         assert envelope("heartbeat", "heartbeat", "tick") == "[via:heartbeat] tick"
@@ -72,14 +72,14 @@ class TestDeliver:
         await service.start()
 
         result = await service.deliver(
-            from_agent="leo", via="tmux", message="done", session_id="sess-1"
+            from_agent="planner", via="tmux", message="done", session_id="sess-1"
         )
         await asyncio.sleep(0.05)
 
         assert result == {"status": "delivered", "session_id": "sess-1", "delivery": "promoted"}
         request = streaming.accept_steering.await_args.args[0]
         assert request.is_steering
-        assert request.content == "[via:tmux from:leo] done"
+        assert request.content == "[via:tmux from:planner] done"
         assert sio.emit.await_count == 2
         assert sio.emit.await_args.kwargs["room"] == "session:sess-1"
 
@@ -91,7 +91,7 @@ class TestDeliver:
         await service.start()
 
         result = await service.deliver(
-            from_agent="leo", via="tmux", message="x", session_id="sess-1"
+            from_agent="planner", via="tmux", message="x", session_id="sess-1"
         )
 
         assert result["delivery"] == "queued"
@@ -201,7 +201,7 @@ class TestDeliver:
         streaming.stream_message = _stream
         service = _service(store, streaming=streaming)
         await service.start()
-        await service.deliver(from_agent="leo", via="tmux", message="x", session_id="sess-1")
+        await service.deliver(from_agent="planner", via="tmux", message="x", session_id="sess-1")
         assert len(service._background) == 1
 
         await service.stop()

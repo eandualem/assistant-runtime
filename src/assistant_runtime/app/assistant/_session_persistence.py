@@ -8,9 +8,11 @@ store never pretends a write happened.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from weakref import WeakValueDictionary
 
 from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
 
@@ -56,6 +58,13 @@ class SessionPersistence:
     def __init__(self, database_service: DatabaseService, session_ttl_hours: int) -> None:
         self._db = database_service
         self._session_ttl_hours = session_ttl_hours
+        self._write_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+            WeakValueDictionary()
+        )
+
+    def _write_lock(self, kind: str, record_id: str) -> asyncio.Lock:
+        """Order writes to one row without retaining locks for idle records."""
+        return self._write_locks.setdefault((kind, record_id), asyncio.Lock())
 
     def _expires_at(self) -> datetime:
         return datetime.now(UTC) + timedelta(hours=self._session_ttl_hours)
@@ -99,7 +108,10 @@ class SessionPersistence:
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
     ) -> None:
-        async with self._db.session_context() as db_session:
+        async with (
+            self._write_lock("message", message_id),
+            self._db.session_context() as db_session,
+        ):
             await MessageRepository(db_session).update(
                 message_id, content=content, segments=segments, usage=usage
             )
@@ -116,6 +128,7 @@ class SessionPersistence:
             await SteeringRepository(db_session).create(
                 steering_id=record["id"],
                 session_id=record["session_id"],
+                profile=record.get("profile"),
                 content=record["content"],
                 status=record["status"],
                 delivered_at=record["delivered_at"],
@@ -130,8 +143,11 @@ class SessionPersistence:
             )
 
     async def save_state(self, session_id: str, ctx: dict[str, Any]) -> None:
-        """Persist the non-message session metadata."""
-        async with self._db.session_context() as db_session:
+        """Persist metadata in order with foreground and background session writes."""
+        async with (
+            self._write_lock("session", session_id),
+            self._db.session_context() as db_session,
+        ):
             await SessionRepository(db_session).upsert(
                 session_id,
                 title=ctx.get("title"),
@@ -216,6 +232,7 @@ class SessionPersistence:
                         {
                             "id": s.id,
                             "session_id": s.session_id,
+                            "profile": s.profile,
                             "content": s.content,
                             "status": s.status,
                             "created_at": s.created_at,
@@ -240,4 +257,5 @@ def pending_action_from_context(ctx: dict[str, Any]) -> dict[str, Any] | None:
         # Every host call of the response that produced this action, in order;
         # the ones after tool_call_id are handed to the host one at a time.
         "batch": list(ctx.get("pending_tool_batch") or [tool_call_id]),
+        **({"output_mode": "host_tools"} if ctx.get("pending_output_mode") == "host_tools" else {}),
     }
