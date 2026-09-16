@@ -81,6 +81,8 @@ A FastAPI service around Pydantic AI is the closest alternative: you choose the 
 
 Start with [getting started](https://github.com/eandualem/assistant-runtime/blob/main/docs/getting-started.md), then [concepts](https://github.com/eandualem/assistant-runtime/blob/main/docs/concepts.md), the [host contract](https://github.com/eandualem/assistant-runtime/blob/main/docs/host-contract.md) and the [API](https://github.com/eandualem/assistant-runtime/blob/main/docs/api.md). The [documentation index](https://github.com/eandualem/assistant-runtime/blob/main/docs/README.md) links configuration, deployment, access, persistence and composition references.
 
+`assistant-runtime --version` prints the installed release; the OpenAPI schema reports the same version.
+
 The pages ship with the package: `assistant-runtime docs` lists them and `assistant-runtime docs <page>` prints one without a checkout.
 
 ## Development

@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from assistant_runtime import RUNTIME_MARKER
+from assistant_runtime import RUNTIME_MARKER, __version__
 from assistant_runtime.app.access import deps as access_deps
 from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
 from assistant_runtime.app.access.factory import register_access
@@ -134,7 +134,7 @@ def create_app(
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="Assistant Runtime",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.state.assistant_definition = assistant
