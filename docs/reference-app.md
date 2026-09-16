@@ -10,9 +10,10 @@ application, with its own domain profile and no runtime source edits.
 
 Follow Design Studio's [installation instructions](https://github.com/eandualem/design-studio#running-it).
 Clone that repository first so its `profiles/design-studio.toml` is available,
-install the released runtime with `uv tool install assistant-runtime`, and
-set `ASSISTANT__PROFILE` to the profile's absolute path before starting the
-runtime. The studio uses port 7130 and connects to the runtime on port 7100
+install the released runtime with `uv tool install "assistant-runtime[voice]"`,
+and register the profile's absolute path in `ASSISTANT__PROFILES` before
+starting the runtime (see [shared deployment](deployments.md)). The studio
+sends its profile on each request; start the backend first, then the studio. The studio uses port 7130 and connects to the runtime on port 7100
 by default. Its README describes provider configuration and URL overrides.
 
 Design Studio's [demo](https://github.com/eandualem/design-studio#the-demo)

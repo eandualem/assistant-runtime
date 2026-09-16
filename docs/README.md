@@ -7,6 +7,8 @@ An installed runtime prints these pages with `assistant-runtime docs <page>`
 |---|---|
 | [concepts](concepts.md) | The vocabulary: sessions, turns, tools, host context, artifacts, envelopes |
 | [getting-started](getting-started.md) | Install, one provider key, chat from the terminal, then the server and a client |
+| [subscription](subscription.md) | Local ChatGPT/Codex login, subscription routing and Fast mode |
+| [voice](voice.md) | GPT-Live setup, browser connection, delegation and call accounting |
 | [configuration](configuration.md) | Every setting, the three configuration tiers, secrets |
 | [api](api.md) | HTTP endpoints, the Socket.IO streaming contract and the AG-UI endpoint |
 | [host contract](host-contract.md) | The versioned `host_context`, attachments and the action protocol a host uses |
