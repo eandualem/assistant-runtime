@@ -43,30 +43,30 @@ class IssuesProvider(Protocol):
 
 
 def register_issues_tools(registry: ToolRegistry, provider: IssuesProvider) -> None:
-    """Register all GitHub issue management tools."""
+    """Register issue management tools."""
     registry.register_backend_tool(
         ToolDefinition(
             name="create_issue",
             description=(
-                "Create a new issue in the orchestration repository. "
-                "Labels must include at least one 'from:' and one 'for:' label "
-                "per system convention. Optionally set priority to 'blocking' or 'non-blocking'."
+                "Create an issue in the configured repository. Use the repository's "
+                "label conventions; an empty label list is allowed. Optionally set "
+                "priority to 'blocking' or 'non-blocking'."
             ),
             parameters_schema={
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "Issue title, e.g. '[task] Brief description'",
+                        "description": "Issue title",
                     },
                     "body": {
                         "type": "string",
-                        "description": "Issue body in markdown with ## Context, ## Request, ## References sections",
+                        "description": "Issue body in Markdown, following any host-provided template",
                     },
                     "labels": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Labels including from: and for: labels, plus a type label (task, bug, spec-gap, question, optimization)",
+                        "description": "Repository labels to apply; use an empty list for none",
                     },
                     "priority": {
                         "type": "string",
@@ -86,7 +86,7 @@ def register_issues_tools(registry: ToolRegistry, provider: IssuesProvider) -> N
         ToolDefinition(
             name="search_issues",
             description=(
-                "Search issues in the orchestration repository. "
+                "Search issues in the configured repository. "
                 "Can filter by state, labels, and text query. "
                 "Returns issue number, title, state, labels, and creation date."
             ),
@@ -102,7 +102,7 @@ def register_issues_tools(registry: ToolRegistry, provider: IssuesProvider) -> N
                     "labels": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by labels (e.g. ['for:coding-agent', 'task'])",
+                        "description": "Filter by labels (e.g. ['bug'])",
                     },
                     "text": {
                         "type": "string",
@@ -196,4 +196,4 @@ def register_issues_tools(registry: ToolRegistry, provider: IssuesProvider) -> N
         provider.close_issue,
     )
 
-    logger.info("Registered GitHub issue management tools", count=5)
+    logger.info("Registered issue management tools", count=5)

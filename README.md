@@ -87,8 +87,12 @@ saves the work completed so far and drains running tools before the next
 turn starts. A Socket.IO disconnect leaves the turn running; reconnect and
 read the session to recover its saved state. See [turn control](docs/api.md#turn-control).
 
-The runtime knows nothing about any particular host. Your application
-describes itself in two ways, both optional:
+The runtime knows nothing about any particular host. Add an application by
+configuring its assistant profile and declaring its host context and actions;
+the runtime needs no application-specific code. Optional providers supply
+capabilities with generic tool descriptions. Repository labels and workflow
+conventions belong in the host profile: issue tools accept the labels supplied,
+including an empty list. Your application describes itself in two ways, both optional:
 
 - **Host context**, sent with a message: what the user is looking at, as
   a small versioned JSON object (`host`, `view`, `navigation`,

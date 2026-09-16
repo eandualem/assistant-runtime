@@ -30,10 +30,9 @@ def register_repositories_tools(registry: ToolRegistry, provider: RepositoriesPr
         ToolDefinition(
             name="onboard_repo",
             description=(
-                "Onboard a new repository into the workspace. Clones the repo, "
-                "sets up CLAUDE.md, .claude/ directory, settings, and registers it "
-                "in the agent backbone. Requires the org name "
-                "and the Git URL."
+                "Onboard a repository into the configured workspace. The provider "
+                "handles cloning, agent setup, and registration. Requires the "
+                "organization name and Git URL."
             ),
             parameters_schema={
                 "type": "object",

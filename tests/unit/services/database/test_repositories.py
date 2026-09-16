@@ -113,7 +113,7 @@ class TestSteeringRepository:
         row = SteeringORM(
             id="steering-1",
             session_id="sess-1",
-            content="Focus on Leo",
+            content="Focus on Planner",
             status="pending",
         )
         result = MagicMock()
@@ -123,7 +123,7 @@ class TestSteeringRepository:
         created = await SteeringRepository(mock_session).create(
             steering_id="steering-1",
             session_id="sess-1",
-            content="Focus on Leo",
+            content="Focus on Planner",
             status="pending",
         )
 

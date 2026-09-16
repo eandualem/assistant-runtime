@@ -419,7 +419,7 @@ class TestStreamingService:
         action = await service.accept_steering(
             _request(
                 message_id="steering-1",
-                content="Focus on Leo only",
+                content="Focus on Planner only",
                 message_type="steering",
             ),
             has_live_stream=True,
@@ -439,7 +439,7 @@ class TestStreamingService:
         action = await service.accept_steering(
             _request(
                 message_id="steering-1",
-                content="Focus on Leo only",
+                content="Focus on Planner only",
                 message_type="steering",
             ),
             has_live_stream=False,
@@ -460,7 +460,7 @@ class TestStreamingService:
             "sess-1",
             _request(
                 message_id="steering-1",
-                content="Focus on Leo only",
+                content="Focus on Planner only",
                 message_type="steering",
             ),
         )
@@ -468,7 +468,7 @@ class TestStreamingService:
             "sess-1",
             _request(
                 message_id="steering-2",
-                content="Skip Ada",
+                content="Skip Builder",
                 message_type="steering",
             ),
         )
@@ -511,7 +511,7 @@ class TestStreamingService:
         await service.start()
         request = _request(
             message_id="steering-1",
-            content="Focus on Leo only",
+            content="Focus on Planner only",
             message_type="steering",
         )
 
@@ -664,8 +664,8 @@ class TestMultiToolContinuation:
                         {
                             "id": "call-backend-1",
                             "name": "get_agent_status",
-                            "input": {"agent": "ike"},
-                            "output": {"status": "idle", "entity": "ike"},
+                            "input": {"agent": "reviewer"},
+                            "output": {"status": "idle", "entity": "reviewer"},
                         }
                     ],
                 },
@@ -790,7 +790,7 @@ class TestMultiToolContinuation:
                         {
                             "id": "call-backend-1",
                             "name": "get_agent_status",
-                            "input": {"agent": "ike"},
+                            "input": {"agent": "reviewer"},
                             "output": {"status": "idle"},
                         }
                     ],

@@ -34,13 +34,13 @@ class TestCreateMeetingRoom:
                 "id": "room-1",
                 "title": "Sprint planning",
                 "state": "active",
-                "participants": ["leo", "ike"],
+                "participants": ["planner", "reviewer"],
             },
         )
 
         result = await create_meeting_room(
             title="Sprint planning",
-            participants=["leo", "ike"],
+            participants=["planner", "reviewer"],
         )
         assert result["success"] is True
         assert result["id"] == "room-1"
@@ -48,7 +48,7 @@ class TestCreateMeetingRoom:
         assert result["state"] == "active"
 
     async def test_missing_title(self):
-        result = await create_meeting_room(title="", participants=["leo"])
+        result = await create_meeting_room(title="", participants=["planner"])
         assert result["success"] is False
         assert "empty" in result["error"].lower()
 
@@ -61,7 +61,7 @@ class TestCreateMeetingRoom:
     async def test_api_error(self, mock_req):
         mock_req.return_value = (500, {"detail": "Internal Server Error"})
 
-        result = await create_meeting_room(title="Test", participants=["leo"])
+        result = await create_meeting_room(title="Test", participants=["planner"])
         assert result["success"] is False
         assert "500" in result["error"]
 
@@ -69,7 +69,7 @@ class TestCreateMeetingRoom:
     async def test_network_error(self, mock_req):
         mock_req.return_value = (-1, {"message": "Connection refused"})
 
-        result = await create_meeting_room(title="Test", participants=["leo"])
+        result = await create_meeting_room(title="Test", participants=["planner"])
         assert result["success"] is False
         assert "Connection refused" in result["error"]
 
@@ -77,12 +77,12 @@ class TestCreateMeetingRoom:
     async def test_with_description(self, mock_req):
         mock_req.return_value = (
             201,
-            {"id": "room-2", "title": "Review", "state": "active", "participants": ["leo"]},
+            {"id": "room-2", "title": "Review", "state": "active", "participants": ["planner"]},
         )
 
         result = await create_meeting_room(
             title="Review",
-            participants=["leo"],
+            participants=["planner"],
             description="Architecture review",
         )
         assert result["success"] is True
@@ -109,7 +109,7 @@ class TestListMeetingRooms:
                         "id": "room-1",
                         "title": "Sprint",
                         "state": "active",
-                        "participants": ["leo", "ike"],
+                        "participants": ["planner", "reviewer"],
                         "created_at": "2026-02-19T10:00:00Z",
                     },
                 ],
@@ -165,14 +165,14 @@ class TestSendMeetingMessage:
     async def test_directed(self, mock_req):
         mock_req.return_value = (200, {"ok": True})
 
-        result = await send_meeting_message("room-1", "Hey Leo", target="leo")
+        result = await send_meeting_message("room-1", "Hey Planner", target="planner")
         assert result["success"] is True
         assert result["directed"] is True
 
         call_args = mock_req.call_args
         assert "/directed" in call_args[0][1]
         json_body = call_args.kwargs.get("json_body") or call_args[1].get("json_body")
-        assert json_body["target"] == "leo"
+        assert json_body["target"] == "planner"
 
     async def test_empty_message(self):
         result = await send_meeting_message("room-1", "")

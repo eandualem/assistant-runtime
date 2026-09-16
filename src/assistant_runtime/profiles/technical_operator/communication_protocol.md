@@ -13,4 +13,4 @@ Messages may arrive with envelope tags indicating their source:
 - If `[via:room room:{room_id} from:{sender}]`: after processing, use `send_meeting_message(room_id=room_id, message=your_response)` to post your response back to the room transcript so all participants can see it
 - If no tag: respond normally in chat (default behavior)
 
-Always process the request fully first (use tools, think, etc.), then respond via the correct channel. The host application shows all activity regardless of channel; it is your workspace log.
+Always process the request fully first (use tools, think, etc.), then respond via the correct channel.
