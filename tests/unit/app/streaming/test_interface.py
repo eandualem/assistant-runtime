@@ -1496,3 +1496,73 @@ class TestAdmissionExclusion:
                 _request(message_id="steer-2", content="x", message_type="steering"),
                 has_live_stream=False,
             )
+
+
+class TestAdmissionLockLifetime:
+    async def test_unknown_session_ids_do_not_accumulate_locks(self) -> None:
+        service = _make_service()
+        await service.start()
+        for index in range(200):
+            with pytest.raises(SessionError, match="does not exist"):
+                await service.accept_steering(
+                    _request(
+                        message_id=f"steer-{index}",
+                        session_id=f"missing-{index}",
+                        content="focus",
+                        message_type="steering",
+                    ),
+                    has_live_stream=False,
+                )
+        assert not service._admission_locks
+        await service.stop()
+        assert not service._admission_locks
+
+    async def test_waiters_share_one_lock_and_cancelled_waiters_release_it(self) -> None:
+        service = _make_service()
+        await service.start()
+        gate = asyncio.Event()
+        entered = []
+
+        async def admission(number):
+            async with service._admission_lock("session"):
+                entered.append(number)
+                if number == 0:
+                    await gate.wait()
+
+        holder = asyncio.create_task(admission(0))
+        await asyncio.sleep(0)
+        cancelled = asyncio.create_task(admission(1))
+        waiter = asyncio.create_task(admission(2))
+        await asyncio.sleep(0)
+        assert entered == [0]
+        assert len(service._admission_locks) == 1
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        assert len(service._admission_locks) == 1
+        gate.set()
+        await asyncio.gather(holder, waiter)
+        assert entered == [0, 2]
+        assert not service._admission_locks
+
+    async def test_stop_drains_admissions_and_rejects_new_lock_users(self) -> None:
+        from assistant_runtime.app.streaming.exceptions import StreamingError
+
+        service = _make_service()
+        await service.start()
+        gate = asyncio.Event()
+
+        async def admission():
+            async with service._admission_lock("session"):
+                await gate.wait()
+
+        holder = asyncio.create_task(admission())
+        await asyncio.sleep(0)
+        stopping = asyncio.create_task(service.stop())
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        with pytest.raises(StreamingError, match="not started"):
+            service._admission_lock("new-session")
+        gate.set()
+        await asyncio.gather(holder, stopping)
+        assert not service._admission_locks

@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from weakref import WeakValueDictionary
 
 from loguru import logger
 from pydantic_ai.exceptions import RunCancelled
@@ -73,7 +74,7 @@ class StreamingService:
         self._background_chains: dict[str, asyncio.Task[Any]] = {}
         # Steering admission and voice reservation of one session exclude each
         # other, so a lease cannot appear while an admission hydrates or writes.
-        self._admission_locks: dict[str, asyncio.Lock] = {}
+        self._admission_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
     @property
     def _sessions(self) -> SessionStore:
@@ -139,6 +140,12 @@ class StreamingService:
             turn.cancel()
         await asyncio.gather(*(turn.done.wait() for turn in turns))
         await self.wait_for_background()
+        # Every holder/waiter retains its lock. Refuse new admissions while
+        # stopping, then drain existing queues before clearing their registry.
+        for lock in tuple(self._admission_locks.values()):
+            async with lock:
+                pass
+        self._admission_locks.clear()
         logger.info("Streaming service stopped")
 
     async def cancel_session(
@@ -186,6 +193,10 @@ class StreamingService:
         await self._authorize(session_id, principal)
 
     def _admission_lock(self, session_id: str) -> asyncio.Lock:
+        if not self._started:
+            raise StreamingError("Streaming service not started")
+        # The async-with holder and acquire waiters keep a strong reference;
+        # no cache entry survives after the last operation releases its lock.
         lock = self._admission_locks.get(session_id)
         if lock is None:
             lock = self._admission_locks[session_id] = asyncio.Lock()
