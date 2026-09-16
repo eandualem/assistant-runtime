@@ -129,10 +129,15 @@ def _describe_error(exc: Exception, *, detail: bool = True) -> tuple[str, str, b
 def _keep_row_auxiliary(
     usage: dict[str, Any] | None, row: dict[str, Any] | None
 ) -> dict[str, Any] | None:
-    """``usage`` plus the auxiliary sections the stored row has and ``usage`` lacks."""
+    """Keep row-owned memory totals and auxiliary sections missing from a snapshot."""
     existing = ((row or {}).get("usage") or {}).get("auxiliary") or {}
     for name, part in existing.items():
-        if name not in ((usage or {}).get("auxiliary") or {}):
+        auxiliary = (usage or {}).get("auxiliary") or {}
+        if name == "working_memory" and name in auxiliary:
+            # Background extraction owns this cumulative total; the turn's
+            # earlier copy must neither overwrite it nor be added a second time.
+            usage = {**usage, "auxiliary": {**auxiliary, name: part}}
+        elif name not in auxiliary:
             usage = with_auxiliary(usage, name, part)
     return usage
 

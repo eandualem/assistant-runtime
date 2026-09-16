@@ -1460,6 +1460,49 @@ class TestAuxiliaryKeptAtPersistence:
         assert _keep_row_auxiliary(None, None) is None
 
 
+class TestLatestBackgroundUsage:
+    async def test_continuation_keeps_newer_memory_total_without_double_counting(self):
+        from assistant_runtime.app.streaming._runner import _RunState
+        from assistant_runtime.app.streaming._turn import TurnPlan
+
+        service = _make_service()
+        await service.start()
+        try:
+            sessions = service._sessions
+            request = _request(message_id="question")
+            ctx, _ = await sessions.register_user_message(request)
+            old = {"input_tokens": 10, "auxiliary": {"working_memory": {"input_tokens": 3}}}
+            await sessions.register_assistant_message(
+                "sess-1",
+                message_id="answer",
+                parent_id="question",
+                content="a",
+                segments=[],
+                usage=old,
+            )
+            plan = TurnPlan(
+                kind="continuation",
+                request=request,
+                session_id="sess-1",
+                session_context=ctx,
+                assistant_message_id="answer",
+                assistant_parent_id=None,
+                prior_usage=old,
+            )
+            continuation = _RunState(usage=plan.prior_usage)
+            service._assistant_service.update_working_memory = AsyncMock(
+                return_value={"input_tokens": 7}
+            )
+            await service._runner._update_working_memory(plan, _RunState(stored_usage=old))
+            for _ in range(2):
+                await service._runner._persist(plan, continuation)
+                usage = sessions.get_message("sess-1", "answer")["usage"]
+                assert usage["input_tokens"] == 10
+                assert usage["auxiliary"]["working_memory"]["input_tokens"] == 10
+        finally:
+            await service.stop()
+
+
 class TestAdmissionExclusion:
     @pytest.mark.asyncio
     async def test_a_reservation_waits_for_an_admission_in_progress(self) -> None:

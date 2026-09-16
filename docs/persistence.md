@@ -199,3 +199,11 @@ remains pending across cancellation and restart until a turn with that profile
 consumes it. Unprofiled legacy and ingress records inherit the consuming turn.
 Existing Postgres installations must apply migration `0026` with
 `assistant-runtime migrate` (or `make db-upgrade`) before running this version.
+
+### Background memory writes
+
+Working-memory extraction runs after the turn completes. Within one runtime,
+session metadata writes and updates to each message are serialized through
+transaction commit, so an older background write cannot replace a newer pending
+action or continuation usage total. Continuation snapshots retain the latest
+background-owned working-memory usage without counting it twice.
