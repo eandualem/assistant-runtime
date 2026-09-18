@@ -298,6 +298,16 @@ default `neutral` profile defines `instructions` and `scratchpad`.
 | `GET /api/media/video/{job_id}` | video job status |
 | `GET /api/debug/tools` | the complete tool registry and MCP server status |
 
+## Decisions
+
+`GET /api/decisions/status` reports whether the [decision capability](decisions.md)
+is configured. `POST /api/decisions` sends `state` and a map of typed `questions`
+(`choice`, `score`, `noul`) to the decision model in one call and returns typed
+`answers` under the same ids, with `usage` and the call's `timing`. Optional
+`profile` is validated like voice creation. No session is involved. A missing
+key is `503`; provider errors map to `422`, `429`, `502` and `504` with
+`provider_status_code` and the provider's bounded `provider_detail`.
+
 ## Voice calls
 
 The optional [GPT-Live integration](voice.md) exposes authenticated

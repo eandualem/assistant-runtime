@@ -10,6 +10,7 @@ from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.services.artifacts.config import ArtifactsConfig
 from assistant_runtime.services.database.config import DatabaseConfig
+from assistant_runtime.services.decisions.config import DecisionsConfig
 from assistant_runtime.services.history.config import HistoryConfig
 from assistant_runtime.services.llm.config import LLMConfig
 from assistant_runtime.services.media.config import MediaConfig
@@ -32,6 +33,7 @@ class AppSettings(BaseSettings):
     llm: LLMConfig = LLMConfig()
     history: HistoryConfig = HistoryConfig()
     media: MediaConfig = MediaConfig()
+    decisions: DecisionsConfig = DecisionsConfig()
     oauth: OAuthConfig = OAuthConfig()
     tools: ToolConfig = ToolConfig()
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig.from_env)

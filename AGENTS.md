@@ -248,6 +248,14 @@ execution, history, serialization, or the upstream dependency; see
   Pending actions persist their output mode; receipt-only plans save the result
   without another model, summarization or working-memory call. Hosts own scheduling
   and physical cancellation. Docs: `docs/host-contract.md`.
+- **Decisions are a capability of the application, not of the model.**
+  `services/decisions` sends program state plus typed questions (`choice`,
+  `score`, `noul`) to a `DecisionProvider` (TypeSafe's System One endpoint in
+  `_typesafe.py`) in one request and returns typed answers under the same ids
+  through `POST /api/decisions`. The key is `DECISIONS__API_KEY_ENV`
+  (`TYPESAFE_API_KEY`) on the runtime; without it the status reports
+  `configured: false` and a call is `503`. There is no language-model fallback
+  and the model is not offered a decision tool. Docs: `docs/decisions.md`.
 - **Voice delegates through the shared pipeline.** Optional `app/voice` imports
   `app/streaming` and owns the GPT-Live sideband; the browser owns WebRTC audio.
   Conversation-only calls create no backend worker and reject tool-result

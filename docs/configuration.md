@@ -173,6 +173,17 @@ from native [Pydantic AI capabilities](composition.md).
 `video_timeout_seconds`, `video_max_concurrent_jobs`. Video needs the
 `[video]` extra and `RUNWAYML_API_SECRET` or `LUMAAI_API_KEY`.
 
+### Decisions (`DECISIONS__*`)
+
+Typed decisions from [TypeSafe's Jev](decisions.md), fixed at startup; these
+are not request or runtime-overlay tunables. The capability is configured when
+the variable named by `api_key_env` is set; without it `GET /api/decisions/status`
+reports `configured: false` and a call returns `503`. There is no fallback.
+
+`api_key_env` (`TYPESAFE_API_KEY`, the name of an environment variable),
+`model` (`jev-latest`), `base_url` (`https://api.typesafe.ai`),
+`timeout_seconds` (`10`, >0–120), `max_questions` (`32`, 1–256, per call).
+
 ### Voice (`VOICE__*`)
 
 `VOICE__DELEGATION_ENABLED` defaults to `true`. Set it to `false` for an instance that
