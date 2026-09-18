@@ -95,6 +95,19 @@ class TestModels:
             DecisionRequest(state="s", questions=QUESTIONS, profile="Not-Valid")
 
 
+class TestConfig:
+    @pytest.mark.parametrize(
+        "url", ["https://api.typesafe.ai", "http://127.0.0.1:7199", "http://localhost/"]
+    )
+    def test_https_or_loopback_base_url(self, url):
+        assert DecisionsConfig(base_url=url).base_url == url
+
+    @pytest.mark.parametrize("url", ["http://decisions.example", "ftp://x", "api.typesafe.ai"])
+    def test_cleartext_base_url_is_rejected(self, url):
+        with pytest.raises(ValidationError, match="https"):
+            DecisionsConfig(base_url=url)
+
+
 class TestTypeSafeProvider:
     async def test_sends_every_question_in_one_bearer_request(self):
         seen: list[httpx.Request] = []
@@ -129,12 +142,16 @@ class TestTypeSafeProvider:
             await _provider(handler).decide(api_key="k", state="s", questions=QUESTIONS)
         assert info.value.status_code == status
         assert info.value.provider_status_code == provider_status
-        assert info.value.provider_detail.startswith("questions.energy: ")
-        assert len(info.value.provider_detail) == 500
-        assert info.value.metadata == {
-            "provider_status_code": provider_status,
-            "provider_detail": info.value.provider_detail,
-        }
+        if provider_status in (422, 429):
+            assert info.value.provider_detail.startswith("questions.energy: ")
+            assert len(info.value.provider_detail) == 500
+            assert info.value.metadata == {
+                "provider_status_code": provider_status,
+                "provider_detail": info.value.provider_detail,
+            }
+        else:
+            assert info.value.provider_detail is None
+            assert info.value.metadata == {"provider_status_code": provider_status}
 
     @pytest.mark.parametrize(
         ("body", "detail"),
@@ -269,6 +286,9 @@ class TestDecisionService:
                 "start": {"type": "choice", "choice": "x", "probabilities": {}, "confidence": 1},
             },
             {**ANSWERS, "start": {"type": "noul", "noul": 1.5}},
+            {**ANSWERS, "start": {"type": "noul", "noul": float("nan")}},
+            {**ANSWERS, "intent": {**ANSWERS["intent"], "confidence": 2}},
+            {**ANSWERS, "energy": {**ANSWERS["energy"], "score": float("inf")}},
             "not a map",
             None,
         ],

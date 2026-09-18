@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DecisionsConfig(BaseModel):
@@ -21,3 +23,14 @@ class DecisionsConfig(BaseModel):
     timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     max_questions: int = Field(default=32, ge=1, le=256)
     max_state_bytes: int = Field(default=262144, ge=1024, le=8388608)
+
+    @field_validator("base_url")
+    @classmethod
+    def _https_unless_loopback(cls, value: str) -> str:
+        """The key travels as a bearer header, so only TLS or the local machine may carry it."""
+        parts = urlsplit(value)
+        if parts.scheme == "https" and parts.hostname:
+            return value
+        if parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1", "::1"):
+            return value
+        raise ValueError("DECISIONS__BASE_URL must be an https:// URL (http:// only for localhost)")

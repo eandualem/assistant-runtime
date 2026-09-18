@@ -177,11 +177,12 @@ from native [Pydantic AI capabilities](composition.md).
 
 Typed decisions from [TypeSafe's Jev](decisions.md), fixed at startup; these
 are not request or runtime-overlay tunables. The capability is configured when
-the variable named by `api_key_env` is set; without it `GET /api/decisions/status`
+the variable named by `api_key_env` contains a non-blank value; without it `GET /api/decisions/status`
 reports `configured: false` and a call returns `503`. There is no fallback.
 
 `api_key_env` (`TYPESAFE_API_KEY`, the name of an environment variable),
-`model` (`jev-latest`), `base_url` (`https://api.typesafe.ai`),
+`model` (`jev-latest`), `base_url` (`https://api.typesafe.ai`; `https://`, or `http://`
+only for localhost, since the key travels as a bearer header),
 `timeout_seconds` (`10`, >0–120), `max_questions` (`32`, 1–256, per call),
 `max_state_bytes` (`262144`, 1024–8388608, the state serialised as JSON).
 

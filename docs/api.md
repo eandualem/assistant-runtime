@@ -306,7 +306,7 @@ is configured. `POST /api/decisions` sends `state` and a map of typed `questions
 `answers` under the same ids, with `usage` and the call's `timing`. Optional
 `profile` is validated like voice creation. No session is involved. A missing
 key is `503`; provider errors map to `422`, `429`, `502` and `504` with
-`provider_status_code` and the provider's bounded `provider_detail`.
+`provider_status_code`, and the provider's bounded `provider_detail` on `422` and `429`.
 
 ## Voice calls
 

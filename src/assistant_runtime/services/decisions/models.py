@@ -59,22 +59,26 @@ class DecisionRequest(BaseModel):
     profile: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
 
 
+Probability = Annotated[float, Field(ge=0, le=1)]
+"""A calibrated value from 0 to 1; NaN and infinity are not answers."""
+
+
 class ChoiceAnswer(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     type: Literal["choice"]
     choice: str
-    probabilities: dict[str, float]
-    confidence: float
+    probabilities: dict[str, Probability]
+    confidence: Probability
 
 
 class ScoreAnswer(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     type: Literal["score"]
-    score: float
-    probabilities: dict[str, float]
-    confidence: float
+    score: Annotated[float, Field(allow_inf_nan=False)]
+    probabilities: dict[str, Probability]
+    confidence: Probability
     legend: dict[str, Any] | None = None
 
 
@@ -82,7 +86,7 @@ class NoulAnswer(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     type: Literal["noul"]
-    noul: float = Field(ge=0, le=1)
+    noul: Probability
 
 
 Answer = Annotated[ChoiceAnswer | ScoreAnswer | NoulAnswer, Field(discriminator="type")]

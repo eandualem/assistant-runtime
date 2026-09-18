@@ -84,8 +84,13 @@ def _provider_error(status: int, response: httpx.Response) -> DecisionError:
         message, runtime_status = "Decision provider rate limit reached", 429
     else:
         message, runtime_status = "Decision provider request failed", 502
+    # The caller gets the reason only when it is about its own request; what the
+    # provider says about the runtime's key or its own failures stays in the log.
     return DecisionError(
-        message, runtime_status, provider_status_code=status, provider_detail=detail
+        message,
+        runtime_status,
+        provider_status_code=status,
+        provider_detail=detail if status in (422, 429) else None,
     )
 
 

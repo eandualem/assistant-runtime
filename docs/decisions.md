@@ -21,7 +21,8 @@ uv run assistant-runtime serve
 ```
 
 Nothing else is needed; there is no extra to install. `GET /api/decisions/status`
-reports `healthy`, `configured` (the key variable is set), `provider` and `model`.
+reports `healthy`, `configured` (the key variable holds a non-blank value),
+`provider` and `model`.
 `configured` means a key is present, not that access has been tested.
 
 The data path is explicit. Without the key, `configured` is `false` and a call
@@ -108,8 +109,9 @@ The response keeps the application's ids:
 }
 ```
 
-Every question has an answer of its own type; a response that lacks one, or
-answers with the wrong type, is a `502`, and answers for ids that were not asked
+Every question has an answer of its own type, with probabilities and
+confidence from 0 to 1 and a finite score; a response that lacks one, answers
+with the wrong type or with values outside that range, is a `502`, and answers for ids that were not asked
 are dropped. Fields the provider adds to an answer are passed through. `usage` and `model` are the provider's own. `timing` is
 measured by the runtime for this call: `provider_ms` is the provider round trip
 and `total_ms` adds the runtime's validation and answer checking. Thresholds
@@ -118,10 +120,11 @@ belong to the application; the runtime applies none.
 ## Errors
 
 Every error carries `detail`. A provider error also carries
-`provider_status_code` and, when the provider gave a reason, `provider_detail`
-(its `detail`, `error` or `message` text, at most 500 characters), so a
-rejected question can be fixed from the application's own log line. The state
-and the key are never echoed by the runtime.
+`provider_status_code`. A `422` or `429` from the provider also carries
+`provider_detail` (its `detail`, `error` or `message` text, at most 500
+characters), so a rejected question can be fixed from the application's own log
+line; what the provider says about the runtime's key or its own failures stays
+in the runtime log. The state and the key are never echoed by the runtime.
 
 | Status | Meaning |
 |---|---|
