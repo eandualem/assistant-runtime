@@ -180,6 +180,20 @@ class TestTypeSafeProvider:
             await _provider(handler).decide(api_key="k", state="s", questions=QUESTIONS)
         assert info.value.status_code == 502
 
+    async def test_any_success_status_is_accepted(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(201, json={"answers": ANSWERS})
+
+        data = await _provider(handler).decide(api_key="k", state="s", questions=QUESTIONS)
+        assert data["answers"] == ANSWERS
+
+    async def test_closed_client_is_a_502_not_a_crash(self):
+        provider = _provider(lambda request: httpx.Response(200, json={"answers": ANSWERS}))
+        await provider._client.aclose()
+        with pytest.raises(DecisionError) as info:
+            await provider.decide(api_key="k", state="s", questions=QUESTIONS)
+        assert info.value.status_code == 502
+
 
 class TestDecisionService:
     async def test_missing_key_reports_unconfigured_and_fails_the_call(self, monkeypatch):
@@ -297,6 +311,47 @@ class TestDecisionService:
         service = DecisionService(DecisionsConfig())
         await service.start()
         assert (await service.health_check())["provider"] == "typesafe"
-        assert service._client is not None
+        first = service._client
+        assert first is not None
         await service.stop()
         assert service._client is None
+        await service.start()
+        assert service._client is not None
+        assert service._client is not first
+        assert service._provider._client is service._client
+        await service.stop()
+
+    async def test_blank_key_is_not_configured(self, monkeypatch):
+        service = await _service(
+            lambda request: httpx.Response(200, json={"answers": ANSWERS}),
+            {"TYPESAFE_API_KEY": "   "},
+            monkeypatch,
+        )
+        assert service.configured is False
+        with pytest.raises(DecisionError) as info:
+            await service.decide(_request())
+        assert info.value.status_code == 503
+
+    async def test_state_size_is_bounded(self, monkeypatch):
+        service = await _service(
+            lambda request: httpx.Response(200, json={"answers": ANSWERS}),
+            {"TYPESAFE_API_KEY": "k"},
+            monkeypatch,
+            max_state_bytes=1024,
+        )
+        request = DecisionRequest(state={"transcript": "x" * 2000}, questions=QUESTIONS)
+        with pytest.raises(DecisionError) as info:
+            await service.decide(request)
+        assert info.value.status_code == 422
+        assert "DECISIONS__MAX_STATE_BYTES" in str(info.value)
+
+    async def test_unasked_answers_are_dropped(self, monkeypatch):
+        service = await _service(
+            lambda request: httpx.Response(
+                200, json={"answers": {**ANSWERS, "debug": {"type": "noul", "noul": 0.1}}}
+            ),
+            {"TYPESAFE_API_KEY": "k"},
+            monkeypatch,
+        )
+        response = await service.decide(_request())
+        assert set(response.answers) == set(QUESTIONS)

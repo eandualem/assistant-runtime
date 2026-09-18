@@ -20,3 +20,4 @@ class DecisionsConfig(BaseModel):
     base_url: str = Field(default="https://api.typesafe.ai", min_length=1, max_length=2048)
     timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     max_questions: int = Field(default=32, ge=1, le=256)
+    max_state_bytes: int = Field(default=262144, ge=1024, le=8388608)

@@ -74,9 +74,10 @@ session and reserves nothing.
 }
 ```
 
-`state` is any JSON the questions are about. `questions` is a map from the
-application's own ids to typed questions, at least one and at most
-`DECISIONS__MAX_QUESTIONS` (default 32). The three types follow the provider's
+`state` is any JSON the questions are about, at most `DECISIONS__MAX_STATE_BYTES`
+serialised (default 256 KiB). `questions` is a map from the application's own
+ids to typed questions, at least one and at most `DECISIONS__MAX_QUESTIONS`
+(default 32). The three types follow the provider's
 [primitives](https://docs.typesafe.ai/primitives):
 
 - `choice` picks one option from `criteria`, a map of at least two options.
@@ -108,8 +109,8 @@ The response keeps the application's ids:
 ```
 
 Every question has an answer of its own type; a response that lacks one, or
-answers with the wrong type, is a `502`. Fields the provider adds to an answer
-are passed through. `usage` and `model` are the provider's own. `timing` is
+answers with the wrong type, is a `502`, and answers for ids that were not asked
+are dropped. Fields the provider adds to an answer are passed through. `usage` and `model` are the provider's own. `timing` is
 measured by the runtime for this call: `provider_ms` is the provider round trip
 and `total_ms` adds the runtime's validation and answer checking. Thresholds
 belong to the application; the runtime applies none.
@@ -124,7 +125,7 @@ and the key are never echoed by the runtime.
 
 | Status | Meaning |
 |---|---|
-| `422` | The body failed validation, `profile` is unknown, too many questions, or the provider rejected the state or questions (`provider_status_code: 422`) |
+| `422` | The body failed validation, `profile` is unknown, too many questions, the state is too large, or the provider rejected the state or questions (`provider_status_code: 422`) |
 | `429` | The provider's rate limit (`provider_status_code: 429`); retry with backoff |
 | `502` | The provider rejected the runtime's key (`401`/`403`), failed, was unreachable, or answered in an unexpected shape |
 | `503` | The key is not configured, or the service is not started |

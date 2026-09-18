@@ -105,8 +105,8 @@ execution, history, serialization, or the upstream dependency; see
   `exceptions.py`, and optionally `models.py`. Files starting with `_` are
   private to their module; other modules use the interface class only.
 - **Startup order is registration order** (`main.py:lifespan`): access,
-  database, oauth, llm, history, media, mcp, artifacts, tools, assistant,
-  streaming, voice, ingress, heartbeat.
+  database, oauth, llm, history, media, decisions, mcp, artifacts, tools,
+  assistant, streaming, voice, ingress, heartbeat.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.

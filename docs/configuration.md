@@ -182,7 +182,8 @@ reports `configured: false` and a call returns `503`. There is no fallback.
 
 `api_key_env` (`TYPESAFE_API_KEY`, the name of an environment variable),
 `model` (`jev-latest`), `base_url` (`https://api.typesafe.ai`),
-`timeout_seconds` (`10`, >0–120), `max_questions` (`32`, 1–256, per call).
+`timeout_seconds` (`10`, >0–120), `max_questions` (`32`, 1–256, per call),
+`max_state_bytes` (`262144`, 1024–8388608, the state serialised as JSON).
 
 ### Voice (`VOICE__*`)
 

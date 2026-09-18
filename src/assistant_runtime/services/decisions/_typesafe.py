@@ -52,9 +52,12 @@ class TypeSafeDecisions:
         except httpx.HTTPError as exc:
             logger.warning("Decision provider unreachable", error=type(exc).__name__)
             raise DecisionError("Decision provider unreachable", 502) from exc
-        status = response.status_code
-        if status != 200:
-            raise _provider_error(status, response)
+        except Exception as exc:
+            # A closed client or an unusable base URL: still the documented contract.
+            logger.exception("Decision provider request could not be made")
+            raise DecisionError("Decision provider request failed", 502) from exc
+        if not response.is_success:
+            raise _provider_error(response.status_code, response)
         try:
             data = response.json()
         except ValueError as exc:

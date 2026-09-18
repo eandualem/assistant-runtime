@@ -21,6 +21,7 @@ An assistant backend for the application you already have: it holds the conversa
 - **A UI that follows the work.** Thinking, text, tool calls and results arrive as ordered events. Cancellation saves partial text and completed work.
 - **A second model role in parallel.** A silent controller can return one application action or a structured hold with `output_mode: host_tools`, while another model handles the conversation.
 - **Voice with the same application context.** GPT-Live carries the conversation over WebRTC and can delegate tasks into the shared tool pipeline, or speak alongside an independent controller.
+- **Typed decisions while the user is still speaking.** Send your application's state and a set of `choice`, `score` and `noul` questions in one call; a decision model answers all of them with calibrated probabilities in well under a second, with no text to parse ([decisions](https://github.com/eandualem/assistant-runtime/blob/main/docs/decisions.md)).
 
 One runtime can serve several applications, each with its own registered profile and host actions.
 
