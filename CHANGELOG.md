@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0 — 2026-09-18
+
+- Typed decisions: `POST /api/decisions` sends program state and a set of
+  `choice`, `score` and `noul` questions to TypeSafe's Jev decision model in one
+  call and returns typed answers with probabilities, usage and per-call timing.
+  The runtime holds `TYPESAFE_API_KEY`; without it the capability reports
+  `configured: false` and a call fails with `503`, never a language-model
+  fallback. See [decisions](https://github.com/eandualem/assistant-runtime/blob/main/docs/decisions.md).
+
+### Upgrading from 0.2.0
+
+No migration and no new extra. Set `TYPESAFE_API_KEY` on the runtime to enable
+decisions; everything else is unchanged.
+
 ## 0.2.0 — 2026-09-16
 
 - GPT-Live voice over WebRTC, with optional delegation into the shared turn
