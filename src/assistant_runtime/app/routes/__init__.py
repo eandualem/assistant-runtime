@@ -6,6 +6,7 @@ from assistant_runtime.app.routes.agui import router as agui_router
 from assistant_runtime.app.routes.artifacts import router as artifacts_router
 from assistant_runtime.app.routes.chat import router as chat_router
 from assistant_runtime.app.routes.debug import router as debug_router
+from assistant_runtime.app.routes.decisions import router as decisions_router
 from assistant_runtime.app.routes.inbox import router as inbox_router
 from assistant_runtime.app.routes.inject import router as inject_router
 from assistant_runtime.app.routes.media import router as media_router
@@ -21,6 +22,7 @@ router.include_router(agui_router)
 router.include_router(artifacts_router)
 router.include_router(chat_router)
 router.include_router(debug_router)
+router.include_router(decisions_router)
 router.include_router(inbox_router)
 router.include_router(inject_router)
 router.include_router(media_router)
