@@ -8,7 +8,7 @@ what must stay true when you change it.
 ## Shared instructions
 
 This is the canonical project guide for all coding agents. Keep repository
-instructions here; `CLAUDE.md` imports this file. If a CLI does not load
+instructions here. If a CLI does not load
 `AGENTS.md` automatically, explicitly ask it to read this file before working.
 
 Managed sessions receive the shared base brief, `request-context`,
