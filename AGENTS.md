@@ -27,6 +27,10 @@ The shared `project-context` policy uses this checkout's local memory:
 └── notes/          decisions, implementation evidence, and follow-up findings
 ```
 
+Startup reads `HANDOFF.md` and `INDEX.md`; handoffs update `HANDOFF.md`, with
+topic details in `notes/` linked from `INDEX.md`.
+(Claude Code only) `.claude/settings.json` disables native auto memory.
+
 - After reading shared memory, run `git status --short` and read the relevant
   README/docs section before changing files.
 - `.backbone/` and `/planning/` are git-ignored and must remain uncommitted.
