@@ -58,6 +58,8 @@ Local ChatGPT/Codex subscription authentication is also supported for backend mo
 
 The server defaults to localhost and trusts the local operator. Before exposing it to other people, configure authentication and allowed browser origins: [identity and access](https://github.com/eandualem/assistant-runtime/blob/main/docs/access.md).
 
+Optional notes and document-library tools use configured folders; [filesystem provider configuration](https://github.com/eandualem/assistant-runtime/blob/main/docs/configuration.md#providers) covers symlinks and note moves.
+
 ## How it works
 
 Your application sends a message, its current context and the actions it can perform. The runtime builds the assistant from its profile, calls the model through Pydantic AI, and streams the turn over Socket.IO or returns it over HTTP. An optional AG-UI endpoint exposes the same pipeline.

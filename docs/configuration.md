@@ -258,6 +258,18 @@ variables:
 | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | messaging (`respond_telegram`) | a Telegram bot and the chat it answers in |
 | `AGENT_STATE_DIR` | approvals (`list_agent_plans`, `approve_plan`, `reject_plan`), registered only when `TOOLS__PROVIDER_CAPABILITIES` names `approvals`; also enriches peers | a directory of agent state files (the Claude Code layout, `~/.claude/state`) |
 
+Filesystem providers accept symlinks within a configured root, including a
+symlink used as the root itself. Links resolving outside the root are rejected.
+The host remains responsible for root configuration and filesystem permissions;
+these tools do not isolate files from other local programs that can modify them.
+
+Note moves check for existing destination entries, including dangling symlinks.
+Moves between filesystems preserve content, permissions, timestamps and
+supported extended attributes. On macOS, moving a file with nonzero file flags
+between filesystems fails and retains the source: Python cannot safely preserve
+those flags through an opened file descriptor. Moves within a filesystem retain
+the original file and its metadata.
+
 The GitHub issue tools accept arbitrary repository labels, including an empty
 list. They do not require agent-routing prefixes or a particular issue-body
 template. Put workflow conventions in the assistant profile; existing `from:`

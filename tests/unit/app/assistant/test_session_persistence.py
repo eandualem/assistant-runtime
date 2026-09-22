@@ -6,6 +6,8 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import pytest
+from pydantic import ValidationError
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql.asyncpg import dialect
 
@@ -79,6 +81,23 @@ async def test_delayed_background_state_save_cannot_erase_new_pending_action():
     assert restored.working_memory == memory_state
     assert restored.working_memory.entries[0].content == "an insight"
     assert not store._db._write_locks
+
+
+async def test_working_memory_json_is_validated_before_opening_database_session():
+    db = DelayedCommitDatabase()
+    db.release.set()
+    persistence = SessionPersistence(db, 24)
+    await persistence.save_state("session", {"working_memory": {"active_goal": "remember"}})
+    loaded = await persistence.load("session")
+    assert loaded is not None
+    assert loaded.working_memory == WorkingMemory(active_goal="remember")
+
+    transactions = db.entries
+    for invalid in ({"goal": "unknown field"}, {"entries": "malformed"}):
+        with pytest.raises(ValidationError):
+            await persistence.save_state("session", {"working_memory": invalid})
+    assert db.entries == transactions
+    assert db.stored["working_memory"] == loaded.working_memory.model_dump(mode="json")
 
 
 async def test_delayed_background_usage_write_cannot_replace_continuation_totals():

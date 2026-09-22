@@ -42,7 +42,7 @@ class LoadedSession:
     """A session row with its messages and steering, as stored."""
 
     turn_number: int
-    working_memory: Any
+    working_memory: WorkingMemory | None
     title: str | None
     owner_id: str | None
     telegram_chat_id: str | None
@@ -142,25 +142,24 @@ class SessionPersistence:
 
     async def save_state(self, session_id: str, ctx: dict[str, Any]) -> None:
         """Persist metadata in order with foreground and background session writes."""
-        async with (
-            self._write_lock("session", session_id),
-            self._db.session_context() as db_session,
-        ):
-            await SessionRepository(db_session).upsert(
-                session_id,
-                title=ctx.get("title"),
-                turn_number=ctx.get("turn_number", 0),
-                working_memory=(
-                    ctx["working_memory"].model_dump(mode="json")
-                    if isinstance(ctx.get("working_memory"), WorkingMemory)
-                    else ctx.get("working_memory")
-                ),
-                telegram_chat_id=ctx.get("telegram_chat_id"),
-                telegram_bound_at=ctx.get("telegram_bound_at"),
-                expires_at=self._expires_at(),
-                owner_id=ctx.get("owner_id"),
-                pending_action=pending_action_from_context(ctx),
-            )
+        async with self._write_lock("session", session_id):
+            working_memory = ctx.get("working_memory")
+            if working_memory is not None:
+                working_memory = WorkingMemory.model_validate(
+                    working_memory, extra="forbid"
+                ).model_dump(mode="json")
+            async with self._db.session_context() as db_session:
+                await SessionRepository(db_session).upsert(
+                    session_id,
+                    title=ctx.get("title"),
+                    turn_number=ctx.get("turn_number", 0),
+                    working_memory=working_memory,
+                    telegram_chat_id=ctx.get("telegram_chat_id"),
+                    telegram_bound_at=ctx.get("telegram_bound_at"),
+                    expires_at=self._expires_at(),
+                    owner_id=ctx.get("owner_id"),
+                    pending_action=pending_action_from_context(ctx),
+                )
 
     async def session_for_telegram_chat(self, chat_id: str) -> str | None:
         async with self._db.session_context() as db_session:
