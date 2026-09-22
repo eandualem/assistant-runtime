@@ -24,8 +24,9 @@ branches from an earlier message by naming it as the parent.
 
 With Postgres the tree and the pending host action are persisted and
 survive restarts; without it sessions live in memory for the life of the
-process. Sessions expire after `ASSISTANT__SESSION_TTL_HOURS` (24 by
-default). See [persistence and recovery](persistence.md).
+process. Postgres-backed sessions expire after
+`ASSISTANT__SESSION_TTL_HOURS` (24 by default); in-memory sessions remain until
+cache eviction or process shutdown. See [persistence and recovery](persistence.md).
 
 A session belongs to the principal whose message created it; other
 principals cannot read or continue it, administrators can (see
@@ -73,7 +74,7 @@ side effects.
 The model can call **backend tools**: functions the runtime executes.
 The full list with schemas is at `GET /api/debug/tools`. Built-in tools
 are part of the runtime and present whenever their own service is
-(artifacts need Postgres, media a provider key). Capabilities (what the
+(media needs a provider key; artifacts also work in process memory). Capabilities (what the
 assistant can do) are offered only when a provider (who does it) is
 configured, so the model is never given a tool that cannot work;
 configuration lists the providers.
@@ -83,7 +84,7 @@ configuration lists the providers.
 | time, screen | `get_time`, `look_at_screen` | nothing (a host that sends screenshots, for the screen) |
 | notes | `manage_notes` | `NOTES_PATH` |
 | library | `list_documents`, `read_document` | `LIBRARY_PATHS` |
-| artifacts | `manage_artifacts` | Postgres |
+| artifacts | `manage_artifacts` | nothing; Postgres makes versions durable |
 | peers, rooms, reminders, activity, workgroups, repositories | `list_agents`, `start_agent`, `send_agent_message`, `create_meeting_room`, `add_schedule_item`, `get_delivery_status`, `create_swarm`, `onboard_repo`, ... | `BACKBONE_URL` |
 | approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR`, and `approvals` named in `TOOLS__PROVIDER_CAPABILITIES` (it types into other agents' terminals) |
 | issues | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
@@ -102,8 +103,8 @@ when the file is absent.
 ## Host tools
 
 Tools the **host application executes**, not the runtime: navigate to a
-page, select an item, refresh a view. They are declared in configuration
-(`TOOLS__HOST_TOOLS`), so the runtime ships none. When the model calls
+page, select an item, refresh a view. Declare them in configuration (`TOOLS__HOST_TOOLS`) or in the request
+(`host_context.actions`); the runtime ships no application-specific actions. When the model calls
 one, the runtime emits a `tool_call` event with `category: "host"`,
 ends the turn with `final_response.pending_tool_call`, and waits. The host
 performs the action and sends a continuation with the matching
@@ -234,14 +235,14 @@ may lower `max_turns` and the thinking budgets but never raise them past
 what the host set. Reaching a limit ends the turn with a saved partial
 message and a terminal `usage_limit` error.
 
-A predictable worst case for one turn, with `max_turns=3`,
-`ASSISTANT__BUDGET__TOOL_CALLS=4`, `ASSISTANT__BUDGET__OUTPUT_TOKENS=2000`
-and `THINKING_BUDGET=1000`: at most three model requests, four tool
-executions and 2,000 output tokens (plus the thinking tokens the provider
-bills), on top of the prompt and history the runtime sends — which the
-history budget (`HISTORY__TOKEN_BUDGET`) keeps bounded. Summarisation and
-working-memory calls are separate, smaller requests reported under
-`auxiliary`; disable the latter with `enable_working_memory=false`.
+For example, `max_turns=3` and `ASSISTANT__BUDGET__TOOL_CALLS=4` limit a turn
+to three model requests and four tool executions.
+`ASSISTANT__BUDGET__OUTPUT_TOKENS=2000` stops a turn when reported output
+usage exceeds that threshold; it is not a provider-side generation cap, so
+usage can exceed it before the runtime detects the breach. The history budget
+is also an estimate, not a hard cap on the complete prompt. Summarisation and
+working-memory calls are accounted for separately under `auxiliary`; disable
+the latter with `enable_working_memory=false`.
 
 ## Envelopes
 
