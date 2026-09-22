@@ -863,3 +863,35 @@ class TestRobustness:
         names = {r["filename"] for r in results}
         assert len(names) == 5
         assert len(list(notes_dir.glob("*.md"))) == 5
+
+
+@pytest.mark.parametrize("action", ["read", "update", "list", "search"])
+async def test_notes_do_not_follow_symlinks_outside_root(tmp_path, action):
+    root = tmp_path / "notes"
+    root.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside marker")
+    (root / "linked.md").symlink_to(outside)
+    result = await _manage(root)(
+        action=action, filename="linked.md", content="changed", query="marker"
+    )
+    assert outside.read_text() == "outside marker"
+    if action in ("read", "update"):
+        assert result["success"] is False
+    else:
+        assert result["count"] == 0
+
+
+async def test_notes_keep_in_root_symlinks_and_configured_symlink_root(tmp_path):
+    root = tmp_path / "notes"
+    root.mkdir()
+    (root / "original.md").write_text("inside marker")
+    (root / "linked.md").symlink_to(root / "original.md")
+    configured = tmp_path / "configured"
+    configured.symlink_to(root, target_is_directory=True)
+    assert (await _manage(configured)(action="read", filename="linked.md"))[
+        "content"
+    ] == "inside marker"
+    result = await _manage(configured)(action="update", filename="linked.md", content="changed")
+    assert result["success"] is True
+    assert "changed" in (root / "original.md").read_text()

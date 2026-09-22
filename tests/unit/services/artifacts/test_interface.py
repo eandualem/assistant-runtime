@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -118,6 +119,26 @@ class TestActiveTexts:
         await service.active_texts()
         assert service._store.get_all_active.await_count == 2
 
+    async def test_old_cache_fill_cannot_hide_a_newly_activated_version(self):
+        service = await _service()
+        await service.update("persona", "old", actor=HOST)
+        original = service._store.get_all_active
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def read_active(scope):
+            rows = await original(scope)
+            started.set()
+            await release.wait()
+            return rows
+
+        service._store.get_all_active = read_active
+        old_read = asyncio.create_task(service.active_texts())
+        await started.wait()
+        await service.update("persona", "new", actor=HOST)
+        release.set()
+        assert (await old_read)["persona"] == "old"
+        assert (await service.active_texts())["persona"] == "new"
+
     async def test_store_failure_falls_back_to_defaults(self):
         service = await _service()
         service._store.get_all_active = AsyncMock(side_effect=RuntimeError("down"))
@@ -219,6 +240,24 @@ class TestVersions:
             await service.propose("soul", "x", actor=HOST)
         with pytest.raises(UnknownArtifactError):
             service.allowed_actions("soul", "host")
+
+    async def test_concurrent_edits_detect_the_stale_version(self):
+        service = await _service()
+        original = service._store.get_active
+
+        async def read_active(scope, name):
+            active = await original(scope, name)
+            await asyncio.sleep(0)  # A store read can yield before the following write.
+            return active
+
+        service._store.get_active = read_active
+        results = await asyncio.gather(
+            service.update("scratchpad", "first", actor=ASSISTANT, expected_version=0),
+            service.update("scratchpad", "second", actor=ASSISTANT, expected_version=0),
+            return_exceptions=True,
+        )
+        assert sum(isinstance(result, ArtifactConflictError) for result in results) == 1
+        assert len(await service.history("scratchpad")) == 1
 
     async def test_stale_expected_version_conflicts(self):
         service = await _service()

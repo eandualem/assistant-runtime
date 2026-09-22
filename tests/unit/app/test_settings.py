@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import fields
 from datetime import UTC, datetime
@@ -336,6 +337,33 @@ class TestRuntimeSettingsDB:
         mock_settings_repo_cls.assert_called_once()
         mock_repo.save.assert_awaited_once()
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_concurrent_updates_persist_in_order(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        stored = {}
+
+        async def save(state):
+            if state["temperature"] == 0.5:
+                started.set()
+                await release.wait()
+            stored.update(state)
+
+        rs = RuntimeSettings(
+            frozen_config=AssistantConfig(), database_service=self._make_mock_db(healthy=True)
+        )
+        with patch(
+            "assistant_runtime.services.database.repositories.SettingsRepository"
+        ) as repository:
+            repository.return_value.save = save
+            first = asyncio.create_task(rs.update(temperature=0.5))
+            await started.wait()
+            second = asyncio.create_task(rs.update(temperature=0.8))
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(first, second)
+
+        assert stored["temperature"] == rs.get("temperature") == 0.8
 
     @pytest.mark.asyncio
     async def test_persist_sends_full_state(self):

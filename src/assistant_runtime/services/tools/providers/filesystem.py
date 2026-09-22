@@ -16,6 +16,13 @@ FILENAME_PATTERN = re.compile(r"^[\w\-]+\.md$")
 _SLUG_INVALID_CHARS = re.compile(r"[^a-z0-9]+")
 
 
+def _inside_root(target: Path, root: Path) -> bool:
+    try:
+        return target.resolve().is_relative_to(root.resolve())
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
 def slugify(text: str) -> str:
     """A URL-safe slug for a title, at most 80 characters."""
     slug = _SLUG_INVALID_CHARS.sub("-", text.lower().strip())
@@ -67,10 +74,7 @@ class MarkdownNotes:
     # --- validation ------------------------------------------------------------
 
     def _is_inside_root(self, target: Path) -> bool:
-        try:
-            return target.resolve().is_relative_to(self.root.resolve())
-        except (ValueError, OSError):
-            return False
+        return _inside_root(target, self.root)
 
     def validate_note_path(self, note_path: str) -> str | None:
         """An error for a ``folder/sub/note.md`` path that is unsafe, else None."""
@@ -104,6 +108,8 @@ class MarkdownNotes:
         )
         if error:
             return None, error
+        if not self._is_inside_root(self.root / filename):
+            return None, "Invalid note path — resolves outside notes directory"
         return self.root / filename, None
 
     # --- files -----------------------------------------------------------------
@@ -120,6 +126,8 @@ class MarkdownNotes:
 
     def parse_note(self, path: Path) -> dict[str, Any] | None:
         """A note file as a dict (filename, path, folder, title, date, tags, content), or None."""
+        if not self._is_inside_root(path):
+            return None
         try:
             content = path.read_text(encoding="utf-8")
         except OSError:
@@ -246,6 +254,10 @@ class MarkdownNotes:
             return {"error": "Provide content or tags to update", "success": False}
         new_content = content if content else parsed["content"]
         new_tags = tags if tags is not None else parsed["tags"]
+        # Reading ran in a worker; check containment again before a write.
+        path, error = self._resolve(filename)
+        if error:
+            return {"error": error, "success": False}
         await asyncio.to_thread(
             path.write_text, build_note_content(parsed["title"], new_content, new_tags), "utf-8"
         )
@@ -367,10 +379,10 @@ class FilesystemLibrary:
         self.roots = roots
         self.index_names = index_names
 
-    def _index_file(self, entry: Path) -> Path | None:
+    def _index_file(self, entry: Path, root: Path) -> Path | None:
         for name in self.index_names:
             candidate = entry / name
-            if candidate.is_file():
+            if _inside_root(candidate, root) and candidate.is_file():
                 return candidate
         return None
 
@@ -382,7 +394,7 @@ class FilesystemLibrary:
         for entry in sorted(root.iterdir()):
             if not entry.is_dir():
                 continue
-            index = self._index_file(entry)
+            index = self._index_file(entry, root)
             if index is None:
                 continue
             try:
@@ -417,7 +429,7 @@ class FilesystemLibrary:
             return {"success": False, "error": f"Unknown collection '{collection}'"}
         roots = {collection: self.roots[collection]} if collection else self.roots
         for coll, root in roots.items():
-            index = self._index_file(root / name)
+            index = self._index_file(root / name, root)
             if index is None:
                 continue
             try:

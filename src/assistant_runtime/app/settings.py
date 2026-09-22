@@ -104,7 +104,7 @@ class RuntimeSettings:
                     self._overrides[field] = value
             self._updated_at = datetime.now(UTC)
 
-        return await self._persist_to_db()
+            return await self._persist_to_db()
 
     async def load_from_db(self) -> None:
         """Load persisted overrides on startup; silently skipped without a database.

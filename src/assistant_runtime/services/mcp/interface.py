@@ -51,7 +51,6 @@ class MCPService:
         self._exit_stack: AsyncExitStack | None = None
         self._detailed_cache: list[dict[str, Any]] | None = None
         self._detailed_cache_task: asyncio.Task[list[dict[str, Any]]] | None = None
-        self._detailed_cache_lock = asyncio.Lock()
         self._started = False
 
     async def start(self) -> None:
@@ -101,6 +100,11 @@ class MCPService:
 
     async def stop(self) -> None:
         """Close all server connections."""
+        self._started = False
+        task = self._detailed_cache_task
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         if self._exit_stack is not None:
             try:
                 await self._exit_stack.aclose()
@@ -152,35 +156,26 @@ class MCPService:
         Returns a list of dicts with name, tools (list of tool names), and
         tool_count per live server.
         """
+        if not self._started:
+            return []
         if self._detailed_cache is not None:
             return self._detailed_cache
-
-        created = False
-        async with self._detailed_cache_lock:
-            if self._detailed_cache is not None:
-                return self._detailed_cache
-            if self._detailed_cache_task is None:
-                self._detailed_cache_task = asyncio.create_task(self._build_detailed_summary())
-                created = True
-            task = self._detailed_cache_task
-
-        try:
-            summaries = await task
-        finally:
-            if created:
-                async with self._detailed_cache_lock:
-                    if self._detailed_cache_task is task:
-                        self._detailed_cache_task = None
-
-        self._detailed_cache = summaries
-        return summaries
+        # Creation has no await: one producer owns the shared cache, regardless
+        # of which request waits for it or gets cancelled first.
+        if self._detailed_cache_task is None:
+            self._detailed_cache_task = asyncio.create_task(self._build_detailed_summary())
+        return await asyncio.shield(self._detailed_cache_task)
 
     async def _build_detailed_summary(self) -> list[dict[str, Any]]:
         """Build detailed summaries for all live servers in parallel."""
-        summaries = await asyncio.gather(
-            *(self._summarize_server(server) for server in self._live_servers)
-        )
-        return list(summaries)
+        try:
+            summaries = await asyncio.gather(
+                *(self._summarize_server(server) for server in self._live_servers)
+            )
+            self._detailed_cache = list(summaries)
+            return self._detailed_cache
+        finally:
+            self._detailed_cache_task = None
 
     async def _summarize_server(self, server: Any) -> dict[str, Any]:
         """Return the detailed tool summary for one MCP server."""

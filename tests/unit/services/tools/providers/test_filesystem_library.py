@@ -109,3 +109,33 @@ class TestLibraryCapability:
         read = await registry._backend_handlers["read_document"](name="onboarding")
         assert read["success"] is True
         assert (await registry._backend_handlers["read_document"](name=""))["success"] is False
+
+
+@pytest.mark.parametrize("link_directory", [False, True])
+async def test_library_does_not_follow_symlinks_outside_collection(tmp_path, link_directory):
+    root = tmp_path / "library"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "README.md").write_text("outside marker")
+    if link_directory:
+        (root / "linked").symlink_to(outside, target_is_directory=True)
+    else:
+        (root / "linked").mkdir()
+        (root / "linked" / "README.md").symlink_to(outside / "README.md")
+    library = FilesystemLibrary({"docs": root})
+    assert (await library.read_document(name="linked", collection="docs"))["success"] is False
+    assert (await library.list_documents(collection="docs"))["documents"] == []
+
+
+async def test_library_keeps_links_inside_a_symlinked_collection_root(tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    _document(root, "original")
+    (root / "linked").symlink_to(root / "original", target_is_directory=True)
+    configured = tmp_path / "configured"
+    configured.symlink_to(root, target_is_directory=True)
+    library = FilesystemLibrary({"docs": configured})
+    result = await library.read_document(name="linked", collection="docs")
+    assert result["success"] is True
+    assert "original" in result["content"]

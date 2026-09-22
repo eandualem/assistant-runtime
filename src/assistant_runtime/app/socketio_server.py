@@ -173,6 +173,11 @@ class AssistantNamespace(socketio.AsyncNamespace):
             )
             return
         principal = self._principal(sid)
+        if principal is None:
+            await self._forbid(
+                sid, AuthenticationError("Socket.IO connection is not authenticated")
+            )
+            return
         streaming_service = self._try_get_streaming_service()
         if streaming_service is not None:
             warm = getattr(streaming_service, "warm_session", None)
@@ -216,10 +221,18 @@ class AssistantNamespace(socketio.AsyncNamespace):
             )
             return
 
+        principal = self._principal(sid)
+        if principal is None:
+            await self._forbid(
+                sid, AuthenticationError("Socket.IO connection is not authenticated")
+            )
+            return
         async with self._session_lock(request.session_id):
-            await self._start_request(sid, request)
+            await self._start_request(sid, request, principal)
 
-    async def _start_request(self, sid: str, request: AssistantRequest) -> None:
+    async def _start_request(
+        self, sid: str, request: AssistantRequest, principal: Principal
+    ) -> None:
         """Start a request while its session's transport ownership is locked."""
         session_id = request.session_id
         try:
@@ -235,7 +248,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
                 action = await self._streaming_service.accept_steering(
                     request,
                     has_live_stream=has_live_stream,
-                    principal=self._principal(sid),
+                    principal=principal,
                 )
             except AccessDeniedError as e:
                 await self._forbid(sid, e)
@@ -254,7 +267,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
                 )
             else:
                 if action == "promoted":
-                    self._start_stream(sid, request)
+                    self._start_stream(sid, request, principal)
             return
 
         # Let native cancellation persist the previous turn before replacing
@@ -266,9 +279,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
                 self._release_stream(session_id, active_task)
             elif not request.is_continuation:
                 try:
-                    await self._streaming_service.cancel_session(
-                        session_id, principal=self._principal(sid)
-                    )
+                    await self._streaming_service.cancel_session(session_id, principal=principal)
                 except AccessDeniedError as e:
                     await self._forbid(sid, e)
                     return
@@ -285,7 +296,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
                     session_id=session_id,
                 )
 
-        self._start_stream(sid, request)
+        self._start_stream(sid, request, principal)
 
     async def on_assistant_cancel(self, sid: str, data: dict[str, Any]) -> None:
         """Cancel an active stream for a session."""
@@ -293,12 +304,18 @@ class AssistantNamespace(socketio.AsyncNamespace):
         if not session_id:
             return
 
+        principal = self._principal(sid)
+        if principal is None:
+            await self._forbid(
+                sid, AuthenticationError("Socket.IO connection is not authenticated")
+            )
+            return
         async with self._session_lock(session_id):
             task = self._active_streams.get(session_id)
             delivery = self._stream_delivery.get(task)
             try:
                 cancelled = await self._streaming_service.cancel_session(
-                    session_id, principal=self._principal(sid)
+                    session_id, principal=principal
                 )
             except AccessDeniedError as e:
                 await self._forbid(sid, e)
@@ -330,11 +347,11 @@ class AssistantNamespace(socketio.AsyncNamespace):
             self._session_locks[session_id] = lock
         return lock
 
-    def _start_stream(self, sid: str, request: AssistantRequest) -> None:
+    def _start_stream(self, sid: str, request: AssistantRequest, principal: Principal) -> None:
         self._start_transport(
             sid,
             request.session_id,
-            self._streaming_service.stream_message(request, principal=self._principal(sid)),
+            self._streaming_service.stream_message(request, principal=principal),
         )
 
     async def _cancelled_before_start_events(

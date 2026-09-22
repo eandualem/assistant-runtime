@@ -24,6 +24,7 @@ from typing import Any
 
 from loguru import logger
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelMessage,
     ModelRequest,
     ModelResponse,
@@ -317,7 +318,15 @@ class HistoryManager:
                     key = f"{part.part_kind}:{part.tool_call_id}"
                 else:
                     content = getattr(part, "content", "")
-                    key = f"{part.part_kind}:{len(content) if isinstance(content, str) else 0}"
+                    if isinstance(part, UserPromptPart) and not isinstance(content, str):
+                        content = list(content)
+                        for index, item in enumerate(content):
+                            if isinstance(item, BinaryContent):
+                                # Keep metadata without expanding binary bytes into text.
+                                item = copy.copy(item)
+                                item.data = hashlib.blake2b(item.data, digest_size=16).digest()
+                                content[index] = item
+                    key = f"{part.part_kind}:{json.dumps(content, default=str, sort_keys=True)}"
                 digest.update(key.encode())
                 digest.update(b"\0")
             digest.update(b"\n")

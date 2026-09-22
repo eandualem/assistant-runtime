@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,7 +18,7 @@ def _namespace(access: AccessService | None, streaming=None) -> AssistantNamespa
     namespace = AssistantNamespace("/assistant")
     server = MagicMock()
     server.fastapi_app.state.access_service = access
-    server.fastapi_app.state.streaming_service = streaming or MagicMock()
+    server.fastapi_app.state.streaming_service = streaming if streaming is not None else MagicMock()
     namespace.server = server
     namespace.emit = AsyncMock()
     namespace.enter_room = AsyncMock()
@@ -109,3 +110,77 @@ class TestHandlersCarryThePrincipal:
         await namespace.on_assistant_cancel("sid-1", {"session_id": "s1"})
         event, payload = namespace.emit.await_args.args[:2]
         assert (event, payload["type"]) == ("assistant:error", "forbidden")
+
+    @pytest.mark.parametrize("operation", ["cancel", "message", "steering"])
+    async def test_queued_handler_keeps_its_principal_after_disconnect(self, connected, operation):
+        namespace, streaming = connected
+        observed = []
+
+        async def stream(request, *, principal):
+            observed.append(principal)
+            yield {"type": "agent_status", "status": "completed"}
+
+        streaming.stream_message = stream
+        lock = namespace._session_lock("s1")
+        await lock.acquire()
+        payload = {"id": "m1", "session_id": "s1", "content": "hello"}
+        if operation == "steering":
+            payload["message_type"] = "steering"
+        handler = (
+            namespace.on_assistant_cancel
+            if operation == "cancel"
+            else namespace.on_assistant_message
+        )
+        pending = asyncio.create_task(handler("sid-1", payload))
+        await asyncio.sleep(0)
+        await namespace.on_disconnect("sid-1")
+        lock.release()
+        await pending
+        if operation == "message":
+            await asyncio.gather(*namespace._active_streams.values())
+            assert observed == [Principal(id="alice")]
+        else:
+            call = streaming.cancel_session if operation == "cancel" else streaming.accept_steering
+            assert call.await_args.kwargs["principal"] == Principal(id="alice")
+
+    @pytest.mark.parametrize("operation", ["join_session", "message", "cancel"])
+    async def test_handler_without_authenticated_socket_never_calls_service(
+        self, connected, operation
+    ):
+        namespace, streaming = connected
+        await namespace.on_disconnect("sid-1")
+        handler = getattr(namespace, f"on_assistant_{operation}")
+        await handler("sid-1", {"id": "m1", "session_id": "s1", "content": "hello"})
+        assert streaming.mock_calls == []
+        namespace.enter_room.assert_not_awaited()
+        event, payload = namespace.emit.await_args.args[:2]
+        assert (event, payload["type"]) == ("assistant:error", "forbidden")
+
+    async def test_steering_promotion_keeps_identity_during_disconnect(self, connected):
+        namespace, streaming = connected
+        accepted, release = asyncio.Event(), asyncio.Event()
+        observed = []
+
+        async def promote(*args, **kwargs):
+            accepted.set()
+            await release.wait()
+            return "promoted"
+
+        async def stream(request, *, principal):
+            observed.append(principal)
+            yield {"type": "agent_status", "status": "completed"}
+
+        streaming.accept_steering = promote
+        streaming.stream_message = stream
+        pending = asyncio.create_task(
+            namespace.on_assistant_message(
+                "sid-1",
+                {"id": "m1", "session_id": "s1", "content": "hello", "message_type": "steering"},
+            )
+        )
+        await accepted.wait()
+        await namespace.on_disconnect("sid-1")
+        release.set()
+        await pending
+        await asyncio.gather(*namespace._active_streams.values())
+        assert observed == [Principal(id="alice")]

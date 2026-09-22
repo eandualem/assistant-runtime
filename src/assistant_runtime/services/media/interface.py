@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from loguru import logger
@@ -16,7 +17,7 @@ from assistant_runtime.services.media._video_providers import (
     submit_runway,
 )
 from assistant_runtime.services.media.config import MediaConfig
-from assistant_runtime.services.media.exceptions import MediaError, ProviderError
+from assistant_runtime.services.media.exceptions import MediaError, ProviderError, VideoJobError
 from assistant_runtime.services.media.models import (
     GeneratedImage,
     MediaResult,
@@ -57,6 +58,7 @@ class MediaService:
         self._cache: ImageCache | None = None
         self._job_tracker: JobTracker | None = None
         self._runtime_settings = None
+        self._video_submissions: set[asyncio.Task] = set()
         self._started = False
 
     async def start(self) -> None:
@@ -81,6 +83,12 @@ class MediaService:
 
     async def stop(self) -> None:
         """Clear cache, cancel video jobs, and shut down."""
+        self._started = False
+        submissions = list(self._video_submissions)
+        for task in submissions:
+            task.cancel()
+        if submissions:
+            await asyncio.gather(*submissions, return_exceptions=True)
         if self._job_tracker is not None:
             await self._job_tracker.stop_all()
         self._job_tracker = None
@@ -215,17 +223,28 @@ class MediaService:
         resolved_model = model or runtime_default
         provider, model_name = self._parse_video_model_id(resolved_model)
 
-        # Submit to provider and get poll function
-        provider_job_id = await self._submit_video(provider, model_name, prompt, duration)
         video_poll_fn = self._get_video_poll_fn(provider)
-
-        # Register with job tracker
-        job = self._job_tracker.submit(
-            provider_job_id=provider_job_id,
-            provider=provider,
-            model=resolved_model,
-            poll_fn=video_poll_fn,
-        )
+        # Reserve before allocating provider work. Admission and transfer to the
+        # tracker have no await, so concurrent calls cannot overbook a slot.
+        if (
+            self._job_tracker.active_count() + len(self._video_submissions)
+            >= self._config.video_max_concurrent_jobs
+        ):
+            raise VideoJobError(
+                f"Maximum concurrent video jobs ({self._config.video_max_concurrent_jobs}) reached"
+            )
+        task = asyncio.current_task()
+        self._video_submissions.add(task)
+        try:
+            provider_job_id = await self._submit_video(provider, model_name, prompt, duration)
+            job = self._job_tracker.submit(
+                provider_job_id=provider_job_id,
+                provider=provider,
+                model=resolved_model,
+                poll_fn=video_poll_fn,
+            )
+        finally:
+            self._video_submissions.discard(task)
 
         result = VideoResult(
             job_id=job.internal_id,

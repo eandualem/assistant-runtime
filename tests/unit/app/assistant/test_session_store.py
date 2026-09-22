@@ -340,12 +340,17 @@ class TestSingleflightHydration:
         second = asyncio.create_task(store.get_context_if_exists_async("sess-1"))
         await asyncio.sleep(0)
         first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        third = asyncio.create_task(store.get_context_if_exists_async("sess-1"))
+        await asyncio.sleep(0)
         release.set()
 
         ctx = await second
+        assert await third is ctx
         assert ctx is not None
         assert ctx["turn_number"] == 3
         assert store._db.load.await_count == 1
+        assert not store._pending_db_loads
 
 
 class TestOwnership:

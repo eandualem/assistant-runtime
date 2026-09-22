@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from functools import partial
 from typing import Any
 
 import httpx
@@ -52,13 +53,14 @@ async def _github_request(
     *,
     json_body: dict[str, Any] | None = None,
     params: dict[str, str] | None = None,
+    token: str | None = None,
 ) -> tuple[int, Any]:
     """Make a GitHub API request. Returns (status_code, parsed_json_body).
 
     Returns (-1, error_dict) if the token is not configured or on network error.
-    Token is read at call time (not import time) so load_dotenv() in lifespan works.
+    Omitted credentials use the environment; provider instances bind their startup token.
     """
-    github_token = os.environ.get("GITHUB_TOKEN", "")
+    github_token = os.environ.get("GITHUB_TOKEN", "") if token is None else token
     if not github_token:
         return (
             -1,
@@ -138,38 +140,9 @@ async def create_issue(
     priority: str = "",
 ) -> dict[str, Any]:
     """Create a new issue in the configured repository."""
-    config_error = _repo_config_error()
-    if config_error:
-        return config_error
-
-    if not title or not title.strip():
-        return {"error": "Title cannot be empty", "success": False}
-
-    issue_labels = list(labels)
-    if priority and priority in ("blocking", "non-blocking"):
-        issue_labels.append(priority)
-
-    status, data = await _github_request(
-        "POST",
-        f"/repos/{_repo_slug()}/issues",
-        json_body={"title": title.strip(), "body": body, "labels": issue_labels},
+    return await GitHubIssues().create_issue(
+        title=title, body=body, labels=labels, priority=priority
     )
-
-    if status == -1:
-        return {"error": _request_error(data), "success": False}
-
-    if status not in (200, 201):
-        return {
-            "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
-            "success": False,
-        }
-
-    return {
-        "number": data.get("number"),
-        "url": data.get("html_url"),
-        "title": data.get("title"),
-        "success": True,
-    }
 
 
 async def search_issues(
@@ -179,197 +152,22 @@ async def search_issues(
     limit: int = 20,
 ) -> dict[str, Any]:
     """Search issues in the configured repository."""
-    config_error = _repo_config_error()
-    if config_error:
-        return config_error
-
-    if text:
-        # Use search endpoint for text queries
-        query = f"{text} repo:{_repo_slug()} is:issue state:{state}"
-        if labels:
-            for label in labels:
-                query += f' label:"{label}"'
-
-        status, data = await _github_request(
-            "GET",
-            "/search/issues",
-            params={"q": query, "per_page": str(limit)},
-        )
-
-        if status == -1:
-            return {"error": _request_error(data), "success": False}
-
-        if status != 200:
-            return {
-                "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
-                "success": False,
-            }
-
-        items = data.get("items", [])
-    else:
-        # Use list endpoint for simple filtering
-        params: dict[str, str] = {
-            "state": state,
-            "per_page": str(limit),
-        }
-        if labels:
-            params["labels"] = ",".join(labels)
-
-        status, data = await _github_request(
-            "GET",
-            f"/repos/{_repo_slug()}/issues",
-            params=params,
-        )
-
-        if status == -1:
-            return {"error": _request_error(data), "success": False}
-
-        if status != 200:
-            return {
-                "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
-                "success": False,
-            }
-
-        items = data if isinstance(data, list) else []
-
-    issues = [
-        {
-            "number": item.get("number"),
-            "title": item.get("title"),
-            "state": item.get("state"),
-            "labels": [lbl.get("name", "") for lbl in item.get("labels", [])],
-            "created_at": item.get("created_at"),
-        }
-        for item in items
-    ]
-
-    return {"issues": issues, "count": len(issues), "success": True}
+    return await GitHubIssues().search_issues(state=state, labels=labels, text=text, limit=limit)
 
 
 async def get_issue_details(issue_number: int) -> dict[str, Any]:
     """Get full details of a specific issue including comments."""
-    config_error = _repo_config_error()
-    if config_error:
-        return config_error
-
-    if issue_number <= 0:
-        return {"error": "Issue number must be positive", "success": False}
-
-    path = f"/repos/{_repo_slug()}/issues/{issue_number}"
-
-    status, data = await _github_request("GET", path)
-
-    if status == -1:
-        return {"error": _request_error(data), "success": False}
-
-    if status == 404:
-        return {"error": f"Issue #{issue_number} not found", "success": False}
-
-    if status != 200:
-        return {
-            "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
-            "success": False,
-        }
-
-    # Fetch comments
-    comment_status, comment_data = await _github_request("GET", f"{path}/comments")
-    comments = []
-    if comment_status == 200 and isinstance(comment_data, list):
-        comments = [
-            {
-                "author": c.get("user", {}).get("login", "unknown"),
-                "body": c.get("body", ""),
-                "created_at": c.get("created_at"),
-            }
-            for c in comment_data
-        ]
-
-    return {
-        "number": data.get("number"),
-        "title": data.get("title"),
-        "state": data.get("state"),
-        "body": data.get("body", ""),
-        "labels": [lbl.get("name", "") for lbl in data.get("labels", [])],
-        "comments": comments,
-        "success": True,
-    }
+    return await GitHubIssues().get_issue_details(issue_number=issue_number)
 
 
 async def comment_on_issue(issue_number: int, body: str) -> dict[str, Any]:
     """Add a comment to an issue."""
-    config_error = _repo_config_error()
-    if config_error:
-        return config_error
-
-    if not body or not body.strip():
-        return {"error": "Comment body cannot be empty", "success": False}
-
-    status, data = await _github_request(
-        "POST",
-        f"/repos/{_repo_slug()}/issues/{issue_number}/comments",
-        json_body={"body": body.strip()},
-    )
-
-    if status == -1:
-        return {"error": _request_error(data), "success": False}
-
-    if status not in (200, 201):
-        return {
-            "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
-            "success": False,
-        }
-
-    return {
-        "issue_number": issue_number,
-        "comment_id": data.get("id"),
-        "success": True,
-    }
+    return await GitHubIssues().comment_on_issue(issue_number=issue_number, body=body)
 
 
 async def close_issue(issue_number: int, comment: str = "") -> dict[str, Any]:
     """Close an issue, optionally adding a closing comment first."""
-    config_error = _repo_config_error()
-    if config_error:
-        return config_error
-
-    comment_added = False
-
-    if comment and comment.strip():
-        c_status, c_data = await _github_request(
-            "POST",
-            f"/repos/{_repo_slug()}/issues/{issue_number}/comments",
-            json_body={"body": comment.strip()},
-        )
-        if c_status == -1:
-            return {"error": _request_error(c_data), "success": False}
-        if c_status not in (200, 201):
-            return {
-                "error": f"Failed to add closing comment ({c_status}): {c_data.get('message', 'Unknown error')}",
-                "success": False,
-            }
-        comment_added = True
-
-    status, data = await _github_request(
-        "PATCH",
-        f"/repos/{_repo_slug()}/issues/{issue_number}",
-        json_body={"state": "closed", "state_reason": "completed"},
-    )
-
-    if status == -1:
-        return {"error": _request_error(data), "success": False}
-
-    if status != 200:
-        return {
-            "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
-            "success": False,
-        }
-
-    return {
-        "issue_number": issue_number,
-        "closed": True,
-        "comment_added": comment_added,
-        "success": True,
-    }
+    return await GitHubIssues().close_issue(issue_number=issue_number, comment=comment)
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +178,20 @@ async def close_issue(issue_number: int, comment: str = "") -> dict[str, Any]:
 class GitHubIssues:
     """The issues capability served by this provider (see ``capabilities.issues``)."""
 
+    def __init__(self, *, repo: str | None = None, token: str | None = None) -> None:
+        self._configured_repo = repo
+        self._request = (
+            partial(_github_request, token=token) if token is not None else _github_request
+        )
+
+    @property
+    def _repo(self) -> str:
+        return _repo_slug() if self._configured_repo is None else self._configured_repo
+
+    @property
+    def _repo_error(self) -> dict[str, Any] | None:
+        return _repo_config_error() if self._configured_repo is None else None
+
     async def create_issue(
         self,
         title: str,
@@ -387,7 +199,39 @@ class GitHubIssues:
         labels: list[str],
         priority: str = "",
     ) -> dict[str, Any]:
-        return await create_issue(title=title, body=body, labels=labels, priority=priority)
+        """Create a new issue in the configured repository."""
+        config_error = self._repo_error
+        if config_error:
+            return config_error
+
+        if not title or not title.strip():
+            return {"error": "Title cannot be empty", "success": False}
+
+        issue_labels = list(labels)
+        if priority and priority in ("blocking", "non-blocking"):
+            issue_labels.append(priority)
+
+        status, data = await self._request(
+            "POST",
+            f"/repos/{self._repo}/issues",
+            json_body={"title": title.strip(), "body": body, "labels": issue_labels},
+        )
+
+        if status == -1:
+            return {"error": _request_error(data), "success": False}
+
+        if status not in (200, 201):
+            return {
+                "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
+                "success": False,
+            }
+
+        return {
+            "number": data.get("number"),
+            "url": data.get("html_url"),
+            "title": data.get("title"),
+            "success": True,
+        }
 
     async def search_issues(
         self,
@@ -396,13 +240,192 @@ class GitHubIssues:
         text: str = "",
         limit: int = 20,
     ) -> dict[str, Any]:
-        return await search_issues(state=state, labels=labels, text=text, limit=limit)
+        """Search issues in the configured repository."""
+        config_error = self._repo_error
+        if config_error:
+            return config_error
+
+        if text:
+            # Use search endpoint for text queries
+            query = f"{text} repo:{self._repo} is:issue state:{state}"
+            if labels:
+                for label in labels:
+                    query += f' label:"{label}"'
+
+            status, data = await self._request(
+                "GET",
+                "/search/issues",
+                params={"q": query, "per_page": str(limit)},
+            )
+
+            if status == -1:
+                return {"error": _request_error(data), "success": False}
+
+            if status != 200:
+                return {
+                    "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
+                    "success": False,
+                }
+
+            items = data.get("items", [])
+        else:
+            # Use list endpoint for simple filtering
+            params: dict[str, str] = {
+                "state": state,
+                "per_page": str(limit),
+            }
+            if labels:
+                params["labels"] = ",".join(labels)
+
+            status, data = await self._request(
+                "GET",
+                f"/repos/{self._repo}/issues",
+                params=params,
+            )
+
+            if status == -1:
+                return {"error": _request_error(data), "success": False}
+
+            if status != 200:
+                return {
+                    "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
+                    "success": False,
+                }
+
+            items = data if isinstance(data, list) else []
+
+        issues = [
+            {
+                "number": item.get("number"),
+                "title": item.get("title"),
+                "state": item.get("state"),
+                "labels": [lbl.get("name", "") for lbl in item.get("labels", [])],
+                "created_at": item.get("created_at"),
+            }
+            for item in items
+        ]
+
+        return {"issues": issues, "count": len(issues), "success": True}
 
     async def get_issue_details(self, issue_number: int) -> dict[str, Any]:
-        return await get_issue_details(issue_number=issue_number)
+        """Get full details of a specific issue including comments."""
+        config_error = self._repo_error
+        if config_error:
+            return config_error
+
+        if issue_number <= 0:
+            return {"error": "Issue number must be positive", "success": False}
+
+        path = f"/repos/{self._repo}/issues/{issue_number}"
+
+        status, data = await self._request("GET", path)
+
+        if status == -1:
+            return {"error": _request_error(data), "success": False}
+
+        if status == 404:
+            return {"error": f"Issue #{issue_number} not found", "success": False}
+
+        if status != 200:
+            return {
+                "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
+                "success": False,
+            }
+
+        # Fetch comments
+        comment_status, comment_data = await self._request("GET", f"{path}/comments")
+        comments = []
+        if comment_status == 200 and isinstance(comment_data, list):
+            comments = [
+                {
+                    "author": c.get("user", {}).get("login", "unknown"),
+                    "body": c.get("body", ""),
+                    "created_at": c.get("created_at"),
+                }
+                for c in comment_data
+            ]
+
+        return {
+            "number": data.get("number"),
+            "title": data.get("title"),
+            "state": data.get("state"),
+            "body": data.get("body", ""),
+            "labels": [lbl.get("name", "") for lbl in data.get("labels", [])],
+            "comments": comments,
+            "success": True,
+        }
 
     async def comment_on_issue(self, issue_number: int, body: str) -> dict[str, Any]:
-        return await comment_on_issue(issue_number=issue_number, body=body)
+        """Add a comment to an issue."""
+        config_error = self._repo_error
+        if config_error:
+            return config_error
+
+        if not body or not body.strip():
+            return {"error": "Comment body cannot be empty", "success": False}
+
+        status, data = await self._request(
+            "POST",
+            f"/repos/{self._repo}/issues/{issue_number}/comments",
+            json_body={"body": body.strip()},
+        )
+
+        if status == -1:
+            return {"error": _request_error(data), "success": False}
+
+        if status not in (200, 201):
+            return {
+                "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
+                "success": False,
+            }
+
+        return {
+            "issue_number": issue_number,
+            "comment_id": data.get("id"),
+            "success": True,
+        }
 
     async def close_issue(self, issue_number: int, comment: str = "") -> dict[str, Any]:
-        return await close_issue(issue_number=issue_number, comment=comment)
+        """Close an issue, optionally adding a closing comment first."""
+        config_error = self._repo_error
+        if config_error:
+            return config_error
+
+        comment_added = False
+
+        if comment and comment.strip():
+            c_status, c_data = await self._request(
+                "POST",
+                f"/repos/{self._repo}/issues/{issue_number}/comments",
+                json_body={"body": comment.strip()},
+            )
+            if c_status == -1:
+                return {"error": _request_error(c_data), "success": False}
+            if c_status not in (200, 201):
+                return {
+                    "error": f"Failed to add closing comment ({c_status}): {c_data.get('message', 'Unknown error')}",
+                    "success": False,
+                }
+            comment_added = True
+
+        status, data = await self._request(
+            "PATCH",
+            f"/repos/{self._repo}/issues/{issue_number}",
+            json_body={"state": "closed", "state_reason": "completed"},
+        )
+
+        if status == -1:
+            return {"error": _request_error(data), "success": False}
+
+        if status != 200:
+            return {
+                "error": f"GitHub API error ({status}): {data.get('message', 'Unknown error')}",
+                "success": False,
+            }
+
+        return {
+            "issue_number": issue_number,
+            "closed": True,
+            "comment_added": comment_added,
+            "success": True,
+        }

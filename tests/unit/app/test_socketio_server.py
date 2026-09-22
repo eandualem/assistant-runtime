@@ -8,7 +8,14 @@ import socketio
 
 from assistant_runtime.app.socketio_server import _EVENT_TYPE_MAP, AssistantNamespace, create_sio
 from assistant_runtime.app.streaming.interface import StreamingService
+from assistant_runtime.principal import LOCAL_PRINCIPAL
 from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
+
+
+def _connected_namespace() -> AssistantNamespace:
+    namespace = AssistantNamespace("/assistant")
+    namespace._principals = {"sid-1": LOCAL_PRINCIPAL, "sid-2": LOCAL_PRINCIPAL}
+    return namespace
 
 
 def _server_with_streaming_service(streaming_service: MagicMock) -> MagicMock:
@@ -27,7 +34,7 @@ def _namespace_for_stream(stream):
     service.cancel_session = AsyncMock(return_value=True)
     service.wait_for_session = AsyncMock()
     service.cancelled_before_start_events = StreamingService.cancelled_before_start_events
-    namespace = AssistantNamespace("/assistant")
+    namespace = _connected_namespace()
     namespace.server = _server_with_streaming_service(service)
     namespace.emit = AsyncMock()
     return namespace, service
@@ -53,7 +60,7 @@ class TestEventMap:
 class TestAssistantNamespaceJoin:
     @pytest.mark.asyncio
     async def test_join_session_requires_session_id(self) -> None:
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.emit = AsyncMock()
 
         await namespace.on_assistant_join_session("sid-1", {})
@@ -68,7 +75,7 @@ class TestAssistantNamespaceJoin:
     async def test_join_session_normalises_camel_case_host_context(self) -> None:
         streaming = MagicMock()
         streaming.warm_session = AsyncMock()
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.server = _server_with_streaming_service(streaming)
         namespace.emit = AsyncMock()
         namespace.enter_room = AsyncMock()
@@ -96,7 +103,7 @@ class TestAssistantNamespaceJoin:
     async def test_join_session_rejects_invalid_host_context(self) -> None:
         streaming = MagicMock()
         streaming.warm_session = AsyncMock()
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.server = _server_with_streaming_service(streaming)
         namespace.emit = AsyncMock()
         namespace.enter_room = AsyncMock()
@@ -116,20 +123,20 @@ class TestAssistantNamespaceJoin:
     async def test_join_session_without_context_warms_with_none(self) -> None:
         streaming = MagicMock()
         streaming.warm_session = AsyncMock()
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.server = _server_with_streaming_service(streaming)
         namespace.emit = AsyncMock()
         namespace.enter_room = AsyncMock()
 
         await namespace.on_assistant_join_session("sid-1", {"session_id": "sess-1"})
 
-        streaming.warm_session.assert_awaited_once_with("sess-1", None, principal=None)
+        streaming.warm_session.assert_awaited_once_with("sess-1", None, principal=LOCAL_PRINCIPAL)
 
 
 class TestAssistantNamespaceMessages:
     @pytest.mark.asyncio
     async def test_invalid_payload_emits_validation_error(self) -> None:
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.emit = AsyncMock()
 
         await namespace.on_assistant_message("sid-1", "bad-payload")
@@ -142,7 +149,7 @@ class TestAssistantNamespaceMessages:
 
     @pytest.mark.asyncio
     async def test_starts_stream_for_unified_message_contract(self) -> None:
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.emit = AsyncMock()
 
         async def _stream(_request, **_kwargs):
@@ -178,7 +185,7 @@ class TestAssistantNamespaceMessages:
 
     @pytest.mark.asyncio
     async def test_new_message_cancels_stale_stream(self) -> None:
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.emit = AsyncMock()
 
         old_task = asyncio.create_task(_never_finishes())
@@ -207,7 +214,9 @@ class TestAssistantNamespaceMessages:
 
         assert old_task.cancelling() > 0
         assert old_task.done()
-        streaming_service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+        streaming_service.cancel_session.assert_awaited_once_with(
+            "sess-1", principal=LOCAL_PRINCIPAL
+        )
         streaming_service.wait_for_session.assert_awaited_once_with("sess-1")
         await namespace._active_streams["sess-1"]
 
@@ -238,7 +247,7 @@ class TestAssistantNamespaceMessages:
 
     @pytest.mark.asyncio
     async def test_continuation_does_not_cancel_active_stream(self) -> None:
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.emit = AsyncMock()
 
         old_task = asyncio.create_task(_never_finishes())
@@ -274,7 +283,7 @@ class TestAssistantNamespaceMessages:
 
     @pytest.mark.asyncio
     async def test_steering_is_queued_without_starting_stream(self) -> None:
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.emit = AsyncMock()
         streaming_service = MagicMock()
         streaming_service.accept_steering = AsyncMock(return_value="queued")
@@ -297,7 +306,7 @@ class TestAssistantNamespaceMessages:
 
     @pytest.mark.asyncio
     async def test_promoted_steering_starts_stream_immediately(self) -> None:
-        namespace = AssistantNamespace("/assistant")
+        namespace = _connected_namespace()
         namespace.emit = AsyncMock()
 
         async def _stream(_request, **_kwargs):
@@ -362,7 +371,7 @@ class TestAssistantNamespaceCancellation:
                 assert closed.is_set() is waiting
                 assert namespace._active_streams == {}
                 assert namespace._stream_delivery == {}
-                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=LOCAL_PRINCIPAL)
                 service.wait_for_session.assert_awaited_once_with("sess-1")
                 assert [call.args[1] for call in namespace.emit.await_args_list] == (
                     StreamingService.cancelled_before_start_events("sess-1")
@@ -399,7 +408,7 @@ class TestAssistantNamespaceCancellation:
             async with asyncio.timeout(5):
                 await emitting.wait()
                 await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
-                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=LOCAL_PRINCIPAL)
                 assert task.cancelling() == 0
                 assert not task.done()
                 release_emit.set()
@@ -562,7 +571,7 @@ class TestAssistantNamespaceCancellation:
 
         await namespace.on_assistant_cancel("sid-1", {"session_id": "sess-1"})
 
-        service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+        service.cancel_session.assert_awaited_once_with("sess-1", principal=LOCAL_PRINCIPAL)
 
     async def test_replacement_waits_for_native_drain_before_closing_old_transport(self):
         emitting, drain_started, drained = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -611,7 +620,7 @@ class TestAssistantNamespaceCancellation:
                 await replacement
                 await new_started.wait()
                 assert old_task.done()
-                service.cancel_session.assert_awaited_once_with("sess-1", principal=None)
+                service.cancel_session.assert_awaited_once_with("sess-1", principal=LOCAL_PRINCIPAL)
         finally:
             tasks = [
                 task

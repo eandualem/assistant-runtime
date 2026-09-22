@@ -45,12 +45,12 @@ async def submit_runway(prompt: str, model_name: str, duration: int) -> str:
     try:
         from runwayml import AsyncRunwayML
 
-        client = AsyncRunwayML(api_key=api_key)
-        task = await client.image_to_video.create(
-            model=model_name,
-            prompt_text=prompt,
-            duration=duration,
-        )
+        async with AsyncRunwayML(api_key=api_key) as client:
+            task = await client.image_to_video.create(
+                model=model_name,
+                prompt_text=prompt,
+                duration=duration,
+            )
         job_id = task.id
         logger.info("Runway video job submitted", job_id=job_id, model=model_name)
         return job_id
@@ -72,8 +72,8 @@ async def poll_runway(job_id: str) -> VideoStatus:
     try:
         from runwayml import AsyncRunwayML
 
-        client = AsyncRunwayML(api_key=api_key)
-        task = await client.tasks.retrieve(id=job_id)
+        async with AsyncRunwayML(api_key=api_key) as client:
+            task = await client.tasks.retrieve(id=job_id)
 
         status = task.status.upper() if task.status else "UNKNOWN"
 
@@ -114,11 +114,11 @@ async def submit_luma(prompt: str, model_name: str, duration: int) -> str:
     try:
         from lumaai import AsyncLumaAI
 
-        client = AsyncLumaAI(auth_token=api_key)
-        generation = await client.generations.create(
-            model=model_name,
-            prompt=prompt,
-        )
+        async with AsyncLumaAI(auth_token=api_key) as client:
+            generation = await client.generations.create(
+                model=model_name,
+                prompt=prompt,
+            )
         job_id = generation.id
         logger.info("Luma video job submitted", job_id=job_id, model=model_name)
         return job_id
@@ -140,8 +140,8 @@ async def poll_luma(job_id: str) -> VideoStatus:
     try:
         from lumaai import AsyncLumaAI
 
-        client = AsyncLumaAI(auth_token=api_key)
-        generation = await client.generations.get(id=job_id)
+        async with AsyncLumaAI(auth_token=api_key) as client:
+            generation = await client.generations.get(id=job_id)
 
         state = generation.state.lower() if generation.state else "unknown"
 

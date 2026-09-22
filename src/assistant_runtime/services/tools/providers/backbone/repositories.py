@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from assistant_runtime.services.tools.providers.backbone._client import (
+    BackboneRequest,
     backbone_detail,
     backbone_error,
     backbone_request,
@@ -42,80 +43,17 @@ def _validate_org(org: str) -> str | None:
 
 async def onboard_repo(org: str, url: str) -> dict[str, Any]:
     """Onboard a new repository -- clone, configure CLAUDE.md, .claude/, settings, registry."""
-    error = _validate_org(org)
-    if error:
-        return {"error": error, "success": False}
-
-    if not url or not url.strip():
-        return {"error": "URL cannot be empty", "success": False}
-
-    status, data = await backbone_request(
-        "POST",
-        "/api/repos/onboard",
-        json_body={"org": org, "url": url.strip()},
-    )
-
-    if status == -1:
-        return {"error": backbone_error(data), "success": False}
-
-    if status not in (200, 201):
-        return {
-            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
-            "success": False,
-        }
-
-    return {
-        "repo": data.get("repo"),
-        "org": data.get("org", org),
-        "steps": data.get("steps", []),
-        "success": True,
-    }
+    return await BackboneRepositories().onboard_repo(org=org, url=url)
 
 
 async def check_repo_status(org: str, repo: str) -> dict[str, Any]:
     """Check the onboarding/configuration status of a specific repository."""
-    error = _validate_org(org)
-    if error:
-        return {"error": error, "success": False}
-
-    if not repo or not repo.strip():
-        return {"error": "Repo name cannot be empty", "success": False}
-
-    status, data = await backbone_request(
-        "GET",
-        f"/api/repos/{org}/{repo.strip()}/status",
-    )
-
-    if status == -1:
-        return {"error": backbone_error(data), "success": False}
-
-    if status == 404:
-        return {"error": f"Repository {org}/{repo} not found", "success": False}
-
-    if status != 200:
-        return {
-            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
-            "success": False,
-        }
-
-    return {**data, "success": True}
+    return await BackboneRepositories().check_repo_status(org=org, repo=repo)
 
 
 async def list_repos() -> dict[str, Any]:
     """List all managed repositories across all orgs."""
-    status, data = await backbone_request("GET", "/api/repos")
-
-    if status == -1:
-        return {"error": backbone_error(data), "success": False}
-
-    if status != 200:
-        return {
-            "error": f"Backbone API error ({status}): {backbone_detail(data)}",
-            "success": False,
-        }
-
-    repos = data.get("repos", data.get("items", []))
-    return {"repos": repos, "count": len(repos), "success": True}
+    return await BackboneRepositories().list_repos()
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +64,80 @@ async def list_repos() -> dict[str, Any]:
 class BackboneRepositories:
     """The repositories capability served by this provider (see ``capabilities.repositories``)."""
 
+    def __init__(self, *, request: BackboneRequest | None = None) -> None:
+        self._request = request if request is not None else backbone_request
+
     async def onboard_repo(self, org: str, url: str) -> dict[str, Any]:
-        return await onboard_repo(org=org, url=url)
+        """Onboard a new repository -- clone, configure CLAUDE.md, .claude/, settings, registry."""
+        error = _validate_org(org)
+        if error:
+            return {"error": error, "success": False}
+
+        if not url or not url.strip():
+            return {"error": "URL cannot be empty", "success": False}
+
+        status, data = await self._request(
+            "POST",
+            "/api/repos/onboard",
+            json_body={"org": org, "url": url.strip()},
+        )
+
+        if status == -1:
+            return {"error": backbone_error(data), "success": False}
+
+        if status not in (200, 201):
+            return {
+                "error": f"Backbone API error ({status}): {backbone_detail(data)}",
+                "success": False,
+            }
+
+        return {
+            "repo": data.get("repo"),
+            "org": data.get("org", org),
+            "steps": data.get("steps", []),
+            "success": True,
+        }
 
     async def check_repo_status(self, org: str, repo: str) -> dict[str, Any]:
-        return await check_repo_status(org=org, repo=repo)
+        """Check the onboarding/configuration status of a specific repository."""
+        error = _validate_org(org)
+        if error:
+            return {"error": error, "success": False}
+
+        if not repo or not repo.strip():
+            return {"error": "Repo name cannot be empty", "success": False}
+
+        status, data = await self._request(
+            "GET",
+            f"/api/repos/{org}/{repo.strip()}/status",
+        )
+
+        if status == -1:
+            return {"error": backbone_error(data), "success": False}
+
+        if status == 404:
+            return {"error": f"Repository {org}/{repo} not found", "success": False}
+
+        if status != 200:
+            return {
+                "error": f"Backbone API error ({status}): {backbone_detail(data)}",
+                "success": False,
+            }
+
+        return {**data, "success": True}
 
     async def list_repos(self) -> dict[str, Any]:
-        return await list_repos()
+        """List all managed repositories across all orgs."""
+        status, data = await self._request("GET", "/api/repos")
+
+        if status == -1:
+            return {"error": backbone_error(data), "success": False}
+
+        if status != 200:
+            return {
+                "error": f"Backbone API error ({status}): {backbone_detail(data)}",
+                "success": False,
+            }
+
+        repos = data.get("repos", data.get("items", []))
+        return {"repos": repos, "count": len(repos), "success": True}

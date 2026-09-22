@@ -23,6 +23,7 @@ from assistant_runtime.services.database.repositories import (
     SessionRepository,
     SteeringRepository,
 )
+from assistant_runtime.services.history.models import WorkingMemory
 
 if TYPE_CHECKING:
     from assistant_runtime.services.database.interface import DatabaseService
@@ -108,10 +109,7 @@ class SessionPersistence:
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
     ) -> None:
-        async with (
-            self._write_lock("message", message_id),
-            self._db.session_context() as db_session,
-        ):
+        async with self._db.session_context() as db_session:
             await MessageRepository(db_session).update(
                 message_id, content=content, segments=segments, usage=usage
             )
@@ -152,7 +150,11 @@ class SessionPersistence:
                 session_id,
                 title=ctx.get("title"),
                 turn_number=ctx.get("turn_number", 0),
-                working_memory=ctx.get("working_memory"),
+                working_memory=(
+                    ctx["working_memory"].model_dump(mode="json")
+                    if isinstance(ctx.get("working_memory"), WorkingMemory)
+                    else ctx.get("working_memory")
+                ),
                 telegram_chat_id=ctx.get("telegram_chat_id"),
                 telegram_bound_at=ctx.get("telegram_bound_at"),
                 expires_at=self._expires_at(),
@@ -208,7 +210,11 @@ class SessionPersistence:
                 steering = await SteeringRepository(db_session).list_by_session(session_id)
                 return LoadedSession(
                     turn_number=row.turn_number,
-                    working_memory=row.working_memory,
+                    working_memory=(
+                        WorkingMemory.model_validate(row.working_memory)
+                        if row.working_memory is not None
+                        else None
+                    ),
                     title=row.title,
                     owner_id=row.owner_id,
                     telegram_chat_id=row.telegram_chat_id,

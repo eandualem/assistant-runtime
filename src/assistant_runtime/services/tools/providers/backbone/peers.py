@@ -17,10 +17,14 @@ from assistant_runtime.services.tools.providers._local_sessions import (
     _validate_session_name,
 )
 from assistant_runtime.services.tools.providers.backbone._client import (
+    BackboneRequest,
     backbone_error,
     backbone_request,
 )
-from assistant_runtime.services.tools.providers.backbone._registry_cache import get_registry_cache
+from assistant_runtime.services.tools.providers.backbone._registry_cache import (
+    AgentRegistryCache,
+    get_registry_cache,
+)
 from assistant_runtime.services.tools.request_context import get_current_assistant_session_id
 
 __all__ = ["MAX_SESSION_NAME_LENGTH", "SESSION_NAME_PATTERN", "BackbonePeers"]
@@ -63,37 +67,7 @@ def _read_state_file(session_name: str, state_dir: Path | None = None) -> dict[s
 
 async def list_agents(state_dir: Path | None = None) -> dict[str, Any]:
     """List all running tmux sessions with their agent state."""
-    rc, stdout, stderr = await _run_command(["tmux", "list-sessions", "-F", "#{session_name}"])
-    if rc == 127:
-        return {"error": "tmux is not installed", "success": False}
-    if rc != 0:
-        # tmux returns error when no sessions exist
-        return {"sessions": [], "success": True}
-
-    cache = get_registry_cache()
-    await cache.get_agents()  # ensure cache is populated
-
-    session_names = [s for s in stdout.splitlines() if s.strip()]
-    sessions = []
-    for name in session_names:
-        state = _read_state_file(name, state_dir)
-        info = cache.get_agent_info(name)
-        entry: dict[str, Any] = {
-            "session_name": name,
-            "state": state.get("state", "unknown") if state else "unknown",
-            "entity": state.get("entity") if state else None,
-            "issue": state.get("issue") if state else None,
-            "context": state.get("context") if state else None,
-        }
-        if info:
-            entry["display_name"] = info.get("display_name")
-            entry["role"] = info.get("role")
-            entry["type"] = info.get("type")
-            entry["home"] = info.get("home")
-            entry["runtime"] = info.get("runtime")
-        sessions.append(entry)
-
-    return {"sessions": sessions, "count": len(sessions), "success": True}
+    return await BackbonePeers(state_dir=state_dir).list_agents()
 
 
 async def get_active_agents(
@@ -105,38 +79,7 @@ async def get_active_agents(
     entity metadata. Filters out the configured infrastructure sessions,
     unknown state, and offline agents.
     """
-    cache = get_registry_cache()
-    agents = await cache.get_agents()
-    if agents is None:
-        return {"error": "Backbone agent registry unavailable", "success": False}
-
-    active = []
-    for agent in agents:
-        session = agent.get("session", "")
-        # Skip infrastructure
-        if session in infrastructure_sessions:
-            continue
-        # Skip offline
-        if not agent.get("online"):
-            continue
-        # Skip unknown state (no state file, not a real agent session)
-        state = agent.get("state", "unknown")
-        if state == "unknown" and agent.get("runtime") is None:
-            continue
-
-        active.append(
-            {
-                "session_name": session,
-                "display_name": agent.get("display_name") or session,
-                "role": agent.get("role", ""),
-                "type": agent.get("type", ""),
-                "state": state,
-                "runtime": agent.get("runtime"),
-                "current_issue": agent.get("current_issue"),
-            }
-        )
-
-    return {"agents": active, "count": len(active), "success": True}
+    return await BackbonePeers(infrastructure_sessions=infrastructure_sessions).get_active_agents()
 
 
 async def check_agent_state(session_name: str, state_dir: Path | None = None) -> dict[str, Any]:
@@ -187,55 +130,13 @@ async def start_agent(
     and tmux session creation. After the session starts, an optional initial
     prompt is sent directly via tmux send-keys.
     """
-    error = _validate_session_name(session_name)
-    if error:
-        return {"error": error, "success": False}
-
-    # Delegate to backbone start endpoint
-    body: dict[str, Any] = {"runtime": runtime}
-    if model is not None:
-        body["model"] = model
-    if resume:
-        body["resume"] = True
-
-    status, data = await backbone_request(
-        "POST",
-        f"/api/agents/{session_name}/start",
-        json_body=body,
-    )
-
-    if status == -1:
-        return {"error": backbone_error(data), "success": False}
-
-    if status != 200:
-        return {"error": backbone_error(data), "success": False}
-
-    working_directory = data.get("working_directory", "")
-
-    # Send initial prompt if provided (with delay to let the CLI start)
-    if initial_prompt:
-        await asyncio.sleep(2)
-        rc, _, stderr = await _run_command(
-            ["tmux", "send-keys", "-t", session_name, "-l", initial_prompt]
-        )
-        if rc == 0:
-            await _run_command(["tmux", "send-keys", "-t", session_name, "Enter"])
-
-    logger.info(
-        "Started agent session",
-        session=session_name,
+    return await BackbonePeers().start_agent(
+        session_name=session_name,
         runtime=runtime,
-        directory=working_directory,
+        model=model,
+        resume=resume,
+        initial_prompt=initial_prompt,
     )
-    return {
-        "session_name": session_name,
-        "runtime": runtime,
-        "model": model,
-        "resume": resume,
-        "working_directory": working_directory,
-        "initial_prompt": initial_prompt or None,
-        "success": True,
-    }
 
 
 async def stop_agent(session_name: str, state_dir: Path | None = None) -> dict[str, Any]:
@@ -338,15 +239,86 @@ class BackbonePeers:
         *,
         infrastructure_sessions: frozenset[str] = frozenset(),
         state_dir: Path | None = None,
+        request: BackboneRequest | None = None,
     ) -> None:
         self._infrastructure = infrastructure_sessions
         self._state_dir = state_dir
+        self._request = request if request is not None else backbone_request
+        self._cache = AgentRegistryCache(request=request) if request is not None else None
 
     async def list_agents(self) -> dict[str, Any]:
-        return await list_agents(state_dir=self._state_dir)
+        """List all running tmux sessions with their agent state."""
+        rc, stdout, stderr = await _run_command(["tmux", "list-sessions", "-F", "#{session_name}"])
+        if rc == 127:
+            return {"error": "tmux is not installed", "success": False}
+        if rc != 0:
+            # tmux returns error when no sessions exist
+            return {"sessions": [], "success": True}
+
+        cache = self._cache if self._cache is not None else get_registry_cache()
+        await cache.get_agents()  # ensure cache is populated
+
+        session_names = [s for s in stdout.splitlines() if s.strip()]
+        sessions = []
+        for name in session_names:
+            state = _read_state_file(name, self._state_dir)
+            info = cache.get_agent_info(name)
+            entry: dict[str, Any] = {
+                "session_name": name,
+                "state": state.get("state", "unknown") if state else "unknown",
+                "entity": state.get("entity") if state else None,
+                "issue": state.get("issue") if state else None,
+                "context": state.get("context") if state else None,
+            }
+            if info:
+                entry["display_name"] = info.get("display_name")
+                entry["role"] = info.get("role")
+                entry["type"] = info.get("type")
+                entry["home"] = info.get("home")
+                entry["runtime"] = info.get("runtime")
+            sessions.append(entry)
+
+        return {"sessions": sessions, "count": len(sessions), "success": True}
 
     async def get_active_agents(self) -> dict[str, Any]:
-        return await get_active_agents(infrastructure_sessions=self._infrastructure)
+        """List active AI agents, excluding infrastructure and offline sessions.
+
+        Uses the backbone registry API which provides runtime, state, and
+        entity metadata. Filters out the configured infrastructure sessions,
+        unknown state, and offline agents.
+        """
+        cache = self._cache if self._cache is not None else get_registry_cache()
+        agents = await cache.get_agents()
+        if agents is None:
+            return {"error": "Backbone agent registry unavailable", "success": False}
+
+        active = []
+        for agent in agents:
+            session = agent.get("session", "")
+            # Skip infrastructure
+            if session in self._infrastructure:
+                continue
+            # Skip offline
+            if not agent.get("online"):
+                continue
+            # Skip unknown state (no state file, not a real agent session)
+            state = agent.get("state", "unknown")
+            if state == "unknown" and agent.get("runtime") is None:
+                continue
+
+            active.append(
+                {
+                    "session_name": session,
+                    "display_name": agent.get("display_name") or session,
+                    "role": agent.get("role", ""),
+                    "type": agent.get("type", ""),
+                    "state": state,
+                    "runtime": agent.get("runtime"),
+                    "current_issue": agent.get("current_issue"),
+                }
+            )
+
+        return {"agents": active, "count": len(active), "success": True}
 
     async def check_agent_state(self, session_name: str) -> dict[str, Any]:
         return await check_agent_state(session_name, state_dir=self._state_dir)
@@ -359,9 +331,61 @@ class BackbonePeers:
         resume: bool = False,
         initial_prompt: str = "",
     ) -> dict[str, Any]:
-        return await start_agent(
-            session_name, runtime=runtime, model=model, resume=resume, initial_prompt=initial_prompt
+        """Start a new agent in a tmux session via the backbone start endpoint.
+
+        The backbone handles working directory resolution, command construction,
+        and tmux session creation. After the session starts, an optional initial
+        prompt is sent directly via tmux send-keys.
+        """
+        error = _validate_session_name(session_name)
+        if error:
+            return {"error": error, "success": False}
+
+        # Delegate to backbone start endpoint
+        body: dict[str, Any] = {"runtime": runtime}
+        if model is not None:
+            body["model"] = model
+        if resume:
+            body["resume"] = True
+
+        status, data = await self._request(
+            "POST",
+            f"/api/agents/{session_name}/start",
+            json_body=body,
         )
+
+        if status == -1:
+            return {"error": backbone_error(data), "success": False}
+
+        if status != 200:
+            return {"error": backbone_error(data), "success": False}
+
+        working_directory = data.get("working_directory", "")
+
+        # Send initial prompt if provided (with delay to let the CLI start)
+        if initial_prompt:
+            await asyncio.sleep(2)
+            rc, _, stderr = await _run_command(
+                ["tmux", "send-keys", "-t", session_name, "-l", initial_prompt]
+            )
+            if rc == 0:
+                await _run_command(["tmux", "send-keys", "-t", session_name, "Enter"])
+
+        logger.info(
+            "Started agent session",
+            session=session_name,
+            runtime=runtime,
+            directory=working_directory,
+        )
+        return {
+            "session_name": session_name,
+            "runtime": runtime,
+            "model": model,
+            "resume": resume,
+            "working_directory": working_directory,
+            "initial_prompt": initial_prompt or None,
+            "success": True,
+        }
 
     async def stop_agent(self, session_name: str) -> dict[str, Any]:
         return await stop_agent(session_name, state_dir=self._state_dir)
