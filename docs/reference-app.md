@@ -1,4 +1,4 @@
-# Reference application and adoption status
+# Run the reference application
 
 [Design Studio](https://github.com/eandualem/design-studio) is the reference
 browser application: a Markdown and Mermaid editor with an assistant that
@@ -20,9 +20,10 @@ Design Studio's [demo](https://github.com/eandualem/design-studio#the-demo)
 is an opt-in live model exercise, separate from its deterministic tests.
 It records timings, actions, errors, tokens and estimated costs. It includes
 scenarios for attachments, branching, cancellation, host-action reload and
-artifact proposals. A scenario in the runner is not evidence that it passed.
+artifact proposals. Run the scenarios you need and inspect their results; the runner
+also includes cases that may not trigger the intended model behavior on every run.
 
-The runtime also has a minimal [AG-UI browser example](https://github.com/eandualem/assistant-runtime/tree/develop/examples/agui),
+The runtime also has a minimal [AG-UI browser example](https://github.com/eandualem/assistant-runtime/tree/main/examples/agui),
 and [composition](composition.md) documents a store assistant definition.
 These illustrate public contracts; they are not additional independently
 validated adoption exercises. Socket.IO remains Design Studio's transport.
@@ -35,21 +36,11 @@ persistent sessions and pending actions; without it those are process-local.
 See [persistence](persistence.md) for the exact recovery guarantees and
 [compatibility](compatibility.md) for deterministic execution coverage.
 
-As of 2026-09-12, Design Studio has documented package installation and demo
-commands. Its retained September 7 run against runtime 0.1.0 created a document
-and edited blocks successfully. The run's parse-repair scenario did **not**
-produce a render error, so it does not establish repair. Older feature exercises
-and current implementation support do not constitute a fresh complete live run.
-
-[Issue #95](https://github.com/eandualem/assistant-runtime/issues/95) tracks the
-remaining acceptance evidence: a second unrelated assistant definition run,
-three unrelated integration exercises including an outside developer, measured
-onboarding assistance/time, and complete recovery, rejected-action, artifact
-and cost demonstrations. An agent-run test is not an outside-human adoption
-trial. The original issue's non-browser example conflicts with a later scope
-exclusion and remains a recorded scope discrepancy, not a shipped example.
-The 15-minute installation and one-hour first-action targets are experimental
-targets, not product guarantees.
+Deterministic tests cover runtime contracts with fake providers; they do not
+establish live model quality, browser behavior or recovery in your deployment.
+Use the studio's demo scenarios and the smoke checks below to verify those
+boundaries. See [issue #95](https://github.com/eandualem/assistant-runtime/issues/95)
+for the current independent-adoption evidence and remaining validation work.
 
 ## Separately runnable runtime smoke checks
 

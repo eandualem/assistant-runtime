@@ -2,8 +2,7 @@
 
 For local personal use, the runtime can authenticate the same way the
 Codex CLI does instead of using a usage-billed `OPENAI_API_KEY`. Set
-`OAUTH__ENCRYPTION_KEY` to a Fernet key (`python -c "from
-cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`),
+`OAUTH__ENCRYPTION_KEY` to a Fernet key (`uv run --with cryptography python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`),
 start the server, and either run the device flow
 (`POST /api/oauth/openai/device-code`, then open the returned URL and
 enter the code) or import an existing Codex CLI login

@@ -40,7 +40,7 @@ sessions live in memory, and an unconfigured integration reports
 
 `POST /api/chat` with a message body (below) runs the same turn pipeline
 as the socket and returns `{"content", "model", "session_id",
-"turn_number", "message_id", "pending_tool_call", "decision"}` when the turn ends.
+"turn_number", "message_id", "usage", "pending_tool_call", "decision"}` when the turn ends.
 `pending_tool_call` is set when the turn stopped on a host tool call; answer
 it with a continuation body (`tool_call_id`, `tool_result`). A request
 that does not fit the session is a 409 and is not worth retrying: unknown
@@ -133,7 +133,7 @@ Keys may be camelCase; they are normalised.
 | `attachments` | list, optional | images, documents or text for the model, or a `screenshot` for `look_at_screen`; shape in [the host contract](host-contract.md) |
 | `images` | list of data URLs, optional | legacy: screenshots; a top-level `screenshot` is folded in |
 | `host_context` | object, optional | what the host shows, version 1 of [the host contract](host-contract.md); invalid content is a `422` |
-| `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model`. Budgets can only be lowered; when the host sets `ASSISTANT__REQUEST_MODELS`, a model outside that list keeps the host's value |
+| `config` | object, optional | per-request overrides: `default_model`, `thinking_budget`, `temperature`, `max_turns`, `enable_working_memory`, `summarization_model`, `working_memory_model`, `default_image_model`, `default_video_model`, `subagent_model`, `subagent_thinking_budget`, `codex_service_tier` (see [configuration](configuration.md#three-tiers)). Budgets can only be lowered; when the host sets `ASSISTANT__REQUEST_MODELS`, a model outside that list keeps the host's value |
 | `tool_call_id`, `tool_result` | continuation only | the pending host tool's call id and its result |
 | `tool_outcome` | continuation only | `success` (default) or `failed`: the host could not perform the action; `tool_result` is then the failure the model reads |
 
@@ -165,7 +165,7 @@ requesting socket.
 | `assistant:tool_call` | `tool_name`, `arguments`, `call_id`, `category` (`backend` or `host`) |
 | `assistant:tool_result` | `tool_name`, `output`, `call_id`, `duration_ms`?, `invalidates`? |
 | `assistant:tool_error` | `tool_name`, `error`, `call_id` |
-| `assistant:final_response` | `content`, `model`, `streamed`, `session_id`?, `message_id`?, `trace_id`?, `usage`?, `error`?, `error_type`? (including `cancelled`), `pending_tool_call`? (`{tool_name, call_id, arguments}`) |
+| `assistant:final_response` | `content`, `model`, `streamed`, `session_id`?, `message_id`?, `trace_id`?, `usage`?, `error`?, `error_type`? (including `cancelled`), `decision`? (`hold`, `pending`, `completed`), `pending_tool_call`? (`{tool_name, call_id, arguments, queued}`) |
 | `assistant:error` | `type`, `message`, `error_type`?, `terminal`?, `retry_allowed`?; turn errors use `type: "error"` and a specific `error_type`: `rate_limit`, `provider_error`, `connection_error`, `timeout`, `provider_auth`, `provider_client_error` for provider failures (a timed-out or interrupted provider request is `timeout`, retryable), `usage_limit`, `cancelled`, `session_error`, `forbidden`, `setup_error`, and `internal` only for failures inside the runtime |
 | `assistant:debug` | `type` is one of `debug_request`, `debug_system_prompt`, `debug_history`, `debug_tool_selection`, `debug_agent_config`, `debug_thinking`, `debug_final_response`, `debug_usage`, `debug_error`, `debug_completed`; off by default, on with `STREAMING__EMIT_DEBUG_EVENTS=true` |
 

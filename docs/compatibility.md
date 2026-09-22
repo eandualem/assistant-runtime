@@ -1,16 +1,15 @@
 # Pydantic AI compatibility
 
 The runtime supports Pydantic AI 2.x starting at 2.38.0 (`>=2.38.0,<3`).
-The release/development baseline remains **2.38.0 in `uv.lock`**. Version
-2.40.0 is the comparison target for the migration work in
-[#84](https://github.com/eandualem/assistant-runtime/issues/84). The upper
+The release/development baseline is **2.38.0 in `uv.lock`**. CI also tests
+2.40.0. The upper
 bound prevents an unreviewed major upgrade; it does not assert that every
 future 2.x release has been tested. Prefer the lockfile for deployments.
 
 ## Evidence and reproduction
 
-The 2026-09-05 baseline uses Python 3.12.14. The execution, history and native
-composition cases in `tests/compatibility/` pass on both 2.38.0 and 2.40.0. They run real `Agent`
+The execution, history and native composition cases in `tests/compatibility/`
+run on both 2.38.0 and 2.40.0 in CI. They use real `Agent`
 execution against `FunctionModel`; provider requests are disabled. Session
 reload replaces the database persistence boundary with a fake, so this is
 not a Postgres restart test or a live provider test.
@@ -44,20 +43,18 @@ Requirements were inspected in the published
 [core](https://pypi.org/pypi/pydantic-ai-slim/2.38.0/json) and
 [Harness](https://pypi.org/pypi/pydantic-ai-harness/0.29.0/json) metadata.
 
-## Decisions supported by the cases
+## Integration and test coverage
 
-Test names below refer to `tests/compatibility/`. The composition work in
-[#85](https://github.com/eandualem/assistant-runtime/issues/85) adopted public
-event streaming and steering enqueue so native middleware wraps execution.
-[#86](https://github.com/eandualem/assistant-runtime/issues/86) adds native
-cancellation snapshots and application-owned finalization.
+Test names below refer to `tests/compatibility/`. The runtime uses public
+event streaming, steering enqueue and cancellation snapshots. It owns session
+state, persistence and finalization around those native operations.
 
 | Area | Decision and public API | Executable evidence / remaining application behavior |
 |---|---|---|
 | Streaming graph traversal | **Composed** `Agent.run_stream_events()` | `test_runtime_stream_order_and_complete_tool_arguments`, `test_public_stream_has_complete_tools_and_one_trailing_result`, and native capability guard/wrapper/event-processor cases; retain event naming, segment IDs, full arguments, one final/completed envelope, and suppression of repeated final text |
 | Steering | **Composed** `RunContext.enqueue(priority="asap")` and `EnqueuedMessagesEvent` with the session queue | Same-run delivery remains once; `test_interrupted_steering_remains_pending_for_the_next_turn` verifies retry after cancellation before the model call or during a partial response. Acknowledge only after the consuming model request succeeds |
 | Cancellation | **Composed** `CancellationToken`, `RunCancelled.new_messages()` / `.usage`, and `RunCancelled.from_cancellation()` | Native cases cover partial responses and tool-task teardown; the runtime saves snapshots through the same assistant-row persistence path, including accepted host results, and completes one cancellation lifecycle |
-| Deferred host actions | **Keep composing** `ExternalToolset`, `DeferredToolRequests`, `DeferredToolResults` | Host continuation executes a backend tool once and keeps the same assistant message; batch calls resume upstream after JSON serialization, while the current host protocol rejects two pending calls |
+| Deferred host actions | **Keep composing** `ExternalToolset`, `DeferredToolRequests`, `DeferredToolResults` | Host continuations keep the same assistant message and at most one active pending call. Each non-final result is recorded and the next pending call is handed over without a model run; the model resumes only after the final result |
 | Tool arguments | **Compose** `ToolCallPart.args_as_dict()` | Five serialization cases plus a real streamed host continuation cover dicts, JSON objects, malformed/non-object JSON and empty args |
 | Model-input history cleanup | **Replaced** by the public `Agent` run pipeline; the runtime no longer repairs dangling calls or orphaned results itself ([#87](https://github.com/eandualem/assistant-runtime/issues/87)) | `test_public_history_closes_dangling_calls_including_malformed_args`, `test_public_history_drops_orphaned_results_before_model_request`, `test_public_continuation_closes_older_dangling_call_with_deferred_result`; the source conversation and pending frontier semantics are preserved |
 | Application history policy | **Composed** as a `ProcessHistory` capability (`HistoryService.processor()`), attached to every run of a turn | `test_runtime_clears_old_tool_results_in_model_input_only`, `test_runtime_summarizes_once_per_turn_through_native_execution`, `test_runtime_summary_failure_falls_back_without_failing_the_turn`, `test_runtime_disabled_compaction_leaves_history_to_host_capabilities`; the application owns which branch and records supply history, the budget, clearing and the structured summary |
@@ -78,11 +75,10 @@ the live documentation can advance beyond the lockfile.
 
 ## Observed boundaries and remaining coupling
 
-- Streamed providers can keep tool arguments as a JSON string. The old
-  serializer converted those arguments to `{}`, and pending host payloads
-  preferred that persisted value. The baseline fixes this with native
-  argument parsing. Invalid JSON retains the upstream `INVALID_JSON`
-  marker instead of silently becoming an empty object.
+- Streamed providers can keep tool arguments as a JSON string. Native
+  argument parsing preserves those arguments in pending host payloads. Invalid
+  JSON retains the upstream `INVALID_JSON` marker instead of silently becoming
+  an empty object.
 - Core's public request pipeline both removes orphaned results and repairs
   dangling calls. Inspecting only its dangling-call helper understates that
   support. The tested malformed-history examples are not a guarantee that
@@ -127,9 +123,9 @@ the live documentation can advance beyond the lockfile.
   the run's `UsageLimits` (the runtime's `max_turns`) on the summary, needs a
   resolved `Model` for the subscription transport, writes a plain-text
   summary rather than the runtime's structured `CompactionResult`, and the
-  package still warns about renamed classes. Adoption is deferred until the
-  usage budget work in [#94](https://github.com/eandualem/assistant-runtime/issues/94);
-  applications can attach it today through `AssistantDefinition.capabilities`
+  package warns about renamed classes. These history and budget differences
+  are why the runtime retains its own policy. Applications can attach Harness
+  through `AssistantDefinition.capabilities`
   after disabling the built-in policy.
 - Runtime execution uses `Agent.run_stream_events()` without private graph
   imports or state access. A per-run capability uses public node predicates
@@ -140,11 +136,6 @@ the live documentation can advance beyond the lockfile.
 - `assistant_record_to_flat_messages` still arranges completed and pending
   calls around upstream deferred-resumption behavior. Keep the real mixed
   backend/host continuation case green when changing it.
-
-No dependency upgrade is required for these supported replacements. The
-history policy ([#87](https://github.com/eandualem/assistant-runtime/issues/87))
-and the recovery contract ([#92](https://github.com/eandualem/assistant-runtime/issues/92),
-[persistence](persistence.md)) are implemented on this baseline.
 
 ## GPT-Live client delegation
 

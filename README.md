@@ -9,8 +9,6 @@ An assistant backend for the application you already have: it holds the conversa
 ![Design Studio showing a design document, Mermaid diagram and assistant actions](https://raw.githubusercontent.com/eandualem/design-studio/main/public/screenshot.png)
 
 *Design Studio: the assistant edits a document through actions the application provides.*
-<!-- Elias records this -->
-<!-- Replace the screenshot above with ![Assistant Runtime in the two studios](docs/media/demo.gif) and a recording caption. -->
 
 **Contents** · [What it enables](#what-it-enables) · [See it in an application](#see-it-in-an-application) · [Getting started](#getting-started) · [How it works](#how-it-works) · [How it relates to other tools](#how-it-relates-to-other-tools) · [Documentation](#documentation) · [Development](#development)
 
@@ -21,7 +19,7 @@ An assistant backend for the application you already have: it holds the conversa
 - **A UI that follows the work.** Thinking, text, tool calls and results arrive as ordered events. Cancellation saves partial text and completed work.
 - **A second model role in parallel.** A silent controller can return one application action or a structured hold with `output_mode: host_tools`, while another model handles the conversation.
 - **Voice with the same application context.** GPT-Live carries the conversation over WebRTC and can delegate tasks into the shared tool pipeline, or speak alongside an independent controller.
-- **Typed decisions while the user is still speaking.** Send your application's state and a set of `choice`, `score` and `noul` questions in one call; a decision model answers all of them with calibrated probabilities in one round trip, with no text to parse and about a millisecond of runtime overhead on top of the provider's own latency ([decisions](https://github.com/eandualem/assistant-runtime/blob/main/docs/decisions.md)).
+- **Typed decisions while the user is still speaking.** Send your application's state and ask the decision model to choose an option, rate a level, or estimate whether a statement is true. The runtime returns structured answers and probabilities in one call ([decisions](https://github.com/eandualem/assistant-runtime/blob/main/docs/decisions.md)).
 
 One runtime can serve several applications, each with its own registered profile and host actions.
 
@@ -84,7 +82,7 @@ Start with [getting started](https://github.com/eandualem/assistant-runtime/blob
 
 `assistant-runtime --version` prints the installed release; the OpenAPI schema reports the same version.
 
-The pages ship with the package: `assistant-runtime docs` lists them and `assistant-runtime docs <page>` prints one without a checkout.
+The pages ship with the package: `assistant-runtime docs` lists them and `assistant-runtime docs <page>` prints the guide matching your installed version. Online documentation links here follow the release branch (`main`); source-checkout users can read `docs/` at their checked-out revision.
 
 ## Development
 
@@ -95,7 +93,7 @@ make check
 make dev
 ```
 
-`make check` runs Ruff and the tests without API keys, Postgres or a running server. Pull requests target `develop`; [AGENTS.md](https://github.com/eandualem/assistant-runtime/blob/main/AGENTS.md) defines the architecture and contribution checks.
+`make check` runs Ruff and the tests without API keys, Postgres or a running server. Pull requests target `develop`; [AGENTS.md](https://github.com/eandualem/assistant-runtime/blob/develop/AGENTS.md) defines the architecture and contribution checks.
 
 ```text
 src/assistant_runtime/base/       lifecycle and shared protocols
