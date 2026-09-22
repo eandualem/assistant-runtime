@@ -3,7 +3,7 @@
 By default, settings are read from the environment and a `.env` file in the working
 directory. Nested settings use `__` as the separator: `DATABASE__PORT`,
 `LLM__PRIMARY_MODEL`, `TOOLS__PAGE_SCOPES`. `.env.example` in the
-repository lists every variable with a comment. Python hosts may supply one
+repository shows common settings with comments. Python hosts may supply one
 `AppSettings` object to the [application factories](composition.md); every
 settings-based service uses that object.
 
@@ -44,7 +44,8 @@ If the primary or summarization model's provider has no credentials but
 another provider does, that provider's default is used instead and a
 warning is logged: `openai:gpt-5.6-terra` / `openai:gpt-5.6-luna`,
 `google:gemini-3.1-pro-preview` / `google:gemini-3.8-flash`,
-`openrouter:x-ai/grok-4.1-fast`. Set `LLM__PRIMARY_MODEL` to choose
+`openrouter:x-ai/grok-4.1-fast`, or
+`cerebras:gpt-oss-120b` / `cerebras:qwen-3.8-27b`. Set `LLM__PRIMARY_MODEL` to choose
 explicitly. The summarization model is used for history compaction unless
 `HISTORY__SUMMARIZATION_MODEL` or the runtime `summarization_model`
 override is set. Working-memory extraction uses
@@ -84,7 +85,7 @@ sampling parameters are not sent a temperature.
 | `request_models` | `[]` (any) | model ids a request's `config` may pick for any `*_model` tunable; a request naming another keeps the host's value. Empty allows any model: fine for development, list the allowed ones for a deployment |
 | `max_turns` | `10` | agent loop iterations per request |
 | `enable_working_memory` | `true` | extract working memory after each turn |
-| `session_ttl_hours` | `24` | sessions older than this are cleaned up |
+| `session_ttl_hours` | `24` | Postgres-backed sessions older than this are cleaned up |
 | `profile` | unset (neutral) | `neutral`, `technical_operator`, or the path of a TOML profile file; `AssistantDefinition.profile` takes precedence |
 | `profiles` | `[]` | Additional built-in names or TOML paths registered at startup; requests select the profile name with top-level `profile`, never a path. Duplicate names fail startup. |
 
@@ -233,7 +234,7 @@ default.
 `host` (`localhost`), `port` (`5434`), `user`, `password`, `name` (all
 `assistant_runtime`), `pool_size` (`5`), `pool_overflow` (`10`), `echo`
 (`false`). Postgres is optional: when unreachable, sessions and runtime
-settings stay in memory, default prompt artifacts are used, and
+settings and artifact versions stay in process memory, and
 database-backed endpoints return 503.
 
 ### Application

@@ -109,12 +109,13 @@ same message body with `tool_call_id` = the pending `call_id` and
 `tool_result` = any JSON. The run resumes with that result on the same
 assistant message. When the host could not perform the action, it adds
 `tool_outcome: "failed"`: the model then sees a failed tool result (the
-`tool_result`, as text) and does not repeat the call. A screenshot data
+`tool_result`, as text). The runtime rejects duplicate results for that call,
+but the model may request a new action in a later response. A screenshot data
 URI anywhere in the result is removed from what the model reads and
 offered to `look_at_screen` instead.
 
-The pending call is stored with the session, so a host may answer it after
-the runtime restarted (`GET /api/sessions/{id}` shows `pending_action`).
+With Postgres, the pending call is stored with the session, so a host may
+answer it after the runtime restarted (`GET /api/sessions/{id}` shows `pending_action`).
 
 Errors: a continuation for a call that is not pending is rejected as a
 session error (`409` on HTTP), with a message that says whether its result

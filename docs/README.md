@@ -5,8 +5,9 @@ An installed runtime prints these pages with `assistant-runtime docs <page>`
 
 | Page | What it covers |
 |---|---|
+| [getting-started](getting-started.md) | Install, send a first message, then connect an application |
+| [reference application](reference-app.md) | Run Design Studio and check a live model or database integration |
 | [concepts](concepts.md) | The vocabulary: sessions, turns, tools, host context, artifacts, envelopes |
-| [getting-started](getting-started.md) | Install, one provider key, chat from the terminal, then the server and a client |
 | [subscription](subscription.md) | Local ChatGPT/Codex login, subscription routing and Fast mode |
 | [voice](voice.md) | GPT-Live setup, browser connection, delegation and call accounting |
 | [decisions](decisions.md) | Typed decisions from a decision model: enabling, the call shape, errors and measured overhead |
@@ -19,5 +20,6 @@ An installed runtime prints these pages with `assistant-runtime docs <page>`
 | [composition](composition.md) | Native Pydantic AI extensions and request dependencies in a Python host |
 | [compatibility](compatibility.md) | Tested dependency versions and migration boundaries |
 
-For the complete browser application, separately runnable live smoke checks and
-current adoption limits, see [reference application](reference-app.md).
+Start with getting started for terminal chat, the reference application for a
+working browser client, or composition to embed the runtime in Python.
+The API and host contract pages describe the request, event and action shapes.

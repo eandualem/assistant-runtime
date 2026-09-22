@@ -261,8 +261,7 @@ this composition API. The compatibility cases run an external module through
 HTTP and in-process calls with real agent execution and concurrent dependency
 resolution.
 
-This definition supplies native extensions. Configurable prompt artifact
-schemas and neutral defaults are tracked separately in #88. External toolsets
+This definition supplies native extensions and the profile described above. External toolsets
 that defer execution still need the runtime's configured host-tool names and
 schemas; arbitrary deferred-action protocols and native custom-event mapping
 are not introduced by this API.
