@@ -23,6 +23,7 @@ from assistant_runtime.services.database.repositories import (
     SessionRepository,
     SteeringRepository,
 )
+from assistant_runtime.services.history.models import WorkingMemory
 
 if TYPE_CHECKING:
     from assistant_runtime.services.database.interface import DatabaseService
@@ -41,7 +42,7 @@ class LoadedSession:
     """A session row with its messages and steering, as stored."""
 
     turn_number: int
-    working_memory: Any
+    working_memory: WorkingMemory | None
     title: str | None
     owner_id: str | None
     telegram_chat_id: str | None
@@ -108,10 +109,7 @@ class SessionPersistence:
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
     ) -> None:
-        async with (
-            self._write_lock("message", message_id),
-            self._db.session_context() as db_session,
-        ):
+        async with self._db.session_context() as db_session:
             await MessageRepository(db_session).update(
                 message_id, content=content, segments=segments, usage=usage
             )
@@ -144,21 +142,24 @@ class SessionPersistence:
 
     async def save_state(self, session_id: str, ctx: dict[str, Any]) -> None:
         """Persist metadata in order with foreground and background session writes."""
-        async with (
-            self._write_lock("session", session_id),
-            self._db.session_context() as db_session,
-        ):
-            await SessionRepository(db_session).upsert(
-                session_id,
-                title=ctx.get("title"),
-                turn_number=ctx.get("turn_number", 0),
-                working_memory=ctx.get("working_memory"),
-                telegram_chat_id=ctx.get("telegram_chat_id"),
-                telegram_bound_at=ctx.get("telegram_bound_at"),
-                expires_at=self._expires_at(),
-                owner_id=ctx.get("owner_id"),
-                pending_action=pending_action_from_context(ctx),
-            )
+        async with self._write_lock("session", session_id):
+            working_memory = ctx.get("working_memory")
+            if working_memory is not None:
+                working_memory = WorkingMemory.model_validate(
+                    working_memory, extra="forbid"
+                ).model_dump(mode="json")
+            async with self._db.session_context() as db_session:
+                await SessionRepository(db_session).upsert(
+                    session_id,
+                    title=ctx.get("title"),
+                    turn_number=ctx.get("turn_number", 0),
+                    working_memory=working_memory,
+                    telegram_chat_id=ctx.get("telegram_chat_id"),
+                    telegram_bound_at=ctx.get("telegram_bound_at"),
+                    expires_at=self._expires_at(),
+                    owner_id=ctx.get("owner_id"),
+                    pending_action=pending_action_from_context(ctx),
+                )
 
     async def session_for_telegram_chat(self, chat_id: str) -> str | None:
         async with self._db.session_context() as db_session:
@@ -208,7 +209,11 @@ class SessionPersistence:
                 steering = await SteeringRepository(db_session).list_by_session(session_id)
                 return LoadedSession(
                     turn_number=row.turn_number,
-                    working_memory=row.working_memory,
+                    working_memory=(
+                        WorkingMemory.model_validate(row.working_memory)
+                        if row.working_memory is not None
+                        else None
+                    ),
                     title=row.title,
                     owner_id=row.owner_id,
                     telegram_chat_id=row.telegram_chat_id,

@@ -35,6 +35,24 @@ def _repo_env(monkeypatch):
 
 
 class TestRepoConfig:
+    @patch(f"{MODULE}._github_request")
+    async def test_default_instance_reads_repository_when_called(self, mock_req, monkeypatch):
+        monkeypatch.delenv("GITHUB_REPO_OWNER", raising=False)
+        provider = GitHubIssues()
+        result = await provider.create_issue("Test", "Body", [])
+        assert result["error_code"] == "GITHUB_REPO_MISSING"
+        mock_req.assert_not_awaited()
+
+        monkeypatch.setenv("GITHUB_REPO_OWNER", "configured-org")
+        mock_req.return_value = (201, {"number": 1})
+        result = await provider.create_issue("Test", "Body", [])
+        assert result["success"] is True
+        mock_req.assert_awaited_once_with(
+            "POST",
+            "/repos/configured-org/sample-app/issues",
+            json_body={"title": "Test", "body": "Body", "labels": []},
+        )
+
     async def test_missing_repo_config_returns_error(self, monkeypatch):
         monkeypatch.delenv("GITHUB_REPO_OWNER", raising=False)
         monkeypatch.delenv("GITHUB_REPO_NAME", raising=False)

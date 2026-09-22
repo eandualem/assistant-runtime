@@ -19,10 +19,10 @@ import json
 import os
 import sys
 import uuid
-from typing import IO, Any
+from typing import IO, TYPE_CHECKING, Any
 
-from assistant_runtime.app.assistant.config import TunableOverrides
-from assistant_runtime.app.assistant.models import AssistantRequest
+if TYPE_CHECKING:
+    from assistant_runtime.app.assistant.models import AssistantRequest
 
 EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit"})
 NO_HOST_RESULT = {
@@ -116,6 +116,8 @@ async def run_turn(
 
     Returns the final assistant text, or None when the turn ended in an error.
     """
+    from assistant_runtime.app.assistant.models import AssistantRequest
+
     rounds = 0
     while True:
         renderer.start_turn()
@@ -153,6 +155,9 @@ async def run_turn(
 
 def build_request(session_id: str, content: str, model: str | None) -> AssistantRequest:
     """A standard request for one user message."""
+    from assistant_runtime.app.assistant.config import TunableOverrides
+    from assistant_runtime.app.assistant.models import AssistantRequest
+
     config = TunableOverrides(default_model=model) if model else None
     return AssistantRequest(
         id=str(uuid.uuid4()), session_id=session_id, content=content, config=config

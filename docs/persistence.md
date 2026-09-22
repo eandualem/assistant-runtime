@@ -27,6 +27,13 @@ The substrate is deliberately the application's own tables. The upstream
 options were compared and deferred; see [the decision](#upstream-decision)
 below.
 
+## Concurrent artifact edits
+
+Artifact version checks, writes and activation run in one transaction, serialized
+per profile/artifact in Postgres. An edit with a stale `expected_version` returns
+409. A failed activation rolls back the proposed version, and a prompt-cache read
+started before an edit cannot hide that edit from subsequent prompts.
+
 ## The pending host action
 
 A host tool call ends the turn. The runtime then:

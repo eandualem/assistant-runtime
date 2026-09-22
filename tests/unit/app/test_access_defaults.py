@@ -21,6 +21,34 @@ from assistant_runtime.principal import Credentials
 
 
 class TestOriginRule:
+    @pytest.mark.parametrize("content_type", ["application/x-www-form-urlencoded", "text/plain"])
+    async def test_disallowed_simple_post_cannot_change_runtime_state(self, content_type):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from assistant_runtime.services.oauth.interface import AuthStatus
+
+        settings = AppSettings(
+            _env_file=None,
+            access=AccessConfig(cors_origins=["https://app.example"], cors_origin_regex=None),
+        )
+        app = create_app(settings=settings)
+        app.state.access_service = AccessService(settings.access)
+        sync = AsyncMock(return_value=AuthStatus())
+        app.state.oauth_service = SimpleNamespace(sync_from_codex_cli=sync)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            rejected = await client.post(
+                "/api/oauth/openai/codex-cli/sync",
+                headers={"Origin": "https://untrusted.example", "Content-Type": content_type},
+            )
+            assert rejected.status_code == 403
+            sync.assert_not_awaited()
+            for headers in ({}, {"Origin": "https://app.example"}):
+                accepted = await client.post("/api/oauth/openai/codex-cli/sync", headers=headers)
+                assert accepted.status_code == 200
+            assert accepted.headers["access-control-allow-origin"] == "https://app.example"
+        assert sync.await_count == 2
+
     def test_default_admits_this_machine_on_any_port(self):
         config = AccessConfig()
         assert config.cors_origin_regex == LOCALHOST_ORIGIN_REGEX

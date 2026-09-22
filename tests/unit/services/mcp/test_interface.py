@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from assistant_runtime.services.mcp.interface import MCPService
 
@@ -368,3 +371,61 @@ class TestPrefixedToolsetShape:
             {"name": "memory", "tools": ["create_entities", "search_nodes"], "tool_count": 2}
         ]
         wrapper.wrapped.list_tools.assert_awaited_once()
+
+
+async def test_cancelling_summary_waiter_does_not_cancel_shared_producer():
+    service = MCPService()
+    await service.start()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def list_tools():
+        entered.set()
+        await release.wait()
+        return [_make_mock_tool("one")]
+
+    server = _make_mock_server("memory")
+    server.list_tools = AsyncMock(side_effect=list_tools)
+    service._live_servers = [server]
+    first = asyncio.create_task(service.get_detailed_summary())
+    await asyncio.wait_for(entered.wait(), 1)
+    second = asyncio.create_task(service.get_detailed_summary())
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    # A new caller after the original creator left still joins the same query.
+    third = asyncio.create_task(service.get_detailed_summary())
+    await asyncio.sleep(0)
+    release.set()
+    try:
+        results = await asyncio.wait_for(asyncio.gather(second, third), 1)
+        assert results == [[{"name": "memory", "tools": ["one"], "tool_count": 1}]] * 2
+        server.list_tools.assert_awaited_once()
+    finally:
+        await service.stop()
+
+
+async def test_stop_drains_pending_summary_before_clearing_cache():
+    service = MCPService()
+    await service.start()
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def list_tools():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    server = _make_mock_server("memory")
+    server.list_tools = AsyncMock(side_effect=list_tools)
+    service._live_servers = [server]
+    waiting = asyncio.create_task(service.get_detailed_summary())
+    await asyncio.wait_for(entered.wait(), 1)
+    await service.stop()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert cancelled.is_set()
+    assert service._detailed_cache is None
+    assert service._detailed_cache_task is None
+    assert await service.get_detailed_summary() == []

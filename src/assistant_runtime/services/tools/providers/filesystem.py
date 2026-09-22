@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import os
 import re
-import shutil
+from contextlib import ExitStack
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -12,8 +14,21 @@ from typing import Any
 import yaml
 from loguru import logger
 
+from assistant_runtime.services.tools.providers._filesystem import (
+    RootedDirectory,
+    exclusive_text,
+    rooted,
+)
+
 FILENAME_PATTERN = re.compile(r"^[\w\-]+\.md$")
 _SLUG_INVALID_CHARS = re.compile(r"[^a-z0-9]+")
+
+
+def _inside_root(target: Path, root: Path) -> bool:
+    try:
+        return target.resolve().is_relative_to(root.resolve())
+    except (ValueError, OSError, RuntimeError):
+        return False
 
 
 def slugify(text: str) -> str:
@@ -67,10 +82,7 @@ class MarkdownNotes:
     # --- validation ------------------------------------------------------------
 
     def _is_inside_root(self, target: Path) -> bool:
-        try:
-            return target.resolve().is_relative_to(self.root.resolve())
-        except (ValueError, OSError):
-            return False
+        return _inside_root(target, self.root)
 
     def validate_note_path(self, note_path: str) -> str | None:
         """An error for a ``folder/sub/note.md`` path that is unsafe, else None."""
@@ -104,26 +116,34 @@ class MarkdownNotes:
         )
         if error:
             return None, error
+        if not self._is_inside_root(self.root / filename):
+            return None, "Invalid note path — resolves outside notes directory"
         return self.root / filename, None
 
     # --- files -----------------------------------------------------------------
 
-    def _ensure_root(self) -> Path:
-        self.root.mkdir(parents=True, exist_ok=True)
-        return self.root
-
-    def _relative(self, path: Path) -> str:
-        try:
-            return str(path.resolve().relative_to(self.root.resolve()))
-        except ValueError:
-            return path.name
-
     def parse_note(self, path: Path) -> dict[str, Any] | None:
         """A note file as a dict (filename, path, folder, title, date, tags, content), or None."""
         try:
-            content = path.read_text(encoding="utf-8")
-        except OSError:
+            with rooted(self.root) as root:
+                return self._read_note(root, path)
+        except UnicodeError:
+            raise
+        except (OSError, ValueError, RuntimeError):
             return None
+
+    def _read_note(self, root: RootedDirectory, path: Path) -> dict[str, Any] | None:
+        try:
+            relative = root.relative(path)
+            content = root.read_text(root.path / relative)
+        except UnicodeError:
+            raise
+        except (OSError, ValueError, RuntimeError):
+            return None
+        return self._parse_note(path, content, str(relative))
+
+    @staticmethod
+    def _parse_note(path: Path, content: str, relative: str) -> dict[str, Any]:
         frontmatter: dict[str, Any] = {}
         body = content
         if content.startswith("---\n"):
@@ -135,11 +155,10 @@ class MarkdownNotes:
                     loaded = None
                 frontmatter = loaded if isinstance(loaded, dict) else {}
                 body = parts[2].strip()
-        rel = self._relative(path)
-        folder = str(Path(rel).parent)
+        folder = str(Path(relative).parent)
         return {
             "filename": path.name,
-            "path": rel,
+            "path": relative,
             "folder": "" if folder == "." else folder,
             "title": frontmatter.get("title", path.stem),
             "date": str(frontmatter.get("date", "")),
@@ -147,16 +166,27 @@ class MarkdownNotes:
             "content": body,
         }
 
-    def _scope(self, folder: str) -> tuple[Path | None, str | None]:
-        """The directory to scan for ``folder`` (None when it does not exist), or an error."""
-        root = self._ensure_root()
-        if not folder:
-            return root, None
-        error = self.validate_folder(folder)
-        if error:
-            return None, error
-        target = root / folder
-        return (target if target.is_dir() else None), None
+    def _scan_notes(
+        self, folder: str, limit: int, *, tag: str = "", query: str = ""
+    ) -> list[dict[str, Any]]:
+        notes: list[dict[str, Any]] = []
+        with rooted(self.root, create=True) as root:
+            try:
+                paths = root.markdown_paths(self.root / folder) if limit > 0 else []
+            except (OSError, ValueError, RuntimeError):
+                return notes
+            for path in paths:
+                if len(notes) >= limit:
+                    break
+                parsed = self._read_note(root, path)
+                if parsed is None or (tag and tag not in parsed["tags"]):
+                    continue
+                if query:
+                    searchable = f"{parsed['title']} {parsed['content']} {' '.join(parsed['tags'])}"
+                    if query.lower() not in searchable.lower():
+                        continue
+                notes.append(parsed)
+        return notes
 
     # --- NotesStore --------------------------------------------------------------
 
@@ -167,33 +197,31 @@ class MarkdownNotes:
             return {"error": "Title is required for create", "success": False}
         if not content:
             return {"error": "Content is required for create", "success": False}
-        target_dir = self._ensure_root()
         if folder:
             error = self.validate_folder(folder)
             if error:
                 return {"error": error, "success": False}
-            target_dir = target_dir / folder
-            target_dir.mkdir(parents=True, exist_ok=True)
         slug = slugify(title)
         if not slug:
             return {"error": "Title produces empty slug", "success": False}
         note = build_note_content(title, content, tags)
-        filename, path = await asyncio.to_thread(_create_exclusive, target_dir, slug, note)
-        rel = self._relative(path)
+        filename, rel = await asyncio.to_thread(self._create, folder, slug, note)
         logger.info("Created note", path=rel, title=title)
         return {"filename": filename, "path": rel, "title": title, "success": True}
 
+    def _create(self, folder: str, slug: str, note: str) -> tuple[str, str]:
+        with rooted(self.root, create=True) as root:
+            relative = root.relative(self.root / folder)
+            with root.directory(root.path / relative, create=True) as parent:
+                filename = _create_exclusive(parent, slug, note)
+            return filename, str(relative / filename)
+
     async def list(self, *, tag: str, limit: int, folder: str) -> dict[str, Any]:
-        scope, error = self._scope(folder)
+        error = self.validate_folder(folder) if folder else None
         if error:
             return {"error": error, "success": False}
         notes: list[dict[str, Any]] = []
-        for path in sorted(scope.rglob("*.md"), reverse=True) if scope else []:
-            if len(notes) >= limit:
-                break
-            parsed = await asyncio.to_thread(self.parse_note, path)
-            if parsed is None or (tag and tag not in parsed["tags"]):
-                continue
+        for parsed in await asyncio.to_thread(self._scan_notes, folder, limit, tag=tag):
             preview = parsed["content"].split("\n", 1)[0][:200] if parsed["content"] else ""
             notes.append(
                 {k: parsed[k] for k in ("filename", "path", "folder", "title", "date", "tags")}
@@ -213,20 +241,11 @@ class MarkdownNotes:
     async def search(self, *, query: str, limit: int, folder: str) -> dict[str, Any]:
         if not query:
             return {"error": "Query is required for search", "success": False}
-        scope, error = self._scope(folder)
+        error = self.validate_folder(folder) if folder else None
         if error:
             return {"error": error, "success": False}
-        query_lower = query.lower()
         results: list[dict[str, Any]] = []
-        for path in sorted(scope.rglob("*.md"), reverse=True) if scope else []:
-            if len(results) >= limit:
-                break
-            parsed = await asyncio.to_thread(self.parse_note, path)
-            if parsed is None:
-                continue
-            searchable = f"{parsed['title']} {parsed['content']} {' '.join(parsed['tags'])}".lower()
-            if query_lower not in searchable:
-                continue
+        for parsed in await asyncio.to_thread(self._scan_notes, folder, limit, query=query):
             results.append(
                 {k: parsed[k] for k in ("filename", "path", "folder", "title", "date", "tags")}
                 | {"snippet": _snippet(parsed["content"], query)}
@@ -239,21 +258,31 @@ class MarkdownNotes:
         path, error = self._resolve(filename)
         if error:
             return {"error": error, "success": False}
-        parsed = await asyncio.to_thread(self.parse_note, path)
-        if parsed is None:
-            return {"error": f"Note not found: {filename}", "success": False}
-        if not content and tags is None:
-            return {"error": "Provide content or tags to update", "success": False}
-        new_content = content if content else parsed["content"]
-        new_tags = tags if tags is not None else parsed["tags"]
-        await asyncio.to_thread(
-            path.write_text, build_note_content(parsed["title"], new_content, new_tags), "utf-8"
-        )
+        return await asyncio.to_thread(self._update, path, filename, content, tags)
+
+    def _update(
+        self, path: Path, filename: str, content: str, tags: list[str] | None
+    ) -> dict[str, Any]:
+        with ExitStack() as resources:
+            try:
+                root = resources.enter_context(rooted(self.root))
+                relative = root.relative(path)
+                handle = resources.enter_context(root.text(root.path / relative, update=True))
+                parsed = self._parse_note(path, handle.read(), str(relative))
+            except (UnicodeError, PermissionError):
+                raise
+            except (OSError, ValueError, RuntimeError):
+                return {"error": f"Note not found: {filename}", "success": False}
+            if not content and tags is None:
+                return {"error": "Provide content or tags to update", "success": False}
+            new_content = content if content else parsed["content"]
+            new_tags = tags if tags is not None else parsed["tags"]
+            handle.seek(0)
+            handle.write(build_note_content(parsed["title"], new_content, new_tags))
+            handle.truncate()
         logger.info("Updated note", filename=filename)
         return {
-            "filename": parsed["filename"],
-            "path": self._relative(path),
-            "title": parsed["title"],
+            **{k: parsed[k] for k in ("filename", "path", "title")},
             "updated": True,
             "success": True,
         }
@@ -264,11 +293,21 @@ class MarkdownNotes:
             return {"error": error, "success": False}
         if not path.exists():
             return {"error": f"Note not found: {filename}", "success": False}
-        await asyncio.to_thread(path.unlink)
+        return await asyncio.to_thread(self._delete, path, filename)
+
+    def _delete(self, path: Path, filename: str) -> dict[str, Any]:
+        try:
+            with rooted(self.root) as root:
+                root.relative(path)
+                relative = root.relative(path.parent) / path.name
+                with root.parent(root.path / relative) as parent:
+                    os.unlink(path.name, dir_fd=parent)
+        except FileNotFoundError:
+            return {"error": f"Note not found: {filename}", "success": False}
         logger.info("Deleted note", filename=filename)
         return {
             "filename": path.name,
-            "path": self._relative(path),
+            "path": str(relative),
             "deleted": True,
             "success": True,
         }
@@ -279,17 +318,30 @@ class MarkdownNotes:
         error = self.validate_folder(folder)
         if error:
             return {"error": error, "success": False}
-        target = self._ensure_root() / folder
-        if target.exists():
+        created = await asyncio.to_thread(self._create_folder, folder)
+        if not created:
             return {
                 "folder": folder,
                 "created": False,
                 "message": "Folder already exists",
                 "success": True,
             }
-        await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
         logger.info("Created notes folder", folder=folder)
         return {"folder": folder, "created": True, "success": True}
+
+    def _create_folder(self, folder: str) -> bool:
+        with rooted(self.root, create=True) as root:
+            target = root.path / root.relative(self.root / folder)
+            if target == root.path:
+                return False
+            with root.parent(target, create=True) as parent:
+                try:
+                    os.mkdir(target.name, dir_fd=parent)
+                except FileExistsError:
+                    with root.directory(target):
+                        pass
+                    return False
+            return True
 
     async def move(self, *, filename: str, folder: str) -> dict[str, Any]:
         if not filename:
@@ -304,35 +356,39 @@ class MarkdownNotes:
         error = self.validate_folder(folder)
         if error:
             return {"error": error, "success": False}
-        dest_dir = self._ensure_root() / folder
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / src.name
-        if dest.exists():
+        return await asyncio.to_thread(self._move, src, filename, folder)
+
+    def _move(self, source: Path, filename: str, folder: str) -> dict[str, Any]:
+        try:
+            with rooted(self.root) as root:
+                source_rel = str(root.relative(source))
+                destination_rel = root.relative(self.root / folder) / source.name
+                moved = root.move(source, root.path / destination_rel)
+        except FileNotFoundError:
+            return {"error": f"Note not found: {filename}", "success": False}
+        if not moved:
             return {
-                "error": f"A note named '{src.name}' already exists in '{folder}'",
+                "error": f"A note named '{source.name}' already exists in '{folder}'",
                 "success": False,
             }
-        source_rel = self._relative(src)
-        await asyncio.to_thread(shutil.move, str(src), str(dest))
-        new_path = self._relative(dest)
+        new_path = str(destination_rel)
         logger.info("Moved note", source=filename, destination=new_path)
-        return {"filename": src.name, "from": source_rel, "to": new_path, "success": True}
+        return {"filename": source.name, "from": source_rel, "to": new_path, "success": True}
 
 
-def _create_exclusive(target_dir: Path, slug: str, note: str) -> tuple[str, Path]:
+def _create_exclusive(target_dir: int, slug: str, note: str) -> str:
     """Write ``note`` under a dated slug filename that does not exist yet, atomically."""
     counter = 0
     while True:
         suffix = f"-{counter}" if counter else ""
         filename = f"{date.today()}-{slug}{suffix}.md"
-        path = target_dir / filename
         try:
-            with path.open("x", encoding="utf-8") as handle:
+            with exclusive_text(target_dir, filename) as handle:
                 handle.write(note)
         except FileExistsError:
             counter += 1
             continue
-        return filename, path
+        return filename
 
 
 def _snippet(content: str, query: str) -> str:
@@ -367,28 +423,39 @@ class FilesystemLibrary:
         self.roots = roots
         self.index_names = index_names
 
-    def _index_file(self, entry: Path) -> Path | None:
+    def _read_index(self, entry: Path, root: RootedDirectory) -> str | None:
         for name in self.index_names:
-            candidate = entry / name
-            if candidate.is_file():
-                return candidate
+            try:
+                return root.read_text(entry / name)
+            except UnicodeError:
+                raise
+            except (ValueError, RuntimeError):
+                continue
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EINVAL):
+                    raise
         return None
 
     def scan(self, collection: str, root: Path) -> list[dict[str, Any]]:
         """The documents in one root, with name, description, path and collection."""
-        if not root.is_dir():
+        try:
+            with rooted(root) as directory:
+                return self._scan(collection, root, directory)
+        except (FileNotFoundError, NotADirectoryError):
             return []
+
+    def _scan(
+        self, collection: str, root: Path, directory: RootedDirectory
+    ) -> list[dict[str, Any]]:
         documents: list[dict[str, Any]] = []
-        for entry in sorted(root.iterdir()):
-            if not entry.is_dir():
-                continue
-            index = self._index_file(entry)
-            if index is None:
-                continue
+        for name in sorted(directory.entry_names()):
+            entry = root / name
             try:
-                content = index.read_text(encoding="utf-8")
+                content = self._read_index(entry, directory)
             except OSError as exc:
-                logger.warning("Failed to read document", path=str(index), error=str(exc))
+                logger.warning("Failed to read document", path=str(entry), error=str(exc))
+                continue
+            if content is None:
                 continue
             meta = parse_frontmatter(content)
             documents.append(
@@ -415,15 +482,20 @@ class FilesystemLibrary:
             return {"success": False, "error": f"Invalid name: '{name}'"}
         if collection is not None and collection not in self.roots:
             return {"success": False, "error": f"Unknown collection '{collection}'"}
+        return await asyncio.to_thread(self._read_document, name, collection)
+
+    def _read_document(self, name: str, collection: str | None) -> dict[str, Any]:
         roots = {collection: self.roots[collection]} if collection else self.roots
         for coll, root in roots.items():
-            index = self._index_file(root / name)
-            if index is None:
-                continue
             try:
-                content = await asyncio.to_thread(index.read_text, "utf-8")
+                with rooted(root) as directory:
+                    content = self._read_index(root / name, directory)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
             except OSError as exc:
                 return {"success": False, "error": f"Failed to read document '{name}': {exc}"}
+            if content is None:
+                continue
             return {"success": True, "name": name, "collection": coll, "content": content}
         where = f" in collection '{collection}'" if collection else ""
         return {"success": False, "error": f"Document '{name}' not found{where}"}

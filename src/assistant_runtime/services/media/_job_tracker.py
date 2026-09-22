@@ -16,7 +16,7 @@ from typing import Any
 from loguru import logger
 
 from assistant_runtime.services.media._video_providers import VideoStatus
-from assistant_runtime.services.media.exceptions import VideoJobError, VideoTimeoutError
+from assistant_runtime.services.media.exceptions import VideoJobError
 
 
 @dataclass
@@ -143,67 +143,57 @@ class JobTracker:
         poll_fn: Callable[..., Coroutine[Any, Any, VideoStatus]],
     ) -> None:
         """Background loop: poll provider until terminal state or timeout."""
-        deadline = job.created_at + self._timeout
-
+        remaining = max(0, job.created_at + self._timeout - time.monotonic())
         try:
-            while True:
-                await asyncio.sleep(self._poll_interval)
+            async with asyncio.timeout(remaining):
+                while True:
+                    await asyncio.sleep(self._poll_interval)
 
-                # Check timeout
-                if time.monotonic() > deadline:
-                    job.state = "failed"
-                    job.error = "Video generation timed out"
+                    try:
+                        status = await poll_fn(job.provider_job_id)
+                    except Exception as e:
+                        logger.error(
+                            "Video poll error",
+                            internal_id=job.internal_id,
+                            error=str(e),
+                        )
+                        job.state = "failed"
+                        job.error = f"Poll error: {e}"
+                        job.updated_at = time.monotonic()
+                        return
+
                     job.updated_at = time.monotonic()
-                    logger.warning(
-                        "Video job timed out",
-                        internal_id=job.internal_id,
-                        timeout=self._timeout,
-                    )
-                    raise VideoTimeoutError(
-                        f"Video job {job.internal_id} timed out after {self._timeout}s"
-                    )
 
-                try:
-                    status = await poll_fn(job.provider_job_id)
-                except Exception as e:
-                    logger.error(
-                        "Video poll error",
-                        internal_id=job.internal_id,
-                        error=str(e),
-                    )
-                    job.state = "failed"
-                    job.error = f"Poll error: {e}"
-                    job.updated_at = time.monotonic()
-                    return
+                    if status.state == "completed":
+                        job.state = "completed"
+                        job.video_url = status.video_url
+                        logger.info(
+                            "Video job completed",
+                            internal_id=job.internal_id,
+                            video_url=status.video_url,
+                        )
+                        return
 
-                job.updated_at = time.monotonic()
+                    if status.state == "failed":
+                        job.state = "failed"
+                        job.error = status.error or "Provider reported failure"
+                        logger.warning(
+                            "Video job failed",
+                            internal_id=job.internal_id,
+                            error=job.error,
+                        )
+                        return
 
-                if status.state == "completed":
-                    job.state = "completed"
-                    job.video_url = status.video_url
-                    logger.info(
-                        "Video job completed",
-                        internal_id=job.internal_id,
-                        video_url=status.video_url,
-                    )
-                    return
-
-                if status.state == "failed":
-                    job.state = "failed"
-                    job.error = status.error or "Provider reported failure"
-                    logger.warning(
-                        "Video job failed",
-                        internal_id=job.internal_id,
-                        error=job.error,
-                    )
-                    return
-
-                # Still processing
-                if job.state == "submitted":
-                    job.state = "processing"
+                    if job.state == "submitted":
+                        job.state = "processing"
 
         except asyncio.CancelledError:
             logger.debug("Video poll task cancelled", internal_id=job.internal_id)
             raise
-        except VideoTimeoutError:
-            return  # already updated job state above
+        except TimeoutError:
+            job.state = "failed"
+            job.error = "Video generation timed out"
+            job.updated_at = time.monotonic()
+            logger.warning(
+                "Video job timed out", internal_id=job.internal_id, timeout=self._timeout
+            )

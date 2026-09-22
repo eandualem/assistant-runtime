@@ -23,6 +23,11 @@ fields, and any it invents are ignored or rejected.
 
 ## Browser origins
 
+HTTP requests that can change state are rejected before execution when their
+`Origin` is outside the configured allowlist, including simple form POSTs.
+Calls without an `Origin` remain available to non-browser hosts. Socket.IO
+work retains its authenticated caller even if the connection closes while it waits.
+
 Every caller being the local operator makes the browser the attack
 surface: a page on any site could otherwise call `http://127.0.0.1:7100`
 and administer the runtime. So by default only pages served from this

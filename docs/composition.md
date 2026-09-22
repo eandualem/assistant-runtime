@@ -232,6 +232,9 @@ tunable overrides still apply above this startup configuration.
   configured providers. `None` keeps every configured capability; an empty
   set selects none. Names are validated at startup. A selection never
   enables an unconfigured provider.
+- GitHub and Telegram use the credentials and destinations in the supplied
+  `ProvidersConfig`. Backbone uses its supplied URL and startup environment key,
+  with a separate registry cache for each runtime.
 - `providers=ProvidersConfig()` disables automatic provider discovery for
   that settings object. The default still discovers configured providers
   from their existing environment variables. Provider credentials and MCP

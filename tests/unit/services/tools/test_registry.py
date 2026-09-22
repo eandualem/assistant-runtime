@@ -492,3 +492,36 @@ class TestRequestDeclaredActions:
         registry.register_host_tools()
         available = registry.get_available_tools(self._context("get_time", "navigate", "fresh"))
         assert [t.name for t in available.host_tools] == ["navigate", "fresh"]
+
+
+class TestBoundedScopeCaches:
+    def test_unlisted_views_share_tools_and_preserve_each_page(
+        self, registry, backend_definition, dummy_handler
+    ):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        baseline = registry.build_toolset()[0]
+        for index in range(200):
+            page = f"document-{index}"
+            context = {"view": {"name": page}}
+            assert registry.build_toolset(context)[0] is baseline
+            available = registry.get_available_tools(context)
+            assert available.page == page
+            assert available.tool_names == [backend_definition.name]
+        assert len(registry._available_tools_cache) == 1
+        assert len(registry._toolset_cache) == 1
+
+    def test_request_actions_reuse_backend_schemas_without_retaining_actions(
+        self, registry, backend_definition, dummy_handler
+    ):
+        registry.register_backend_tool(backend_definition, dummy_handler)
+        contexts = [
+            {"view": {"name": "document"}, "actions": [{"name": name, "description": name}]}
+            for name in ("open_document", "close_document")
+        ]
+        first = registry.build_toolset(contexts[0])
+        second = registry.build_toolset(contexts[1])
+        assert first[0] is second[0]
+        assert first[1] is not second[1]
+        assert registry.get_available_tools(contexts[1]).host_tools[0].name == "close_document"
+        assert registry.get_available_tools().host_tools == []
+        assert registry.build_toolset() == [first[0]]

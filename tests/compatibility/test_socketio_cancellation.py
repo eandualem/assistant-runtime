@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from assistant_runtime.app.socketio_server import AssistantNamespace
+from assistant_runtime.principal import LOCAL_PRINCIPAL
 
 from .test_execution import assert_terminal, request
 from .test_runtime_cancellation import drain
@@ -26,6 +27,7 @@ async def test_socket_cancellation_during_planning_drains_and_emits_terminal_env
 
     monkeypatch.setattr(runtime.sessions, "get_context_if_exists_async", lookup)
     namespace = AssistantNamespace("/assistant")
+    namespace._principals["client-1"] = LOCAL_PRINCIPAL
     namespace.server = SimpleNamespace(
         fastapi_app=SimpleNamespace(state=SimpleNamespace(streaming_service=runtime.streaming))
     )

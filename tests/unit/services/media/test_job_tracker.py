@@ -319,3 +319,26 @@ class TestPollLoop:
             assert job.state == "completed"
         finally:
             await tracker.stop_all()
+
+
+@pytest.mark.parametrize("poll_interval", [0.001, 10.0])
+async def test_deadline_bounds_hung_poll_and_sleep(poll_interval):
+    tracker = JobTracker(max_concurrent=1, poll_interval=poll_interval, timeout=0.03)
+    cancelled = asyncio.Event()
+
+    async def poll(job_id):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    job = tracker.submit("remote", provider="fake", model="fake:video", poll_fn=poll)
+    try:
+        await asyncio.wait_for(job.poll_task, timeout=1)
+        assert job.state == "failed"
+        assert "timed out" in job.error
+        assert tracker.active_count() == 0
+        if poll_interval < 0.03:
+            assert cancelled.is_set()
+    finally:
+        await tracker.stop_all()

@@ -100,86 +100,37 @@ def _classify_model_api_error(exc: Exception) -> tuple[str, bool] | None:
         return "TIMEOUT", True
     if "connection" in message or "interrupted" in message:
         return "CONNECTION_ERROR", True
-    if "overloaded" in message:
-        return "SERVER_ERROR", True
     return "SERVER_ERROR", True
 
 
+_PROVIDER_ERRORS = {
+    "RateLimitError": ("RATE_LIMIT", True),
+    "InternalServerError": ("SERVER_ERROR", True),
+    "APIConnectionError": ("CONNECTION_ERROR", True),
+    "APITimeoutError": ("TIMEOUT", True),
+    "AuthenticationError": ("AUTH_ERROR", False),
+    "BadRequestError": ("CLIENT_ERROR", False),
+}
+
+
 def classify_llm_error(exc: Exception) -> LLMCallError:
-    """Classify a provider exception into a categorized LLMCallError.
-
-    Lazily imports provider-specific exception types to avoid hard-coupling
-    to optional SDKs (anthropic, openai, google-genai).
-    """
-    exc_type = type(exc)
-    exc_name = exc_type.__name__
-
-    # Build a mapping of exception class names to (category, is_retryable)
-    # All three provider SDKs (anthropic, openai, google) share the same
-    # exception naming convention.
-    retryable_names: dict[str, tuple[str, bool]] = {
-        "RateLimitError": ("RATE_LIMIT", True),
-        "InternalServerError": ("SERVER_ERROR", True),
-        "APIConnectionError": ("CONNECTION_ERROR", True),
-        "APITimeoutError": ("TIMEOUT", True),
-    }
-    non_retryable_names: dict[str, tuple[str, bool]] = {
-        "AuthenticationError": ("AUTH_ERROR", False),
-        "BadRequestError": ("CLIENT_ERROR", False),
-    }
-
-    # Check by class name (works across all provider SDKs)
-    if exc_name in retryable_names:
-        cat, retryable = retryable_names[exc_name]
-        return LLMCallError(
-            f"LLM call failed ({cat}): {exc}",
-            error_category=cat,
-            is_retryable=retryable,
-        )
-
-    if exc_name in non_retryable_names:
-        cat, retryable = non_retryable_names[exc_name]
-        return LLMCallError(
-            f"LLM call failed ({cat}): {exc}",
-            error_category=cat,
-            is_retryable=retryable,
-        )
-
-    model_http = _classify_model_http_error(exc)
-    if model_http is not None:
-        cat, retryable = model_http
-        return LLMCallError(
-            f"LLM call failed ({cat}): {exc}",
-            error_category=cat,
-            is_retryable=retryable,
-        )
-
-    model_api = _classify_model_api_error(exc)
-    if model_api is not None:
-        cat, retryable = model_api
-        return LLMCallError(
-            f"LLM call failed ({cat}): {exc}",
-            error_category=cat,
-            is_retryable=retryable,
-        )
-
-    # Also check for standard Python transient errors
-    if isinstance(exc, TimeoutError):
-        return LLMCallError(
-            f"LLM call failed (TIMEOUT): {exc}",
-            error_category="TIMEOUT",
-            is_retryable=True,
-        )
-    if isinstance(exc, ConnectionError):
-        return LLMCallError(
-            f"LLM call failed (CONNECTION_ERROR): {exc}",
-            error_category="CONNECTION_ERROR",
-            is_retryable=True,
-        )
-
-    # Fallback — unknown error
+    """Classify native/provider failures without importing optional provider SDKs."""
+    classification = (
+        _PROVIDER_ERRORS.get(type(exc).__name__)
+        or _classify_model_http_error(exc)
+        or _classify_model_api_error(exc)
+    )
+    if classification is None:
+        if isinstance(exc, TimeoutError):
+            classification = ("TIMEOUT", True)
+        elif isinstance(exc, ConnectionError):
+            classification = ("CONNECTION_ERROR", True)
+        else:
+            classification = ("UNKNOWN", False)
+    category, retryable = classification
+    label = f" ({category})" if category != "UNKNOWN" else ""
     return LLMCallError(
-        f"LLM call failed: {exc}",
-        error_category="UNKNOWN",
-        is_retryable=False,
+        f"LLM call failed{label}: {exc}",
+        error_category=category,
+        is_retryable=retryable,
     )

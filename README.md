@@ -16,7 +16,7 @@ An assistant backend for the application you already have: it holds the conversa
 
 - **A conversation people can keep working in.** Branch from an earlier message, steer a turn while it runs, retain working memory, and edit the assistant's versioned system prompt.
 - **An assistant that can use your application.** Send what is on screen and declare actions such as editing a document or moving an object. The runtime requests an action; your app performs it and returns the result to continue the turn.
-- **A UI that follows the work.** Thinking, text, tool calls and results arrive as ordered events. Cancellation saves partial text and completed work.
+- **A UI that follows the work.** Thinking, text, tool calls and results arrive as ordered events. Cancellation and provider failures preserve partial text and completed tool results.
 - **A second model role in parallel.** A silent controller can return one application action or a structured hold with `output_mode: host_tools`, while another model handles the conversation.
 - **Voice with the same application context.** GPT-Live carries the conversation over WebRTC and can delegate tasks into the shared tool pipeline, or speak alongside an independent controller.
 - **Typed decisions while the user is still speaking.** Send your application's state and ask the decision model to choose an option, rate a level, or estimate whether a statement is true. The runtime returns structured answers and probabilities in one call ([decisions](https://github.com/eandualem/assistant-runtime/blob/main/docs/decisions.md)).
@@ -57,6 +57,8 @@ Voice needs the `[voice]` extra, an OpenAI API key and explicit enablement; each
 Local ChatGPT/Codex subscription authentication is also supported for backend models: [subscription setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/subscription.md).
 
 The server defaults to localhost and trusts the local operator. Before exposing it to other people, configure authentication and allowed browser origins: [identity and access](https://github.com/eandualem/assistant-runtime/blob/main/docs/access.md).
+
+Optional notes and document-library tools use configured folders; [filesystem provider configuration](https://github.com/eandualem/assistant-runtime/blob/main/docs/configuration.md#providers) covers symlinks and note moves.
 
 ## How it works
 

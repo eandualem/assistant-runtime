@@ -143,19 +143,18 @@ class ToolRegistry:
         """
         request_actions = self._request_actions(host_context)
         cache_key = self._cache_key(host_context)
-        cached = self._toolset_cache.get(cache_key) if not request_actions else None
-        if cached is not None:
-            return list(cached)
+        cached = self._toolset_cache.get(cache_key)
+        if cached is None:
+            available = self._resolve_available_tools(host_context)
+            cached = []
+            if available.backend_tools:
+                cached.append(self._function_toolset(available.backend_tools))
+            # Configured host tools always bypass page scoping.
+            if self._host_toolset is not None:
+                cached.append(self._host_toolset)
+            self._toolset_cache[cache_key] = cached
 
-        available = self._resolve_available_tools(host_context)
-        toolsets: list = []
-
-        if available.backend_tools:
-            toolsets.append(self._function_toolset(available.backend_tools))
-
-        # Host tools — always appended, bypass page scoping
-        if self._host_toolset is not None:
-            toolsets.append(self._host_toolset)
+        toolsets = list(cached)
         if request_actions:
             toolsets.append(
                 build_host_toolset(
@@ -166,16 +165,7 @@ class ToolRegistry:
                 )
             )
 
-        logger.debug(
-            "[TOOLS] Built toolsets",
-            backend=len(available.backend_tools),
-            host=len(self._host_definitions),
-            toolsets=len(toolsets),
-        )
-        if not request_actions:
-            # Declared actions vary per request; caching them would grow without bound.
-            self._toolset_cache[cache_key] = list(toolsets)
-        return list(toolsets)
+        return toolsets
 
     def host_action_tools(self, host_context: dict[str, Any] | None) -> tuple[ToolSet, list]:
         """Only actions explicitly supplied by the host; no configured tools or providers."""
@@ -259,7 +249,11 @@ class ToolRegistry:
         cache_key = self._cache_key(host_context)
         cached = self._available_tools_cache.get(cache_key) if not request_actions else None
         if cached is not None:
-            return cached
+            return (
+                cached
+                if cached.page == page_name
+                else cached.model_copy(update={"page": page_name})
+            )
 
         backend = list(self._backend_definitions.values())
         total_before = len(backend)
@@ -319,5 +313,6 @@ class ToolRegistry:
         return actions
 
     def _cache_key(self, host_context: dict[str, Any] | None = None) -> str | None:
-        """Cache by page; contexts with declared actions are never cached."""
-        return self._page_name(host_context) or None
+        """Configured scopes are finite; every unlisted view has the same tools."""
+        page = self._page_name(host_context)
+        return page if page in self._config.page_scopes else None

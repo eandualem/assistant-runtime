@@ -8,7 +8,9 @@ start the server, and either run the device flow
 enter the code) or import an existing Codex CLI login
 (`codex login`, then `POST /api/oauth/openai/codex-cli/sync`).
 `GET /api/oauth/openai/status` shows the connection;
-`DELETE /api/oauth/openai` disconnects. While connected, every `openai:`
+`DELETE /api/oauth/openai` cancels pending device authorization and waits for any
+in-flight credential update before clearing the login. Starting another device
+flow replaces the old one. While connected, every `openai:`
 model goes through the subscription (set `LLM__CODEX_MODELS` to a JSON
 list to narrow that); the backend decides what the plan allows. Other
 OpenAI features, such as image generation, still use an API key.

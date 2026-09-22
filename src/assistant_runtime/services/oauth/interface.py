@@ -101,6 +101,8 @@ class OAuthService:
         self._fernet: Fernet | None = None
         self._http: httpx.AsyncClient | None = None
         self._poll_task: asyncio.Task | None = None
+        # Include persistence so disconnect cannot be followed by an older token save.
+        self._auth_lock = asyncio.Lock()
 
         # In-memory state
         self._access_token: str | None = None
@@ -151,15 +153,19 @@ class OAuthService:
 
     async def stop(self) -> None:
         """Cancel polling task and close HTTP client."""
-        if self._poll_task is not None and not self._poll_task.done():
-            self._poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._poll_task
-            self._poll_task = None
+        async with self._auth_lock:
+            await self._cancel_polling()
+            if self._http is not None:
+                await self._http.aclose()
+                self._http = None
 
-        if self._http is not None:
-            await self._http.aclose()
-            self._http = None
+    async def _cancel_polling(self) -> None:
+        """Drain the old device flow before replacing or clearing its credentials."""
+        task = self._poll_task
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._poll_task = None
 
     async def health_check(self) -> dict[str, Any]:
         """Report OAuth connection health."""
@@ -177,44 +183,46 @@ class OAuthService:
 
     async def initiate_device_code(self) -> DeviceCodeResponse:
         """Start the OAuth Device Code flow — returns user_code and verification_uri."""
-        if not self.configured:
-            raise OAuthNotConfiguredError()
-        if self._http is None:
-            raise OAuthNotConfiguredError("OAuth service not started")
+        async with self._auth_lock:
+            await self._cancel_polling()
+            if not self.configured:
+                raise OAuthNotConfiguredError()
+            if self._http is None:
+                raise OAuthNotConfiguredError("OAuth service not started")
 
-        response = await self._http.post(
-            self._config.device_code_url,
-            json={
-                "client_id": OPENAI_OAUTH_CLIENT_ID,
-            },
-        )
-
-        if response.status_code != 200:
-            raise OAuthDeviceCodeError(
-                f"Device code request failed: {response.status_code} {response.text}"
+            response = await self._http.post(
+                self._config.device_code_url,
+                json={
+                    "client_id": OPENAI_OAUTH_CLIENT_ID,
+                },
             )
 
-        data = response.json()
-        interval = self._parse_interval_seconds(data.get("interval"))
-        self._pending_device_code = data["device_auth_id"]
-        self._device_code_status = DeviceCodeStatus.POLLING
-        self._device_code_error = None
+            if response.status_code != 200:
+                raise OAuthDeviceCodeError(
+                    f"Device code request failed: {response.status_code} {response.text}"
+                )
 
-        # Start background polling
-        self._poll_task = asyncio.create_task(
-            self._poll_for_token(
-                device_auth_id=data["device_auth_id"],
+            data = response.json()
+            interval = self._parse_interval_seconds(data.get("interval"))
+            self._pending_device_code = data["device_auth_id"]
+            self._device_code_status = DeviceCodeStatus.POLLING
+            self._device_code_error = None
+
+            # Start background polling
+            self._poll_task = asyncio.create_task(
+                self._poll_for_token(
+                    device_auth_id=data["device_auth_id"],
+                    user_code=data["user_code"],
+                    interval=interval,
+                    expires_in=self._config.device_code_timeout,
+                )
+            )
+
+            return DeviceCodeResponse(
                 user_code=data["user_code"],
-                interval=interval,
+                verification_uri=self._config.device_verification_uri,
                 expires_in=self._config.device_code_timeout,
             )
-        )
-
-        return DeviceCodeResponse(
-            user_code=data["user_code"],
-            verification_uri=self._config.device_verification_uri,
-            expires_in=self._config.device_code_timeout,
-        )
 
     def get_device_code_status(self) -> AuthStatus:
         """Get current authorization flow status."""
@@ -260,6 +268,11 @@ class OAuthService:
 
     async def refresh(self) -> None:
         """Refresh the OAuth token chain: refresh_token → new access/id tokens."""
+        async with self._auth_lock:
+            await self._refresh_token_chain()
+
+    async def _refresh_token_chain(self) -> None:
+        """Refresh while the caller owns the credential mutation lock."""
         if not self.configured:
             raise OAuthNotConfiguredError()
         if self._refresh_token is None:
@@ -294,68 +307,71 @@ class OAuthService:
 
     async def sync_from_codex_cli(self) -> AuthStatus:
         """Import ChatGPT/Codex OAuth tokens from the local Codex CLI."""
-        if not self.configured:
-            raise OAuthNotConfiguredError()
-        if self._http is None:
-            raise OAuthNotConfiguredError("OAuth service not started")
+        async with self._auth_lock:
+            await self._cancel_polling()
+            if not self.configured:
+                raise OAuthNotConfiguredError()
+            if self._http is None:
+                raise OAuthNotConfiguredError("OAuth service not started")
 
-        tokens = self._read_codex_cli_auth()
-        self._access_token = tokens.access_token
-        self._refresh_token = tokens.refresh_token
-        self._id_token = tokens.id_token
-        self._email = tokens.email
-        self._account_id = tokens.account_id
-        self._sync_token_metadata()
+            tokens = self._read_codex_cli_auth()
+            self._access_token = tokens.access_token
+            self._refresh_token = tokens.refresh_token
+            self._id_token = tokens.id_token
+            self._email = tokens.email
+            self._account_id = tokens.account_id
+            self._sync_token_metadata()
 
-        if self.needs_refresh():
-            await self.refresh()
-        else:
-            await self._save_token()
+            if self.needs_refresh():
+                await self._refresh_token_chain()
+            else:
+                await self._save_token()
 
-        self._auth_source = AuthSource.CODEX_CLI
-        self._device_code_status = DeviceCodeStatus.AUTHORIZED
-        self._device_code_error = None
+            self._auth_source = AuthSource.CODEX_CLI
+            self._device_code_status = DeviceCodeStatus.AUTHORIZED
+            self._device_code_error = None
 
-        logger.info(
-            "Synced OpenAI OAuth from Codex CLI",
-            auth_mode=tokens.auth_mode,
-            email=self._email,
-        )
-        return self.get_device_code_status()
+            logger.info(
+                "Synced OpenAI OAuth from Codex CLI",
+                auth_mode=tokens.auth_mode,
+                email=self._email,
+            )
+            return self.get_device_code_status()
 
     async def disconnect(self) -> bool:
         """Clear local auth; return whether persisted-token deletion is confirmed."""
-        self._access_token = None
-        self._refresh_token = None
-        self._id_token = None
-        self._account_id = None
-        self._expires_at = 0.0
-        self._email = None
-        self._auth_source = None
-        self._token_persisted = False
-        self._device_code_status = DeviceCodeStatus.IDLE
-        self._device_code_error = None
+        async with self._auth_lock:
+            await self._cancel_polling()
+            self._access_token = None
+            self._refresh_token = None
+            self._id_token = None
+            self._account_id = None
+            self._expires_at = 0.0
+            self._email = None
+            self._auth_source = None
+            self._token_persisted = False
+            self._device_code_status = DeviceCodeStatus.IDLE
+            self._device_code_error = None
 
-        deleted = self._db_service is None
-        if self._db_service is not None and self._db_service.healthy:
-            try:
-                async with self._db_service.session_context() as session:
-                    from assistant_runtime.services.database.repositories import (
-                        OAuthTokenRepository,
+            deleted = self._db_service is None
+            if self._db_service is not None and self._db_service.healthy:
+                try:
+                    async with self._db_service.session_context() as session:
+                        from assistant_runtime.services.database.repositories import (
+                            OAuthTokenRepository,
+                        )
+
+                        repo = OAuthTokenRepository(session)
+                        await repo.delete("openai")
+                    # DELETE is idempotent: an already absent row also confirms removal.
+                    deleted = True
+                except Exception as exc:
+                    logger.warning(
+                        "OAuth persisted-token deletion failed", error_type=type(exc).__name__
                     )
 
-                    repo = OAuthTokenRepository(session)
-                    await repo.delete("openai")
-                    await session.commit()
-                # DELETE is idempotent: an already absent row also confirms removal.
-                deleted = True
-            except Exception as exc:
-                logger.warning(
-                    "OAuth persisted-token deletion failed", error_type=type(exc).__name__
-                )
-
-        logger.info("OpenAI OAuth disconnected", persisted_deleted=deleted)
-        return deleted
+            logger.info("OpenAI OAuth disconnected", persisted_deleted=deleted)
+            return deleted
 
     # --- Private methods ---
 
@@ -378,16 +394,17 @@ class OAuthService:
                 )
 
                 if response.status_code == 200:
-                    code_data = response.json()
-                    await self._exchange_authorization_code_for_tokens(
-                        authorization_code=code_data["authorization_code"],
-                        code_verifier=code_data["code_verifier"],
-                    )
-                    await self._save_token()
+                    async with self._auth_lock:
+                        code_data = response.json()
+                        await self._exchange_authorization_code_for_tokens(
+                            authorization_code=code_data["authorization_code"],
+                            code_verifier=code_data["code_verifier"],
+                        )
+                        await self._save_token()
 
-                    self._auth_source = AuthSource.DEVICE_CODE
-                    self._device_code_status = DeviceCodeStatus.AUTHORIZED
-                    logger.info("OpenAI OAuth authorized", email=self._email)
+                        self._auth_source = AuthSource.DEVICE_CODE
+                        self._device_code_status = DeviceCodeStatus.AUTHORIZED
+                        logger.info("OpenAI OAuth authorized", email=self._email)
                     return
 
                 if response.status_code in {403, 404}:
@@ -518,7 +535,6 @@ class OAuthService:
                     expires_at=self._expires_at,
                     email=self._email,
                 )
-                await session.commit()
             self._token_persisted = True
         except Exception as exc:
             # DB exception text can contain bound encrypted credentials; do not log it.

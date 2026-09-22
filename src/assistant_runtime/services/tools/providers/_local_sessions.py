@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 
 SESSION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$")
@@ -17,7 +18,16 @@ async def _run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except (TimeoutError, asyncio.CancelledError):
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            # Reap the process and finish draining its pipes before propagating
+            # cancellation or reporting a timeout to the caller.
+            await proc.communicate()
+            raise
         return (
             proc.returncode or 0,
             (stdout_bytes or b"").decode().strip(),
@@ -26,7 +36,6 @@ async def _run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str
     except FileNotFoundError:
         return (127, "", f"Command not found: {args[0]}")
     except TimeoutError:
-        proc.kill()
         return (1, "", f"Command timed out after {timeout}s")
 
 

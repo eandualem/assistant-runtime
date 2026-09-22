@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -85,6 +86,21 @@ def _summary_messages(messages) -> list[ModelRequest]:
             for p in m.parts
         )
     ]
+
+
+def test_binary_fingerprints_use_bytes_and_preserve_inputs(manager):
+    contents = [
+        BinaryContent(data=data, media_type="image/png", identifier="shared")
+        for data in (b"first", b"other")
+    ]
+    snapshots = [repr(content) for content in contents]
+    fingerprints = [
+        manager._fingerprint([ModelRequest(parts=[UserPromptPart(content=[content])])])
+        for content in contents
+    ]
+
+    assert fingerprints[0] != fingerprints[1]
+    assert [repr(content) for content in contents] == snapshots
 
 
 class TestEstimateTokens:
@@ -497,7 +513,7 @@ class TestCompact:
 
         branch = [
             _make_user_msg("first"),
-            _make_assistant_msg("a completely different answer"),
+            _make_assistant_msg("b" * 100),
             _make_user_msg("second"),
         ]
         await manager._compact(branch, session_context, config)
