@@ -21,6 +21,8 @@ import sys
 import uuid
 from typing import IO, TYPE_CHECKING, Any
 
+from assistant_runtime.model_catalog import PROVIDER_ENV_VARS
+
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant.models import AssistantRequest
 
@@ -31,6 +33,14 @@ NO_HOST_RESULT = {
     "error_code": "NO_HOST_ATTACHED",
 }
 MAX_HOST_TOOL_ROUNDS = 3
+NO_PROVIDER_MESSAGE = (
+    "No model provider is configured, so chat cannot answer.\n"
+    f"Set one provider key ({', '.join(PROVIDER_ENV_VARS.values())}) in the environment "
+    "or in a .env file in this directory, or connect a ChatGPT/Codex subscription, "
+    "then run chat again.\n"
+    "`assistant-runtime doctor` checks the setup; `assistant-runtime docs configuration` "
+    "lists the options."
+)
 
 
 def _short(value: Any, limit: int = 160) -> str:
@@ -171,12 +181,24 @@ async def _read_line(prompt: str) -> str | None:
         return None
 
 
+async def has_usable_provider(llm_service: Any, model: str | None) -> bool:
+    """Whether the started LLM service can serve a turn: any provider credential,
+    or a Vertex model, which authenticates with Google Cloud credentials instead."""
+    health = await llm_service.health_check()
+    if health["providers"]:
+        return True
+    return (model or health["primary_model"]).startswith("google-cloud:")
+
+
 async def chat_loop(args: argparse.Namespace) -> int:
     """Open the app lifespan and run the read/stream loop."""
     from assistant_runtime.main import create_app
 
     app = create_app()
     async with app.router.lifespan_context(app):
+        if not await has_usable_provider(app.state.llm_service, args.model):
+            print(NO_PROVIDER_MESSAGE, file=sys.stderr)
+            return 1
         streaming = app.state.streaming_service
         session_id = args.session or f"cli-{uuid.uuid4().hex[:12]}"
         await streaming.warm_session(session_id)
