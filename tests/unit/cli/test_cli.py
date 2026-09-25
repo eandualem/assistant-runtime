@@ -14,6 +14,8 @@ from assistant_runtime.cli.chat import (
     NO_HOST_RESULT,
     TurnRenderer,
     build_request,
+    chat_loop,
+    has_usable_provider,
     run_turn,
 )
 from assistant_runtime.cli.doctor import FAIL, OK, WARN, _codex, configured_providers, run_checks
@@ -448,6 +450,48 @@ class TestRunTurn:
             streaming, build_request("s1", "hi", None), TurnRenderer(io.StringIO())
         )
         assert result is None
+
+
+class FakeLLM:
+    def __init__(self, providers: list[str], primary_model: str = "anthropic:claude-opus-5"):
+        self._health = {"providers": providers, "primary_model": primary_model}
+
+    async def health_check(self) -> dict[str, Any]:
+        return self._health
+
+
+class TestProviderCheck:
+    @pytest.mark.parametrize(
+        ("llm", "model", "usable"),
+        [
+            (FakeLLM(["openai"]), None, True),
+            (FakeLLM([]), None, False),
+            (FakeLLM([], "google-cloud:gemini-3-pro"), None, True),
+            (FakeLLM([]), "google-cloud:gemini-3-pro", True),
+        ],
+    )
+    async def test_has_usable_provider(self, llm, model, usable):
+        assert await has_usable_provider(llm, model) is usable
+
+    async def test_chat_exits_before_the_first_message_without_a_provider(
+        self, monkeypatch, capsys
+    ):
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        @asynccontextmanager
+        async def lifespan(_app):
+            yield
+
+        app = SimpleNamespace(
+            router=SimpleNamespace(lifespan_context=lifespan),
+            state=SimpleNamespace(llm_service=FakeLLM([])),
+        )
+        monkeypatch.setattr("assistant_runtime.main.create_app", lambda: app)
+        args = build_parser().parse_args(["chat"])
+
+        assert await chat_loop(args) == 1
+        assert "No model provider is configured" in capsys.readouterr().err
 
 
 class TestDoctorCodex:
