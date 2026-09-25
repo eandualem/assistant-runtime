@@ -21,6 +21,8 @@ import sys
 import uuid
 from typing import IO, TYPE_CHECKING, Any
 
+from assistant_runtime.model_catalog import PROVIDER_ENV_VARS
+
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant.models import AssistantRequest
 
@@ -31,6 +33,16 @@ NO_HOST_RESULT = {
     "error_code": "NO_HOST_ATTACHED",
 }
 MAX_HOST_TOOL_ROUNDS = 3
+SETUP_HINT = (
+    "`assistant-runtime doctor` checks the setup; `assistant-runtime docs configuration` "
+    "lists the options."
+)
+NO_CREDENTIALS_MESSAGE = (
+    "No credentials for {model}, so chat cannot answer.\n"
+    f"Set a provider key ({', '.join(PROVIDER_ENV_VARS.values())}) in the environment "
+    "or in a .env file in this directory, or connect a ChatGPT/Codex subscription, "
+    "then run chat again.\n" + SETUP_HINT
+)
 
 
 def _short(value: Any, limit: int = 160) -> str:
@@ -171,12 +183,46 @@ async def _read_line(prompt: str) -> str | None:
         return None
 
 
+def model_setup_error(state: Any, model: str | None) -> str | None:
+    """Why the model a turn would use cannot be built, in CLI terms; None when it can.
+
+    The model is resolved as a turn resolves it (``--model``, then the runtime
+    settings, then the frozen assistant config) and built as a turn builds it,
+    so every credential source Pydantic AI accepts counts. Pydantic AI reports
+    a missing key as a ``UserError`` naming the environment variable; that one
+    gets the key guidance, any other failure its own message.
+    """
+    from pydantic_ai.exceptions import UserError
+
+    from assistant_runtime.app.assistant.config import TunableOverrides
+    from assistant_runtime.app.settings import resolve_effective_config
+
+    llm = state.llm_service
+    effective = resolve_effective_config(
+        state.settings.assistant,
+        state.runtime_settings,
+        TunableOverrides(default_model=model) if model else None,
+    )
+    name = effective.default_model or llm.effective_primary_model()
+    try:
+        llm.build_agent(model=effective.default_model, system_prompt="")
+    except Exception as exc:
+        if isinstance(exc, UserError) and "environment variable" in str(exc):
+            return NO_CREDENTIALS_MESSAGE.format(model=name)
+        return f"chat cannot use {name}: {exc}\n{SETUP_HINT}"
+    return None
+
+
 async def chat_loop(args: argparse.Namespace) -> int:
     """Open the app lifespan and run the read/stream loop."""
     from assistant_runtime.main import create_app
 
     app = create_app()
     async with app.router.lifespan_context(app):
+        problem = model_setup_error(app.state, args.model)
+        if problem is not None:
+            print(problem, file=sys.stderr)
+            return 1
         streaming = app.state.streaming_service
         session_id = args.session or f"cli-{uuid.uuid4().hex[:12]}"
         await streaming.warm_session(session_id)

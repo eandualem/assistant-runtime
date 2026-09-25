@@ -7,6 +7,7 @@ import io
 from typing import Any
 
 import pytest
+from pydantic_ai.exceptions import UserError
 
 from assistant_runtime.cli import build_parser, main, serve
 from assistant_runtime.cli.chat import (
@@ -14,9 +15,12 @@ from assistant_runtime.cli.chat import (
     NO_HOST_RESULT,
     TurnRenderer,
     build_request,
+    chat_loop,
+    model_setup_error,
     run_turn,
 )
 from assistant_runtime.cli.doctor import FAIL, OK, WARN, _codex, configured_providers, run_checks
+from assistant_runtime.services.llm import ProviderConfigError
 
 
 class TestParser:
@@ -448,6 +452,101 @@ class TestRunTurn:
             streaming, build_request("s1", "hi", None), TurnRenderer(io.StringIO())
         )
         assert result is None
+
+
+class FakeLLM:
+    """Builds agents for models in ``usable``; any other model lacks a key."""
+
+    def __init__(self, usable: set[str], primary_model: str = "anthropic:claude-opus-5"):
+        self._usable = usable
+        self._primary = primary_model
+        self.built: list[str | None] = []
+
+    def effective_primary_model(self) -> str:
+        return self._primary
+
+    def build_agent(self, *, model: str | None = None, system_prompt: str) -> object:
+        self.built.append(model)
+        if (model or self._primary) not in self._usable:
+            raise UserError("Set the `ANTHROPIC_API_KEY` environment variable")
+        return object()
+
+
+def _state(llm: Any, **assistant: Any) -> Any:
+    from types import SimpleNamespace
+
+    from assistant_runtime.app.assistant.config import AssistantConfig
+    from assistant_runtime.app.settings import RuntimeSettings
+
+    frozen = AssistantConfig(**assistant)
+    return SimpleNamespace(
+        llm_service=llm,
+        settings=SimpleNamespace(assistant=frozen),
+        runtime_settings=RuntimeSettings(frozen_config=frozen),
+    )
+
+
+GEMINI = "google:gemini-3.1-pro-preview"
+
+
+class TestModelSetupCheck:
+    def test_a_buildable_model_passes(self):
+        assert model_setup_error(_state(FakeLLM({"anthropic:claude-opus-5"})), None) is None
+
+    def test_a_missing_key_gets_the_key_guidance(self):
+        message = model_setup_error(_state(FakeLLM(set())), None)
+        assert message.startswith("No credentials for anthropic:claude-opus-5")
+        assert "ANTHROPIC_API_KEY, OPENAI_API_KEY" in message
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            UserError("Unknown model: typo:model"),
+            ProviderConfigError("Subscription-only routing requires a connected Codex session"),
+        ],
+    )
+    def test_other_setup_errors_keep_their_own_message(self, exc):
+        class Broken(FakeLLM):
+            def build_agent(self, **_kwargs: Any) -> object:
+                raise exc
+
+        message = model_setup_error(_state(Broken(set())), "typo:model")
+        assert message.startswith(f"chat cannot use typo:model: {exc}")
+        assert "No credentials" not in message
+
+    def test_the_request_model_is_checked(self):
+        llm = FakeLLM({GEMINI})
+        assert model_setup_error(_state(llm), GEMINI) is None
+        assert llm.built == [GEMINI]
+
+    def test_the_assistant_config_model_is_checked(self):
+        llm = FakeLLM({GEMINI})
+        assert model_setup_error(_state(llm, default_model=GEMINI), None) is None
+
+    async def test_the_runtime_settings_model_is_checked(self):
+        llm = FakeLLM({GEMINI})
+        state = _state(llm)
+        await state.runtime_settings.update(default_model=GEMINI)
+        assert model_setup_error(state, None) is None
+
+    async def test_chat_exits_before_the_first_message_without_credentials(
+        self, monkeypatch, capsys
+    ):
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        @asynccontextmanager
+        async def lifespan(_app):
+            yield
+
+        app = SimpleNamespace(
+            router=SimpleNamespace(lifespan_context=lifespan), state=_state(FakeLLM(set()))
+        )
+        monkeypatch.setattr("assistant_runtime.main.create_app", lambda: app)
+        args = build_parser().parse_args(["chat"])
+
+        assert await chat_loop(args) == 1
+        assert "No credentials for anthropic:claude-opus-5" in capsys.readouterr().err
 
 
 class TestDoctorCodex:
