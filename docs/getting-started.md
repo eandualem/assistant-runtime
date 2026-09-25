@@ -65,8 +65,8 @@ as the server, and streams the reply to your terminal. Tool calls show on
 their own lines. `--show-thinking` prints the model's thinking,
 `--model openai:gpt-5.6-terra` switches models for this chat,
 `-m "one message"` sends a single message and exits, `/exit` quits.
-Without a usable provider (a key or a connected subscription), `chat`
-stops at startup and names the keys it accepts.
+Without credentials for the chosen model (a key or a connected
+subscription), `chat` stops at startup and names the keys it accepts.
 
 Without Postgres, conversations and edits to prompt artifacts live in process
 memory and are lost on restart. Integration tools such as GitHub and Telegram

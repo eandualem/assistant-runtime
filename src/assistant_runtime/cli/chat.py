@@ -33,9 +33,9 @@ NO_HOST_RESULT = {
     "error_code": "NO_HOST_ATTACHED",
 }
 MAX_HOST_TOOL_ROUNDS = 3
-NO_PROVIDER_MESSAGE = (
-    "No model provider is configured, so chat cannot answer.\n"
-    f"Set one provider key ({', '.join(PROVIDER_ENV_VARS.values())}) in the environment "
+NO_CREDENTIALS_MESSAGE = (
+    "No credentials for {model}, so chat cannot answer.\n"
+    f"Set a provider key ({', '.join(PROVIDER_ENV_VARS.values())}) in the environment "
     "or in a .env file in this directory, or connect a ChatGPT/Codex subscription, "
     "then run chat again.\n"
     "`assistant-runtime doctor` checks the setup; `assistant-runtime docs configuration` "
@@ -181,30 +181,32 @@ async def _read_line(prompt: str) -> str | None:
         return None
 
 
-async def has_usable_provider(state: Any, model: str | None) -> bool:
-    """Whether the started app can serve a turn: any provider credential, or a
-    Vertex model, which authenticates with Google Cloud credentials instead.
+def model_without_credentials(state: Any, model: str | None) -> str | None:
+    """The model a turn would use, when its provider has no credentials.
 
-    The model is resolved as a turn resolves it: the ``--model`` request tier,
-    then the runtime settings, then the frozen assistant config.
+    The model is resolved as a turn resolves it (``--model``, then the runtime
+    settings, then the frozen assistant config) and built as a turn builds it,
+    so every credential source Pydantic AI accepts counts. Other setup errors
+    are left for the turn to report.
     """
+    from pydantic_ai.exceptions import UserError
+
     from assistant_runtime.app.assistant.config import TunableOverrides
     from assistant_runtime.app.settings import resolve_effective_config
-    from assistant_runtime.services.llm import ProviderConfigError
 
     llm = state.llm_service
-    if (await llm.health_check())["providers"]:
-        return True
     effective = resolve_effective_config(
         state.settings.assistant,
         state.runtime_settings,
         TunableOverrides(default_model=model) if model else None,
     )
     try:
-        resolved = llm.resolve_model(effective.default_model)
-    except ProviderConfigError:
-        return False
-    return resolved.startswith("google-cloud:")
+        llm.build_agent(model=effective.default_model, system_prompt="")
+    except UserError:
+        return llm.resolve_model(effective.default_model)
+    except Exception:
+        return None
+    return None
 
 
 async def chat_loop(args: argparse.Namespace) -> int:
@@ -213,8 +215,9 @@ async def chat_loop(args: argparse.Namespace) -> int:
 
     app = create_app()
     async with app.router.lifespan_context(app):
-        if not await has_usable_provider(app.state, args.model):
-            print(NO_PROVIDER_MESSAGE, file=sys.stderr)
+        missing = model_without_credentials(app.state, args.model)
+        if missing is not None:
+            print(NO_CREDENTIALS_MESSAGE.format(model=missing), file=sys.stderr)
             return 1
         streaming = app.state.streaming_service
         session_id = args.session or f"cli-{uuid.uuid4().hex[:12]}"
