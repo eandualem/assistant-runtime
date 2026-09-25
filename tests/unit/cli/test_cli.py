@@ -15,7 +15,7 @@ from assistant_runtime.cli.chat import (
     TurnRenderer,
     build_request,
     chat_loop,
-    has_usable_provider,
+    model_without_credentials,
     run_turn,
 )
 from assistant_runtime.cli.doctor import FAIL, OK, WARN, _codex, configured_providers, run_checks
@@ -453,17 +453,26 @@ class TestRunTurn:
 
 
 class FakeLLM:
-    def __init__(self, providers: list[str], primary_model: str = "anthropic:claude-opus-5"):
-        self._health = {"providers": providers, "primary_model": primary_model}
+    """Builds agents for models in ``usable``; any other model lacks credentials."""
 
-    async def health_check(self) -> dict[str, Any]:
-        return self._health
+    def __init__(self, usable: set[str], primary_model: str = "anthropic:claude-opus-5"):
+        self._usable = usable
+        self._primary = primary_model
+        self.built: list[str | None] = []
 
     def resolve_model(self, model: str | None = None) -> str:
-        return model or self._health["primary_model"]
+        return model or self._primary
+
+    def build_agent(self, *, model: str | None = None, system_prompt: str) -> object:
+        from pydantic_ai.exceptions import UserError
+
+        self.built.append(model)
+        if self.resolve_model(model) not in self._usable:
+            raise UserError("Set the `ANTHROPIC_API_KEY` environment variable")
+        return object()
 
 
-def _state(llm: FakeLLM, **assistant: Any) -> Any:
+def _state(llm: Any, **assistant: Any) -> Any:
     from types import SimpleNamespace
 
     from assistant_runtime.app.assistant.config import AssistantConfig
@@ -477,31 +486,39 @@ def _state(llm: FakeLLM, **assistant: Any) -> Any:
     )
 
 
-VERTEX = "google-cloud:gemini-3-pro"
+GEMINI = "google:gemini-3.1-pro-preview"
 
 
-class TestProviderCheck:
-    @pytest.mark.parametrize(
-        ("llm", "model", "usable"),
-        [
-            (FakeLLM(["openai"]), None, True),
-            (FakeLLM([]), None, False),
-            (FakeLLM([], VERTEX), None, True),
-            (FakeLLM([]), VERTEX, True),
-        ],
-    )
-    async def test_has_usable_provider(self, llm, model, usable):
-        assert await has_usable_provider(_state(llm), model) is usable
+class TestCredentialCheck:
+    def test_a_buildable_model_passes(self):
+        assert model_without_credentials(_state(FakeLLM({"anthropic:claude-opus-5"})), None) is None
 
-    async def test_vertex_selected_in_the_assistant_config(self):
-        assert await has_usable_provider(_state(FakeLLM([]), default_model=VERTEX), None)
+    def test_a_model_without_credentials_is_named(self):
+        assert model_without_credentials(_state(FakeLLM(set())), None) == "anthropic:claude-opus-5"
 
-    async def test_vertex_selected_in_the_runtime_settings(self):
-        state = _state(FakeLLM([]))
-        await state.runtime_settings.update(default_model=VERTEX)
-        assert await has_usable_provider(state, None)
+    def test_other_setup_errors_are_left_to_the_turn(self):
+        class Broken(FakeLLM):
+            def build_agent(self, **_kwargs: Any) -> object:
+                raise RuntimeError("no default credentials")
 
-    async def test_chat_exits_before_the_first_message_without_a_provider(
+        assert model_without_credentials(_state(Broken(set())), None) is None
+
+    def test_the_request_model_is_checked(self):
+        llm = FakeLLM({GEMINI})
+        assert model_without_credentials(_state(llm), GEMINI) is None
+        assert llm.built == [GEMINI]
+
+    def test_the_assistant_config_model_is_checked(self):
+        llm = FakeLLM({GEMINI})
+        assert model_without_credentials(_state(llm, default_model=GEMINI), None) is None
+
+    async def test_the_runtime_settings_model_is_checked(self):
+        llm = FakeLLM({GEMINI})
+        state = _state(llm)
+        await state.runtime_settings.update(default_model=GEMINI)
+        assert model_without_credentials(state, None) is None
+
+    async def test_chat_exits_before_the_first_message_without_credentials(
         self, monkeypatch, capsys
     ):
         from contextlib import asynccontextmanager
@@ -512,13 +529,13 @@ class TestProviderCheck:
             yield
 
         app = SimpleNamespace(
-            router=SimpleNamespace(lifespan_context=lifespan), state=_state(FakeLLM([]))
+            router=SimpleNamespace(lifespan_context=lifespan), state=_state(FakeLLM(set()))
         )
         monkeypatch.setattr("assistant_runtime.main.create_app", lambda: app)
         args = build_parser().parse_args(["chat"])
 
         assert await chat_loop(args) == 1
-        assert "No model provider is configured" in capsys.readouterr().err
+        assert "No credentials for anthropic:claude-opus-5" in capsys.readouterr().err
 
 
 class TestDoctorCodex:
