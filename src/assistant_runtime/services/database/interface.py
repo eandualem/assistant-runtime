@@ -59,13 +59,18 @@ class DatabaseService:
                 database=self._config.name,
             )
         except Exception as e:
+            self._healthy = False
+            if not self._config.model_fields_set:
+                # Nothing configured and no local default Postgres: the
+                # documented in-memory setup, not a fault.
+                logger.info("No database configured; sessions are kept in memory")
+                return
             logger.warning(
                 "Database not reachable — degraded mode",
                 host=self._config.host,
                 port=self._config.port,
                 error=str(e),
             )
-            self._healthy = False
 
     async def stop(self) -> None:
         """Dispose engine and clean up."""

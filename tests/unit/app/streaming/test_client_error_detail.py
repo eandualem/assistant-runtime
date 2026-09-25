@@ -53,6 +53,22 @@ class TestPersistenceFailureText:
 
 class TestTraceRetention:
     @pytest.mark.asyncio
+    async def test_save_trace_skips_an_unreachable_database(self):
+        from assistant_runtime.app.streaming._runner import TurnRunner
+
+        unreachable = MagicMock(healthy=False)
+        runner = TurnRunner(
+            config=StreamingConfig(),
+            sessions=MagicMock(),
+            tools=MagicMock(),
+            history=MagicMock(),
+            assistant_service=MagicMock(),
+            database_service=unreachable,
+        )
+        await runner.save_trace("s1", [{"type": "debug"}])
+        unreachable.session_context.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_without_a_reachable_database_nothing_runs(self):
         service = StreamingService(
             StreamingConfig(), MagicMock(), MagicMock(), MagicMock(), database_service=None
