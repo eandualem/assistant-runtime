@@ -89,7 +89,7 @@ class TestCreate:
         assert result.severity == "urgent"
 
     async def test_accepts_context_parameter(self, repo):
-        ctx = {"issue_number": 42, "repo": "orchestration"}
+        ctx = {"issue_number": 42, "repo": "sample-app"}
         mock_session = repo._session
         created_row = InboxItemORM(
             from_agent="planner", message="Check this", severity="info", context=ctx
