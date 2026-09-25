@@ -88,6 +88,11 @@ class DatabaseService:
                     f"cannot be used and DATABASE__REQUIRED is set: {e}",
                     cause=failure_cause(e),
                 ) from e
+            if not self._config.model_fields_set:
+                # Nothing configured and no local default Postgres: the
+                # documented in-memory setup, not a fault.
+                logger.info("No database configured; sessions are kept in memory")
+                return
             logger.warning(
                 "Database not reachable — degraded mode",
                 host=self._config.host,
