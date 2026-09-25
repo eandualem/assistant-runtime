@@ -181,13 +181,30 @@ async def _read_line(prompt: str) -> str | None:
         return None
 
 
-async def has_usable_provider(llm_service: Any, model: str | None) -> bool:
-    """Whether the started LLM service can serve a turn: any provider credential,
-    or a Vertex model, which authenticates with Google Cloud credentials instead."""
-    health = await llm_service.health_check()
-    if health["providers"]:
+async def has_usable_provider(state: Any, model: str | None) -> bool:
+    """Whether the started app can serve a turn: any provider credential, or a
+    Vertex model, which authenticates with Google Cloud credentials instead.
+
+    The model is resolved as a turn resolves it: the ``--model`` request tier,
+    then the runtime settings, then the frozen assistant config.
+    """
+    from assistant_runtime.app.assistant.config import TunableOverrides
+    from assistant_runtime.app.settings import resolve_effective_config
+    from assistant_runtime.services.llm import ProviderConfigError
+
+    llm = state.llm_service
+    if (await llm.health_check())["providers"]:
         return True
-    return (model or health["primary_model"]).startswith("google-cloud:")
+    effective = resolve_effective_config(
+        state.settings.assistant,
+        state.runtime_settings,
+        TunableOverrides(default_model=model) if model else None,
+    )
+    try:
+        resolved = llm.resolve_model(effective.default_model)
+    except ProviderConfigError:
+        return False
+    return resolved.startswith("google-cloud:")
 
 
 async def chat_loop(args: argparse.Namespace) -> int:
@@ -196,7 +213,7 @@ async def chat_loop(args: argparse.Namespace) -> int:
 
     app = create_app()
     async with app.router.lifespan_context(app):
-        if not await has_usable_provider(app.state.llm_service, args.model):
+        if not await has_usable_provider(app.state, args.model):
             print(NO_PROVIDER_MESSAGE, file=sys.stderr)
             return 1
         streaming = app.state.streaming_service

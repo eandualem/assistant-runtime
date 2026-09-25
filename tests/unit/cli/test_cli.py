@@ -459,6 +459,26 @@ class FakeLLM:
     async def health_check(self) -> dict[str, Any]:
         return self._health
 
+    def resolve_model(self, model: str | None = None) -> str:
+        return model or self._health["primary_model"]
+
+
+def _state(llm: FakeLLM, **assistant: Any) -> Any:
+    from types import SimpleNamespace
+
+    from assistant_runtime.app.assistant.config import AssistantConfig
+    from assistant_runtime.app.settings import RuntimeSettings
+
+    frozen = AssistantConfig(**assistant)
+    return SimpleNamespace(
+        llm_service=llm,
+        settings=SimpleNamespace(assistant=frozen),
+        runtime_settings=RuntimeSettings(frozen_config=frozen),
+    )
+
+
+VERTEX = "google-cloud:gemini-3-pro"
+
 
 class TestProviderCheck:
     @pytest.mark.parametrize(
@@ -466,12 +486,20 @@ class TestProviderCheck:
         [
             (FakeLLM(["openai"]), None, True),
             (FakeLLM([]), None, False),
-            (FakeLLM([], "google-cloud:gemini-3-pro"), None, True),
-            (FakeLLM([]), "google-cloud:gemini-3-pro", True),
+            (FakeLLM([], VERTEX), None, True),
+            (FakeLLM([]), VERTEX, True),
         ],
     )
     async def test_has_usable_provider(self, llm, model, usable):
-        assert await has_usable_provider(llm, model) is usable
+        assert await has_usable_provider(_state(llm), model) is usable
+
+    async def test_vertex_selected_in_the_assistant_config(self):
+        assert await has_usable_provider(_state(FakeLLM([]), default_model=VERTEX), None)
+
+    async def test_vertex_selected_in_the_runtime_settings(self):
+        state = _state(FakeLLM([]))
+        await state.runtime_settings.update(default_model=VERTEX)
+        assert await has_usable_provider(state, None)
 
     async def test_chat_exits_before_the_first_message_without_a_provider(
         self, monkeypatch, capsys
@@ -484,8 +512,7 @@ class TestProviderCheck:
             yield
 
         app = SimpleNamespace(
-            router=SimpleNamespace(lifespan_context=lifespan),
-            state=SimpleNamespace(llm_service=FakeLLM([])),
+            router=SimpleNamespace(lifespan_context=lifespan), state=_state(FakeLLM([]))
         )
         monkeypatch.setattr("assistant_runtime.main.create_app", lambda: app)
         args = build_parser().parse_args(["chat"])
