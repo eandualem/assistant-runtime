@@ -112,6 +112,37 @@ class TestDatabaseServiceStart:
             assert service._started is True
             assert service._healthy is False
 
+    @pytest.mark.parametrize(
+        ("config", "level", "message"),
+        [
+            (DatabaseConfig(), "INFO", "No database configured; sessions are kept in memory"),
+            (
+                DatabaseConfig(host="db.example"),
+                "WARNING",
+                "Database not reachable — degraded mode",
+            ),
+        ],
+    )
+    async def test_unreachable_database_is_a_warning_only_when_configured(
+        self, config, level, message
+    ):
+        import io
+
+        from loguru import logger
+
+        logs = io.StringIO()
+        sink = logger.add(logs, format="{level} {message}", level="INFO")
+        mock_engine, _ = _make_mock_engine(connect_ok=False)
+        try:
+            with patch(
+                "assistant_runtime.services.database.interface.create_async_engine",
+                return_value=mock_engine,
+            ):
+                await DatabaseService(config=config).start()
+        finally:
+            logger.remove(sink)
+        assert logs.getvalue().strip() == f"{level} {message}"
+
 
 class TestDatabaseServiceStop:
     """Stop lifecycle — engine disposal."""

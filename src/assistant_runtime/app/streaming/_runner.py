@@ -984,7 +984,7 @@ class TurnRunner:
         duration_ms: float | None = None,
     ) -> None:
         """Persist collected debug events as a trace row (never the screenshot). Best-effort."""
-        if self._db is None or not trace_events:
+        if self._db is None or not self._db.healthy or not trace_events:
             return
         try:
             from assistant_runtime.services.database.repositories import TraceRepository
