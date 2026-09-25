@@ -7,6 +7,7 @@ import io
 from typing import Any
 
 import pytest
+from pydantic_ai.exceptions import UserError
 
 from assistant_runtime.cli import build_parser, main, serve
 from assistant_runtime.cli.chat import (
@@ -15,10 +16,11 @@ from assistant_runtime.cli.chat import (
     TurnRenderer,
     build_request,
     chat_loop,
-    model_without_credentials,
+    model_setup_error,
     run_turn,
 )
 from assistant_runtime.cli.doctor import FAIL, OK, WARN, _codex, configured_providers, run_checks
+from assistant_runtime.services.llm import ProviderConfigError
 
 
 class TestParser:
@@ -453,21 +455,19 @@ class TestRunTurn:
 
 
 class FakeLLM:
-    """Builds agents for models in ``usable``; any other model lacks credentials."""
+    """Builds agents for models in ``usable``; any other model lacks a key."""
 
     def __init__(self, usable: set[str], primary_model: str = "anthropic:claude-opus-5"):
         self._usable = usable
         self._primary = primary_model
         self.built: list[str | None] = []
 
-    def resolve_model(self, model: str | None = None) -> str:
-        return model or self._primary
+    def effective_primary_model(self) -> str:
+        return self._primary
 
     def build_agent(self, *, model: str | None = None, system_prompt: str) -> object:
-        from pydantic_ai.exceptions import UserError
-
         self.built.append(model)
-        if self.resolve_model(model) not in self._usable:
+        if (model or self._primary) not in self._usable:
             raise UserError("Set the `ANTHROPIC_API_KEY` environment variable")
         return object()
 
@@ -489,34 +489,45 @@ def _state(llm: Any, **assistant: Any) -> Any:
 GEMINI = "google:gemini-3.1-pro-preview"
 
 
-class TestCredentialCheck:
+class TestModelSetupCheck:
     def test_a_buildable_model_passes(self):
-        assert model_without_credentials(_state(FakeLLM({"anthropic:claude-opus-5"})), None) is None
+        assert model_setup_error(_state(FakeLLM({"anthropic:claude-opus-5"})), None) is None
 
-    def test_a_model_without_credentials_is_named(self):
-        assert model_without_credentials(_state(FakeLLM(set())), None) == "anthropic:claude-opus-5"
+    def test_a_missing_key_gets_the_key_guidance(self):
+        message = model_setup_error(_state(FakeLLM(set())), None)
+        assert message.startswith("No credentials for anthropic:claude-opus-5")
+        assert "ANTHROPIC_API_KEY, OPENAI_API_KEY" in message
 
-    def test_other_setup_errors_are_left_to_the_turn(self):
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            UserError("Unknown model: typo:model"),
+            ProviderConfigError("Subscription-only routing requires a connected Codex session"),
+        ],
+    )
+    def test_other_setup_errors_keep_their_own_message(self, exc):
         class Broken(FakeLLM):
             def build_agent(self, **_kwargs: Any) -> object:
-                raise RuntimeError("no default credentials")
+                raise exc
 
-        assert model_without_credentials(_state(Broken(set())), None) is None
+        message = model_setup_error(_state(Broken(set())), "typo:model")
+        assert message.startswith(f"chat cannot use typo:model: {exc}")
+        assert "No credentials" not in message
 
     def test_the_request_model_is_checked(self):
         llm = FakeLLM({GEMINI})
-        assert model_without_credentials(_state(llm), GEMINI) is None
+        assert model_setup_error(_state(llm), GEMINI) is None
         assert llm.built == [GEMINI]
 
     def test_the_assistant_config_model_is_checked(self):
         llm = FakeLLM({GEMINI})
-        assert model_without_credentials(_state(llm, default_model=GEMINI), None) is None
+        assert model_setup_error(_state(llm, default_model=GEMINI), None) is None
 
     async def test_the_runtime_settings_model_is_checked(self):
         llm = FakeLLM({GEMINI})
         state = _state(llm)
         await state.runtime_settings.update(default_model=GEMINI)
-        assert model_without_credentials(state, None) is None
+        assert model_setup_error(state, None) is None
 
     async def test_chat_exits_before_the_first_message_without_credentials(
         self, monkeypatch, capsys
