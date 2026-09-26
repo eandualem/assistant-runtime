@@ -198,9 +198,11 @@ class FakeServer:
         self.queues.pop(thread_id, None)
 
     def feed(self, thread_id, method, **params):
-        self.subscribe(thread_id).put_nowait(
-            {"method": method, "params": {"threadId": thread_id, **params}}
-        )
+        # Like the real reader: only subscribed threads receive notifications.
+        if thread_id in self.queues:
+            self.queues[thread_id].put_nowait(
+                {"method": method, "params": {"threadId": thread_id, **params}}
+            )
 
     def sent(self, method):
         return [params for name, params in self.requests if name == method]
@@ -1032,7 +1034,7 @@ def test_a_moved_version_list_does_not_hide_the_start_parameters(tmp_path):
     assert missing_from_schema(tmp_path) == ["thread/realtime/start.version=v3"]
 
 
-async def test_a_schema_generator_that_fails_is_retried_not_cached(tmp_path):
+async def test_a_cli_that_cannot_run_is_retried_not_cached(tmp_path):
     command = _fake_codex(tmp_path, "import sys\nsys.exit(1)\n")
     transport = CodexTransport(command, 5, usage_ceiling_percent=97, usage_check_seconds=60)
     assert (await transport.compatibility())["missing"] == ["codex_cli"]
@@ -1109,10 +1111,8 @@ async def test_a_cli_that_runs_but_cannot_describe_its_protocol_is_incompatible(
     assert transport.checked() == result  # an old CLI stays old: no rerun per call
 
 
-async def test_a_hung_server_cannot_hold_a_call_open_on_close(codex, monkeypatch):
-    from assistant_runtime.app.voice import _codex
-
-    monkeypatch.setattr(_codex, "_CLOSE_SECONDS", 0.05)
+async def test_a_hung_server_cannot_hold_a_call_open_on_close(codex):
+    codex.close_timeout = 0.05  # VOICE__CLOSE_TIMEOUT_SECONDS
 
     async def hung(method, params, original=codex._server.request):
         if method in ("thread/realtime/stop", "thread/unsubscribe"):
@@ -1125,11 +1125,12 @@ async def test_a_hung_server_cannot_hold_a_call_open_on_close(codex, monkeypatch
         await connection.close()
 
 
-def test_usage_without_a_credits_object_is_unreadable():
+def test_absent_credits_are_no_credits_but_a_malformed_snapshot_set_is_unreadable():
     snapshot = dict(LIMITS["rateLimitsByLimitId"]["codex"])
-    del snapshot["credits"]
-    report = usage_report({"rateLimitsByLimitId": {"codex": snapshot}}, 97)
-    assert (report["allowed"], report["reason"]) == (False, "usage_unreadable")
+    del snapshot["credits"]  # optional and nullable in the CLI's schema
+    assert usage_report({"rateLimitsByLimitId": {"codex": snapshot}}, 97)["allowed"] is True
+    snapshot["credits"] = None
+    assert usage_report({"rateLimitsByLimitId": {"codex": snapshot}}, 97)["allowed"] is True
     report = usage_report({"rateLimitsByLimitId": ["not", "a", "mapping"]}, 97)
     assert report["reason"] == "usage_unreadable"
 
@@ -1174,21 +1175,6 @@ async def test_a_session_created_but_never_attached_is_stopped(codex, monkeypatc
             await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
         await until(lambda: codex._server.sent("thread/realtime/stop"))
         assert codex._created == {}
-    finally:
-        await service.stop()
-
-
-async def test_final_transcripts_stop_with_the_call(codex, monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
-    await service.start()
-    try:
-        created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
-        call = service._calls[created["call_id"]]
-        call.stop_requested.set()
-        codex._server.feed("thread-1", "thread/realtime/transcript/done", role="user", text="late")
-        codex._server.feed("thread-1", "thread/realtime/closed", reason="requested")
-        await until(call.done.is_set)
-        assert not [e for _, e in call.events if e["event"] == "transcript_done"]
+        assert "thread-1" not in codex._server.queues
     finally:
         await service.stop()

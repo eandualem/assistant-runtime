@@ -339,7 +339,9 @@ behave as described above.
   event ends the session. Conversation-only calls are enforced by the runtime and
   the instructions; the provider has no client-event allowlist.
 - The provider reports no usage for the realtime session. `usage` holds the
-  measured `duration_seconds` once the call closes.
+  measured `duration_seconds` once the call closes. A close waits at most
+  `VOICE__CLOSE_TIMEOUT_SECONDS` for the CLI to stop the session and release its
+  thread.
 - Voices: `juniper`, `maple`, `spruce`, `ember`, `vale`, `breeze`, `arbor`, `sol`
   and `cove` (the default). `VOICE__VOICE` is checked against this list at startup,
   and `GET /api/voice/status` returns it as `voices`.
@@ -397,8 +399,9 @@ checks the installed CLI's protocol schema offline (`codex app-server
 generate-json-schema`, no session and no usage) for every method, notification and
 parameter this provider relies on. `GET /api/voice/status` reports the result as
 `codex: {version, compatible, missing}`; an incompatible CLI refuses calls with
-`503` and `reason: "codex_incompatible"`, and a CLI that cannot be run with
-`reason: "codex_unavailable"`. A session that starts on a realtime
+`503` and `reason: "codex_incompatible"` (`missing` names what it lacks, or
+`app-server generate-json-schema` for a CLI too old to describe its protocol), and a
+CLI that cannot be run with `reason: "codex_unavailable"`. A session that starts on a realtime
 version other than v3 is closed with `codex_version_mismatch`. This provider was
 developed against Codex CLI 0.157.1.
 

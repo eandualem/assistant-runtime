@@ -87,6 +87,7 @@ class VoiceService:
                 self.config.connect_timeout_seconds,
                 usage_ceiling_percent=self.config.codex_usage_ceiling_percent,
                 usage_check_seconds=self.config.codex_usage_check_seconds,
+                close_timeout=self.config.close_timeout_seconds,
             )
         return self._transport
 
@@ -606,7 +607,7 @@ class VoiceService:
                 self._emit(call, "transcript", fragment)
             elif kind == "session.transcript.done":
                 text = event.get("text")
-                if isinstance(text, str) and text and not call.stop_requested.is_set():
+                if isinstance(text, str) and text:
                     call.last_activity_at = time.time()
                     self._emit(call, "transcript_done", {"role": event.get("role"), "text": text})
             elif kind in ("session.usage.updated", "session.closed"):

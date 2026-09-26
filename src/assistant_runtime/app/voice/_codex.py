@@ -116,7 +116,7 @@ def missing_from_schema(directory: Path) -> list[str]:
     ):
         try:
             fields = set(json.loads((directory / "v2" / file).read_text()).get("properties", {}))
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError, AttributeError, TypeError):
             fields = set()
         missing += [f"{method}.{name}" for name in sorted(needed - fields)]
     return missing
@@ -144,8 +144,9 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
         if not isinstance(snapshot, dict):
             continue
         balance = snapshot.get("credits")
-        if not isinstance(balance, dict):
-            # Without a credits object nothing shows that credits cannot be spent.
+        if balance is None:
+            balance = {}  # optional in the CLI's schema: no credit information
+        elif not isinstance(balance, dict):
             reasons.append("usage_unreadable")
             balance = {}
         if (
@@ -199,8 +200,6 @@ _AGENT_INSTRUCTIONS = (
     "This thread only carries a voice call, and another system answers every request. "
     "Do not run commands, read files or call tools. End every turn at once without output."
 )
-# Longest a close waits for each of the stop and the thread release.
-_CLOSE_SECONDS = 5
 # Consecutive unreadable usage checks that end a call.
 _UNREADABLE_CHECKS = 3
 # Closures the runtime synthesises when it can no longer see the session.
@@ -606,7 +605,9 @@ class _CodexConnection:
         # Bounded: a hung app-server must not hold the call's session reservation.
         if not self._closed or self._stop_task is not None:
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(asyncio.shield(self._stop(None)), _CLOSE_SECONDS)
+                await asyncio.wait_for(
+                    asyncio.shield(self._stop(None)), self._transport.close_timeout
+                )
         self._stopping = True
         self._watchdog.cancel()
         for task in list(self._tasks):
@@ -617,7 +618,7 @@ class _CodexConnection:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
                 self._server.request("thread/unsubscribe", {"threadId": self._thread}),
-                _CLOSE_SECONDS,
+                self._transport.close_timeout,
             )
 
 
@@ -631,9 +632,13 @@ class CodexTransport:
         *,
         usage_ceiling_percent: int,
         usage_check_seconds: float,
+        close_timeout: float = 10,
     ) -> None:
         self.command = command
         self.timeout = timeout
+        # Bounds each of a closing call's stop and thread release, so a hung
+        # app-server cannot hold the call's session reservation.
+        self.close_timeout = close_timeout
         self.usage_ceiling_percent = usage_ceiling_percent
         self.usage_check_seconds = usage_check_seconds
         self._server = _AppServer(command, timeout)
@@ -805,10 +810,7 @@ class CodexTransport:
         except BaseException:
             # The session may have started even though no answer arrived; stop it
             # in the background so a cancelled request cannot skip the stop.
-            task = asyncio.create_task(self._stop_quietly(thread_id))
-            self._background.add(task)
-            task.add_done_callback(self._background.discard)
-            self._server.unsubscribe(thread_id)
+            self.abandon(thread_id)
             raise
         # Keep arrival order: what came before the answer goes first.
         later = []
@@ -822,6 +824,7 @@ class CodexTransport:
     def abandon(self, provider_id: str) -> None:
         """Stop a session that was created but never attached to a call."""
         self._created.pop(provider_id, None)
+        self._server.unsubscribe(provider_id)
         task = asyncio.create_task(self._stop_quietly(provider_id))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
