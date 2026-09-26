@@ -265,7 +265,7 @@ model. On the `codex` provider the same request can carry a `fact` for the voice
 itself (see [facts](#facts-for-the-voice)). `POST .../cancel` cancels backend work and resolves unanswered host actions
 as interrupted/cancelled; it leaves the audio conversation connected. It returns
 `{"cancelled": true}` only when an unfinished delegation was cancelled; a
-delegation whose result was already sent keeps its status. Ordinary
+delegation whose result is already sent, or being sent, is left as it is. Ordinary
 speech interruption alone does not cancel backend work. New client delegations
 supersede older unfinished delegations after native cleanup, except that submitted
 host results finish being recorded first.

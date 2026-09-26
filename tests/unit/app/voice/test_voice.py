@@ -510,11 +510,33 @@ async def test_cancel_after_a_finished_delegation_relabels_nothing(setup, status
     assert not cancelled_events(call)
 
 
-@pytest.mark.parametrize("blocked_in", ["backend turn", "result send"])
-async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup, blocked_in):
-    service, backend, _ = setup
+@pytest.mark.parametrize("text", ["Check availability", None])  # a result or a notice
+async def test_cancel_during_the_result_send_lets_it_finish(setup, text):
+    service, _, _ = setup
     call_id, connection = await create(setup)
     call = service._calls[call_id]
+    sending, release = asyncio.Event(), asyncio.Event()
+
+    async def send(frame, send=connection.send):
+        if json.loads(frame)["type"] == "session.commentary.append":
+            sending.set()
+            await release.wait()
+        await send(frame)
+
+    connection.send = send
+    delegate(connection, text=text)
+    await asyncio.wait_for(sending.wait(), 2)
+    cancelling = asyncio.create_task(service.cancel_work(call_id, OWNER))
+    await until(lambda: call.cancelling)
+    release.set()
+    assert await asyncio.wait_for(cancelling, 2) == {"cancelled": False}
+    assert call.delegations["item_1"]["status"] == "result_sent"
+    assert connection.sent[0]["delegation_id"] == "item_1"
+    assert not cancelled_events(call)
+
+
+async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup):
+    service, backend, _ = setup
     started = asyncio.Event()
 
     async def runner(request):
@@ -522,16 +544,9 @@ async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup, bl
         await asyncio.Event().wait()
         yield {}  # async generator
 
-    async def send(frame, send=connection.send):
-        if json.loads(frame)["type"] == "session.commentary.append":
-            started.set()
-            await asyncio.Event().wait()
-        await send(frame)
-
-    if blocked_in == "backend turn":
-        backend.runner = runner
-    else:
-        connection.send = send
+    backend.runner = runner
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
     delegate(connection)
     await asyncio.wait_for(started.wait(), 2)
     assert await service.cancel_work(call_id, OWNER) == {"cancelled": True}
