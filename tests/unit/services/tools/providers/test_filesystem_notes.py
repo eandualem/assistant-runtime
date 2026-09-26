@@ -8,7 +8,7 @@ import os
 import shutil
 import stat
 import threading
-import time
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +19,7 @@ from assistant_runtime.services.tools.capabilities.notes import (
     register_notes_tools,
 )
 from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers._filesystem import exclusive_text
 from assistant_runtime.services.tools.providers.filesystem import (
     MarkdownNotes,
     build_note_content,
@@ -967,16 +968,15 @@ async def test_note_move_uses_both_opened_parents_after_replacement(tmp_path, mo
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "note.md").write_text("outside")
-    original_rename = os.rename
+    original_link = os.link
 
-    def replace_before_rename(src, dst, **kwargs):
-        if "src_dir_fd" in kwargs:
-            for directory in (source, destination):
-                directory.rename(directory.with_name(directory.name + "-original"))
-                directory.symlink_to(outside, target_is_directory=True)
-        return original_rename(src, dst, **kwargs)
+    def replace_before_link(src, dst, **kwargs):
+        for directory in (source, destination):
+            directory.rename(directory.with_name(directory.name + "-original"))
+            directory.symlink_to(outside, target_is_directory=True)
+        return original_link(src, dst, **kwargs)
 
-    monkeypatch.setattr(os, "rename", replace_before_rename)
+    monkeypatch.setattr(os, "link", replace_before_link)
     result = await _manage(root)(
         action="move_note", filename="source/note.md", folder="destination"
     )
@@ -1002,10 +1002,10 @@ async def test_note_move_preserves_symlink_entry(tmp_path, monkeypatch, cross_de
     (tmp_path / "linked.md").symlink_to("original.md")
     if cross_device:
 
-        def fail_rename(*args, **kwargs):
+        def fail_link(*args, **kwargs):
             raise OSError(errno.EXDEV, "fixture")
 
-        monkeypatch.setattr(os, "rename", fail_rename)
+        monkeypatch.setattr(os, "link", fail_link)
     result = await _manage(tmp_path)(action="move_note", filename="linked.md", folder="moved")
     assert result["success"] is True
     assert os.readlink(tmp_path / "moved" / "linked.md") == "original.md"
@@ -1025,7 +1025,7 @@ async def test_note_move_across_devices_preserves_content_and_metadata(tmp_path,
     def cross_device(*args, **kwargs):
         raise OSError(errno.EXDEV, "fixture")
 
-    monkeypatch.setattr(os, "rename", cross_device)
+    monkeypatch.setattr(os, "link", cross_device)
     result = await _manage(tmp_path)(action="move_note", filename="note.md", folder="moved")
     assert result["success"] is True
     destination = tmp_path / "moved" / "note.md"
@@ -1049,7 +1049,7 @@ async def test_failed_cross_device_copy_leaves_no_partial_destination(tmp_path, 
         writer.write(b"part")
         raise OSError(errno.ENOSPC, "fixture")
 
-    monkeypatch.setattr(os, "rename", cross_device)
+    monkeypatch.setattr(os, "link", cross_device)
     monkeypatch.setattr(shutil, "copyfileobj", full_disk)
     manage = _manage(tmp_path)
     with pytest.raises(OSError, match="fixture"):
@@ -1063,18 +1063,10 @@ async def test_failed_cross_device_copy_leaves_no_partial_destination(tmp_path, 
     assert (tmp_path / "moved" / "note.md").read_text() == "inside"
 
 
-async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path, monkeypatch):
+async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path):
     for folder in ("a", "b"):
         (tmp_path / folder).mkdir()
         (tmp_path / folder / "note.md").write_text(folder)
-    real_rename = os.rename
-
-    def slow_rename(*args, **kwargs):
-        # Widen the gap between the destination check and the rename.
-        time.sleep(0.1)
-        return real_rename(*args, **kwargs)
-
-    monkeypatch.setattr(os, "rename", slow_rename)
     notes = MarkdownNotes(tmp_path)
     results = await asyncio.gather(
         notes.move(filename="a/note.md", folder="target"),
@@ -1087,28 +1079,123 @@ async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path, monkeypatch):
     assert sorted(kept + [(tmp_path / "target" / "note.md").read_text()]) == ["a", "b"]
 
 
-async def test_a_note_created_during_a_move_is_not_overwritten(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hard_links", [True, False])
+async def test_a_move_does_not_replace_a_destination_created_during_it(
+    tmp_path, monkeypatch, hard_links
+):
     (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "note.md").write_text("moved")
+    real_link = os.link
+
+    def another_writer_first(*args, **kwargs):
+        (tmp_path / "b" / "note.md").write_text("other")
+        if not hard_links:
+            raise OSError(errno.ENOTSUP, "fixture")
+        return real_link(*args, **kwargs)
+
+    monkeypatch.setattr(os, "link", another_writer_first)
+    result = await MarkdownNotes(tmp_path).move(filename="a/note.md", folder="b")
+    assert result["success"] is False
+    assert "already exists" in result["error"]
+    assert (tmp_path / "b" / "note.md").read_text() == "other"
+    assert (tmp_path / "a" / "note.md").read_text() == "moved"
+
+
+async def test_a_failed_source_removal_keeps_a_replaced_destination(tmp_path, monkeypatch):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "note.md").write_text("note")
+    real_unlink = os.unlink
+
+    def replace_then_fail(path, **kwargs):
+        # Another program replaces the new entry; then the source cannot be removed.
+        monkeypatch.setattr(os, "unlink", real_unlink)
+        (tmp_path / "other.md").write_text("other")
+        (tmp_path / "other.md").replace(tmp_path / "b" / "note.md")
+        raise PermissionError(errno.EACCES, "fixture")
+
+    monkeypatch.setattr(os, "unlink", replace_then_fail)
+    with pytest.raises(PermissionError):
+        await MarkdownNotes(tmp_path).move(filename="a/note.md", folder="b")
+    assert (tmp_path / "b" / "note.md").read_text() == "other"
+    assert (tmp_path / "a" / "note.md").read_text() == "note"
+
+
+def _observe_lock_waits(monkeypatch, notes):
+    """An event set when a notes operation waits for another one's lock."""
+    waiting, lock = threading.Event(), notes._entry_lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if lock.locked():
+                waiting.set()
+            return lock.__enter__()
+
+        def __exit__(self, *exc):
+            return lock.__exit__(*exc)
+
+    monkeypatch.setattr(notes, "_entry_lock", ObservedLock())
+    return waiting
+
+
+def _refuse_links(*args, **kwargs):
+    raise OSError(errno.ENOTSUP, "fixture")
+
+
+async def test_a_move_waits_for_another_moves_copy(tmp_path, monkeypatch):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "note.md").write_text("note")
     notes = MarkdownNotes(tmp_path)
-    created = await notes.create(title="Plan", content="moved", tags=None, folder="a")
-    real_rename = os.rename
-    renaming = threading.Event()
+    copying, release = threading.Event(), threading.Event()
+    real_copy = shutil.copyfileobj
 
-    def slow_rename(*args, **kwargs):
-        # The move has checked its destination; hold the gap open.
-        renaming.set()
-        time.sleep(0.1)
-        return real_rename(*args, **kwargs)
+    def paused_copy(*args):
+        copying.set()
+        release.wait(5)
+        return real_copy(*args)
 
-    monkeypatch.setattr(os, "rename", slow_rename)
-    move = asyncio.create_task(notes.move(filename=created["path"], folder="b"))
-    assert await asyncio.to_thread(renaming.wait, 5)
-    made = await notes.create(title="Plan", content="new", tags=None, folder="b")
-    moved = await move
-    assert moved["success"] is True
-    assert made["success"] is True
-    contents = sorted(p.read_text().split("---")[-1].strip() for p in (tmp_path / "b").glob("*.md"))
-    assert contents == ["moved", "new"]
+    monkeypatch.setattr(os, "link", _refuse_links)
+    monkeypatch.setattr(shutil, "copyfileobj", paused_copy)
+    waiting = _observe_lock_waits(monkeypatch, notes)
+    tasks = [asyncio.create_task(notes.move(filename="a/note.md", folder="b"))]
+    try:
+        assert await asyncio.to_thread(copying.wait, 5)
+        # b/note.md exists but is still empty; moving it now would lose the note.
+        tasks.append(asyncio.create_task(notes.move(filename="b/note.md", folder="c")))
+        assert await asyncio.to_thread(waiting.wait, 5)
+    finally:
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert [r["success"] for r in results] == [True, True]
+    assert (tmp_path / "c" / "note.md").read_text() == "note"
+
+
+async def test_a_move_waits_for_a_create_in_progress(tmp_path, monkeypatch):
+    notes = MarkdownNotes(tmp_path)
+    opened, release = threading.Event(), threading.Event()
+    real_exclusive = exclusive_text
+
+    @contextmanager
+    def paused_exclusive(parent, name):
+        with real_exclusive(parent, name) as handle:
+            opened.set()
+            release.wait(5)
+            yield handle
+
+    monkeypatch.setattr(os, "link", _refuse_links)
+    monkeypatch.setattr(f"{MODULE}.exclusive_text", paused_exclusive)
+    waiting = _observe_lock_waits(monkeypatch, notes)
+    tasks = [asyncio.create_task(notes.create(title="Plan", content="body", tags=None, folder="a"))]
+    try:
+        assert await asyncio.to_thread(opened.wait, 5)
+        # The new note exists but is still empty; moving it now would lose its content.
+        name = next((tmp_path / "a").iterdir()).name
+        tasks.append(asyncio.create_task(notes.move(filename=f"a/{name}", folder="b")))
+        assert await asyncio.to_thread(waiting.wait, 5)
+    finally:
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert [r["success"] for r in results] == [True, True]
+    assert "body" in (tmp_path / "b" / name).read_text()
 
 
 @pytest.mark.skipif(not hasattr(os, "chflags"), reason="BSD file flags require macOS")
@@ -1120,7 +1207,7 @@ async def test_cross_device_move_with_file_flags_keeps_source(tmp_path, monkeypa
     def cross_device(*args, **kwargs):
         raise OSError(errno.EXDEV, "fixture")
 
-    monkeypatch.setattr(os, "rename", cross_device)
+    monkeypatch.setattr(os, "link", cross_device)
     try:
         with pytest.raises(OSError, match="cannot preserve file flags") as error:
             await _manage(tmp_path)(action="move_note", filename="note.md", folder="moved")

@@ -116,17 +116,25 @@ class RootedDirectory:
     def _move_entry(self, src: int, source: str, destination: Path) -> bool:
         with self.parent(destination, create=True) as dst:
             try:
-                os.stat(destination.name, dir_fd=dst, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
+                # Unlike a rename, a link fails rather than replace the destination.
+                os.link(
+                    source,
+                    destination.name,
+                    src_dir_fd=src,
+                    dst_dir_fd=dst,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
                 return False
-            try:
-                os.rename(source, destination.name, src_dir_fd=src, dst_dir_fd=dst)
-            except OSError as exc:
-                if exc.errno != errno.EXDEV:
-                    raise
-                _move_across_devices(src, source, dst, destination.name)
+            except OSError:
+                # Another device, or a filesystem or policy that refuses the link.
+                try:
+                    _copy_entry(src, source, dst, destination.name)
+                except FileExistsError:
+                    return False
+            # If this fails the note keeps both names; removing the new one by
+            # name could delete an entry another program put there meanwhile.
+            os.unlink(source, dir_fd=src)
         return True
 
 
@@ -162,7 +170,7 @@ def _copy_metadata(source: int, destination: int, metadata: os.stat_result) -> N
     os.fchmod(destination, stat.S_IMODE(metadata.st_mode))
 
 
-def _move_across_devices(src: int, source: str, dst: int, destination: str) -> None:
+def _copy_entry(src: int, source: str, dst: int, destination: str) -> None:
     metadata = os.stat(source, dir_fd=src, follow_symlinks=False)
     if stat.S_ISLNK(metadata.st_mode):
         os.symlink(os.readlink(source, dir_fd=src), destination, dir_fd=dst)
@@ -172,7 +180,7 @@ def _move_across_devices(src: int, source: str, dst: int, destination: str) -> N
             if getattr(metadata, "st_flags", 0):
                 raise OSError(
                     errno.ENOTSUP,
-                    "Cross-filesystem note moves cannot preserve file flags on this platform",
+                    "Copying a note cannot preserve file flags on this platform",
                 )
             with _file(dst, destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL) as destination_fd:
                 try:
@@ -187,4 +195,3 @@ def _move_across_devices(src: int, source: str, dst: int, destination: str) -> N
                     with suppress(OSError):
                         os.unlink(destination, dir_fd=dst)
                     raise
-    os.unlink(source, dir_fd=src)
