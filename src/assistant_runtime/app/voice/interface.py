@@ -405,13 +405,23 @@ class VoiceService:
                 task = call.cancel_task
             else:
                 previous = call.active_delegation
+                # The active delegation may be finished, its result sent or
+                # still being sent; it is not interrupted, relabelled or reported.
+                finished = previous is not None and call.delegations[previous]["status"] not in (
+                    "running",
+                    "pending_host",
+                    "waiting",
+                )
+                if finished:
+                    previous = None
                 # Enqueue before changing state so a full queue is retryable.
                 barrier = asyncio.get_running_loop().create_future()
                 self._enqueue(call, "", None, barrier)
                 call.cancelling = True
                 call.active_delegation = None
                 call.pending = None
-                self._cancel_unprotected(call)
+                if not finished:
+                    self._cancel_unprotected(call)
                 task = call.cancel_task = asyncio.create_task(
                     self._cancel_backend(call, previous, barrier)
                 )
@@ -838,6 +848,8 @@ class VoiceService:
         if len(encoded) > 400:
             spoken += " [Full details are available in the chat.]"
         command_id = str(uuid.uuid4())
+        # Recorded before the send: the provider's acknowledgement is matched by
+        # command_id and can arrive while the send is still suspended.
         call.delegations[ident].update(status="result_sent", command_id=command_id)
         await send(
             call.connection,

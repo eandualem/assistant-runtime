@@ -485,6 +485,75 @@ async def test_second_cancel_discards_delegation_waiting_for_cleanup(setup):
     assert not backend.requests
 
 
+def cancelled_events(call):
+    return [
+        event["data"]
+        for _, event in call.events
+        if event["event"] == "delegation" and event["data"]["status"] == "cancelled"
+    ]
+
+
+@pytest.mark.parametrize("status", ["result_sent", "result_accepted"])
+async def test_cancel_after_a_finished_delegation_relabels_nothing(setup, status):
+    service, _, _ = setup
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
+    delegate(connection)
+    await until(lambda: connection.sent)
+    if status == "result_accepted":
+        connection.feed(
+            "session.commentary.appended", client_event_id=connection.sent[0]["event_id"]
+        )
+    await until(lambda: call.delegations["item_1"]["status"] == status)
+    assert await service.cancel_work(call_id, OWNER) == {"cancelled": False}
+    assert call.delegations["item_1"]["status"] == status
+    assert not cancelled_events(call)
+
+
+@pytest.mark.parametrize("text", ["Check availability", None])  # a result or a notice
+async def test_cancel_during_the_result_send_lets_it_finish(setup, text):
+    service, _, _ = setup
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
+    sending, release = asyncio.Event(), asyncio.Event()
+
+    async def send(frame, send=connection.send):
+        if json.loads(frame)["type"] == "session.commentary.append":
+            sending.set()
+            await release.wait()
+        await send(frame)
+
+    connection.send = send
+    delegate(connection, text=text)
+    await asyncio.wait_for(sending.wait(), 2)
+    cancelling = asyncio.create_task(service.cancel_work(call_id, OWNER))
+    await until(lambda: call.cancelling)
+    release.set()
+    assert await asyncio.wait_for(cancelling, 2) == {"cancelled": False}
+    assert call.delegations["item_1"]["status"] == "result_sent"
+    assert connection.sent[0]["delegation_id"] == "item_1"
+    assert not cancelled_events(call)
+
+
+async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup):
+    service, backend, _ = setup
+    started = asyncio.Event()
+
+    async def runner(request):
+        started.set()
+        await asyncio.Event().wait()
+        yield {}  # async generator
+
+    backend.runner = runner
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
+    delegate(connection)
+    await asyncio.wait_for(started.wait(), 2)
+    assert await service.cancel_work(call_id, OWNER) == {"cancelled": True}
+    assert call.delegations["item_1"]["status"] == "cancelled"
+    assert cancelled_events(call) == [{"id": "item_1", "status": "cancelled"}]
+
+
 @pytest.mark.parametrize(("ceiling", "requested"), [(True, "conversation"), (False, None)])
 async def test_conversation_mode_never_dispatches_and_keeps_lifecycle(setup, ceiling, requested):
     from assistant_runtime.app.voice.models import VoiceContext
