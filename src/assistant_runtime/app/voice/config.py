@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -11,6 +12,9 @@ class VoiceConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = False
+    # PROTOTYPE: "codex" routes audio through the local Codex CLI's experimental
+    # realtime interface on its ChatGPT login; conversation-only, no API key.
+    provider: Literal["live", "codex"] = "live"
     delegation_enabled: bool = True
     model: str = Field(default="gpt-live-1", min_length=1, max_length=128)
     voice: str = Field(default="marin", min_length=1, max_length=128)

@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -71,7 +72,10 @@ class VoiceService:
             "delegation_enabled": self.config.delegation_enabled,
             "conversation_mode_supported": True,
             "call_instructions_supported": True,
-            "configured": bool(os.getenv(self.config.api_key_env)),
+            "provider": self.config.provider,
+            "configured": bool(shutil.which("codex"))
+            if self.config.provider == "codex"
+            else bool(os.getenv(self.config.api_key_env)),
             "model": self.config.model,
             "active_calls": sum(not c.done.is_set() for c in self._calls.values()),
         }
@@ -91,13 +95,24 @@ class VoiceService:
                 self._streaming.validate_profile(offer.profile)
             except UnknownProfileError as exc:
                 raise VoiceError(str(exc), 422, allocation_status="rejected") from exc
-        key = os.getenv(self.config.api_key_env)
-        if not key:
+        codex = self.config.provider == "codex"
+        if codex and mode != "conversation":
+            raise VoiceError(
+                "The Codex voice prototype supports conversation-only calls",
+                409,
+                allocation_status="rejected",
+            )
+        key = None if codex else os.getenv(self.config.api_key_env)
+        if not codex and not key:
             raise VoiceError(
                 f"GPT-Live requires {self.config.api_key_env}; Codex login does not provide Live API access",
                 503,
                 allocation_status="rejected",
             )
+        if self._transport is None and codex:
+            from assistant_runtime.app.voice._codex_realtime import CodexRealtimeTransport
+
+            self._transport = CodexRealtimeTransport(self.config.connect_timeout_seconds)
         if self._transport is None:
             try:
                 from websockets.asyncio.client import connect  # noqa: F401
@@ -120,7 +135,7 @@ class VoiceService:
                 offer=offer,
                 principal=principal,
                 lease=str(uuid.uuid4()),
-                model=self.config.model,
+                model="codex-thread-realtime-v3" if codex else self.config.model,
                 voice=self.config.voice,
                 mode=mode,
             )
