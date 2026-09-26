@@ -647,3 +647,19 @@ class OAuthTokenRepository:
         )
         await self._session.flush()
         return (result.rowcount or 0) > 0
+
+    async def delete_login(self, provider: str) -> bool:
+        """Delete the provider's row only while it holds a login (a refresh or id token).
+
+        The row is shared with a stored API key, which carries neither; the
+        condition is part of the statement, so a key stored meanwhile survives.
+        """
+        result = await self._session.execute(
+            delete(OAuthTokenORM).where(
+                OAuthTokenORM.provider == provider,
+                OAuthTokenORM.encrypted_refresh_token.is_not(None)
+                | OAuthTokenORM.encrypted_id_token.is_not(None),
+            )
+        )
+        await self._session.flush()
+        return (result.rowcount or 0) > 0

@@ -495,7 +495,7 @@ class OAuthService:
                 if cli is not None and self._refresh_token == cli.refresh_token:
                     # A copy of the Codex CLI's own login, stored by an earlier version
                     # or left by a failed cleanup: the CLI owns it, so use its file.
-                    await repo.delete("openai")
+                    await repo.delete_login("openai")
                     self._use_codex_cli_auth(cli)
                     self._auth_source = AuthSource.CODEX_CLI
                     self._device_code_status = DeviceCodeStatus.AUTHORIZED
@@ -561,12 +561,11 @@ class OAuthService:
 
                 repo = OAuthTokenRepository(session)
                 if login_only:
-                    row = await repo.get("openai")
-                    # Without a refresh or id token the row is a stored API key, which
+                    # A row without a refresh or id token is a stored API key, which
                     # belongs to the provider-key store, not to this login.
-                    if row is None or not (row.encrypted_refresh_token or row.encrypted_id_token):
-                        return True
-                await repo.delete("openai")
+                    await repo.delete_login("openai")
+                else:
+                    await repo.delete("openai")
             # DELETE is idempotent: an already absent row also confirms removal.
             return True
         except Exception as exc:
