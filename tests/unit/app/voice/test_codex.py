@@ -632,6 +632,7 @@ async def test_a_failed_read_ends_the_server_and_releases_waiters(tmp_path):
             await server.request("boom", {})
         closed = await asyncio.wait_for(calls.get(), 5)
         assert closed["params"]["reason"] == "app_server_exit"
+        assert not server.running  # the next call starts a new server
     finally:
         await server.stop()
 
@@ -1021,3 +1022,57 @@ def test_a_moved_version_list_does_not_hide_the_start_parameters(tmp_path):
     start["$defs"] = start.pop("definitions")
     path.write_text(json.dumps(start))
     assert missing_from_schema(tmp_path) == ["thread/realtime/start.version=v3"]
+
+
+async def test_a_schema_generator_that_fails_is_retried_not_cached(tmp_path):
+    command = _fake_codex(tmp_path, "import sys\nsys.exit(1)\n")
+    transport = CodexTransport(command, 5, usage_ceiling_percent=97, usage_check_seconds=60)
+    assert (await transport.compatibility())["missing"] == ["codex_cli"]
+    assert transport.checked() is None
+
+
+async def test_a_server_that_exits_before_the_answer_leaves_allocation_unknown(codex):
+    async def dies(method, params, original=codex._server.request):
+        if method == "thread/realtime/start":
+            codex._server.requests.append((method, params))
+            codex._server.feed(
+                params["threadId"], "thread/realtime/closed", reason="app_server_exit"
+            )
+            return {}
+        return await original(method, params)
+
+    codex._server.request = dies
+    with pytest.raises(VoiceError) as lost:
+        await codex.create(None, SESSION, "offer-sdp")
+    assert lost.value.metadata == {"allocation_status": "unknown"}
+
+
+async def test_closing_a_call_releases_its_thread(codex):
+    connection = await codex.attach(None, "thread-1")
+    await connection.close()
+    assert codex._server.sent("thread/unsubscribe") == [{"threadId": "thread-1"}]
+
+
+def test_malformed_usage_values_read_as_unreadable():
+    for snapshot in ({"credits": "none"}, {"primary": {"usedPercent": "12"}}):
+        report = usage_report(_limits(snapshot=snapshot), 97)
+        assert (report["allowed"], report["reason"]) == (False, "usage_unreadable"), snapshot
+
+
+async def test_unreadable_usage_readings_get_the_same_tolerance_as_failed_reads(codex):
+    codex.usage_check_seconds = 0.01
+    reads = 0
+
+    async def empty(method, params, original=codex._server.request):
+        nonlocal reads
+        if method == "account/rateLimits/read":
+            reads += 1
+            return {"rateLimitsByLimitId": {}}
+        return await original(method, params)
+
+    codex._server.request = empty
+    connection = await codex.attach(None, "thread-1")
+    events = await _events(connection, 1)
+    assert events == [{"type": "error", "error": {"code": "usage_unreadable"}}]
+    assert reads == 3
+    await connection.close()

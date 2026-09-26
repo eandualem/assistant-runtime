@@ -132,6 +132,9 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
         if not isinstance(snapshot, dict):
             continue
         balance = snapshot.get("credits") or {}
+        if not isinstance(balance, dict):
+            reasons.append("usage_unreadable")
+            balance = {}
         if (
             balance.get("hasCredits")
             or balance.get("unlimited")
@@ -145,6 +148,9 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
         for name in ("primary", "secondary"):
             window = snapshot.get(name)
             if not isinstance(window, dict) or window.get("usedPercent") is None:
+                continue
+            if not isinstance(window["usedPercent"], int | float):
+                reasons.append("usage_unreadable")
                 continue
             windows.append(
                 {
@@ -323,7 +329,10 @@ class _AppServer:
                     link.threads[thread].put_nowait(message)
         finally:
             # Also when reading fails (an oversized line): nothing reads this
-            # server any more, so end it; its requests and calls end with it.
+            # server any more, so end it; its requests and calls end with it,
+            # and the next call starts a new one.
+            if self._link is link:
+                self._link = None
             if link.proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
                     link.proc.kill()
@@ -409,11 +418,15 @@ class _CodexConnection:
             try:
                 # Never start a server for a call whose server has gone.
                 reason = (await self._transport.usage(start=False))["reason"]
-                failures = 0
             except Exception:
-                # One slow read is not a reason to end a call; several in a row are.
+                reason = "usage_unreadable"
+            if reason == "usage_unreadable":
+                # One bad read is not a reason to end a call; several in a row are.
                 failures += 1
-                reason = "usage_unreadable" if failures >= _UNREADABLE_CHECKS else None
+                if failures < _UNREADABLE_CHECKS:
+                    reason = None
+            else:
+                failures = 0
             if reason and not self._stopping:
                 logger.warning("Codex voice stopped by the usage guard: {}", reason)
                 # Queued ahead of the closed notification the stop produces.
@@ -575,6 +588,9 @@ class _CodexConnection:
             task.cancel()
         await asyncio.gather(self._watchdog, *self._tasks, return_exceptions=True)
         self._server.unsubscribe(self._thread)
+        # Let the app-server release the call's thread; best effort.
+        with contextlib.suppress(Exception):
+            await self._server.request("thread/unsubscribe", {"threadId": self._thread})
 
 
 class CodexTransport:
@@ -628,6 +644,8 @@ class CodexTransport:
                 proc.kill()
             await proc.wait()
             raise
+        if proc.returncode:
+            raise RuntimeError(f"codex {args[0]} exited with {proc.returncode}")
         return stdout
 
     async def _check(self) -> dict:
@@ -718,6 +736,15 @@ class CodexTransport:
                     if method == "thread/realtime/sdp":
                         answer = (message.get("params") or {}).get("sdp")
                         break
+                    if method == "thread/realtime/closed" and (
+                        (message.get("params") or {}).get("reason") in _LOST
+                    ):
+                        # The server went away: nothing says the session was not allocated.
+                        raise VoiceError(
+                            "Codex app-server exited while starting the session",
+                            502,
+                            allocation_status="unknown",
+                        )
                     if method in ("thread/realtime/error", "thread/realtime/closed"):
                         text = str((message.get("params") or {}).get("message") or "")
                         logger.warning("Codex realtime refused the session: {}", text[:300])

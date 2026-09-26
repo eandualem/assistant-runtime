@@ -385,7 +385,8 @@ machine-readable `reason`:
 
 A refused creation returns `409` with `reason` and `allocation_status: "rejected"`.
 A call stopped by the guard emits `provider_error` with the reason and closes with
-reason `usage_guard`. `GET /api/voice/usage` returns the current windows
+reason `usage_guard` (or ends `interrupted` with `connection_lost` if the Codex CLI
+does not confirm the stop). `GET /api/voice/usage` returns the current windows
 (`used_percent`, `window_minutes`, `resets_at`), `credits_available`,
 `spend_control_reached`, `ordinary_usage_allowed`, and the guard's `allowed` and
 `reason`, so an application can show them before opening a call.
