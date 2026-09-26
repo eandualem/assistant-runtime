@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import threading
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +19,7 @@ from assistant_runtime.services.tools.capabilities.notes import (
     register_notes_tools,
 )
 from assistant_runtime.services.tools.config import ToolConfig
+from assistant_runtime.services.tools.providers._filesystem import exclusive_text
 from assistant_runtime.services.tools.providers.filesystem import (
     MarkdownNotes,
     build_note_content,
@@ -1099,23 +1101,6 @@ async def test_a_move_does_not_replace_a_destination_created_during_it(
     assert (tmp_path / "a" / "note.md").read_text() == "moved"
 
 
-async def test_a_note_created_during_a_move_is_not_overwritten(tmp_path, monkeypatch):
-    notes = MarkdownNotes(tmp_path)
-    created = await notes.create(title="Plan", content="moved", tags=None, folder="a")
-    real_link = os.link
-
-    def create_first(*args, **kwargs):
-        # A parallel create of the same title lands before the move's link.
-        notes._create("b", "plan", build_note_content("Plan", "new"))
-        return real_link(*args, **kwargs)
-
-    monkeypatch.setattr(os, "link", create_first)
-    moved = await notes.move(filename=created["path"], folder="b")
-    assert moved["success"] is False
-    contents = sorted(p.read_text().split("---")[-1].strip() for p in tmp_path.rglob("*.md"))
-    assert contents == ["moved", "new"]
-
-
 async def test_a_failed_source_removal_keeps_a_replaced_destination(tmp_path, monkeypatch):
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "note.md").write_text("note")
@@ -1135,20 +1120,9 @@ async def test_a_failed_source_removal_keeps_a_replaced_destination(tmp_path, mo
     assert (tmp_path / "a" / "note.md").read_text() == "note"
 
 
-async def test_a_move_waits_for_another_moves_copy(tmp_path, monkeypatch):
-    (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "note.md").write_text("note")
-    notes = MarkdownNotes(tmp_path)
-    copying, waiting, release = threading.Event(), threading.Event(), threading.Event()
-    real_copy, lock = shutil.copyfileobj, notes._move_lock
-
-    def no_link(*args, **kwargs):
-        raise OSError(errno.ENOTSUP, "fixture")
-
-    def paused_copy(*args):
-        copying.set()
-        release.wait(5)
-        return real_copy(*args)
+def _observe_lock_waits(monkeypatch, notes):
+    """An event set when a notes operation waits for another one's lock."""
+    waiting, lock = threading.Event(), notes._entry_lock
 
     class ObservedLock:
         def __enter__(self):
@@ -1159,9 +1133,29 @@ async def test_a_move_waits_for_another_moves_copy(tmp_path, monkeypatch):
         def __exit__(self, *exc):
             return lock.__exit__(*exc)
 
-    monkeypatch.setattr(os, "link", no_link)
+    monkeypatch.setattr(notes, "_entry_lock", ObservedLock())
+    return waiting
+
+
+def _refuse_links(*args, **kwargs):
+    raise OSError(errno.ENOTSUP, "fixture")
+
+
+async def test_a_move_waits_for_another_moves_copy(tmp_path, monkeypatch):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "note.md").write_text("note")
+    notes = MarkdownNotes(tmp_path)
+    copying, release = threading.Event(), threading.Event()
+    real_copy = shutil.copyfileobj
+
+    def paused_copy(*args):
+        copying.set()
+        release.wait(5)
+        return real_copy(*args)
+
+    monkeypatch.setattr(os, "link", _refuse_links)
     monkeypatch.setattr(shutil, "copyfileobj", paused_copy)
-    monkeypatch.setattr(notes, "_move_lock", ObservedLock())
+    waiting = _observe_lock_waits(monkeypatch, notes)
     first = asyncio.create_task(notes.move(filename="a/note.md", folder="b"))
     try:
         assert await asyncio.to_thread(copying.wait, 5)
@@ -1172,6 +1166,34 @@ async def test_a_move_waits_for_another_moves_copy(tmp_path, monkeypatch):
         release.set()
     assert [r["success"] for r in await asyncio.gather(first, second)] == [True, True]
     assert (tmp_path / "c" / "note.md").read_text() == "note"
+
+
+async def test_a_move_waits_for_a_create_in_progress(tmp_path, monkeypatch):
+    notes = MarkdownNotes(tmp_path)
+    opened, release = threading.Event(), threading.Event()
+    real_exclusive = exclusive_text
+
+    @contextmanager
+    def paused_exclusive(parent, name):
+        with real_exclusive(parent, name) as handle:
+            opened.set()
+            release.wait(5)
+            yield handle
+
+    monkeypatch.setattr(os, "link", _refuse_links)
+    monkeypatch.setattr(f"{MODULE}.exclusive_text", paused_exclusive)
+    waiting = _observe_lock_waits(monkeypatch, notes)
+    create = asyncio.create_task(notes.create(title="Plan", content="body", tags=None, folder="a"))
+    try:
+        assert await asyncio.to_thread(opened.wait, 5)
+        # The new note exists but is still empty; moving it now would lose its content.
+        name = next((tmp_path / "a").iterdir()).name
+        move = asyncio.create_task(notes.move(filename=f"a/{name}", folder="b"))
+        assert await asyncio.to_thread(waiting.wait, 5)
+    finally:
+        release.set()
+    assert [r["success"] for r in await asyncio.gather(create, move)] == [True, True]
+    assert "body" in (tmp_path / "b" / name).read_text()
 
 
 @pytest.mark.skipif(not hasattr(os, "chflags"), reason="BSD file flags require macOS")
