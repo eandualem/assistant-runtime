@@ -170,5 +170,9 @@ class TestOAuthTokenRepository:
         statement = mock_session.execute.await_args.args[0]
         sql = str(statement.compile(dialect=postgresql.dialect()))
         # The login condition is part of the DELETE itself, not a prior read.
+        assert "oauth_tokens.provider = " in sql
         assert "oauth_tokens.encrypted_refresh_token IS NOT NULL" in sql
-        assert "OR oauth_tokens.encrypted_id_token IS NOT NULL" in sql
+        assert "oauth_tokens.encrypted_refresh_token != " in sql
+        assert "oauth_tokens.encrypted_id_token IS NOT NULL" in sql
+        assert "oauth_tokens.encrypted_id_token != " in sql
+        assert " OR " in sql

@@ -657,8 +657,11 @@ class OAuthTokenRepository:
         result = await self._session.execute(
             delete(OAuthTokenORM).where(
                 OAuthTokenORM.provider == provider,
-                OAuthTokenORM.encrypted_refresh_token.is_not(None)
-                | OAuthTokenORM.encrypted_id_token.is_not(None),
+                # Non-empty, matching how the key loader tells a login from a key.
+                (OAuthTokenORM.encrypted_refresh_token.is_not(None))
+                & (OAuthTokenORM.encrypted_refresh_token != "")
+                | (OAuthTokenORM.encrypted_id_token.is_not(None))
+                & (OAuthTokenORM.encrypted_id_token != ""),
             )
         )
         await self._session.flush()
