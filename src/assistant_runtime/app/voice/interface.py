@@ -405,8 +405,8 @@ class VoiceService:
                 task = call.cancel_task
             else:
                 previous = call.active_delegation
-                # A finished delegation stays active until the next one; it is
-                # not cancelled, relabelled or reported.
+                # The active delegation may already be finished; only an
+                # unfinished one is cancelled, relabelled and reported.
                 if previous and call.delegations[previous]["status"] not in (
                     "running",
                     "pending_host",
@@ -846,7 +846,6 @@ class VoiceService:
         if len(encoded) > 400:
             spoken += " [Full details are available in the chat.]"
         command_id = str(uuid.uuid4())
-        call.delegations[ident].update(status="result_sent", command_id=command_id)
         await send(
             call.connection,
             {
@@ -856,4 +855,8 @@ class VoiceService:
                 "content": spoken,
             },
         )
+        # Marked sent only once the send completes, so a cancel during it still
+        # finds the delegation unfinished. The provider's acknowledgement is
+        # read by another task, so it cannot arrive before this line runs.
+        call.delegations[ident].update(status="result_sent", command_id=command_id)
         self._emit(call, "delegation", {"id": ident, "status": "result_sent"})

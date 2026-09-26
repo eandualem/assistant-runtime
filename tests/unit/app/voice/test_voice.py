@@ -510,8 +510,11 @@ async def test_cancel_after_a_finished_delegation_relabels_nothing(setup, status
     assert not cancelled_events(call)
 
 
-async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup):
+@pytest.mark.parametrize("blocked_in", ["backend turn", "result send"])
+async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup, blocked_in):
     service, backend, _ = setup
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
     started = asyncio.Event()
 
     async def runner(request):
@@ -519,9 +522,16 @@ async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup):
         await asyncio.Event().wait()
         yield {}  # async generator
 
-    backend.runner = runner
-    call_id, connection = await create(setup)
-    call = service._calls[call_id]
+    async def send(frame, send=connection.send):
+        if json.loads(frame)["type"] == "session.commentary.append":
+            started.set()
+            await asyncio.Event().wait()
+        await send(frame)
+
+    if blocked_in == "backend turn":
+        backend.runner = runner
+    else:
+        connection.send = send
     delegate(connection)
     await asyncio.wait_for(started.wait(), 2)
     assert await service.cancel_work(call_id, OWNER) == {"cancelled": True}
