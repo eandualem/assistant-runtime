@@ -1087,6 +1087,30 @@ async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path, monkeypatch):
     assert sorted(kept + [(tmp_path / "target" / "note.md").read_text()]) == ["a", "b"]
 
 
+async def test_a_note_created_during_a_move_is_not_overwritten(tmp_path, monkeypatch):
+    (tmp_path / "a").mkdir()
+    notes = MarkdownNotes(tmp_path)
+    created = await notes.create(title="Plan", content="moved", tags=None, folder="a")
+    real_rename = os.rename
+    renaming = threading.Event()
+
+    def slow_rename(*args, **kwargs):
+        # The move has checked its destination; hold the gap open.
+        renaming.set()
+        time.sleep(0.1)
+        return real_rename(*args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", slow_rename)
+    move = asyncio.create_task(notes.move(filename=created["path"], folder="b"))
+    assert await asyncio.to_thread(renaming.wait, 5)
+    made = await notes.create(title="Plan", content="new", tags=None, folder="b")
+    moved = await move
+    assert moved["success"] is True
+    assert made["success"] is True
+    contents = sorted(p.read_text().split("---")[-1].strip() for p in (tmp_path / "b").glob("*.md"))
+    assert contents == ["moved", "new"]
+
+
 @pytest.mark.skipif(not hasattr(os, "chflags"), reason="BSD file flags require macOS")
 async def test_cross_device_move_with_file_flags_keeps_source(tmp_path, monkeypatch):
     source = tmp_path / "note.md"
