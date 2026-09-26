@@ -314,17 +314,21 @@ uv run assistant-runtime serve
 
 The runtime starts `codex app-server` itself (`VOICE__CODEX_COMMAND` names the
 executable) and never reads or holds the login: the CLI authenticates. API-key
-variables are removed from the CLI's environment and a login that is not a ChatGPT
-login is refused, so this provider never falls back to API billing. Each call gets
+variables are removed from the CLI's environment and the login is checked for
+every call (anything but a ChatGPT login is refused), so this provider never falls
+back to API billing. Each call gets
 an ephemeral, read-only Codex thread and a realtime v3 session; the browser's WebRTC
 offer and the provider's answer pass through unchanged, and audio flows directly
 between the browser and the provider. The browser contract above is the same.
 
 **Delegation.** In delegated mode, the realtime model's delegation carries the
 request text; the runtime runs it through the normal turn pipeline (profile, tools,
-host actions, history) and speaks the result back into the call. The Codex agent
-behind the thread is never allowed to act for the call: any turn it starts there is
-interrupted. `delegation` status `result_accepted` means the provider queued the
+host actions, history) and speaks the result back into the call. The Codex CLI
+also hands every delegation to the Codex agent behind the thread; the runtime
+interrupts each turn that agent starts and instructs it not to act. The thread is
+read-only with an empty working directory, but an interrupt can land after the
+agent has begun a read-only action, so treat it as a Codex session on your
+account. `delegation` status `result_accepted` means the provider queued the
 spoken result, not that it was heard. Host actions, continuations and cancellation
 behave as described above.
 
@@ -392,7 +396,8 @@ checks the installed CLI's protocol schema offline (`codex app-server
 generate-json-schema`, no session and no usage) for every method, notification and
 parameter this provider relies on. `GET /api/voice/status` reports the result as
 `codex: {version, compatible, missing}`; an incompatible CLI refuses calls with
-`503` and `reason: "codex_incompatible"`. A session that starts on a realtime
+`503` and `reason: "codex_incompatible"`, and a CLI that cannot be run with
+`reason: "codex_unavailable"`. A session that starts on a realtime
 version other than v3 is closed with `codex_version_mismatch`. This provider was
 developed against Codex CLI 0.157.1.
 

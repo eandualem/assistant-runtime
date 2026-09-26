@@ -151,6 +151,7 @@ class FakeServer:
     """Scripted app-server: records requests and feeds notifications per thread."""
 
     running = True
+    login = "chatgpt"
 
     def __init__(self):
         self.requests = []
@@ -166,6 +167,11 @@ class FakeServer:
 
     async def stop(self):
         return None
+
+    async def require_chatgpt(self):
+        self.requests.append(("account/read", {}))
+        if self.login != "chatgpt":
+            raise VoiceError("Codex voice requires the Codex CLI to be signed in with ChatGPT", 503)
 
     async def request(self, method, params):
         self.requests.append((method, params))
@@ -339,7 +345,7 @@ async def test_a_wrong_realtime_version_ends_the_call(codex):
     events = await _events(connection, 2)
     assert events[0] == {"type": "error", "error": {"code": "codex_version_mismatch"}}
     assert events[1]["type"] == "session.closed"
-    assert events[1]["reason"] == "version_mismatch"
+    assert events[1]["reason"] == "codex_version_mismatch"
     await connection.close()
 
 
@@ -938,3 +944,80 @@ async def test_a_superseded_delegation_leaves_no_request_text_behind(codex, monk
         assert call.inputs == {}
     finally:
         await service.stop()
+
+
+async def test_every_call_rechecks_the_login_and_instructs_the_agent_not_to_act(codex):
+    await codex.create(None, SESSION, "offer-sdp")
+    [start] = codex._server.sent("thread/start")
+    assert "Do not run commands" in start["developerInstructions"]
+
+    codex._server.login = "apiKey"  # the CLI's login changed while its server ran
+    with pytest.raises(VoiceError, match="ChatGPT"):
+        await codex.create(None, SESSION, "offer-sdp")
+    assert len(codex._server.sent("thread/start")) == 1
+
+
+async def test_a_missing_cli_is_reported_as_unavailable_not_incompatible(codex):
+    codex._compatibility = None
+
+    async def unavailable():
+        return {"version": None, "compatible": False, "missing": ["codex_cli"]}
+
+    codex._check = unavailable
+    with pytest.raises(VoiceError) as missing:
+        await codex.create(None, SESSION, "offer-sdp")
+    assert missing.value.metadata["reason"] == "codex_unavailable"
+    assert "install it" in str(missing.value)
+
+
+async def test_a_check_that_crashes_is_reported_and_retried(monkeypatch):
+    from assistant_runtime.app.voice import _codex
+
+    def broken(**kwargs):
+        raise OSError("temporary directory unavailable")
+
+    monkeypatch.setattr(_codex.tempfile, "TemporaryDirectory", broken)
+    transport = CodexTransport("codex", 1, usage_ceiling_percent=97, usage_check_seconds=60)
+    assert (await transport.compatibility())["missing"] == ["codex_cli"]
+    assert transport.checked() is None
+
+
+async def test_a_failed_fact_does_not_undo_a_newer_facts_slot(codex, monkeypatch):
+    from assistant_runtime.app.voice.models import VoiceContext
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    started = asyncio.Event()
+
+    async def slow_failure(method, params, original=codex._server.request):
+        if method == "thread/realtime/appendText":
+            started.set()
+            await asyncio.sleep(0.05)
+            raise VoiceError("Codex thread/realtime/appendText failed", 502)
+        return await original(method, params)
+
+    codex._server.request = slow_failure
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    await service.start()
+    try:
+        created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
+        call = service._calls[created["call_id"]]
+        failing = asyncio.create_task(
+            service.update_context(call.id, VoiceContext(fact="Lost."), OWNER)
+        )
+        await started.wait()
+        newer = call.last_fact_at + 5  # another fact claimed the slot meanwhile
+        call.last_fact_at = newer
+        with pytest.raises(VoiceError):
+            await failing
+        assert call.last_fact_at == newer
+    finally:
+        await service.stop()
+
+
+def test_a_moved_version_list_does_not_hide_the_start_parameters(tmp_path):
+    _schema(tmp_path)
+    path = tmp_path / "v2" / "ThreadRealtimeStartParams.json"
+    start = json.loads(path.read_text())
+    start["$defs"] = start.pop("definitions")
+    path.write_text(json.dumps(start))
+    assert missing_from_schema(tmp_path) == ["thread/realtime/start.version=v3"]

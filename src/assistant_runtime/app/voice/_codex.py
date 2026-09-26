@@ -90,10 +90,13 @@ def missing_from_schema(directory: Path) -> list[str]:
         missing += sorted(needed - present)
     try:
         start = json.loads((directory / "v2" / "ThreadRealtimeStartParams.json").read_text())
-        params = set(start.get("properties", {}))
+    except (OSError, ValueError):
+        start = {}
+    params = set(start.get("properties", {})) if isinstance(start, dict) else set()
+    try:
         versions = start["definitions"]["RealtimeConversationVersion"]["enum"]
-    except (OSError, ValueError, KeyError, TypeError):
-        params, versions = set(), []
+    except (KeyError, TypeError):
+        versions = []
     missing += [f"thread/realtime/start.{name}" for name in sorted(_REQUIRED_START_PARAMS - params)]
     if REALTIME_VERSION not in versions:
         missing.append(f"thread/realtime/start.version={REALTIME_VERSION}")
@@ -172,6 +175,11 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
     }
 
 
+# For the Codex agent behind a call's thread, which never answers the call.
+_AGENT_INSTRUCTIONS = (
+    "This thread only carries a voice call, and another system answers every request. "
+    "Do not run commands, read files or call tools. End every turn at once without output."
+)
 # Consecutive unreadable usage checks that end a call.
 _UNREADABLE_CHECKS = 3
 # Closures the runtime synthesises when it can no longer see the session.
@@ -254,21 +262,27 @@ class _AppServer:
                     },
                 )
                 await self._write(link, {"jsonrpc": "2.0", "method": "initialized"})
-                account = await self.request("account/read", {})
-                if (account.get("account") or {}).get("type") != "chatgpt":
-                    raise VoiceError(
-                        "Codex voice requires the Codex CLI to be signed in with ChatGPT; "
-                        "run `codex login`",
-                        503,
-                        allocation_status="rejected",
-                    )
-            except BaseException:
+                await self.require_chatgpt()
+            except BaseException as exc:
                 # A half-initialised server, or one on another login, must not
                 # serve a later call: the next call starts and checks a new one.
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
                 self._link = None
+                if not isinstance(exc, asyncio.CancelledError):
+                    await asyncio.wait([link.reader], timeout=5)
                 raise
+
+    async def require_chatgpt(self) -> None:
+        """Refuse unless the CLI is signed in with ChatGPT (never an API key)."""
+        account = await self.request("account/read", {})
+        if (account.get("account") or {}).get("type") != "chatgpt":
+            raise VoiceError(
+                "Codex voice requires the Codex CLI to be signed in with ChatGPT; "
+                "run `codex login`",
+                503,
+                allocation_status="rejected",
+            )
 
     @staticmethod
     async def _write(link: _Link, message: dict) -> None:
@@ -457,7 +471,7 @@ class _CodexConnection:
         if method == "thread/realtime/started":
             self._started_at = time.monotonic()
             if params.get("version") != REALTIME_VERSION:
-                self._stop("version_mismatch")
+                self._stop("codex_version_mismatch")
                 return {"type": "error", "error": {"code": "codex_version_mismatch"}}
             return {"type": "session.started"}
         if method == "thread/realtime/transcript/delta":
@@ -618,16 +632,17 @@ class CodexTransport:
 
     async def _check(self) -> dict:
         version = None
-        with tempfile.TemporaryDirectory(prefix="assistant-runtime-codex-schema-") as out:
-            try:
+        try:
+            with tempfile.TemporaryDirectory(prefix="assistant-runtime-codex-schema-") as out:
                 stdout = await self._output("--version", timeout=30)
                 version = stdout.decode(errors="ignore").strip().rsplit(" ", 1)[-1] or None
                 await self._output(
                     "app-server", "generate-json-schema", "--experimental", "--out", out, timeout=60
                 )
-            except (OSError, TimeoutError):
-                return {"version": version, "compatible": False, "missing": ["codex_cli"]}
-            missing = missing_from_schema(Path(out))
+                missing = missing_from_schema(Path(out))
+        except Exception as exc:
+            logger.warning("Codex CLI check could not run: {}", type(exc).__name__)
+            return {"version": version, "compatible": False, "missing": ["codex_cli"]}
         return {"version": version, "compatible": not missing, "missing": missing}
 
     async def usage(self, *, start: bool = True) -> dict:
@@ -640,6 +655,13 @@ class CodexTransport:
 
     async def create(self, api_key: str | None, session: dict, sdp: str) -> tuple[str, str]:
         check = await self.compatibility()
+        if check["missing"] == ["codex_cli"]:
+            raise VoiceError(
+                "Codex voice needs the Codex CLI; install it or set VOICE__CODEX_COMMAND",
+                503,
+                allocation_status="rejected",
+                reason="codex_unavailable",
+            )
         if not check["compatible"]:
             raise VoiceError(
                 "The installed Codex CLI lacks the realtime interface this runtime needs: "
@@ -648,8 +670,9 @@ class CodexTransport:
                 allocation_status="rejected",
                 reason="codex_incompatible",
             )
-        await self._server.ensure_started()
-        report = await self.usage()
+        report = await self.usage()  # starts the app-server when needed
+        # The CLI's login can change while its server runs: check it for every call.
+        await self._server.require_chatgpt()
         if report["reason"]:
             raise VoiceError(
                 f"Codex voice refused by the usage guard: {report['reason']}",
@@ -666,6 +689,8 @@ class CodexTransport:
                 "sandbox": "read-only",
                 "approvalPolicy": "never",
                 "cwd": self._workdir.name,
+                # Its turns are interrupted as they start; until then it must not act.
+                "developerInstructions": _AGENT_INSTRUCTIONS,
             },
         )
         thread_id = thread["thread"]["id"]

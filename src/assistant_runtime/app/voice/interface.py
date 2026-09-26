@@ -335,12 +335,13 @@ class VoiceService:
                 raise VoiceError("At most one fact per second per call", 429)
             # Claimed before delivery so concurrent requests see the limit; a
             # refused fact gives the slot back and leaves the context unchanged.
-            call.last_fact_at = time.monotonic()
+            claimed = call.last_fact_at = time.monotonic()
             try:
                 # The host's own words, as context for the voice (not backend context).
                 await call.connection.append_fact(update.fact, speak=update.speak)
             except BaseException:
-                call.last_fact_at = previous
+                if call.last_fact_at == claimed:  # a newer fact may hold the slot now
+                    call.last_fact_at = previous
                 raise
         if update.host_context is not None:
             call.offer = call.offer.model_copy(update={"host_context": update.host_context})
