@@ -28,9 +28,15 @@ async def _run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str
             # cancellation or reporting a timeout to the caller, even if the
             # caller is cancelled again meanwhile.
             cleanup = asyncio.ensure_future(proc.communicate())
+            cancelled: asyncio.CancelledError | None = None
             while not cleanup.done():
-                with contextlib.suppress(asyncio.CancelledError):
+                try:
                     await asyncio.shield(cleanup)
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+            if cancelled is not None:
+                # A cancellation during cleanup outranks a timeout.
+                raise cancelled from None
             raise
         return (
             proc.returncode or 0,
