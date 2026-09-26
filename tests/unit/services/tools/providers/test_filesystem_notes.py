@@ -1092,17 +1092,19 @@ async def test_a_note_created_during_a_move_is_not_overwritten(tmp_path, monkeyp
     notes = MarkdownNotes(tmp_path)
     created = await notes.create(title="Plan", content="moved", tags=None, folder="a")
     real_rename = os.rename
+    renaming = threading.Event()
 
     def slow_rename(*args, **kwargs):
-        # Widen the gap between the move's destination check and its rename.
+        # The move has checked its destination; hold the gap open.
+        renaming.set()
         time.sleep(0.1)
         return real_rename(*args, **kwargs)
 
     monkeypatch.setattr(os, "rename", slow_rename)
-    moved, made = await asyncio.gather(
-        notes.move(filename=created["path"], folder="b"),
-        notes.create(title="Plan", content="new", tags=None, folder="b"),
-    )
+    move = asyncio.create_task(notes.move(filename=created["path"], folder="b"))
+    assert await asyncio.to_thread(renaming.wait, 5)
+    made = await notes.create(title="Plan", content="new", tags=None, folder="b")
+    moved = await move
     assert moved["success"] is True
     assert made["success"] is True
     contents = sorted(p.read_text().split("---")[-1].strip() for p in (tmp_path / "b").glob("*.md"))
