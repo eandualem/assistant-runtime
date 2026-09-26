@@ -138,7 +138,7 @@ async def _cli_service(auth_file, *, auto_sync: bool, monkeypatch) -> OAuthServi
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
         "assistant_runtime.services.oauth.interface.httpx.AsyncClient",
-        lambda **kwargs: real_client(transport=httpx.MockTransport(_no_network), **kwargs),
+        lambda **kwargs: real_client(**{"transport": httpx.MockTransport(_no_network), **kwargs}),
     )
     service = OAuthService(
         OAuthConfig(
@@ -199,6 +199,30 @@ async def test_expired_codex_cli_login_leaves_startup_running_and_names_the_fix(
         _write_codex_auth(auth_file, access_token=_access_token(10 * 86400))
         status = service.get_device_code_status()
         assert status.connected is True
+        assert status.error is None
+    finally:
+        await service.stop()
+
+
+async def test_device_flow_after_an_expired_codex_cli_login_reports_its_own_state(
+    tmp_path, monkeypatch
+):
+    auth_file = tmp_path / "auth.json"
+    _write_codex_auth(auth_file, access_token=_access_token(-60))
+    service = await _cli_service(auth_file, auto_sync=True, monkeypatch=monkeypatch)
+    await service._http.aclose()
+    service._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"device_auth_id": "device", "user_code": "CODE", "interval": 60}
+            )
+        )
+    )
+    try:
+        await service.initiate_device_code()
+
+        status = service.get_device_code_status()
+        assert status.status == DeviceCodeStatus.POLLING
         assert status.error is None
     finally:
         await service.stop()

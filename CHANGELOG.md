@@ -20,7 +20,9 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 A Codex CLI login is no longer stored in Postgres: sync again after a restart,
 or enable `OAUTH__CODEX_AUTO_SYNC`. If an earlier version stored a Codex CLI
-login in Postgres, sync once or disconnect to remove the stored copy.
+login in Postgres, sync once or disconnect while the database is reachable to
+remove the stored copy; a disconnect reports `persisted_deleted: true` once it
+is gone.
 
 ## 0.3.0 — 2026-09-18
 

@@ -235,7 +235,8 @@ class OAuthService:
         status, error = self._device_code_status, self._device_code_error
         if connected:
             status = DeviceCodeStatus.AUTHORIZED
-        elif self._auth_source == AuthSource.CODEX_CLI:
+        elif self._auth_source == AuthSource.CODEX_CLI and status == DeviceCodeStatus.AUTHORIZED:
+            # A device flow started since the CLI login expired reports its own state.
             status, error = DeviceCodeStatus.EXPIRED, CODEX_CLI_LOGIN_EXPIRED
         return AuthStatus(
             connected=connected,
