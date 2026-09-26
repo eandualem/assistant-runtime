@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
+import shutil
 import stat
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -1034,6 +1036,55 @@ async def test_note_move_across_devices_preserves_content_and_metadata(tmp_path,
     assert not source.exists()
     if hasattr(os, "getxattr"):
         assert os.getxattr(destination, "user.runtime-test") == b"fixture"
+
+
+async def test_failed_cross_device_copy_leaves_no_partial_destination(tmp_path, monkeypatch):
+    (tmp_path / "note.md").write_text("inside")
+    real_copy = shutil.copyfileobj
+
+    def cross_device(*args, **kwargs):
+        raise OSError(errno.EXDEV, "fixture")
+
+    def full_disk(reader, writer):
+        writer.write(b"part")
+        raise OSError(errno.ENOSPC, "fixture")
+
+    monkeypatch.setattr(os, "rename", cross_device)
+    monkeypatch.setattr(shutil, "copyfileobj", full_disk)
+    manage = _manage(tmp_path)
+    with pytest.raises(OSError, match="fixture"):
+        await manage(action="move_note", filename="note.md", folder="moved")
+    assert not (tmp_path / "moved" / "note.md").exists()
+    assert (tmp_path / "note.md").read_text() == "inside"
+
+    monkeypatch.setattr(shutil, "copyfileobj", real_copy)
+    result = await manage(action="move_note", filename="note.md", folder="moved")
+    assert result["success"] is True
+    assert (tmp_path / "moved" / "note.md").read_text() == "inside"
+
+
+async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path, monkeypatch):
+    for folder in ("a", "b"):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "note.md").write_text(folder)
+    real_rename = os.rename
+
+    def slow_rename(*args, **kwargs):
+        # Widen the gap between the destination check and the rename.
+        time.sleep(0.1)
+        return real_rename(*args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", slow_rename)
+    notes = MarkdownNotes(tmp_path)
+    results = await asyncio.gather(
+        notes.move(filename="a/note.md", folder="target"),
+        notes.move(filename="b/note.md", folder="target"),
+    )
+    assert sorted(r["success"] for r in results) == [False, True]
+    assert "already exists" in next(r for r in results if not r["success"])["error"]
+    remaining = [(tmp_path / f / "note.md") for f in ("a", "b")]
+    kept = [p.read_text() for p in remaining if p.exists()]
+    assert sorted(kept + [(tmp_path / "target" / "note.md").read_text()]) == ["a", "b"]
 
 
 @pytest.mark.skipif(not hasattr(os, "chflags"), reason="BSD file flags require macOS")

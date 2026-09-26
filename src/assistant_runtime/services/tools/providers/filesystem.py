@@ -6,6 +6,7 @@ import asyncio
 import errno
 import os
 import re
+import threading
 from contextlib import ExitStack
 from datetime import date
 from pathlib import Path
@@ -78,6 +79,9 @@ class MarkdownNotes:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        # The destination check and the move are separate steps; parallel
+        # tool calls must not interleave them and overwrite a note.
+        self._move_lock = threading.Lock()
 
     # --- validation ------------------------------------------------------------
 
@@ -360,7 +364,7 @@ class MarkdownNotes:
 
     def _move(self, source: Path, filename: str, folder: str) -> dict[str, Any]:
         try:
-            with rooted(self.root) as root:
+            with self._move_lock, rooted(self.root) as root:
                 source_rel = str(root.relative(source))
                 destination_rel = root.relative(self.root / folder) / source.name
                 moved = root.move(source, root.path / destination_rel)

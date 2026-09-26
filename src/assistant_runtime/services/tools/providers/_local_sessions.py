@@ -25,8 +25,12 @@ async def _run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
             # Reap the process and finish draining its pipes before propagating
-            # cancellation or reporting a timeout to the caller.
-            await proc.communicate()
+            # cancellation or reporting a timeout to the caller, even if the
+            # caller is cancelled again meanwhile.
+            cleanup = asyncio.ensure_future(proc.communicate())
+            while not cleanup.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(cleanup)
             raise
         return (
             proc.returncode or 0,
