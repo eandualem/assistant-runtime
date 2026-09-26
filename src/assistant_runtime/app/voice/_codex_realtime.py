@@ -194,6 +194,13 @@ class _CodexConnection:
     async def __anext__(self) -> str:
         while True:
             message = await self._queue.get()
+            if message.get("method") in ("thread/realtime/error", "thread/realtime/closed"):
+                params = message.get("params") or {}
+                logger.warning(
+                    "Codex realtime {}: {}",
+                    message.get("method").rsplit("/", 1)[-1],
+                    str(params.get("message") or params.get("reason"))[:500],
+                )
             event = _translate(message)
             if event is not None:
                 return json.dumps(event)
