@@ -1230,3 +1230,26 @@ async def test_an_abandoned_session_is_stopped_and_released(codex):
     assert codex._server.sent("thread/realtime/stop") == [{"threadId": "thread-9"}]
     assert codex._server.sent("thread/unsubscribe") == [{"threadId": "thread-9"}]
     assert "thread-9" not in codex._server.queues
+
+
+async def test_cancelling_a_deferred_delegation_drops_its_request_text(codex, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    await service.start()
+    try:
+        created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
+        call = service._calls[created["call_id"]]
+
+        async def draining():
+            return {"cancelled": False}
+
+        # A delegation arrived while an earlier cancellation was still draining.
+        call.cancelling = True
+        call.cancel_task = asyncio.create_task(draining())
+        call.deferred_delegation = call.active_delegation = "h1"
+        call.delegations["h1"] = {"status": "waiting"}
+        call.inputs["h1"] = "Book a room"
+        assert (await service.cancel_work(call.id, OWNER)) == {"cancelled": True}
+        assert call.inputs == {}
+    finally:
+        await service.stop()

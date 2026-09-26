@@ -397,6 +397,7 @@ class VoiceService:
                 ident = call.deferred_delegation
                 if ident is not None:
                     call.delegations[ident]["status"] = "cancelled"
+                    call.inputs.pop(ident, None)
                     self._emit(call, "delegation", {"id": ident, "status": "cancelled"})
                     call.active_delegation = None
                     call.deferred_delegation = None
