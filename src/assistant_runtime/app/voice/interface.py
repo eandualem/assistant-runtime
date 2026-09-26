@@ -705,6 +705,7 @@ class VoiceService:
             if request is None and (
                 ident != call.active_delegation or call.stop_requested.is_set()
             ):
+                call.inputs.pop(ident, None)
                 continue
             if request is None:
                 # A delegation event has no task text. Preserve who said what;

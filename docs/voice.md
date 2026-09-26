@@ -377,7 +377,7 @@ machine-readable `reason`:
 | `usage_not_allowed` | the backend does not allow included usage now |
 | `usage_limit_reached` | the backend reports a reached limit |
 | `usage_window_limit` | a usage window is at `VOICE__CODEX_USAGE_CEILING_PERCENT` (97) or above |
-| `usage_unreadable` | usage could not be read during a call |
+| `usage_unreadable` | usage could not be read, or its shape is not recognised |
 
 A refused creation returns `409` with `reason` and `allocation_status: "rejected"`.
 A call stopped by the guard emits `provider_error` with the reason and closes with

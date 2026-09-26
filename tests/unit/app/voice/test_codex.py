@@ -112,6 +112,12 @@ def _schema(directory, *, drop_method=None, drop_param=None, versions=("v1", "v2
             }
         )
     )
+    started = (
+        {"threadId": {}} if drop_param == "started.version" else {"threadId": {}, "version": {}}
+    )
+    (directory / "v2" / "ThreadRealtimeStartedNotification.json").write_text(
+        json.dumps({"properties": started})
+    )
 
 
 def test_schema_check_names_what_an_installed_cli_lacks(tmp_path):
@@ -128,6 +134,11 @@ def test_schema_check_names_what_an_installed_cli_lacks(tmp_path):
             ["thread/realtime/start.clientManagedHandoffs"],
         ),
         ("no_v3", {"versions": ("v1", "v2")}, ["thread/realtime/start.version=v3"]),
+        (
+            "no_started_version",
+            {"drop_param": "started.version"},
+            ["thread/realtime/started.version"],
+        ),
     ):
         directory = tmp_path / name
         directory.mkdir()
@@ -601,7 +612,7 @@ async def test_a_server_on_another_login_is_never_reused(tmp_path):
         for _ in range(2):  # the second call checks a new server again
             with pytest.raises(VoiceError, match="ChatGPT"):
                 await server.ensure_started()
-            assert server._proc is None
+            assert server._link is None
     finally:
         await server.stop()
 
@@ -647,7 +658,7 @@ async def test_a_cancelled_create_still_stops_the_session(codex):
     assert not os.path.exists(workdir)
 
 
-async def test_a_slow_stop_survives_the_senders_timeout_and_close_waits_for_it(codex):
+async def test_a_slow_stop_does_not_block_the_sender_and_close_waits_for_it(codex):
     finished = asyncio.Event()
 
     async def slow(method, params, original=codex._server.request):
@@ -660,9 +671,9 @@ async def test_a_slow_stop_survives_the_senders_timeout_and_close_waits_for_it(c
 
     codex._server.request = slow
     connection = await codex.attach(None, "thread-1")
-    with pytest.raises(TimeoutError):
-        async with asyncio.timeout(0.01):
-            await connection.send(json.dumps({"type": "session.close"}))
+    async with asyncio.timeout(0.05):  # far shorter than the stop takes
+        await connection.send(json.dumps({"type": "session.close"}))
+    assert not finished.is_set()
     await connection.close()
     assert finished.is_set()
     assert len(codex._server.sent("thread/realtime/stop")) == 1
@@ -783,23 +794,28 @@ async def test_usage_is_not_read_while_the_service_is_stopped(codex):
     assert started == 0
 
 
-async def test_an_old_readers_cleanup_leaves_a_newer_server_alone():
+async def test_a_servers_cleanup_ends_its_own_calls_even_after_it_was_replaced():
     from types import SimpleNamespace
+
+    from assistant_runtime.app.voice._codex import _Link
 
     server = _AppServer("codex", 1)
     old_output = asyncio.StreamReader()
-    server._proc = SimpleNamespace(stdout=old_output, returncode=0)
-    reading = asyncio.create_task(server._read())
-    await asyncio.sleep(0)  # the old reader is waiting on its server
-    server._proc = SimpleNamespace(returncode=None)  # a newer server took over
-    waiting = asyncio.get_running_loop().create_future()
-    server._pending[1] = waiting
-    calls = server.subscribe("thread-1")
+    old = _Link(SimpleNamespace(stdout=old_output, returncode=0))
+    new = _Link(SimpleNamespace(returncode=None))
+    server._link = new  # a newer server took over before the old one's cleanup
+    loop = asyncio.get_running_loop()
+    old_waiting, new_waiting = loop.create_future(), loop.create_future()
+    old.pending[1], new.pending[2] = old_waiting, new_waiting
+    old_call = old.threads.setdefault("thread-1", asyncio.Queue())
+    new_call = new.threads.setdefault("thread-2", asyncio.Queue())
+    reading = asyncio.create_task(server._read(old))
     old_output.feed_eof()
     await reading
-    assert not waiting.done()
-    assert server._pending == {1: waiting}
-    assert calls.empty()
+    assert (await old_call.get())["params"]["reason"] == "app_server_exit"
+    assert isinstance(old_waiting.exception(), VoiceError)
+    assert not new_waiting.done()
+    assert new_call.empty()
 
 
 async def test_concurrent_facts_respect_the_per_second_limit(codex, monkeypatch):
@@ -855,3 +871,70 @@ async def test_a_session_the_provider_ended_is_not_stopped_again(codex):
     assert closed["reason"] == "transport_closed"
     await connection.close()
     assert codex._server.sent("thread/realtime/stop") == []
+
+
+def test_an_unrecognised_usage_shape_is_not_allowed():
+    for limits in ({}, {"rateLimits": None}, {"rateLimitsByLimitId": {"codex": "text"}}):
+        report = usage_report(limits, 97)
+        assert (report["allowed"], report["reason"]) == (False, "usage_unreadable"), limits
+
+
+async def test_notifications_keep_their_order_around_the_answer(codex):
+    async def burst(method, params, original=codex._server.request):
+        if method == "thread/realtime/start":
+            codex._server.requests.append((method, params))
+            thread = params["threadId"]
+            codex._server.feed(thread, "thread/realtime/started", version="v3")
+            codex._server.feed(thread, "thread/realtime/sdp", sdp="answer-sdp")
+            codex._server.feed(thread, "thread/realtime/closed", reason="transport_closed")
+            return {}
+        return await original(method, params)
+
+    codex._server.request = burst
+    thread, _ = await codex.create(None, SESSION, "offer-sdp")
+    connection = await codex.attach(None, thread)
+    events = await _events(connection, 2)
+    assert [e["type"] for e in events] == ["session.started", "session.closed"]
+    assert "duration_seconds" in events[1]["usage"]
+    await connection.close()
+
+
+async def test_a_transport_failure_while_sending_is_a_502(tmp_path):
+    server = _AppServer(_fake_codex(tmp_path, OVERSIZED), 5)
+    try:
+        await server.ensure_started()
+        server._link.proc.stdin.close()
+        with pytest.raises(VoiceError) as failed:
+            await server.request("thread/realtime/appendText", {})
+        assert failed.value.status_code == 502
+    finally:
+        await server.stop()
+
+
+async def test_a_superseded_delegation_leaves_no_request_text_behind(codex, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    backend = Backend()
+    release = asyncio.Event()
+
+    async def held(request):
+        await release.wait()
+        yield {"type": "final_response", "content": "Done", "model": "test", "error": False}
+
+    backend.runner = held
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), backend, transport=codex)
+    await service.start()
+    try:
+        created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
+        call = service._calls[created["call_id"]]
+        for ident in ("h1", "h2", "h3"):
+            codex._server.feed(
+                "thread-1",
+                "thread/realtime/itemAdded",
+                item={"type": "handoff_request", "handoff_id": ident, "input_transcript": ident},
+            )
+        await until(lambda: call.active_delegation == "h3")
+        release.set()
+        await until(lambda: call.delegations["h3"]["status"] in ("result_sent", "result_accepted"))
+        assert call.inputs == {}
+    finally:
+        await service.stop()

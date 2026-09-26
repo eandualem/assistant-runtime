@@ -25,6 +25,7 @@ import json
 import os
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,15 @@ def missing_from_schema(directory: Path) -> list[str]:
     missing += [f"thread/realtime/start.{name}" for name in sorted(_REQUIRED_START_PARAMS - params)]
     if REALTIME_VERSION not in versions:
         missing.append(f"thread/realtime/start.version={REALTIME_VERSION}")
+    try:
+        started = json.loads(
+            (directory / "v2" / "ThreadRealtimeStartedNotification.json").read_text()
+        )
+        started_fields = set(started.get("properties", {}))
+    except (OSError, ValueError, TypeError, AttributeError):
+        started_fields = set()
+    if "version" not in started_fields:  # the session's version is checked on start
+        missing.append("thread/realtime/started.version")
     return missing
 
 
@@ -112,6 +122,9 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
         snapshots = {"default": limits["rateLimits"]}
     windows, reasons = [], []
     has_credits = spend_control = False
+    if not any(isinstance(snapshot, dict) for snapshot in snapshots.values()):
+        # A shape this runtime does not recognise must not read as "allowed".
+        reasons.append("usage_unreadable")
     for limit_id, snapshot in snapshots.items():
         if not isinstance(snapshot, dict):
             continue
@@ -180,28 +193,39 @@ def _error_code(message: str) -> str:
     return "usage_limit_reached" if "usage limit" in message.lower() else "codex_realtime_error"
 
 
+@dataclass
+class _Link:
+    """One spawned app-server, with the requests and calls that depend on it."""
+
+    proc: asyncio.subprocess.Process
+    pending: dict[int, asyncio.Future] = field(default_factory=dict)
+    threads: dict[str, asyncio.Queue] = field(default_factory=dict)
+    reader: asyncio.Task | None = None
+
+
 class _AppServer:
     """Newline-delimited JSON-RPC over ``codex app-server --stdio``."""
 
     def __init__(self, command: str, timeout: float) -> None:
         self.command = command
         self.timeout = timeout
-        self._proc: asyncio.subprocess.Process | None = None
+        self._link: _Link | None = None
         self._ids = itertools.count(1)
-        self._pending: dict[int, asyncio.Future] = {}
-        self._threads: dict[str, asyncio.Queue] = {}
-        self._reader: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def running(self) -> bool:
+        return self._link is not None and self._link.proc.returncode is None
 
     async def ensure_started(self) -> None:
         async with self._lock:
-            if self._proc is not None and self._proc.returncode is None:
+            if self.running:
                 return
             env = {
                 k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")
             }
             try:
-                self._proc = await asyncio.create_subprocess_exec(
+                proc = await asyncio.create_subprocess_exec(
                     self.command,
                     "app-server",
                     "--stdio",
@@ -217,7 +241,8 @@ class _AppServer:
                     503,
                     allocation_status="rejected",
                 ) from exc
-            self._reader = asyncio.create_task(self._read())
+            link = self._link = _Link(proc)
+            link.reader = asyncio.create_task(self._read(link))
             try:
                 await self.request(
                     "initialize",
@@ -228,7 +253,7 @@ class _AppServer:
                         "capabilities": {"experimentalApi": True},
                     },
                 )
-                await self._write({"jsonrpc": "2.0", "method": "initialized"})
+                await self._write(link, {"jsonrpc": "2.0", "method": "initialized"})
                 account = await self.request("account/read", {})
                 if (account.get("account") or {}).get("type") != "chatgpt":
                     raise VoiceError(
@@ -241,22 +266,20 @@ class _AppServer:
                 # A half-initialised server, or one on another login, must not
                 # serve a later call: the next call starts and checks a new one.
                 with contextlib.suppress(ProcessLookupError):
-                    self._proc.kill()
-                self._proc = None
+                    proc.kill()
+                self._link = None
                 raise
 
-    async def _write(self, message: dict) -> None:
-        assert self._proc is not None
-        assert self._proc.stdin is not None
-        self._proc.stdin.write((json.dumps(message) + "\n").encode())
-        await self._proc.stdin.drain()
+    @staticmethod
+    async def _write(link: _Link, message: dict) -> None:
+        assert link.proc.stdin is not None
+        link.proc.stdin.write((json.dumps(message) + "\n").encode())
+        await link.proc.stdin.drain()
 
-    async def _read(self) -> None:
-        proc = self._proc
-        assert proc is not None
-        assert proc.stdout is not None
+    async def _read(self, link: _Link) -> None:
+        assert link.proc.stdout is not None
         try:
-            while line := await proc.stdout.readline():
+            while line := await link.proc.stdout.readline():
                 try:
                     message = json.loads(line)
                 except ValueError:
@@ -268,50 +291,53 @@ class _AppServer:
                     # A server request (approval, tool call): this client serves none.
                     with contextlib.suppress(Exception):
                         await self._write(
+                            link,
                             {
                                 "jsonrpc": "2.0",
                                 "id": ident,
                                 "error": {"code": -32601, "message": "unsupported by this client"},
-                            }
+                            },
                         )
                     continue
-                if ident in self._pending and ("result" in message or "error" in message):
-                    future = self._pending.pop(ident)
+                if ident in link.pending and ("result" in message or "error" in message):
+                    future = link.pending.pop(ident)
                     if not future.done():
                         future.set_result(message)
                     continue
                 thread = (message.get("params") or {}).get("threadId")
-                if thread in self._threads:
-                    self._threads[thread].put_nowait(message)
+                if thread in link.threads:
+                    link.threads[thread].put_nowait(message)
         finally:
             # Also when reading fails (an oversized line): nothing reads this
-            # server any more, so end it and let the next call start a new one.
-            if proc.returncode is None:
+            # server any more, so end it; its requests and calls end with it.
+            if link.proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-            # A newer server owns the shared state once it has replaced this one.
-            if self._proc is None or self._proc is proc:
-                for future in self._pending.values():
-                    if not future.done():
-                        future.set_exception(VoiceError("Codex app-server exited", 502))
-                self._pending.clear()
-                for queue in self._threads.values():
-                    queue.put_nowait(
-                        {
-                            "method": "thread/realtime/closed",
-                            "params": {"reason": "app_server_exit"},
-                        }
-                    )
+                    link.proc.kill()
+            for future in link.pending.values():
+                if not future.done():
+                    future.set_exception(VoiceError("Codex app-server exited", 502))
+            link.pending.clear()
+            for queue in link.threads.values():
+                queue.put_nowait(
+                    {"method": "thread/realtime/closed", "params": {"reason": "app_server_exit"}}
+                )
 
     async def request(self, method: str, params: dict) -> dict:
+        link = self._link
+        if link is None:
+            raise VoiceError("Codex app-server is not running", 502)
         ident = next(self._ids)
         future = asyncio.get_running_loop().create_future()
-        self._pending[ident] = future
+        link.pending[ident] = future
         try:
-            await self._write({"jsonrpc": "2.0", "id": ident, "method": method, "params": params})
+            await self._write(
+                link, {"jsonrpc": "2.0", "id": ident, "method": method, "params": params}
+            )
             message = await asyncio.wait_for(future, self.timeout)
+        except (OSError, TimeoutError) as exc:
+            raise VoiceError(f"Codex {method} failed", 502) from exc
         finally:
-            self._pending.pop(ident, None)
+            link.pending.pop(ident, None)
         if "error" in message:
             # Error text can carry account or prompt detail; keep it out of responses.
             logger.warning("Codex app-server {} failed: {}", method, str(message["error"])[:300])
@@ -319,29 +345,31 @@ class _AppServer:
         result = message.get("result")
         return result if isinstance(result, dict) else {}
 
-    @property
-    def running(self) -> bool:
-        return self._proc is not None and self._proc.returncode is None
-
     def subscribe(self, thread_id: str) -> asyncio.Queue:
-        return self._threads.setdefault(thread_id, asyncio.Queue())
+        if self._link is None:
+            raise VoiceError("Codex app-server is not running", 502)
+        return self._link.threads.setdefault(thread_id, asyncio.Queue())
 
     def unsubscribe(self, thread_id: str) -> None:
-        self._threads.pop(thread_id, None)
+        if self._link is not None:
+            self._link.threads.pop(thread_id, None)
 
     async def stop(self) -> None:
-        if self._proc is not None and self._proc.returncode is None:
+        link, self._link = self._link, None
+        if link is None:
+            return
+        if link.proc.returncode is None:
             with contextlib.suppress(Exception):
-                assert self._proc.stdin is not None
-                self._proc.stdin.close()
+                assert link.proc.stdin is not None
+                link.proc.stdin.close()
             try:
-                await asyncio.wait_for(self._proc.wait(), 5)
+                await asyncio.wait_for(link.proc.wait(), 5)
             except TimeoutError:
-                self._proc.kill()
-                await self._proc.wait()
-        if self._reader is not None:
-            self._reader.cancel()
-            await asyncio.gather(self._reader, return_exceptions=True)
+                link.proc.kill()
+                await link.proc.wait()
+        if link.reader is not None:
+            link.reader.cancel()
+            await asyncio.gather(link.reader, return_exceptions=True)
 
 
 class _CodexConnection:
@@ -467,8 +495,9 @@ class _CodexConnection:
     async def send(self, frame: str) -> None:
         event = json.loads(frame)
         if event.get("type") == "session.close":
-            # Shielded: the caller's send timeout must not cancel the stop itself.
-            await asyncio.shield(self._stop(None))
+            # Not awaited: the service waits for the closed notification, and a
+            # slow stop must not turn into a send timeout. close() awaits it.
+            self._stop(None)
         elif event.get("type") == "session.commentary.append":
             # What Codex's own client does with a delegated result. Speech is
             # session-level context: the protocol names no delegation.
@@ -554,6 +583,7 @@ class CodexTransport:
         self._compatibility: dict | None = None
         self._check_lock = asyncio.Lock()
         self._background: set[asyncio.Task] = set()
+        self._created: dict[str, asyncio.Queue] = {}  # created, not yet attached
 
     def checked(self) -> dict | None:
         """The completed protocol check, without running one."""
@@ -686,8 +716,13 @@ class CodexTransport:
             task.add_done_callback(self._background.discard)
             self._server.unsubscribe(thread_id)
             raise
-        for message in early:  # `started` may precede the answer
+        # Keep arrival order: what came before the answer goes first.
+        later = []
+        while not queue.empty():
+            later.append(queue.get_nowait())
+        for message in (*early, *later):
             queue.put_nowait(message)
+        self._created[thread_id] = queue
         return thread_id, answer
 
     async def _stop_quietly(self, thread_id: str) -> None:
@@ -695,9 +730,9 @@ class CodexTransport:
             await self._server.request("thread/realtime/stop", {"threadId": thread_id})
 
     async def attach(self, api_key: str | None, provider_id: str) -> _CodexConnection:
-        return _CodexConnection(
-            self._server, provider_id, self._server.subscribe(provider_id), self
-        )
+        # The queue create() read from, even if its server has since been replaced.
+        queue = self._created.pop(provider_id, None) or self._server.subscribe(provider_id)
+        return _CodexConnection(self._server, provider_id, queue, self)
 
     async def stop(self) -> None:
         await asyncio.gather(*self._background, return_exceptions=True)
