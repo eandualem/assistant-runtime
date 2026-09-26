@@ -33,6 +33,9 @@ from assistant_runtime.principal import Principal, can_access_session
 from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 from assistant_runtime.services.database.interface import DatabaseService
 
+# Spoken for a delegation the backend could not complete or could not queue.
+_BACKEND_FAILED = "The backend could not complete the request. Do not claim the action succeeded."
+
 
 class VoiceService:
     """Optional lifecycle-managed voice sessions; all keys remain server-side."""
@@ -447,14 +450,23 @@ class VoiceService:
             call.stop_requested.set()
             raise
         finally:
+            status = None
             async with call.control_lock:
                 call.cancelling = False
                 ident = call.deferred_delegation
                 call.deferred_delegation = None
                 if ident and ident == call.active_delegation and not call.stop_requested.is_set():
-                    self._enqueue(call, ident, None)
-                    call.delegations[ident]["status"] = "running"
-                    self._emit(call, "delegation", {"id": ident, "status": "running"})
+                    # A full queue fails the delegation; it never masks the cancel outcome.
+                    status = "failed" if call.queue.full() else "running"
+                    if status == "running":
+                        self._enqueue(call, ident, None)
+                    else:
+                        call.inputs.pop(ident, None)
+                    call.delegations[ident]["status"] = status
+                    self._emit(call, "delegation", {"id": ident, "status": status})
+            if status == "failed":
+                with contextlib.suppress(Exception):
+                    await self._return_result(call, ident, _BACKEND_FAILED)
 
     async def events(
         self, call_id: str, principal: Principal, after: int = 0
@@ -668,13 +680,19 @@ class VoiceService:
                     if isinstance(delegation.get("input"), str) and delegation["input"]:
                         call.inputs[ident] = delegation["input"][: self.config.context_chars]
                     status = "waiting" if call.cancelling else "running"
+                    if status == "running" and call.queue.full():
+                        # Answered below instead of raising, which would end the call.
+                        status = "failed"
+                        call.inputs.pop(ident, None)
                     call.delegations[ident] = {"status": status}
                     self._cancel_unprotected(call)
                     if call.cancelling:
                         call.deferred_delegation = ident
-                    else:
+                    elif status == "running":
                         self._enqueue(call, ident, None)
                     self._emit(call, "delegation", {"id": ident, "status": status})
+                if status == "failed":
+                    await self._return_result(call, ident, _BACKEND_FAILED)
             elif kind in ("session.commentary.appended", "error"):
                 command_id = event.get("client_event_id")
                 if kind == "error":
@@ -778,11 +796,7 @@ class VoiceService:
                 if ident == call.active_delegation and not call.stop_requested.is_set():
                     call.delegations[ident]["status"] = "failed"
                     self._emit(call, "delegation", {"id": ident, "status": "failed"})
-                    await self._return_result(
-                        call,
-                        ident,
-                        "The backend could not complete the request. Do not claim the action succeeded.",
-                    )
+                    await self._return_result(call, ident, _BACKEND_FAILED)
             finally:
                 if receipt is not None and not receipt.done():
                     receipt.set_result(None)
