@@ -1108,6 +1108,23 @@ async def test_a_move_does_not_replace_a_destination_created_during_it(
     assert (tmp_path / "a" / "note.md").read_text() == "moved"
 
 
+async def test_a_note_created_during_a_move_is_not_overwritten(tmp_path, monkeypatch):
+    notes = MarkdownNotes(tmp_path)
+    created = await notes.create(title="Plan", content="moved", tags=None, folder="a")
+    real_link = os.link
+
+    def create_first(*args, **kwargs):
+        # A parallel create of the same title lands before the move's link.
+        notes._create("b", "plan", build_note_content("Plan", "new"))
+        return real_link(*args, **kwargs)
+
+    monkeypatch.setattr(os, "link", create_first)
+    moved = await notes.move(filename=created["path"], folder="b")
+    assert moved["success"] is False
+    contents = sorted(p.read_text().split("---")[-1].strip() for p in tmp_path.rglob("*.md"))
+    assert contents == ["moved", "new"]
+
+
 async def test_a_move_whose_source_was_moved_away_leaves_no_copy(tmp_path, monkeypatch):
     (tmp_path / "a").mkdir()
     (tmp_path / "c").mkdir()
