@@ -9,21 +9,30 @@ tools.
 
 | State | With Postgres | Without Postgres |
 |---|---|---|
-| Sessions, the message tree, steering | rows in `sessions`, `messages`, `steering`; written through on every change | process memory, for the life of the process |
+| Sessions, the message tree, steering | rows in `sessions`, `messages`, `steering`; written through on every change | process memory, until cache eviction or process shutdown |
 | The pending host action | `sessions.pending_action` | process memory |
-| Prompt-artifact versions, runtime settings, provider keys, inbox | rows | memory (artifacts, settings), unavailable (keys, inbox) |
+| Prompt-artifact versions, runtime settings | rows | process memory |
+| Queued inbox messages | rows | process memory; listing and marking surfaced through HTTP still need Postgres |
+| Encrypted provider keys | rows | unavailable |
 | Traces (debug) | rows | not stored |
 
 The session store is a write-through cache: every change is written to the
 row before the in-memory context is updated. The row may be ahead while a
 write completes, but memory is never durably ahead of the row. A session that is not in
-the cache is loaded from its rows on first use. Sessions expire after
+the cache is loaded from its rows on first use. Postgres-backed sessions expire after
 `ASSISTANT__SESSION_TTL_HOURS`; expiry deletes the session with its messages,
 steering and pending action.
 
 The substrate is deliberately the application's own tables. The upstream
 options were compared and deferred; see [the decision](#upstream-decision)
 below.
+
+## Concurrent artifact edits
+
+Artifact version checks, writes and activation run in one transaction, serialized
+per profile/artifact in Postgres. An edit with a stale `expected_version` returns
+409. A failed activation rolls back the proposed version, and a prompt-cache read
+started before an edit cannot hide that edit from subsequent prompts.
 
 ## The pending host action
 
@@ -34,10 +43,6 @@ A host tool call ends the turn. The runtime then:
    `assistant_message_id`, `batch`: every host call of that response in
    order) on the session row;
 3. emits `final_response.pending_tool_call` for the first call and waits.
-
-When the batch has more than one call, each continuation records its
-result on the assistant message and moves `pending_action` to the next
-call without running the model; the last continuation resumes the model.
 
 When a continuation arrives, the accepted result is written on the same
 assistant message first. For a batch with calls still waiting, `pending_action`
@@ -142,8 +147,8 @@ from an installed package (the migrations ship in the wheel); see
 It is the same schema and the same migrations as production. SQLite is not
 supported: the schema uses `JSONB`, `INSERT ... ON CONFLICT` through the
 Postgres dialect, Postgres server defaults and a partial unique index, and
-the 22 migrations are written for Postgres. Adding SQLite would need a
-second schema path and is tracked as follow-up work rather than promised.
+the migrations are written for Postgres. SQLite would need a separate
+schema and migration path.
 
 ## Upstream decision
 
@@ -158,7 +163,7 @@ target, see [compatibility](compatibility.md)).
   message tree. The pending action is state *between* runs, which the
   session row now holds. Upstream also documents that a durable unit may
   execute more than once after a crash, so it does not provide the
-  exactly-once external effects the issue ruled out either. Applications
+  exactly-once external effects guarantee either. Applications
   that want durable model calls can attach a durability capability through
   `AssistantDefinition` (see [composition](composition.md)); the runtime
   does not adopt one.

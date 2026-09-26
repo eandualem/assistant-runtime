@@ -1,7 +1,8 @@
 """Cached client for the backbone's agent registry API.
 
 Fetches agent data from GET /api/agents and caches with a 5-minute TTL.
-Module-level singleton accessed via get_registry_cache().
+Configured providers own a cache bound to their request client; default
+module helpers use the singleton accessed via get_registry_cache().
 """
 
 from __future__ import annotations
@@ -11,7 +12,10 @@ from typing import Any
 
 from loguru import logger
 
-from assistant_runtime.services.tools.providers.backbone._client import backbone_request
+from assistant_runtime.services.tools.providers.backbone._client import (
+    BackboneRequest,
+    backbone_request,
+)
 
 _DEFAULT_TTL = 300.0  # 5 minutes
 
@@ -19,10 +23,13 @@ _DEFAULT_TTL = 300.0  # 5 minutes
 class AgentRegistryCache:
     """Cached wrapper around the backbone's GET /api/agents endpoint."""
 
-    def __init__(self, ttl: float = _DEFAULT_TTL) -> None:
+    def __init__(
+        self, ttl: float = _DEFAULT_TTL, *, request: BackboneRequest | None = None
+    ) -> None:
         self._agents: list[dict[str, Any]] | None = None
         self._fetched_at: float = 0.0
         self._ttl = ttl
+        self._request = request
 
     def _is_stale(self) -> bool:
         return self._agents is None or (time.monotonic() - self._fetched_at) >= self._ttl
@@ -38,7 +45,8 @@ class AgentRegistryCache:
 
     async def refresh(self) -> bool:
         """Force refresh from backbone. Returns True on success."""
-        status, body = await backbone_request("GET", "/api/agents")
+        request = self._request if self._request is not None else backbone_request
+        status, body = await request("GET", "/api/agents")
         if status != 200 or not isinstance(body, dict):
             logger.warning(
                 "Failed to fetch agent registry from backbone",

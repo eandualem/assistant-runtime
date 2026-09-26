@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 
 import socketio
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
@@ -13,6 +12,7 @@ from assistant_runtime import RUNTIME_MARKER, __version__
 from assistant_runtime.app.access import deps as access_deps
 from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
 from assistant_runtime.app.access.factory import register_access
+from assistant_runtime.app.access.middleware import BrowserOriginMiddleware
 from assistant_runtime.app.assistant.definition import AssistantDefinition
 from assistant_runtime.app.assistant.exceptions import AssistantError, SessionError
 from assistant_runtime.app.assistant.factory import register_assistant
@@ -147,7 +147,7 @@ def create_app(
     access = (settings or AppSettings()).access
     origins = list(access.cors_origins)
     app.add_middleware(
-        CORSMiddleware,
+        BrowserOriginMiddleware,
         allow_origins=origins,
         allow_origin_regex=access.cors_origin_regex or None,
         allow_credentials="*" not in origins,

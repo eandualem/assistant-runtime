@@ -1,12 +1,13 @@
 """Tests for MediaService video generation methods: generate_video, get_video_status, _parse_video_model_id."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from assistant_runtime.services.media._video_providers import VideoStatus
 from assistant_runtime.services.media.config import MediaConfig
-from assistant_runtime.services.media.exceptions import MediaError, ProviderError
+from assistant_runtime.services.media.exceptions import MediaError, ProviderError, VideoJobError
 from assistant_runtime.services.media.interface import MediaService
 from assistant_runtime.services.media.models import VideoResult, VideoStatusResponse
 
@@ -271,3 +272,78 @@ class TestGetVideoStatus:
         assert status.job_id == video_result.job_id
         assert status.provider == "runway"
         assert status.model == "runway:gen4-turbo"
+
+
+class TestVideoAdmission:
+    async def test_capacity_reserved_before_provider_submission(self):
+        service = MediaService(MediaConfig(video_max_concurrent_jobs=1))
+        await service.start()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def submit(**kwargs):
+            entered.set()
+            await release.wait()
+            return "remote-job"
+
+        try:
+            with patch(f"{MODULE}.submit_runway", side_effect=submit) as provider:
+                first = asyncio.create_task(service.generate_video("first"))
+                await asyncio.wait_for(entered.wait(), 1)
+                with pytest.raises(VideoJobError, match="Maximum concurrent"):
+                    await service.generate_video("while submitting")
+                release.set()
+                result = await first
+                with pytest.raises(VideoJobError, match="Maximum concurrent"):
+                    await service.generate_video("while processing")
+                provider.assert_awaited_once()
+                assert service.get_video_status(result.job_id).state == "submitted"
+        finally:
+            await service.stop()
+
+    @pytest.mark.parametrize("cancel", [False, True])
+    async def test_failed_or_cancelled_submission_releases_capacity(self, cancel):
+        service = MediaService(MediaConfig(video_max_concurrent_jobs=1))
+        await service.start()
+        entered = asyncio.Event()
+
+        async def submit(**kwargs):
+            entered.set()
+            if cancel:
+                await asyncio.Event().wait()
+            raise ProviderError("submission failed")
+
+        try:
+            with patch(f"{MODULE}.submit_runway", side_effect=submit):
+                attempt = asyncio.create_task(service.generate_video("first"))
+                await asyncio.wait_for(entered.wait(), 1)
+                if cancel:
+                    attempt.cancel()
+                with pytest.raises(asyncio.CancelledError if cancel else ProviderError):
+                    await attempt
+            with patch(f"{MODULE}.submit_runway", return_value="next-job"):
+                result = await service.generate_video("next")
+                assert service.get_video_status(result.job_id) is not None
+        finally:
+            await service.stop()
+
+    async def test_shutdown_cancels_and_drains_provider_submission(self):
+        service = MediaService(MediaConfig(video_max_concurrent_jobs=1))
+        await service.start()
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def submit(**kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        with patch(f"{MODULE}.submit_runway", side_effect=submit):
+            attempt = asyncio.create_task(service.generate_video("first"))
+            await asyncio.wait_for(entered.wait(), 1)
+            await asyncio.wait_for(service.stop(), 1)
+        with pytest.raises(asyncio.CancelledError):
+            await attempt
+        assert cancelled.is_set()
+        with pytest.raises(MediaError, match="not started"):
+            await service.generate_video("after stop")

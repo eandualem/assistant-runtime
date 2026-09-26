@@ -12,8 +12,10 @@ when a database is available.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from weakref import WeakValueDictionary
 
 from loguru import logger
 
@@ -54,7 +56,7 @@ class SessionStore:
             else None
         )
         self._pending_db_loads: dict[str, asyncio.Task[dict[str, Any] | None]] = {}
-        self._pending_db_loads_lock = asyncio.Lock()
+        self._message_write_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         # Sessions with a running turn or post-turn work (a count per holder);
         # never evicted from the cache while the count is above zero.
         self._pinned: dict[str, int] = {}
@@ -87,8 +89,6 @@ class SessionStore:
         if self._db is not None:
             loaded = await self._load_session_singleflight(session_id)
             if loaded is not None:
-                self._evict_if_needed()
-                self._sessions[session_id] = loaded
                 self._touch_session(session_id)
                 return loaded
 
@@ -254,28 +254,37 @@ class SessionStore:
         *,
         content: str | None = None,
         segments: list[dict[str, Any]] | None = None,
-        usage: dict[str, Any] | None = None,
+        usage: dict[str, Any]
+        | Callable[[dict[str, Any] | None], dict[str, Any] | None]
+        | None = None,
     ) -> MessageRecord:
-        """Update an existing message row in-memory and in DB."""
+        """Commit an update before publishing it to the cache.
+
+        A usage transform sees the latest committed total, including concurrent
+        background extraction. The lock covers read, merge, commit and publication.
+        """
         ctx = await self.get_context_if_exists_async(session_id)
         if ctx is None or message_id not in ctx["message_index"]:
             raise LookupError(f"Message '{message_id}' not found")
-        record = dict(ctx["message_index"][message_id])
-        if content is not None:
-            record["content"] = content
-        if segments is not None:
-            record["segments"] = segments
-        if usage is not None:
-            record["usage"] = usage
-        ctx["message_index"][message_id] = record
-        ctx["cached_path"] = [
-            record if message["id"] == message_id else message for message in ctx["cached_path"]
-        ]
-        if self._db is not None:
-            await self._db.update_message(
-                message_id, content=content, segments=segments, usage=usage
-            )
-        return record
+        lock = self._message_write_locks.setdefault(message_id, asyncio.Lock())
+        async with lock:
+            record = dict(ctx["message_index"][message_id])
+            resolved_usage = usage(record.get("usage")) if callable(usage) else usage
+            if content is not None:
+                record["content"] = content
+            if segments is not None:
+                record["segments"] = segments
+            if resolved_usage is not None:
+                record["usage"] = resolved_usage
+            if self._db is not None:
+                await self._db.update_message(
+                    message_id, content=content, segments=segments, usage=resolved_usage
+                )
+            ctx["message_index"][message_id] = record
+            ctx["cached_path"] = [
+                record if message["id"] == message_id else message for message in ctx["cached_path"]
+            ]
+            return record
 
     def get_message(self, session_id: str, message_id: str) -> MessageRecord | None:
         """The cached record of one message, or None when the session or message is not cached."""
@@ -608,19 +617,24 @@ class SessionStore:
 
     async def _load_session_singleflight(self, session_id: str) -> dict[str, Any] | None:
         """Hydrate from the database, sharing one load between concurrent callers."""
-        async with self._pending_db_loads_lock:
-            task = self._pending_db_loads.get(session_id)
-            if task is None:
-                task = asyncio.create_task(self._load_session(session_id))
-                self._pending_db_loads[session_id] = task
-        try:
-            # Shielded: a waiter that gets cancelled (client disconnect) must
-            # not cancel the load the other waiters share.
-            return await asyncio.shield(task)
-        finally:
-            async with self._pending_db_loads_lock:
-                if self._pending_db_loads.get(session_id) is task:
+        task = self._pending_db_loads.get(session_id)
+        if task is None:
+
+            async def load_and_publish() -> dict[str, Any] | None:
+                try:
+                    loaded = await self._load_session(session_id)
+                    if loaded is not None:
+                        self._evict_if_needed()
+                        self._sessions[session_id] = loaded
+                    return loaded
+                finally:
                     self._pending_db_loads.pop(session_id, None)
+
+            task = asyncio.create_task(load_and_publish())
+            self._pending_db_loads[session_id] = task
+            # Retrieve failures even if every waiter disconnects before completion.
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        return await asyncio.shield(task)
 
     async def _load_session(self, session_id: str) -> dict[str, Any] | None:
         assert self._db is not None

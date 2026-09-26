@@ -32,9 +32,11 @@ def build_providers(config: ProvidersConfig) -> dict[str, Any]:
     if config.agent_state_dir is not None:
         providers["approvals"] = StateFileApprovals(config.agent_state_dir)
     if config.github_token and config.github_repo:
-        providers["issues"] = GitHubIssues()
+        providers["issues"] = GitHubIssues(repo=config.github_repo, token=config.github_token)
     if config.telegram_token and config.telegram_chat_id:
-        providers["messaging"] = TelegramMessaging()
+        providers["messaging"] = TelegramMessaging(
+            token=config.telegram_token, chat_id=config.telegram_chat_id
+        )
     return providers
 
 

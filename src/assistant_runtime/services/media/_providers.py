@@ -50,15 +50,15 @@ async def generate_openai(
     try:
         from openai import AsyncOpenAI, BadRequestError, OpenAIError
 
-        client = AsyncOpenAI(api_key=api_key)
-        response = await client.images.generate(
-            prompt=prompt,
-            model=model_name,
-            size=size,
-            quality=quality,
-            response_format="b64_json",
-            n=1,
-        )
+        async with AsyncOpenAI(api_key=api_key) as client:
+            response = await client.images.generate(
+                prompt=prompt,
+                model=model_name,
+                size=size,
+                quality=quality,
+                response_format="b64_json",
+                n=1,
+            )
 
         b64_data = response.data[0].b64_json
         if not b64_data:
@@ -112,15 +112,17 @@ async def generate_google(
         from google import genai
         from google.genai.types import GenerateImagesConfig
 
-        client = genai.Client(api_key=api_key)
-        response = await client.aio.models.generate_images(
-            model=model_name,
-            prompt=prompt,
-            config=GenerateImagesConfig(
-                number_of_images=1,
-                aspect_ratio=aspect_ratio,
-            ),
-        )
+        # The SDK owns separate sync and async transports; close both.
+        with genai.Client(api_key=api_key) as client:
+            async with client.aio as async_client:
+                response = await async_client.models.generate_images(
+                    model=model_name,
+                    prompt=prompt,
+                    config=GenerateImagesConfig(
+                        number_of_images=1,
+                        aspect_ratio=aspect_ratio,
+                    ),
+                )
 
         if not response.generated_images:
             raise ProviderError("Google returned no images")

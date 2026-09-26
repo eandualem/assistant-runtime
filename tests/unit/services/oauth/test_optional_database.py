@@ -50,6 +50,7 @@ async def test_disconnect_reports_incomplete_deletion_then_retries_on_recovery(r
     @asynccontextmanager
     async def session_context():
         yield session
+        await session.commit()
 
     database = SimpleNamespace(healthy=False, session_context=session_context)
     service = OAuthService(OAuthConfig())
@@ -73,6 +74,7 @@ async def test_successful_database_save_is_encrypted_and_reported():
     @asynccontextmanager
     async def session_context():
         yield session
+        await session.commit()
 
     service = OAuthService(OAuthConfig(encryption_key=Fernet.generate_key().decode()))
     await service.start()

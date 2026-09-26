@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -17,6 +19,8 @@ from assistant_runtime.services.artifacts.models import ArtifactVersion
 
 class ArtifactStore(Protocol):
     """What the service needs from a version store."""
+
+    def transaction(self, scope: str, name: str) -> AbstractAsyncContextManager[ArtifactStore]: ...
 
     @property
     def durable(self) -> bool: ...
@@ -46,6 +50,11 @@ class InMemoryArtifactStore:
         self._lock = asyncio.Lock()
         self._next_id = 1
 
+    @asynccontextmanager
+    async def transaction(self, scope: str, name: str) -> AsyncIterator[ArtifactStore]:
+        async with self._lock:
+            yield self
+
     async def get_active(self, scope: str, name: str) -> ArtifactVersion | None:
         return next((v for v in self._versions.get((scope, name), []) if v.is_active), None)
 
@@ -66,35 +75,32 @@ class InMemoryArtifactStore:
     async def propose(
         self, scope: str, name: str, content: str, proposed_by: str
     ) -> ArtifactVersion:
-        async with self._lock:
-            versions = self._versions[(scope, name)]
-            row = ArtifactVersion(
-                name=name,
-                content=content,
-                version=max((v.version for v in versions), default=0) + 1,
-                is_active=False,
-                proposed_by=proposed_by,
-                created_at=datetime.now(UTC),
-                id=self._next_id,
-            )
-            self._next_id += 1
-            versions.append(row)
-            return row
+        versions = self._versions[(scope, name)]
+        row = ArtifactVersion(
+            name=name,
+            content=content,
+            version=max((v.version for v in versions), default=0) + 1,
+            is_active=False,
+            proposed_by=proposed_by,
+            created_at=datetime.now(UTC),
+            id=self._next_id,
+        )
+        self._next_id += 1
+        versions.append(row)
+        return row
 
     async def activate(self, scope: str, name: str, version: int) -> ArtifactVersion | None:
-        async with self._lock:
-            versions = self._versions.get((scope, name), [])
-            if not any(v.version == version for v in versions):
-                return None
-            updated = [
-                ArtifactVersion(**{**vars(v), "is_active": v.version == version}) for v in versions
-            ]
-            self._versions[(scope, name)] = updated
-            return next(v for v in updated if v.version == version)
+        versions = self._versions.get((scope, name), [])
+        if not any(v.version == version for v in versions):
+            return None
+        updated = [
+            ArtifactVersion(**{**vars(v), "is_active": v.version == version}) for v in versions
+        ]
+        self._versions[(scope, name)] = updated
+        return next(v for v in updated if v.version == version)
 
     async def delete(self, scope: str, name: str) -> int:
-        async with self._lock:
-            return len(self._versions.pop((scope, name), []))
+        return len(self._versions.pop((scope, name), []))
 
 
 class DatabaseArtifactStore:
@@ -102,8 +108,23 @@ class DatabaseArtifactStore:
 
     durable = True
 
-    def __init__(self, database_service: Any) -> None:
+    def __init__(self, database_service: Any, *, session: Any = None) -> None:
         self._database = database_service
+        self._transaction_session = session
+
+    @asynccontextmanager
+    async def _session_context(self) -> AsyncIterator[Any]:
+        if self._transaction_session is not None:
+            yield self._transaction_session
+        else:
+            async with self._database.session_context() as session:
+                yield session
+
+    @asynccontextmanager
+    async def transaction(self, scope: str, name: str) -> AsyncIterator[ArtifactStore]:
+        async with self._database.session_context() as session:
+            await self._repository(session).lock(scope, name)
+            yield DatabaseArtifactStore(self._database, session=session)
 
     @staticmethod
     def _to_version(row: Any) -> ArtifactVersion:
@@ -123,32 +144,32 @@ class DatabaseArtifactStore:
         return ArtifactRepository(session)
 
     async def get_active(self, scope: str, name: str) -> ArtifactVersion | None:
-        async with self._database.session_context() as session:
+        async with self._session_context() as session:
             row = await self._repository(session).get_active(scope, name)
         return self._to_version(row) if row is not None else None
 
     async def get_all_active(self, scope: str) -> list[ArtifactVersion]:
-        async with self._database.session_context() as session:
+        async with self._session_context() as session:
             rows = await self._repository(session).get_all_active(scope)
         return [self._to_version(row) for row in rows]
 
     async def get_history(self, scope: str, name: str, limit: int) -> list[ArtifactVersion]:
-        async with self._database.session_context() as session:
+        async with self._session_context() as session:
             rows = await self._repository(session).get_history(scope, name, limit=limit)
         return [self._to_version(row) for row in rows]
 
     async def propose(
         self, scope: str, name: str, content: str, proposed_by: str
     ) -> ArtifactVersion:
-        async with self._database.session_context() as session:
+        async with self._session_context() as session:
             row = await self._repository(session).propose(scope, name, content, proposed_by)
             return self._to_version(row)
 
     async def activate(self, scope: str, name: str, version: int) -> ArtifactVersion | None:
-        async with self._database.session_context() as session:
+        async with self._session_context() as session:
             row = await self._repository(session).approve(scope, name, version)
             return self._to_version(row) if row is not None else None
 
     async def delete(self, scope: str, name: str) -> int:
-        async with self._database.session_context() as session:
+        async with self._session_context() as session:
             return await self._repository(session).delete_by_name(scope, name)

@@ -22,6 +22,12 @@ from assistant_runtime.services.media.exceptions import (
 MODULE = "assistant_runtime.services.media._video_providers"
 
 
+def _mock_client():
+    client = MagicMock()
+    client.__aenter__.return_value = client
+    return client
+
+
 class TestSubmitRunway:
     """Tests for the submit_runway provider function."""
 
@@ -40,7 +46,7 @@ class TestSubmitRunway:
 
         mock_task = SimpleNamespace(id="task-abc-123")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.image_to_video.create = AsyncMock(return_value=mock_task)
 
         with patch("runwayml.AsyncRunwayML", return_value=mock_client):
@@ -57,7 +63,7 @@ class TestSubmitRunway:
 
         mock_task = SimpleNamespace(id="task-xyz")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.image_to_video.create = AsyncMock(return_value=mock_task)
 
         with patch("runwayml.AsyncRunwayML", return_value=mock_client) as mock_cls:
@@ -74,7 +80,7 @@ class TestSubmitRunway:
 
         mock_task = SimpleNamespace(id="task-params")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.image_to_video.create = AsyncMock(return_value=mock_task)
 
         with patch("runwayml.AsyncRunwayML", return_value=mock_client):
@@ -93,7 +99,7 @@ class TestSubmitRunway:
     async def test_generic_error_raises_provider_error(self, monkeypatch):
         monkeypatch.setenv("RUNWAYML_API_SECRET", "rw-test-key")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.image_to_video.create = AsyncMock(
             side_effect=Exception("Connection timeout"),
         )
@@ -139,7 +145,7 @@ class TestPollRunway:
             output=["https://cdn.runway.com/video-abc.mp4"],
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.tasks.retrieve = AsyncMock(return_value=mock_task)
 
         with patch("runwayml.AsyncRunwayML", return_value=mock_client):
@@ -154,7 +160,7 @@ class TestPollRunway:
 
         mock_task = SimpleNamespace(status="FAILED", output=None)
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.tasks.retrieve = AsyncMock(return_value=mock_task)
 
         with patch("runwayml.AsyncRunwayML", return_value=mock_client):
@@ -169,7 +175,7 @@ class TestPollRunway:
 
         mock_task = SimpleNamespace(status="PENDING", output=None)
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.tasks.retrieve = AsyncMock(return_value=mock_task)
 
         with patch("runwayml.AsyncRunwayML", return_value=mock_client):
@@ -182,7 +188,7 @@ class TestPollRunway:
 
         mock_task = SimpleNamespace(status="RUNNING", output=None)
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.tasks.retrieve = AsyncMock(return_value=mock_task)
 
         with patch("runwayml.AsyncRunwayML", return_value=mock_client):
@@ -195,7 +201,7 @@ class TestPollRunway:
 
         mock_task = SimpleNamespace(status="SUCCEEDED", output=[])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.tasks.retrieve = AsyncMock(return_value=mock_task)
 
         with (
@@ -207,7 +213,7 @@ class TestPollRunway:
     async def test_generic_error_raises_provider_error(self, monkeypatch):
         monkeypatch.setenv("RUNWAYML_API_SECRET", "rw-test-key")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.tasks.retrieve = AsyncMock(
             side_effect=Exception("Network failure"),
         )
@@ -237,7 +243,7 @@ class TestSubmitLuma:
 
         mock_generation = SimpleNamespace(id="gen-luma-456")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.create = AsyncMock(return_value=mock_generation)
 
         with patch("lumaai.AsyncLumaAI", return_value=mock_client):
@@ -254,7 +260,7 @@ class TestSubmitLuma:
 
         mock_generation = SimpleNamespace(id="gen-xyz")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.create = AsyncMock(return_value=mock_generation)
 
         with patch("lumaai.AsyncLumaAI", return_value=mock_client) as mock_cls:
@@ -271,7 +277,7 @@ class TestSubmitLuma:
 
         mock_generation = SimpleNamespace(id="gen-params")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.create = AsyncMock(return_value=mock_generation)
 
         with patch("lumaai.AsyncLumaAI", return_value=mock_client):
@@ -289,7 +295,7 @@ class TestSubmitLuma:
     async def test_generic_error_raises_provider_error(self, monkeypatch):
         monkeypatch.setenv("LUMAAI_API_KEY", "luma-test-key")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.create = AsyncMock(
             side_effect=Exception("Connection refused"),
         )
@@ -337,7 +343,7 @@ class TestPollLuma:
             failure_reason=None,
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.get = AsyncMock(return_value=mock_generation)
 
         with patch("lumaai.AsyncLumaAI", return_value=mock_client):
@@ -356,7 +362,7 @@ class TestPollLuma:
             failure_reason="Content policy violation detected",
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.get = AsyncMock(return_value=mock_generation)
 
         with patch("lumaai.AsyncLumaAI", return_value=mock_client):
@@ -374,7 +380,7 @@ class TestPollLuma:
             failure_reason=None,
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.get = AsyncMock(return_value=mock_generation)
 
         with patch("lumaai.AsyncLumaAI", return_value=mock_client):
@@ -391,7 +397,7 @@ class TestPollLuma:
             failure_reason=None,
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.get = AsyncMock(return_value=mock_generation)
 
         with patch("lumaai.AsyncLumaAI", return_value=mock_client):
@@ -409,7 +415,7 @@ class TestPollLuma:
             failure_reason=None,
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.get = AsyncMock(return_value=mock_generation)
 
         with (
@@ -421,7 +427,7 @@ class TestPollLuma:
     async def test_generic_error_raises_provider_error(self, monkeypatch):
         monkeypatch.setenv("LUMAAI_API_KEY", "luma-test-key")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.generations.get = AsyncMock(
             side_effect=Exception("Service unavailable"),
         )

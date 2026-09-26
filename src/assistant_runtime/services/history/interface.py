@@ -35,9 +35,16 @@ class HistoryProcessor:
     own messages pass through verbatim so the run still reports them as new.
     """
 
-    def __init__(self, manager: HistoryManager, session_context: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        manager: HistoryManager,
+        session_context: dict[str, Any],
+        *,
+        collect_debug: bool = True,
+    ) -> None:
         self._manager = manager
         self._session_context = session_context
+        self._collect_debug = collect_debug
         self.result: HistoryPreparationResult | None = None
         self.usage = RunUsage()
         """Usage of the summarisation calls this turn made, for the turn's accounting."""
@@ -63,13 +70,14 @@ class HistoryProcessor:
                 raise
             raise CompactionError(f"History preparation failed: {e}") from e
 
-        self.result = HistoryPreparationResult(
-            was_compacted=was_compacted,
-            message_count=len(prepared),
-            estimated_tokens=self._manager.estimate_tokens(prepared),
-            compacted_from=len(messages) if was_compacted else 0,
-            message_summaries=HistoryService._summarize_messages(prepared),
-        )
+        if self._collect_debug:
+            self.result = HistoryPreparationResult(
+                was_compacted=was_compacted,
+                message_count=len(prepared),
+                estimated_tokens=self._manager.estimate_tokens(prepared),
+                compacted_from=len(messages) if was_compacted else 0,
+                message_summaries=HistoryService._summarize_messages(prepared),
+            )
         return prepared
 
 
@@ -113,7 +121,9 @@ class HistoryService:
         if self._manager is not None:
             self._manager.set_runtime_settings(runtime_settings)
 
-    def processor(self, session_context: dict[str, Any]) -> HistoryProcessor | None:
+    def processor(
+        self, session_context: dict[str, Any], *, collect_debug: bool = True
+    ) -> HistoryProcessor | None:
         """A per-turn processor, or None when compaction is disabled.
 
         ``session_context`` receives the compaction cache; attach the
@@ -126,7 +136,7 @@ class HistoryService:
             raise CompactionError("History service not started")
         if not self._config.compaction_enabled:
             return None
-        return HistoryProcessor(self._manager, session_context)
+        return HistoryProcessor(self._manager, session_context, collect_debug=collect_debug)
 
     @staticmethod
     def _summarize_messages(

@@ -1,42 +1,40 @@
 # Getting started
 
-Ten minutes from nothing to a streamed conversation. Only step 2 needs
-anything from you; everything else is optional.
+Install the runtime, send a first message, then connect an application.
+Postgres and the optional integrations can be added later.
 
 ## 0. Requirements
 
 - Python 3.12 or newer and [uv](https://docs.astral.sh/uv/)
-- One provider API key: Anthropic, OpenAI, Google or OpenRouter
+- One provider API key: Anthropic, OpenAI, Google, OpenRouter or Cerebras
+  (for local subscription authentication instead, see [subscription](subscription.md))
 - Optional: Docker, for Postgres
 
 ## 1. Install
 
-From a checkout:
+For the released command-line tool:
+
+```bash
+uv tool install assistant-runtime
+```
+
+For a source checkout:
 
 ```bash
 git clone https://github.com/eandualem/assistant-runtime
 cd assistant-runtime
-uv sync                     # add --extra video --extra tracing for the optional features
+uv sync --locked
 ```
 
-Or install the released command-line tool: `uv tool install assistant-runtime`.
-The sections below show commands for each installation method; use the one
-that matches yours. To try a complete browser application, see the
-[reference-app guide](reference-app.md).
+The commands below use the installed tool. In a checkout, prefix each
+`assistant-runtime` command with `uv run`. For contribution checks, install
+the development dependencies with `uv sync --locked --extra dev`.
 
 ## 2. One key
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
-
-From a checkout:
-
-```bash
-uv run assistant-runtime doctor
-```
-
-With the installed tool:
 
 ```bash
 assistant-runtime doctor
@@ -45,23 +43,18 @@ assistant-runtime doctor
 `doctor` prints one line per check: Python version, `.env`, provider keys,
 the model ids in use, whether Postgres is reachable, which extras are
 installed. It exits non-zero when no provider key is set. A `.env` file in
-the working directory is read too; `.env.example` lists every variable.
+the working directory is read too; `.env.example` shows common settings.
+A missing optional service may produce a warning without preventing chat.
+`doctor` currently reports the missing API key even when you plan to use
+[subscription authentication](subscription.md); check that path separately.
 
 Any one provider key is enough. The default chat model is
-`anthropic:claude-opus-5`; with only an OpenAI, Google or OpenRouter key
-the runtime uses that provider's default instead (`openai:gpt-5.6-terra`,
-`google:gemini-3.1-pro-preview`, `openrouter:x-ai/grok-4.1-fast`). Set
+`anthropic:claude-opus-5`; with only another supported provider's key,
+the runtime uses that provider's default instead. See
+[provider defaults](configuration.md#providers-and-models). Set
 `LLM__PRIMARY_MODEL=provider:name` to choose.
 
 ## 3. Talk to it
-
-From a checkout:
-
-```bash
-uv run assistant-runtime chat
-```
-
-With the installed tool:
 
 ```bash
 assistant-runtime chat
@@ -73,20 +66,11 @@ their own lines. `--show-thinking` prints the model's thinking,
 `--model openai:gpt-5.6-terra` switches models for this chat,
 `-m "one message"` sends a single message and exits, `/exit` quits.
 
-Without Postgres the session lives in memory and the bundled default prompt
-artifacts are used. Tools that need an integration you have not configured
-(GitHub, Telegram, agent-backbone) answer with a structured error and the
-model carries on.
+Without Postgres, conversations and edits to prompt artifacts live in process
+memory and are lost on restart. Integration tools such as GitHub and Telegram
+are offered to the model only when their providers are configured.
 
 ## 4. Run the server
-
-From a checkout:
-
-```bash
-uv run assistant-runtime serve            # 127.0.0.1:7100
-```
-
-With the installed tool:
 
 ```bash
 assistant-runtime serve                   # 127.0.0.1:7100
@@ -99,6 +83,10 @@ curl -s localhost:7100/health
 curl -s -X POST localhost:7100/api/chat -H 'content-type: application/json' \
   -d '{"id":"m1","session_id":"s1","content":"What can you do?"}'
 ```
+
+The chat response is JSON: `content` holds the assistant's reply, with
+`session_id`, `message_id` and `usage` alongside it. Give each new message
+a new `id`; reusing `m1` in the same session is rejected.
 
 `serve` binds to loopback by default, every caller is the local operator,
 and only pages served from this machine may call it from a browser
@@ -113,9 +101,23 @@ If a previous assistant-runtime still holds the port (recognised by its
 takes effect with one command; anything else on the port is left alone and
 reported. `--no-replace` turns the takeover off.
 
-## 5. Stream from a client
+## 5. Connect an application
 
-Streaming goes over Socket.IO, namespace `/assistant`. The smallest client:
+To try the browser integration, follow the [Design Studio setup](reference-app.md#run-the-application):
+clone the studio, register its assistant profile, start the runtime, then start
+the studio. Ask the assistant to create a document; the app applies the requested
+edits and returns the results. The studio README covers its frontend prerequisites.
+
+For your own application, send [host context and actions](host-contract.md),
+render the streamed response, then return the result of each host action.
+Use [the API reference](api.md) for event and continuation shapes.
+
+### Minimal Socket.IO client
+
+Save the following as `client.py`. It connects to the already-running server
+and prints a reply; it does not implement host actions. Run it with
+`uv run --with "python-socketio[client]" python client.py` to install its client dependencies.
+Streaming uses the `/assistant` namespace:
 
 ```python
 import socketio, uuid
@@ -144,8 +146,8 @@ Every event the runtime emits is listed in [api](api.md).
 
 ## 6. Optional: Postgres
 
-Persistent sessions, editable and versioned prompt artifacts, runtime
-settings that survive a restart, the inbox and the heartbeat:
+Add Postgres when conversations, prompt-artifact versions, runtime settings
+and queued inbox messages must survive a restart. From a source checkout:
 
 ```bash
 make db-up          # docker compose: Postgres on localhost:5434
@@ -169,8 +171,8 @@ for its result is recovered, is in [persistence](persistence.md).
 
 ## 7. Optional: an AG-UI frontend
 
-Install the `ag-ui` extra (`uv sync --extra ag-ui`, or
-`pip install "assistant-runtime[ag-ui]"`) and point an AG-UI client at
+Install the `ag-ui` extra (`uv sync --locked --extra ag-ui` in a checkout, or
+`uv tool install --force "assistant-runtime[ag-ui]"` for the installed CLI) and point an AG-UI client at
 `POST /api/agui`; `examples/agui/index.html` is a dependency-free page that
 does it with `fetch`. The mapping to sessions and host actions is in
 [api](api.md#ag-ui-post-apiagui).

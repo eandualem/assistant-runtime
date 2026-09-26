@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import case, delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant_runtime.services.database.models import (
@@ -479,9 +479,6 @@ class InboxRepository:
         return list(result.scalars().all())
 
 
-_PROPOSE_ATTEMPTS = 3
-
-
 class ArtifactRepository:
     """CRUD operations for versioned prompt artifacts. Uses flush() — caller owns commit.
 
@@ -491,6 +488,13 @@ class ArtifactRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def lock(self, scope: str, name: str) -> None:
+        """Serialize mutations until commit, including an artifact's first version."""
+        key = json.dumps([scope, name])
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0)))
+        )
 
     async def get_active(self, scope: str, name: str) -> ArtifactORM | None:
         """Get the active version of an artifact by name."""
@@ -531,41 +535,26 @@ class ArtifactRepository:
         return list(result.scalars().all())
 
     async def propose(self, scope: str, name: str, content: str, proposed_by: str) -> ArtifactORM:
-        """Create a new version of an artifact (inactive until approved).
-
-        The version is MAX(version) + 1. Two concurrent writers can compute
-        the same number; the unique constraint rejects the loser, whose
-        insert is retried from a savepoint with a fresh number.
-        """
-        for attempt in range(_PROPOSE_ATTEMPTS):
-            max_result = await self._session.execute(
-                select(func.max(ArtifactORM.version)).where(
-                    ArtifactORM.assistant == scope, ArtifactORM.name == name
-                )
+        """Create an inactive version inside the caller's locked artifact transaction."""
+        max_result = await self._session.execute(
+            select(func.max(ArtifactORM.version)).where(
+                ArtifactORM.assistant == scope, ArtifactORM.name == name
             )
-            next_version = (max_result.scalar_one_or_none() or 0) + 1
-            try:
-                async with self._session.begin_nested():
-                    result = await self._session.execute(
-                        insert(ArtifactORM)
-                        .values(
-                            assistant=scope,
-                            name=name,
-                            content=content,
-                            version=next_version,
-                            is_active=False,
-                            proposed_by=proposed_by,
-                        )
-                        .returning(ArtifactORM)
-                    )
-                    row = result.scalar_one()
-            except IntegrityError:
-                if attempt == _PROPOSE_ATTEMPTS - 1:
-                    raise
-                continue
-            await self._session.flush()
-            return row
-        raise AssertionError("unreachable")
+        )
+        result = await self._session.execute(
+            insert(ArtifactORM)
+            .values(
+                assistant=scope,
+                name=name,
+                content=content,
+                version=(max_result.scalar_one_or_none() or 0) + 1,
+                is_active=False,
+                proposed_by=proposed_by,
+            )
+            .returning(ArtifactORM)
+        )
+        await self._session.flush()
+        return result.scalar_one()
 
     async def approve(self, scope: str, name: str, version: int) -> ArtifactORM | None:
         """Approve a version: deactivate current active, activate target.

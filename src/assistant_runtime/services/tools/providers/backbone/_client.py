@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -12,6 +13,7 @@ from loguru import logger
 from assistant_runtime.base.resilience import retry_with_backoff
 
 _BACKBONE_RETRYABLE = (httpx.TimeoutException, httpx.ConnectError, ConnectionError, TimeoutError)
+BackboneRequest = Callable[..., Awaitable[tuple[int, Any]]]
 
 
 async def backbone_request(
@@ -20,15 +22,19 @@ async def backbone_request(
     *,
     json_body: dict[str, Any] | None = None,
     params: dict[str, str] | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
 ) -> tuple[int, Any]:
     """Make a backbone API request. Returns (status_code, parsed_json_body).
 
     Retries up to 3 times on timeouts and connection errors.
     Returns (-1, error_dict) on permanent network error.
-    Env vars are read at call time (not import time) so load_dotenv() in lifespan works.
+    Omitted URL/credentials use the environment; providers bind their startup values.
     """
-    backbone_url = os.environ.get("BACKBONE_URL", "http://127.0.0.1:7120")
-    backbone_api_key = os.environ.get("BACKBONE_API_KEY", "")
+    backbone_url = (
+        os.environ.get("BACKBONE_URL", "http://127.0.0.1:7120") if base_url is None else base_url
+    )
+    backbone_api_key = os.environ.get("BACKBONE_API_KEY", "") if api_key is None else api_key
 
     headers: dict[str, str] = {"Accept": "application/json"}
     if backbone_api_key:

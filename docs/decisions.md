@@ -4,8 +4,8 @@ The decision capability lets an application ask typed questions about its
 own state and act on typed answers, without a language model in the loop.
 The runtime holds the provider key, validates the call, sends every question
 to the provider in one request and returns the answers with calibrated
-probabilities. It is a separate capability from chat: nothing is generated,
-nothing is parsed, and the assistant profile's prompt is not involved.
+probabilities. It is a separate capability from chat: the application receives structured
+answers rather than prose, and the assistant profile's prompt is not involved.
 
 The provider is [TypeSafe's Jev](https://docs.typesafe.ai), a System One
 decision model served at `POST /v1/systemone`. One call carries the state and
@@ -70,8 +70,7 @@ session and reserves nothing.
       "instructions": "How much energy does the moment call for?",
       "criteria": ["still", "calm", "lively", "playful"]
     }
-  },
-  "profile": "avatar"
+  }
 }
 ```
 
@@ -153,10 +152,10 @@ laptop:
 | Client to runtime to stand-in and back | 1.0 ms | 1.2 ms |
 | Client to stand-in directly | 0.3 ms | 0.3 ms |
 
-The runtime adds about 1 ms per call to the provider's round trip; the first
-call after startup added 4 ms for connection setup. This measures the runtime,
-not TypeSafe: real calls are the provider's 70 to 500 ms plus network distance
-to it. `timing` in every response shows both numbers for the actual deployment.
+In this measurement, the full runtime round trip was about 1 ms; the first
+call after startup took 4 ms for connection setup. This local result does not
+predict production latency or measure TypeSafe. Use the returned `timing`
+fields to measure runtime and provider latency in your deployment.
 
 ## Validation boundary
 

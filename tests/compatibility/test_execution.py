@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
-from pydantic_ai.exceptions import RunCancelled
+from pydantic_ai.exceptions import ModelHTTPError, RunCancelled
 from pydantic_ai.messages import (
     BinaryContent,
     FunctionToolCallEvent,
@@ -462,3 +462,70 @@ async def test_runtime_emits_one_error_and_result_for_failed_tool(
     tool_events = [e for e in events if e["type"] in {"tool_call", "tool_error", "tool_result"}]
     assert [e["type"] for e in tool_events] == ["tool_call", "tool_error", "tool_result"]
     assert executed == ([] if validation_error else ["sample"])
+
+
+@pytest.mark.parametrize("failure", ["provider", "event_limit"])
+async def test_runtime_preserves_completed_tool_work_after_stream_failure(
+    runtime, script, monkeypatch, failure
+):
+    executed = []
+    inputs = []
+
+    async def lookup(item):
+        executed.append(item)
+        return {"value": "completed"}
+
+    async def response(messages, info):
+        inputs.append(messages)
+        if len(inputs) == 1:
+            yield calls(("lookup", '{"item":"sample"}', "lookup-1"))
+        elif len(inputs) == 2:
+            if failure == "provider":
+                raise ModelHTTPError(500, "offline", {"error": "unavailable"})
+            for _ in range(110):
+                yield "text "
+        else:
+            yield "The lookup completed."
+
+    register_lookup(runtime, lookup)
+    monkeypatch.setattr(script, "model", lambda: FunctionModel(stream_function=response))
+    if failure == "event_limit":
+        runtime.streaming._config = runtime.streaming._config.model_copy(
+            update={"max_events_per_stream": 100}
+        )
+    events = [e async for e in runtime.streaming.stream_message(request())]
+    final = assert_terminal(events, error=True)
+    assert final["error_type"] == ("provider_error" if failure == "provider" else "internal")
+    path = await runtime.sessions.get_message_path("compat")
+    assert [m["role"] for m in path] == ["user", "assistant"]
+    assert path[-1]["segments"][0]["tools"][0]["output"] == {"value": "completed"}
+    assert path[-1]["usage"]["requests"] >= 1
+    assert_terminal(
+        [e async for e in runtime.streaming.stream_message(request(id="next", content="Status?"))]
+    )
+    returns = [p for m in inputs[-1] for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert len(returns) == 1
+    assert returns[0].content == {"value": "completed"}
+    assert executed == ["sample"]
+
+
+async def test_failed_host_receipt_commit_can_be_retried(runtime, script, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    script.steps = [[calls(("select_item", '{"item":"sample"}', "host-1"))], ["Selected."]]
+    first = assert_terminal([e async for e in runtime.streaming.stream_message(request())])
+    persistence = AsyncMock()
+    persistence.update_message.side_effect = RuntimeError("commit failed")
+    monkeypatch.setattr(runtime.sessions, "_db", persistence)
+    receipt = request(id="receipt", content="", tool_call_id="host-1", tool_result={"ok": True})
+    failed = assert_terminal(
+        [e async for e in runtime.streaming.stream_message(receipt)], error=True
+    )
+    assert failed["error_type"] == "persistence_error"
+    record = runtime.sessions.get_message("compat", first["message_id"])
+    assert "output" not in record["segments"][0]["tools"][0]
+    assert runtime.sessions.get_context("compat")["pending_tool_call_id"] == "host-1"
+    persistence.update_message.side_effect = None
+    assert_terminal([e async for e in runtime.streaming.stream_message(receipt)])
+    record = runtime.sessions.get_message("compat", first["message_id"])
+    assert record["segments"][0]["tools"][0]["output"] == {"ok": True}

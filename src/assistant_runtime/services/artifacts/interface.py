@@ -57,6 +57,7 @@ class ArtifactService:
         self._store: ArtifactStore | None = None
         self._cache: dict[str, str] | None = None
         self._cached_at = 0.0
+        self._cache_generation = 0
         self._started = False
         self._owner = self
         self._views: dict[str, ArtifactService] = {profile.name: self}
@@ -146,6 +147,7 @@ class ArtifactService:
         now = time.monotonic()
         if self._cache is not None and now - self._cached_at < self._config.cache_ttl_seconds:
             return dict(self._cache)
+        generation = self._cache_generation
         texts = self._profile.defaults
         try:
             for row in await store.get_all_active(self._profile.name):
@@ -154,13 +156,15 @@ class ArtifactService:
         except Exception as e:
             logger.warning("Failed to load artifacts, using defaults", error=str(e))
             return texts
-        self._cache = dict(texts)
-        self._cached_at = now
+        if generation == self._cache_generation:
+            self._cache = dict(texts)
+            self._cached_at = now
         return texts
 
     def invalidate(self) -> None:
         """Forget cached texts so the next prompt reads the store."""
         self._cache = None
+        self._cache_generation += 1
 
     async def list_active(self) -> list[ArtifactVersion]:
         """Active versions of the profile's artifacts, in prompt order."""
@@ -193,42 +197,47 @@ class ArtifactService:
         self, name: str, content: str, *, actor: Actor, expected_version: int | None = None
     ) -> MutationResult:
         """Store a new inactive version; an authorized actor activates it later."""
-        artifact = self._definition(name)
-        self._authorize(artifact, actor, "propose")
-        content = self._clean_content(name, content)
-        active = await self._check_expected(name, expected_version)
-        if active is not None and active.content == content:
-            return self._result(active, activated=True, live=active, unchanged=True)
-        row = await self._require_store().propose(
-            self._profile.name, name, content, actor.proposed_by
-        )
-        logger.info("Proposed artifact version", name=name, version=row.version, by=actor.kind)
-        return self._result(row, activated=False, live=active)
+        return await self._write(name, content, actor, expected_version, activate=False)
 
     async def update(
         self, name: str, content: str, *, actor: Actor, expected_version: int | None = None
     ) -> MutationResult:
         """Store a new version and activate it at once (autonomous edit)."""
+        return await self._write(name, content, actor, expected_version, activate=True)
+
+    async def _write(
+        self, name: str, content: str, actor: Actor, expected_version: int | None, *, activate: bool
+    ) -> MutationResult:
         artifact = self._definition(name)
-        self._authorize(artifact, actor, "update")
+        self._authorize(artifact, actor, "update" if activate else "propose")
         content = self._clean_content(name, content)
-        active = await self._check_expected(name, expected_version)
-        if active is not None and active.content == content:
-            return self._result(active, activated=True, live=active, unchanged=True)
-        store = self._require_store()
-        row = await store.propose(self._profile.name, name, content, actor.proposed_by)
-        activated = await store.activate(self._profile.name, name, row.version)
-        self.invalidate()
-        logger.info("Updated artifact", name=name, version=row.version, by=actor.kind)
-        return self._result(activated or row, activated=True, live=activated or row)
+        async with self._require_store().transaction(self._profile.name, name) as store:
+            active = await store.get_active(self._profile.name, name)
+            current = active.version if active is not None else 0
+            if expected_version is not None and current != expected_version:
+                raise ArtifactConflictError(
+                    f"Artifact '{name}' is at version {current}, not {expected_version}"
+                )
+            if active is not None and active.content == content:
+                return self._result(active, activated=True, live=active, unchanged=True)
+            row = await store.propose(self._profile.name, name, content, actor.proposed_by)
+            if activate:
+                row = await store.activate(self._profile.name, name, row.version)
+                assert row is not None
+                active = row
+        if activate:
+            self.invalidate()
+        logger.info("Wrote artifact version", name=name, version=row.version, by=actor.kind)
+        return self._result(row, activated=activate, live=active)
 
     async def activate(self, name: str, version: int, *, actor: Actor) -> MutationResult:
         """Make ``version`` the active one (approval or rollback)."""
         artifact = self._definition(name)
         self._authorize(artifact, actor, "activate")
-        row = await self._require_store().activate(self._profile.name, name, version)
-        if row is None:
-            raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
+        async with self._require_store().transaction(self._profile.name, name) as store:
+            row = await store.activate(self._profile.name, name, version)
+            if row is None:
+                raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
         self.invalidate()
         logger.info("Activated artifact version", name=name, version=version, by=actor.kind)
         return self._result(row, activated=True, live=row)
@@ -237,7 +246,8 @@ class ArtifactService:
         """Remove every stored version; the default text applies again."""
         artifact = self._definition(name)
         self._authorize(artifact, actor, "delete")
-        count = await self._require_store().delete(self._profile.name, name)
+        async with self._require_store().transaction(self._profile.name, name) as store:
+            count = await store.delete(self._profile.name, name)
         self.invalidate()
         logger.info("Deleted artifact versions", name=name, count=count, by=actor.kind)
         return count
@@ -282,18 +292,6 @@ class ArtifactService:
         if not content:
             raise ArtifactError(f"Content is required to write artifact '{name}'")
         return content
-
-    async def _check_expected(
-        self, name: str, expected_version: int | None
-    ) -> ArtifactVersion | None:
-        active = await self._require_store().get_active(self._profile.name, name)
-        if expected_version is not None:
-            current = active.version if active is not None else 0
-            if current != expected_version:
-                raise ArtifactConflictError(
-                    f"Artifact '{name}' is at version {current}, not {expected_version}"
-                )
-        return active
 
     def _result(
         self,

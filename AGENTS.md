@@ -8,7 +8,7 @@ what must stay true when you change it.
 ## Shared instructions
 
 This is the canonical project guide for all coding agents. Keep repository
-instructions here; `CLAUDE.md` imports this file. If a CLI does not load
+instructions here. If a CLI does not load
 `AGENTS.md` automatically, explicitly ask it to read this file before working.
 
 Managed sessions receive the shared base brief, `request-context`,
@@ -26,6 +26,10 @@ The shared `project-context` policy uses this checkout's local memory:
 ├── INDEX.md        one line per topic note, with its last verified date
 └── notes/          decisions, implementation evidence, and follow-up findings
 ```
+
+Startup reads `HANDOFF.md` and `INDEX.md`; handoffs update `HANDOFF.md`, with
+topic details in `notes/` linked from `INDEX.md`.
+(Claude Code only) `.claude/settings.json` disables native auto memory.
 
 - After reading shared memory, run `git status --short` and read the relevant
   README/docs section before changing files.

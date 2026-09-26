@@ -25,6 +25,14 @@ FAKE_PNG = b"fake-png-data"
 FAKE_B64 = base64.b64encode(FAKE_PNG).decode()
 
 
+def _mock_client():
+    client = MagicMock()
+    client.__aenter__.return_value = client
+    client.__enter__.return_value = client
+    client.aio.__aenter__.return_value = client.aio
+    return client
+
+
 class TestGenerateOpenAI:
     """Tests for the generate_openai provider function."""
 
@@ -45,7 +53,7 @@ class TestGenerateOpenAI:
         mock_image_item = SimpleNamespace(b64_json=FAKE_B64)
         mock_response = SimpleNamespace(data=[mock_image_item])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(return_value=mock_response)
 
         with patch("openai.AsyncOpenAI", return_value=mock_client):
@@ -68,7 +76,7 @@ class TestGenerateOpenAI:
         mock_image_item = SimpleNamespace(b64_json=FAKE_B64)
         mock_response = SimpleNamespace(data=[mock_image_item])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(return_value=mock_response)
 
         with patch("openai.AsyncOpenAI", return_value=mock_client):
@@ -87,7 +95,7 @@ class TestGenerateOpenAI:
         mock_image_item = SimpleNamespace(b64_json=None)
         mock_response = SimpleNamespace(data=[mock_image_item])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(return_value=mock_response)
 
         with (
@@ -112,7 +120,7 @@ class TestGenerateOpenAI:
             body=None,
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(side_effect=error)
 
         with (
@@ -137,7 +145,7 @@ class TestGenerateOpenAI:
             body=None,
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(side_effect=error)
 
         with (
@@ -162,7 +170,7 @@ class TestGenerateOpenAI:
             body=None,
         )
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(side_effect=error)
 
         with (
@@ -183,7 +191,7 @@ class TestGenerateOpenAI:
 
         error = OpenAIError("Connection timeout")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(side_effect=error)
 
         with (
@@ -203,7 +211,7 @@ class TestGenerateOpenAI:
         mock_image_item = SimpleNamespace(b64_json=FAKE_B64)
         mock_response = SimpleNamespace(data=[mock_image_item])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(return_value=mock_response)
 
         with patch("openai.AsyncOpenAI", return_value=mock_client) as mock_cls:
@@ -222,7 +230,7 @@ class TestGenerateOpenAI:
         mock_image_item = SimpleNamespace(b64_json=FAKE_B64)
         mock_response = SimpleNamespace(data=[mock_image_item])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.images.generate = AsyncMock(return_value=mock_response)
 
         with patch("openai.AsyncOpenAI", return_value=mock_client):
@@ -267,7 +275,7 @@ class TestGenerateGoogle:
         mock_generated = SimpleNamespace(image=mock_image_data)
         mock_response = SimpleNamespace(generated_images=[mock_generated])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -294,7 +302,7 @@ class TestGenerateGoogle:
         mock_generated = SimpleNamespace(image=mock_image_data)
         mock_response = SimpleNamespace(generated_images=[mock_generated])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -314,7 +322,7 @@ class TestGenerateGoogle:
 
         mock_response = SimpleNamespace(generated_images=[])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -333,7 +341,7 @@ class TestGenerateGoogle:
 
         mock_response = SimpleNamespace(generated_images=None)
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -354,7 +362,7 @@ class TestGenerateGoogle:
         mock_generated = SimpleNamespace(image=mock_image_data)
         mock_response = SimpleNamespace(generated_images=[mock_generated])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -374,7 +382,7 @@ class TestGenerateGoogle:
         mock_generated = SimpleNamespace(image=None)
         mock_response = SimpleNamespace(generated_images=[mock_generated])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -391,7 +399,7 @@ class TestGenerateGoogle:
     async def test_safety_error_raises_content_policy_error(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(
             side_effect=Exception("Image generation failed due to safety filters"),
         )
@@ -410,7 +418,7 @@ class TestGenerateGoogle:
     async def test_blocked_error_raises_content_policy_error(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(
             side_effect=Exception("Request was blocked by the API"),
         )
@@ -429,7 +437,7 @@ class TestGenerateGoogle:
     async def test_generic_error_raises_provider_error(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(
             side_effect=Exception("Network timeout"),
         )
@@ -451,7 +459,7 @@ class TestGenerateGoogle:
 
         mock_response = SimpleNamespace(generated_images=[])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -473,7 +481,7 @@ class TestGenerateGoogle:
         mock_generated = SimpleNamespace(image=mock_image_data)
         mock_response = SimpleNamespace(generated_images=[mock_generated])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -498,7 +506,7 @@ class TestGenerateGoogle:
         mock_generated = SimpleNamespace(image=mock_image_data)
         mock_response = SimpleNamespace(generated_images=[mock_generated])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         with (
@@ -540,7 +548,7 @@ class TestSizeToAspectRatioMapping:
         mock_generated = SimpleNamespace(image=mock_image_data)
         mock_response = SimpleNamespace(generated_images=[mock_generated])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         mock_config_cls = MagicMock()
@@ -570,7 +578,7 @@ class TestSizeToAspectRatioMapping:
         mock_generated = SimpleNamespace(image=mock_image_data)
         mock_response = SimpleNamespace(generated_images=[mock_generated])
 
-        mock_client = MagicMock()
+        mock_client = _mock_client()
         mock_client.aio.models.generate_images = AsyncMock(return_value=mock_response)
 
         mock_config_cls = MagicMock()

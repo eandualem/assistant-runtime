@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from assistant_runtime.services.artifacts._store import (
     DatabaseArtifactStore,
     InMemoryArtifactStore,
@@ -106,3 +108,64 @@ class TestDatabaseArtifactStore:
             repo.propose.assert_awaited_once_with("shop", "persona", "new", "host")
             assert await store.activate("shop", "persona", 9) is None
             assert await store.delete("shop", "persona") == 3
+
+
+@pytest.mark.parametrize("activation_fails", [False, True])
+async def test_database_update_uses_one_locked_transaction(activation_fails):
+    from assistant_runtime.artifacts import ArtifactDefinition, AssistantProfile
+    from assistant_runtime.services.artifacts.config import ArtifactsConfig
+    from assistant_runtime.services.artifacts.interface import ArtifactService
+    from assistant_runtime.services.artifacts.models import Actor
+
+    events = []
+
+    @asynccontextmanager
+    async def session_context():
+        events.append("begin")
+        try:
+            yield object()
+        except RuntimeError:
+            events.append("rollback")
+            raise
+        else:
+            events.append("commit")
+
+    async def lock(scope, name):
+        events.append("lock")
+
+    async def active(scope, name):
+        events.append("read")
+        return
+
+    async def propose(*args):
+        events.append("propose")
+        return _row(version=1, is_active=False)
+
+    async def approve(*args):
+        events.append("activate")
+        if activation_fails:
+            raise RuntimeError("write failed")
+        return _row(version=1)
+
+    repo = SimpleNamespace(lock=lock, get_active=active, propose=propose, approve=approve)
+    db = SimpleNamespace(healthy=True, session_context=session_context)
+    profile = AssistantProfile(name="shop", artifacts=(ArtifactDefinition(name="persona"),))
+    service = ArtifactService(ArtifactsConfig(), profile, database_service=db)
+    await service.start()
+    with patch(
+        "assistant_runtime.services.database.repositories.ArtifactRepository", return_value=repo
+    ):
+        if activation_fails:
+            with pytest.raises(RuntimeError, match="write failed"):
+                await service.update("persona", "new", actor=Actor("host"), expected_version=0)
+        else:
+            result = await service.update("persona", "new", actor=Actor("host"), expected_version=0)
+            assert result.activated
+    assert events == [
+        "begin",
+        "lock",
+        "read",
+        "propose",
+        "activate",
+        "rollback" if activation_fails else "commit",
+    ]

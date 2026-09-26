@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import time
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 
@@ -118,4 +121,105 @@ class TestOAuthServiceCodexSync:
         with pytest.raises(OAuthCodexSyncError, match="Codex auth file not found"):
             await service.sync_from_codex_cli()
 
+        await service.stop()
+
+
+async def _service_with_transport(handler) -> OAuthService:
+    service = OAuthService(
+        OAuthConfig(encryption_key=Fernet.generate_key().decode(), codex_auto_sync=False)
+    )
+    await service.start()
+    await service._http.aclose()
+    service._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return service
+
+
+@pytest.mark.parametrize("operation", ["disconnect", "replace", "stop"])
+async def test_pending_device_flow_is_drained_before_authentication_changes(operation):
+    polled, closed = asyncio.Event(), asyncio.Event()
+
+    async def handler(request):
+        if request.url.path.endswith("/usercode"):
+            return httpx.Response(
+                200, json={"interval": 0, "device_auth_id": "test-device", "user_code": "test-code"}
+            )
+        polled.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    service = await _service_with_transport(handler)
+    try:
+        await service.initiate_device_code()
+        async with asyncio.timeout(5):
+            await polled.wait()
+            old_flow = service._poll_task
+            if operation == "replace":
+                await service.initiate_device_code()
+            elif operation == "disconnect":
+                assert await service.disconnect() is True
+            else:
+                await service.stop()
+        assert old_flow.done()
+        assert closed.is_set()
+        assert service.get_codex_session() is None
+        if operation == "replace":
+            assert service._poll_task is not old_flow
+        else:
+            assert service._poll_task is None
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("waiting_on", ["provider", "persistence"])
+async def test_disconnect_drains_refresh_before_clearing_credentials(waiting_on, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    order = []
+
+    async def wait_if(phase):
+        if waiting_on == phase:
+            entered.set()
+            await release.wait()
+
+    async def handler(request):
+        await wait_if("provider")
+        return httpx.Response(
+            200,
+            json={
+                "access_token": _make_jwt(
+                    {
+                        "exp": time.time() + 7200,
+                        "https://api.openai.com/auth": {"chatgpt_account_id": "test-account"},
+                    }
+                ),
+                "refresh_token": "test-refreshed-token",
+            },
+        )
+
+    async def save():
+        await wait_if("persistence")
+        order.append("saved")
+
+    service = await _service_with_transport(handler)
+    service._refresh_token = "test-refresh-token"
+    monkeypatch.setattr(service, "_save_token", save)
+    refresh = asyncio.create_task(service.refresh())
+    disconnect = None
+    try:
+        async with asyncio.timeout(5):
+            await entered.wait()
+            disconnect = asyncio.create_task(service.disconnect())
+            await asyncio.sleep(0)
+            assert not disconnect.done()
+            release.set()
+            await refresh
+            assert await disconnect is True
+        assert order == ["saved"]
+        assert service.get_codex_session() is None
+        assert service._refresh_token is None
+        assert service.get_device_code_status().status == DeviceCodeStatus.IDLE
+    finally:
+        release.set()
+        await asyncio.gather(refresh, *([disconnect] if disconnect else []), return_exceptions=True)
         await service.stop()

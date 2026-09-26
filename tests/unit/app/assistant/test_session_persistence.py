@@ -2,11 +2,20 @@
 
 import asyncio
 import copy
+import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql.asyncpg import dialect
 
 from assistant_runtime.app.assistant._session_persistence import SessionPersistence
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.services.database.models import SessionORM
+from assistant_runtime.services.history.models import MemoryEntry, WorkingMemory
 
 
 class DelayedCommitDatabase:
@@ -21,10 +30,20 @@ class DelayedCommitDatabase:
         self.entries += 1
         first = self.entries == 1
         values = {}
+        stored = self.stored
 
         class Transaction:
             async def execute(self, statement):
-                values.update(copy.deepcopy(statement.compile().params))
+                if statement.is_select:
+                    if statement.column_descriptions[0]["entity"] is SessionORM:
+                        return SimpleNamespace(scalar_one_or_none=lambda: SimpleNamespace(**stored))
+                    return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+                params = copy.deepcopy(statement.compile().params)
+                for field in ("working_memory", "pending_action", "usage", "segments"):
+                    if field in params:
+                        params[field] = json.loads(JSONB().bind_processor(dialect())(params[field]))
+                values.update(params)
+                return None
 
             async def flush(self):
                 pass
@@ -38,7 +57,10 @@ class DelayedCommitDatabase:
 
 async def test_delayed_background_state_save_cannot_erase_new_pending_action():
     store = SessionStore()
-    store.get_context("session")["working_memory"] = {"goal": "remember"}
+    memory_state = WorkingMemory(
+        active_goal="remember", entries=[MemoryEntry(content="an insight", category="other")]
+    )
+    store.get_context("session")["working_memory"] = memory_state
     db = DelayedCommitDatabase()
     store._db = SessionPersistence(db, 24)
 
@@ -54,8 +76,28 @@ async def test_delayed_background_state_save_cannot_erase_new_pending_action():
     await asyncio.gather(memory, pending)
 
     assert db.stored["pending_action"]["tool_call_id"] == "next-call"
-    assert db.stored["working_memory"] == {"goal": "remember"}
+    assert db.stored["working_memory"] == memory_state.model_dump(mode="json")
+    restored = await store._db.load("session")
+    assert restored.working_memory == memory_state
+    assert restored.working_memory.entries[0].content == "an insight"
     assert not store._db._write_locks
+
+
+async def test_working_memory_json_is_validated_before_opening_database_session():
+    db = DelayedCommitDatabase()
+    db.release.set()
+    persistence = SessionPersistence(db, 24)
+    await persistence.save_state("session", {"working_memory": {"active_goal": "remember"}})
+    loaded = await persistence.load("session")
+    assert loaded is not None
+    assert loaded.working_memory == WorkingMemory(active_goal="remember")
+
+    transactions = db.entries
+    for invalid in ({"goal": "unknown field"}, {"entries": "malformed"}):
+        with pytest.raises(ValidationError):
+            await persistence.save_state("session", {"working_memory": invalid})
+    assert db.entries == transactions
+    assert db.stored["working_memory"] == loaded.working_memory.model_dump(mode="json")
 
 
 async def test_delayed_background_usage_write_cannot_replace_continuation_totals():
@@ -73,12 +115,14 @@ async def test_delayed_background_usage_write_cannot_replace_continuation_totals
         store.update_message("session", "answer", usage={"input_tokens": 1, "auxiliary": auxiliary})
     )
     await db.first_write.wait()
+    # A transaction waiting for commit must not publish its tentative values.
+    assert store.get_message("session", "answer")["usage"] is None
     continuation = asyncio.create_task(
         store.update_message(
             "session",
             "answer",
             content="continued",
-            usage={"input_tokens": 2, "auxiliary": auxiliary},
+            usage=lambda current: {**current, "input_tokens": 2},
         )
     )
     await asyncio.sleep(0)
@@ -89,3 +133,4 @@ async def test_delayed_background_usage_write_cannot_replace_continuation_totals
     assert db.stored["content"] == "continued"
     assert store.get_message("session", "answer")["usage"] == db.stored["usage"]
     assert not store._db._write_locks
+    assert not store._message_write_locks
