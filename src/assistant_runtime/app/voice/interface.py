@@ -848,6 +848,8 @@ class VoiceService:
         if len(encoded) > 400:
             spoken += " [Full details are available in the chat.]"
         command_id = str(uuid.uuid4())
+        # Recorded before the send: the provider's acknowledgement is matched by
+        # command_id and can arrive while the send is still suspended.
         call.delegations[ident].update(status="result_sent", command_id=command_id)
         await send(
             call.connection,
