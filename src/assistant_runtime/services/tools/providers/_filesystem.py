@@ -14,6 +14,8 @@ from typing import TextIO
 
 _DIRECTORY_FLAGS = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _SEARCH_FLAGS = getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY)) | _DIRECTORY_FLAGS
+# Another device, or a filesystem or policy without hard links: a move copies instead.
+_NO_HARD_LINK = {errno.EXDEV, errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EMLINK}
 
 
 @contextmanager
@@ -116,17 +118,30 @@ class RootedDirectory:
     def _move_entry(self, src: int, source: str, destination: Path) -> bool:
         with self.parent(destination, create=True) as dst:
             try:
-                os.stat(destination.name, dir_fd=dst, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
+                # Unlike a rename, a link fails rather than replace the destination.
+                os.link(
+                    source,
+                    destination.name,
+                    src_dir_fd=src,
+                    dst_dir_fd=dst,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
                 return False
-            try:
-                os.rename(source, destination.name, src_dir_fd=src, dst_dir_fd=dst)
             except OSError as exc:
-                if exc.errno != errno.EXDEV:
+                if exc.errno not in _NO_HARD_LINK:
                     raise
-                _move_across_devices(src, source, dst, destination.name)
+                try:
+                    _copy_entry(src, source, dst, destination.name)
+                except FileExistsError:
+                    return False
+            try:
+                os.unlink(source, dir_fd=src)
+            except BaseException:
+                # A failed move must not leave the note in both places.
+                with suppress(OSError):
+                    os.unlink(destination.name, dir_fd=dst)
+                raise
         return True
 
 
@@ -162,7 +177,7 @@ def _copy_metadata(source: int, destination: int, metadata: os.stat_result) -> N
     os.fchmod(destination, stat.S_IMODE(metadata.st_mode))
 
 
-def _move_across_devices(src: int, source: str, dst: int, destination: str) -> None:
+def _copy_entry(src: int, source: str, dst: int, destination: str) -> None:
     metadata = os.stat(source, dir_fd=src, follow_symlinks=False)
     if stat.S_ISLNK(metadata.st_mode):
         os.symlink(os.readlink(source, dir_fd=src), destination, dir_fd=dst)
@@ -187,4 +202,3 @@ def _move_across_devices(src: int, source: str, dst: int, destination: str) -> N
                     with suppress(OSError):
                         os.unlink(destination, dir_fd=dst)
                     raise
-    os.unlink(source, dir_fd=src)
