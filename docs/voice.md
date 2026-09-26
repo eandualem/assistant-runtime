@@ -339,9 +339,9 @@ behave as described above.
   event ends the session. Conversation-only calls are enforced by the runtime and
   the instructions; the provider has no client-event allowlist.
 - The provider reports no usage for the realtime session. `usage` holds the
-  measured `duration_seconds` once the call closes. A close waits at most
-  `VOICE__CLOSE_TIMEOUT_SECONDS` for the CLI to stop the session and release its
-  thread.
+  measured `duration_seconds` once the call closes. After the usual wait for the
+  provider's close, the runtime waits at most `VOICE__CLOSE_TIMEOUT_SECONDS` each for
+  the CLI to stop the session and to release its thread.
 - Voices: `juniper`, `maple`, `spruce`, `ember`, `vale`, `breeze`, `arbor`, `sol`
   and `cove` (the default). `VOICE__VOICE` is checked against this list at startup,
   and `GET /api/voice/status` returns it as `voices`.

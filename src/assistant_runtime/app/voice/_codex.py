@@ -93,9 +93,12 @@ def missing_from_schema(directory: Path) -> list[str]:
         start = json.loads((directory / "v2" / "ThreadRealtimeStartParams.json").read_text())
     except (OSError, ValueError):
         start = {}
-    params = set(start.get("properties", {})) if isinstance(start, dict) else set()
     try:
-        versions = start["definitions"]["RealtimeConversationVersion"]["enum"]
+        params = set(start.get("properties", {}))
+    except (AttributeError, TypeError):
+        params = set()
+    try:
+        versions = list(start["definitions"]["RealtimeConversationVersion"]["enum"])
     except (KeyError, TypeError):
         versions = []
     missing += [f"thread/realtime/start.{name}" for name in sorted(_REQUIRED_START_PARAMS - params)]
@@ -110,6 +113,17 @@ def missing_from_schema(directory: Path) -> list[str]:
         started_fields = set()
     if "version" not in started_fields:  # the session's version is checked on start
         missing.append("thread/realtime/started.version")
+    try:
+        limits = json.loads((directory / "v2" / "GetAccountRateLimitsResponse.json").read_text())
+        snapshot = set(limits["definitions"]["RateLimitSnapshot"]["properties"])
+    except (OSError, ValueError, KeyError, TypeError):
+        snapshot = set()
+    # The usage guard reads these; an absent credits value is trusted only
+    # because the protocol defines the field.
+    missing += [
+        f"account/rateLimits/read.{name}"
+        for name in sorted({"credits", "spendControlReached"} - snapshot)
+    ]
     for file, method, needed in (
         ("ThreadStartParams.json", "thread/start", _REQUIRED_THREAD_PARAMS),
         ("ThreadRealtimeAppendTextParams.json", "thread/realtime/appendText", {"role"}),
@@ -632,7 +646,7 @@ class CodexTransport:
         *,
         usage_ceiling_percent: int,
         usage_check_seconds: float,
-        close_timeout: float = 10,
+        close_timeout: float,
     ) -> None:
         self.command = command
         self.timeout = timeout
@@ -830,8 +844,11 @@ class CodexTransport:
         task.add_done_callback(self._background.discard)
 
     async def _stop_quietly(self, thread_id: str) -> None:
-        with contextlib.suppress(Exception):
-            await self._server.request("thread/realtime/stop", {"threadId": thread_id})
+        for method in ("thread/realtime/stop", "thread/unsubscribe"):
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    self._server.request(method, {"threadId": thread_id}), self.close_timeout
+                )
 
     async def attach(self, api_key: str | None, provider_id: str) -> _CodexConnection:
         # The queue create() read from, even if its server has since been replaced.

@@ -607,7 +607,9 @@ class VoiceService:
                 self._emit(call, "transcript", fragment)
             elif kind == "session.transcript.done":
                 text = event.get("text")
-                if isinstance(text, str) and text:
+                # Not past the transcript limit that ended the call; otherwise, like
+                # the deltas, a final transcript still arrives while a call stops.
+                if isinstance(text, str) and text and call.reason != "transcript_limit":
                     call.last_activity_at = time.time()
                     self._emit(call, "transcript_done", {"role": event.get("role"), "text": text})
             elif kind in ("session.usage.updated", "session.closed"):

@@ -125,6 +125,12 @@ def _schema(directory, *, drop_method=None, drop_param=None, versions=("v1", "v2
     (directory / "v2" / "ThreadRealtimeAppendTextParams.json").write_text(
         json.dumps({"properties": {"threadId": {}, "text": {}, "role": {}}})
     )
+    snapshot = {"credits": {}, "spendControlReached": {}, "primary": {}}
+    if drop_param == "snapshot.credits":
+        del snapshot["credits"]
+    (directory / "v2" / "GetAccountRateLimitsResponse.json").write_text(
+        json.dumps({"definitions": {"RateLimitSnapshot": {"properties": snapshot}}})
+    )
 
 
 def test_schema_check_names_what_an_installed_cli_lacks(tmp_path):
@@ -147,6 +153,7 @@ def test_schema_check_names_what_an_installed_cli_lacks(tmp_path):
             ["thread/realtime/started.version"],
         ),
         ("no_ephemeral", {"drop_param": "thread.ephemeral"}, ["thread/start.ephemeral"]),
+        ("no_credits", {"drop_param": "snapshot.credits"}, ["account/rateLimits/read.credits"]),
     ):
         directory = tmp_path / name
         directory.mkdir()
@@ -210,7 +217,9 @@ class FakeServer:
 
 @pytest.fixture
 def codex():
-    transport = CodexTransport("codex", 1, usage_ceiling_percent=97, usage_check_seconds=60)
+    transport = CodexTransport(
+        "codex", 1, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
+    )
     transport._server = FakeServer()
     transport._compatibility = {"version": "0.157.1", "compatible": True, "missing": []}
     return transport
@@ -649,7 +658,11 @@ async def test_a_failed_read_ends_the_server_and_releases_waiters(tmp_path):
 
 async def test_a_cli_that_cannot_run_is_checked_again(tmp_path):
     transport = CodexTransport(
-        str(tmp_path / "missing-codex"), 1, usage_ceiling_percent=97, usage_check_seconds=60
+        str(tmp_path / "missing-codex"),
+        1,
+        usage_ceiling_percent=97,
+        usage_check_seconds=60,
+        close_timeout=1,
     )
     result = await transport.compatibility()
     assert result == {"version": None, "compatible": False, "missing": ["codex_cli"]}
@@ -738,7 +751,9 @@ async def test_a_refused_fact_changes_nothing(codex, monkeypatch):
 
 
 async def test_status_reports_the_background_check_without_running_it(monkeypatch):
-    transport = CodexTransport("codex", 1, usage_ceiling_percent=97, usage_check_seconds=60)
+    transport = CodexTransport(
+        "codex", 1, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
+    )
     transport._server = FakeServer()
     gate = asyncio.Event()
 
@@ -988,7 +1003,9 @@ async def test_a_check_that_crashes_is_reported_and_retried(monkeypatch):
         raise OSError("temporary directory unavailable")
 
     monkeypatch.setattr(_codex.tempfile, "TemporaryDirectory", broken)
-    transport = CodexTransport("codex", 1, usage_ceiling_percent=97, usage_check_seconds=60)
+    transport = CodexTransport(
+        "codex", 1, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
+    )
     assert (await transport.compatibility())["missing"] == ["codex_cli"]
     assert transport.checked() is None
 
@@ -1036,7 +1053,9 @@ def test_a_moved_version_list_does_not_hide_the_start_parameters(tmp_path):
 
 async def test_a_cli_that_cannot_run_is_retried_not_cached(tmp_path):
     command = _fake_codex(tmp_path, "import sys\nsys.exit(1)\n")
-    transport = CodexTransport(command, 5, usage_ceiling_percent=97, usage_check_seconds=60)
+    transport = CodexTransport(
+        command, 5, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
+    )
     assert (await transport.compatibility())["missing"] == ["codex_cli"]
     assert transport.checked() is None
 
@@ -1101,7 +1120,9 @@ async def test_a_cli_that_runs_but_cannot_describe_its_protocol_is_incompatible(
     command = tmp_path / "codex"
     command.write_text(f'#!/bin/sh\nexec {sys.executable} {script} "$@"\n')
     command.chmod(command.stat().st_mode | stat.S_IEXEC)
-    transport = CodexTransport(str(command), 5, usage_ceiling_percent=97, usage_check_seconds=60)
+    transport = CodexTransport(
+        str(command), 5, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
+    )
     result = await transport.compatibility()
     assert result == {
         "version": "0.90.0",
@@ -1178,3 +1199,34 @@ async def test_a_session_created_but_never_attached_is_stopped(codex, monkeypatc
         assert "thread-1" not in codex._server.queues
     finally:
         await service.stop()
+
+
+async def test_final_transcripts_arrive_while_a_call_stops_but_not_past_its_limit(
+    codex, monkeypatch
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    await service.start()
+    try:
+        for reason, emitted in (("close_requested", True), ("transcript_limit", False)):
+            created = await service.create(VoiceOffer(session_id=reason, sdp="offer-sdp"), OWNER)
+            call = service._calls[created["call_id"]]
+            thread = codex._server.sent("thread/start") and "thread-1"
+            call.reason = reason
+            call.stop_requested.set()
+            codex._server.feed(thread, "thread/realtime/transcript/done", role="user", text="last")
+            codex._server.feed(thread, "thread/realtime/closed", reason="requested")
+            await until(call.done.is_set)
+            finals = [e for _, e in call.events if e["event"] == "transcript_done"]
+            assert bool(finals) is emitted, reason
+    finally:
+        await service.stop()
+
+
+async def test_an_abandoned_session_is_stopped_and_released(codex):
+    codex._server.subscribe("thread-9")
+    codex.abandon("thread-9")
+    await until(lambda: codex._server.sent("thread/unsubscribe"))
+    assert codex._server.sent("thread/realtime/stop") == [{"threadId": "thread-9"}]
+    assert codex._server.sent("thread/unsubscribe") == [{"threadId": "thread-9"}]
+    assert "thread-9" not in codex._server.queues
