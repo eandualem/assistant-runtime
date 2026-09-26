@@ -55,7 +55,10 @@ async def until(predicate):
             await asyncio.sleep(0.001)
 
 
-def delegate(connection, ident="item_1", text="Check availability"):
+def delegate(connection, ident="item_1", text="Check availability", request=None):
     if text:
         connection.feed("session.input_transcript.delta", delta=text, start_ms=1, end_ms=2)
-    connection.feed("session.delegation.created", delegation={"id": ident, "target": "client"})
+    delegation = {"id": ident, "target": "client"}
+    if request is not None:  # the delegated request text some providers name
+        delegation["input"] = request
+    connection.feed("session.delegation.created", delegation=delegation)

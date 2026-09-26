@@ -650,6 +650,7 @@ class VoiceService:
                         "waiting",
                     ):
                         call.delegations[previous]["status"] = "superseded"
+                        call.inputs.pop(previous, None)
                         self._emit(call, "delegation", {"id": previous, "status": "superseded"})
                     call.active_delegation = ident
                     call.pending = None
