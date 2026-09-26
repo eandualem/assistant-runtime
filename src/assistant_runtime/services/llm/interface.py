@@ -312,7 +312,7 @@ class LlmService:
         try:
             async with db.session_context() as session:
                 await OAuthTokenRepository(session).upsert(
-                    provider=provider, encrypted_api_key=encrypted
+                    provider=provider, kind="api_key", encrypted_api_key=encrypted
                 )
         except Exception as exc:
             raise ProviderKeyStoreUnavailableError(f"Storing the key failed: {exc}") from exc
@@ -327,7 +327,7 @@ class LlmService:
 
         try:
             async with db.session_context() as session:
-                deleted = await OAuthTokenRepository(session).delete(provider)
+                deleted = await OAuthTokenRepository(session).delete(provider, "api_key")
         except Exception as exc:
             raise ProviderKeyStoreUnavailableError(f"Deleting the key failed: {exc}") from exc
         await self.remove_provider_key(provider)
@@ -371,16 +371,10 @@ class LlmService:
 
                 repo = OAuthTokenRepository(session)
                 for provider_name in PROVIDER_ENV_VARS:
-                    token = await repo.get(provider_name)
+                    # Not the "login" row: a ChatGPT/Codex access token is not an
+                    # API key, and exporting it would overwrite OPENAI_API_KEY.
+                    token = await repo.get(provider_name, "api_key")
                     if token is None or not token.encrypted_api_key:
-                        continue
-                    if getattr(token, "encrypted_refresh_token", None) or getattr(
-                        token, "encrypted_id_token", None
-                    ):
-                        # A ChatGPT/Codex login: the OAuth service owns that row
-                        # and its access token is not an API key. Exporting it
-                        # would overwrite OPENAI_API_KEY (voice, image generation).
-                        logger.debug("Skipping OAuth session row", provider=provider_name)
                         continue
                     api_key = self._fernet.decrypt(token.encrypted_api_key.encode()).decode()
                     providers.append(

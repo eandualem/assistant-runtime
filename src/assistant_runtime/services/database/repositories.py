@@ -593,21 +593,28 @@ class ArtifactRepository:
 
 
 class OAuthTokenRepository:
-    """CRUD operations for OAuth tokens. Uses flush() — caller owns commit."""
+    """CRUD operations for OAuth tokens. Uses flush() — caller owns commit.
+
+    ``kind`` is "api_key" for the provider-key store and "login" for a
+    ChatGPT/Codex login; every operation touches only the row of that kind.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def get(self, provider: str) -> OAuthTokenORM | None:
-        """Get a token by provider name."""
+    async def get(self, provider: str, kind: str) -> OAuthTokenORM | None:
+        """Get the provider's token of one kind."""
         result = await self._session.execute(
-            select(OAuthTokenORM).where(OAuthTokenORM.provider == provider)
+            select(OAuthTokenORM).where(
+                OAuthTokenORM.provider == provider, OAuthTokenORM.kind == kind
+            )
         )
         return result.scalar_one_or_none()
 
     async def upsert(
         self,
         provider: str,
+        kind: str,
         *,
         encrypted_api_key: str | None = None,
         encrypted_refresh_token: str | None = None,
@@ -615,9 +622,10 @@ class OAuthTokenRepository:
         expires_at: float | None = None,
         email: str | None = None,
     ) -> None:
-        """Insert or update an OAuth token for a provider."""
+        """Insert or update the provider's token of one kind."""
         values: dict[str, object] = {
             "provider": provider,
+            "kind": kind,
             "encrypted_api_key": encrypted_api_key,
             "encrypted_refresh_token": encrypted_refresh_token,
             "encrypted_id_token": encrypted_id_token,
@@ -627,7 +635,7 @@ class OAuthTokenRepository:
 
         stmt = pg_insert(OAuthTokenORM).values(**values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["provider"],
+            index_elements=["provider", "kind"],
             set_={
                 "encrypted_api_key": stmt.excluded.encrypted_api_key,
                 "encrypted_refresh_token": stmt.excluded.encrypted_refresh_token,
@@ -640,28 +648,11 @@ class OAuthTokenRepository:
         await self._session.execute(stmt)
         await self._session.flush()
 
-    async def delete(self, provider: str) -> bool:
-        """Delete a token by provider. Returns True if deleted."""
-        result = await self._session.execute(
-            delete(OAuthTokenORM).where(OAuthTokenORM.provider == provider)
-        )
-        await self._session.flush()
-        return (result.rowcount or 0) > 0
-
-    async def delete_login(self, provider: str) -> bool:
-        """Delete the provider's row only while it holds a login (a refresh or id token).
-
-        The row is shared with a stored API key, which carries neither; the
-        condition is part of the statement, so a key stored meanwhile survives.
-        """
+    async def delete(self, provider: str, kind: str) -> bool:
+        """Delete the provider's token of one kind. Returns True if deleted."""
         result = await self._session.execute(
             delete(OAuthTokenORM).where(
-                OAuthTokenORM.provider == provider,
-                # Non-empty, matching how the key loader tells a login from a key.
-                (OAuthTokenORM.encrypted_refresh_token.is_not(None))
-                & (OAuthTokenORM.encrypted_refresh_token != "")
-                | (OAuthTokenORM.encrypted_id_token.is_not(None))
-                & (OAuthTokenORM.encrypted_id_token != ""),
+                OAuthTokenORM.provider == provider, OAuthTokenORM.kind == kind
             )
         )
         await self._session.flush()

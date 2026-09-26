@@ -159,20 +159,20 @@ class TestSettingsRepository:
 
 
 class TestOAuthTokenRepository:
-    async def test_delete_login_leaves_a_stored_api_key(self, mock_session: AsyncMock) -> None:
+    async def test_each_statement_touches_only_its_own_kind(self, mock_session: AsyncMock) -> None:
         from assistant_runtime.services.database.repositories import OAuthTokenRepository
 
+        repo = OAuthTokenRepository(mock_session)
         mock_session.execute.return_value = MagicMock(rowcount=0)
+        await repo.upsert("openai", "api_key", encrypted_api_key="stored-key")
+        await repo.delete("openai", "login")
+        await repo.get("openai", "login")
 
-        deleted = await OAuthTokenRepository(mock_session).delete_login("openai")
-
-        assert deleted is False
-        statement = mock_session.execute.await_args.args[0]
-        sql = str(statement.compile(dialect=postgresql.dialect()))
-        # The login condition is part of the DELETE itself, not a prior read.
-        assert "oauth_tokens.provider = " in sql
-        assert "oauth_tokens.encrypted_refresh_token IS NOT NULL" in sql
-        assert "oauth_tokens.encrypted_refresh_token != " in sql
-        assert "oauth_tokens.encrypted_id_token IS NOT NULL" in sql
-        assert "oauth_tokens.encrypted_id_token != " in sql
-        assert " OR " in sql
+        upsert, delete, get = (
+            str(call.args[0].compile(dialect=postgresql.dialect()))
+            for call in mock_session.execute.await_args_list
+        )
+        # The kind is part of the key, so a stored key and a login never share a row.
+        assert "ON CONFLICT (provider, kind) DO UPDATE" in upsert
+        assert "oauth_tokens.kind = " in delete
+        assert "oauth_tokens.kind = " in get

@@ -565,8 +565,8 @@ class TestDbProviderKeys:
             encrypted_api_key=encrypted, encrypted_refresh_token=None, encrypted_id_token=None
         )
 
-        async def fake_get(provider):
-            if provider == "anthropic":
+        async def fake_get(provider, kind):
+            if (provider, kind) == ("anthropic", "api_key"):
                 return mock_token
             return None
 
@@ -602,8 +602,8 @@ class TestDbProviderKeys:
             encrypted_api_key=encrypted, encrypted_refresh_token=None, encrypted_id_token=None
         )
 
-        async def fake_get(provider):
-            if provider == "anthropic":
+        async def fake_get(provider, kind):
+            if (provider, kind) == ("anthropic", "api_key"):
                 return mock_token
             return None
 
@@ -717,8 +717,8 @@ class TestDbProviderKeys:
             def __init__(self, session) -> None:
                 pass
 
-            async def get(self, provider):
-                if provider in rows:
+            async def get(self, provider, kind):
+                if provider in rows and kind == "api_key":
                     return SimpleNamespace(
                         encrypted_api_key=rows[provider],
                         encrypted_refresh_token=None,
@@ -726,7 +726,8 @@ class TestDbProviderKeys:
                     )
                 return None
 
-            async def delete(self, provider):
+            async def delete(self, provider, kind):
+                assert kind == "api_key"
                 return rows.pop(provider, None) is not None
 
         monkeypatch.setattr(repositories, "OAuthTokenRepository", FakeRepo)
@@ -829,13 +830,15 @@ class TestDbProviderKeys:
             def __init__(self, session) -> None:
                 pass
 
-            async def upsert(self, *, provider, encrypted_api_key, **_):
+            async def upsert(self, *, provider, kind, encrypted_api_key, **_):
+                assert kind == "api_key"
                 rows[provider] = encrypted_api_key
 
-            async def delete(self, provider):
+            async def delete(self, provider, kind):
+                assert kind == "api_key"
                 return rows.pop(provider, None) is not None
 
-            async def get(self, provider):
+            async def get(self, provider, kind):
                 return None
 
         monkeypatch.setattr(repositories, "OAuthTokenRepository", FakeRepo)
@@ -967,12 +970,12 @@ class TestOAuthRowsAreNotApiKeys:
         key = Fernet.generate_key().decode()
         fernet = Fernet(key.encode())
         rows = {
-            "openai": SimpleNamespace(
+            ("openai", "login"): SimpleNamespace(
                 encrypted_api_key=fernet.encrypt(b"oauth-access-token").decode(),
                 encrypted_refresh_token=fernet.encrypt(b"refresh").decode(),
                 encrypted_id_token=None,
             ),
-            "anthropic": SimpleNamespace(
+            ("anthropic", "api_key"): SimpleNamespace(
                 encrypted_api_key=fernet.encrypt(b"sk-ant-stored").decode(),
                 encrypted_refresh_token=None,
                 encrypted_id_token=None,
@@ -983,8 +986,8 @@ class TestOAuthRowsAreNotApiKeys:
             def __init__(self, session) -> None:
                 pass
 
-            async def get(self, provider):
-                return rows.get(provider)
+            async def get(self, provider, kind):
+                return rows.get((provider, kind))
 
         monkeypatch.setattr(repositories, "OAuthTokenRepository", FakeRepo)
 

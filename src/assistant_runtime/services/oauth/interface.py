@@ -336,7 +336,7 @@ class OAuthService:
             self._use_codex_cli_auth(tokens)
             # The CLI's auth file is this login's only store: a copy in Postgres
             # would be loaded, and refreshed, after a restart.
-            await self._delete_stored_token(login_only=True)
+            await self._delete_stored_token()
             self._token_persisted = False
 
             self._auth_source = AuthSource.CODEX_CLI
@@ -474,7 +474,7 @@ class OAuthService:
                 from assistant_runtime.services.database.repositories import OAuthTokenRepository
 
                 repo = OAuthTokenRepository(session)
-                token = await repo.get("openai")
+                token = await repo.get("openai", "login")
 
                 if token is None:
                     logger.debug("No stored OAuth token found")
@@ -495,7 +495,7 @@ class OAuthService:
                 if cli is not None and self._refresh_token == cli.refresh_token:
                     # A copy of the Codex CLI's own login, stored by an earlier version
                     # or left by a failed cleanup: the CLI owns it, so use its file.
-                    await repo.delete_login("openai")
+                    await repo.delete("openai", "login")
                     self._use_codex_cli_auth(cli)
                     self._auth_source = AuthSource.CODEX_CLI
                     self._device_code_status = DeviceCodeStatus.AUTHORIZED
@@ -532,6 +532,7 @@ class OAuthService:
                 repo = OAuthTokenRepository(session)
                 await repo.upsert(
                     provider="openai",
+                    kind="login",
                     encrypted_api_key=self._encrypt(self._access_token)
                     if self._access_token
                     else None,
@@ -549,8 +550,8 @@ class OAuthService:
                 "OAuth tokens remain in memory; persistence failed", error_type=type(exc).__name__
             )
 
-    async def _delete_stored_token(self, *, login_only: bool = False) -> bool:
-        """Remove the persisted token; return whether no saved token remains."""
+    async def _delete_stored_token(self) -> bool:
+        """Remove the persisted login; return whether no saved login remains."""
         if self._db_service is None:
             return True
         if not self._db_service.healthy:
@@ -559,13 +560,8 @@ class OAuthService:
             async with self._db_service.session_context() as session:
                 from assistant_runtime.services.database.repositories import OAuthTokenRepository
 
-                repo = OAuthTokenRepository(session)
-                if login_only:
-                    # A row without a refresh or id token is a stored API key, which
-                    # belongs to the provider-key store, not to this login.
-                    await repo.delete_login("openai")
-                else:
-                    await repo.delete("openai")
+                # A stored API key is its own row, owned by the provider-key store.
+                await OAuthTokenRepository(session).delete("openai", "login")
             # DELETE is idempotent: an already absent row also confirms removal.
             return True
         except Exception as exc:
