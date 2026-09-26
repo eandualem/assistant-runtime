@@ -545,6 +545,7 @@ class VoiceService:
             for state in call.delegations.values():
                 if state["status"] in ("running", "pending_host", "waiting"):
                     state["status"] = "cancelled"
+            call.inputs.clear()  # no delegation runs after close; keep no request text
             call.status = "closed" if call.finalized else "interrupted"
             self._emit(
                 call,

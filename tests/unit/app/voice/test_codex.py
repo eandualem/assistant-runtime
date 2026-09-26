@@ -522,9 +522,11 @@ async def test_a_lost_app_server_leaves_the_call_interrupted_not_finalized(codex
     await service.start()
     try:
         created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
-        codex._server.feed("thread-1", "thread/realtime/closed", reason="app_server_exit")
         call = service._calls[created["call_id"]]
+        call.inputs["deferred"] = "Request text of a delegation that never ran"
+        codex._server.feed("thread-1", "thread/realtime/closed", reason="app_server_exit")
         await until(call.done.is_set)
+        assert call.inputs == {}
         record = await service.get(created["call_id"], OWNER)
         assert (record["status"], record["finalized"]) == ("interrupted", False)
         assert record["reason"] == "connection_lost"
