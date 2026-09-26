@@ -465,12 +465,7 @@ class VoiceService:
                     call.delegations[ident]["status"] = status
                     self._emit(call, "delegation", {"id": ident, "status": status})
             if status == "failed":
-                try:
-                    await self._return_result(call, ident, _BACKEND_FAILED)
-                except Exception:
-                    # A failed send ends the call, as elsewhere; the cancel outcome stands.
-                    call.reason = call.reason or "connection_lost"
-                    call.stop_requested.set()
+                await self._speak_failure(call, ident)
 
     async def events(
         self, call_id: str, principal: Principal, after: int = 0
@@ -681,13 +676,12 @@ class VoiceService:
                         self._emit(call, "delegation", {"id": previous, "status": "superseded"})
                     call.active_delegation = ident
                     call.pending = None
-                    if isinstance(delegation.get("input"), str) and delegation["input"]:
-                        call.inputs[ident] = delegation["input"][: self.config.context_chars]
                     status = "waiting" if call.cancelling else "running"
                     if status == "running" and call.queue.full():
                         # Answered below instead of raising, which would end the call.
                         status = "failed"
-                        call.inputs.pop(ident, None)
+                    elif isinstance(delegation.get("input"), str) and delegation["input"]:
+                        call.inputs[ident] = delegation["input"][: self.config.context_chars]
                     call.delegations[ident] = {"status": status}
                     self._cancel_unprotected(call)
                     if call.cancelling:
@@ -696,7 +690,7 @@ class VoiceService:
                         self._enqueue(call, ident, None)
                     self._emit(call, "delegation", {"id": ident, "status": status})
                 if status == "failed":
-                    await self._return_result(call, ident, _BACKEND_FAILED)
+                    await self._speak_failure(call, ident)
             elif kind in ("session.commentary.appended", "error"):
                 command_id = event.get("client_event_id")
                 if kind == "error":
@@ -855,6 +849,15 @@ class VoiceService:
             or "".join(text)
             or "The backend completed without a text response.",
         )
+
+    async def _speak_failure(self, call: VoiceCall, ident: str) -> None:
+        """Answer a delegation that could not be queued; a failed send ends the call."""
+        try:
+            await self._return_result(call, ident, _BACKEND_FAILED)
+        except Exception:
+            # Not raised: the reader keeps reading and a cancel keeps its outcome.
+            call.reason = call.reason or "connection_lost"
+            call.stop_requested.set()
 
     async def _return_result(self, call: VoiceCall, ident: str, content: str) -> None:
         if ident != call.active_delegation or call.stop_requested.is_set():
