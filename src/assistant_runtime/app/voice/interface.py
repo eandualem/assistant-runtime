@@ -405,6 +405,14 @@ class VoiceService:
                 task = call.cancel_task
             else:
                 previous = call.active_delegation
+                # A finished delegation stays active until the next one; it is
+                # not cancelled, relabelled or reported.
+                if previous and call.delegations[previous]["status"] not in (
+                    "running",
+                    "pending_host",
+                    "waiting",
+                ):
+                    previous = None
                 # Enqueue before changing state so a full queue is retryable.
                 barrier = asyncio.get_running_loop().create_future()
                 self._enqueue(call, "", None, barrier)
