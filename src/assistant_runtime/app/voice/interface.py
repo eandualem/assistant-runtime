@@ -272,6 +272,9 @@ class VoiceService:
                 }
             except BaseException as exc:
                 self._streaming.release_session(offer.session_id, call.lease)
+                abandon = getattr(self._transport, "abandon", None)
+                if call.provider_id and call.connection is None and abandon is not None:
+                    abandon(call.provider_id)  # created but never attached: stop it
                 if call.connection is not None:
                     with contextlib.suppress(Exception):
                         await call.connection.close()
@@ -603,7 +606,7 @@ class VoiceService:
                 self._emit(call, "transcript", fragment)
             elif kind == "session.transcript.done":
                 text = event.get("text")
-                if isinstance(text, str) and text:
+                if isinstance(text, str) and text and not call.stop_requested.is_set():
                     call.last_activity_at = time.time()
                     self._emit(call, "transcript_done", {"role": event.get("role"), "text": text})
             elif kind in ("session.usage.updated", "session.closed"):

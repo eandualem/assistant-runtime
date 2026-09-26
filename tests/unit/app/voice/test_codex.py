@@ -118,6 +118,13 @@ def _schema(directory, *, drop_method=None, drop_param=None, versions=("v1", "v2
     (directory / "v2" / "ThreadRealtimeStartedNotification.json").write_text(
         json.dumps({"properties": started})
     )
+    thread = ["approvalPolicy", "cwd", "developerInstructions", "ephemeral", "sandbox"]
+    (directory / "v2" / "ThreadStartParams.json").write_text(
+        json.dumps({"properties": {p: {} for p in thread if f"thread.{p}" != drop_param}})
+    )
+    (directory / "v2" / "ThreadRealtimeAppendTextParams.json").write_text(
+        json.dumps({"properties": {"threadId": {}, "text": {}, "role": {}}})
+    )
 
 
 def test_schema_check_names_what_an_installed_cli_lacks(tmp_path):
@@ -139,6 +146,7 @@ def test_schema_check_names_what_an_installed_cli_lacks(tmp_path):
             {"drop_param": "started.version"},
             ["thread/realtime/started.version"],
         ),
+        ("no_ephemeral", {"drop_param": "thread.ephemeral"}, ["thread/start.ephemeral"]),
     ):
         directory = tmp_path / name
         directory.mkdir()
@@ -1076,3 +1084,111 @@ async def test_unreadable_usage_readings_get_the_same_tolerance_as_failed_reads(
     assert events == [{"type": "error", "error": {"code": "usage_unreadable"}}]
     assert reads == 3
     await connection.close()
+
+
+async def test_a_cli_that_runs_but_cannot_describe_its_protocol_is_incompatible(tmp_path):
+    source = (
+        "import sys\n"
+        "if sys.argv[1:] == ['--version']:\n"
+        "    print('codex-cli 0.90.0')\n"
+        "else:\n"
+        "    sys.exit(2)\n"
+    )
+    script = tmp_path / "fake_codex.py"
+    script.write_text(source)
+    command = tmp_path / "codex"
+    command.write_text(f'#!/bin/sh\nexec {sys.executable} {script} "$@"\n')
+    command.chmod(command.stat().st_mode | stat.S_IEXEC)
+    transport = CodexTransport(str(command), 5, usage_ceiling_percent=97, usage_check_seconds=60)
+    result = await transport.compatibility()
+    assert result == {
+        "version": "0.90.0",
+        "compatible": False,
+        "missing": ["app-server generate-json-schema"],
+    }
+    assert transport.checked() == result  # an old CLI stays old: no rerun per call
+
+
+async def test_a_hung_server_cannot_hold_a_call_open_on_close(codex, monkeypatch):
+    from assistant_runtime.app.voice import _codex
+
+    monkeypatch.setattr(_codex, "_CLOSE_SECONDS", 0.05)
+
+    async def hung(method, params, original=codex._server.request):
+        if method in ("thread/realtime/stop", "thread/unsubscribe"):
+            await asyncio.sleep(10)
+        return await original(method, params)
+
+    codex._server.request = hung
+    connection = await codex.attach(None, "thread-1")
+    async with asyncio.timeout(1):
+        await connection.close()
+
+
+def test_usage_without_a_credits_object_is_unreadable():
+    snapshot = dict(LIMITS["rateLimitsByLimitId"]["codex"])
+    del snapshot["credits"]
+    report = usage_report({"rateLimitsByLimitId": {"codex": snapshot}}, 97)
+    assert (report["allowed"], report["reason"]) == (False, "usage_unreadable")
+    report = usage_report({"rateLimitsByLimitId": ["not", "a", "mapping"]}, 97)
+    assert report["reason"] == "usage_unreadable"
+
+
+async def test_a_failed_interrupt_and_an_unknown_item_are_logged(codex):
+    from loguru import logger
+
+    messages = []
+    sink = logger.add(messages.append, level="WARNING")
+    codex._server.failures.add("turn/interrupt")
+    try:
+        connection = await codex.attach(None, "thread-1")
+        codex._server.feed("thread-1", "turn/started", turn={"id": "turn-1"})
+        codex._server.feed("thread-1", "thread/realtime/itemAdded", item={"type": "surprise"})
+        codex._server.feed("thread-1", "thread/realtime/started", version="v3")
+        await _events(connection, 1)
+        await until(lambda: any("interrupt" in str(m) for m in messages))
+        assert any("surprise" in str(m) for m in messages)
+        await connection.close()
+    finally:
+        logger.remove(sink)
+
+
+async def test_a_thread_start_without_an_id_is_rejected_cleanly(codex):
+    codex._server.results["thread/start"] = {"threadId": "t1"}
+    with pytest.raises(VoiceError) as bad:
+        await codex.create(None, SESSION, "offer-sdp")
+    assert bad.value.metadata == {"allocation_status": "rejected"}
+
+
+async def test_a_session_created_but_never_attached_is_stopped(codex, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def fails(api_key, provider_id):
+        raise RuntimeError("attach failed")
+
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    codex.attach = fails
+    await service.start()
+    try:
+        with pytest.raises(VoiceError):
+            await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
+        await until(lambda: codex._server.sent("thread/realtime/stop"))
+        assert codex._created == {}
+    finally:
+        await service.stop()
+
+
+async def test_final_transcripts_stop_with_the_call(codex, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    await service.start()
+    try:
+        created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
+        call = service._calls[created["call_id"]]
+        call.stop_requested.set()
+        codex._server.feed("thread-1", "thread/realtime/transcript/done", role="user", text="late")
+        codex._server.feed("thread-1", "thread/realtime/closed", reason="requested")
+        await until(call.done.is_set)
+        assert not [e for _, e in call.events if e["event"] == "transcript_done"]
+    finally:
+        await service.stop()

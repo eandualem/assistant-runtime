@@ -57,6 +57,7 @@ _REQUIRED_METHODS = {
         "turn/started",
     },
 }
+_REQUIRED_THREAD_PARAMS = {"approvalPolicy", "cwd", "developerInstructions", "ephemeral", "sandbox"}
 _REQUIRED_START_PARAMS = {
     "clientManagedHandoffs",
     "includeStartupContext",
@@ -109,6 +110,15 @@ def missing_from_schema(directory: Path) -> list[str]:
         started_fields = set()
     if "version" not in started_fields:  # the session's version is checked on start
         missing.append("thread/realtime/started.version")
+    for file, method, needed in (
+        ("ThreadStartParams.json", "thread/start", _REQUIRED_THREAD_PARAMS),
+        ("ThreadRealtimeAppendTextParams.json", "thread/realtime/appendText", {"role"}),
+    ):
+        try:
+            fields = set(json.loads((directory / "v2" / file).read_text()).get("properties", {}))
+        except (OSError, ValueError, AttributeError):
+            fields = set()
+        missing += [f"{method}.{name}" for name in sorted(needed - fields)]
     return missing
 
 
@@ -121,6 +131,8 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
     the configured ceiling.
     """
     snapshots = limits.get("rateLimitsByLimitId") or {}
+    if not isinstance(snapshots, dict):
+        snapshots = {}
     if not snapshots and limits.get("rateLimits"):
         snapshots = {"default": limits["rateLimits"]}
     windows, reasons = [], []
@@ -131,8 +143,9 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
     for limit_id, snapshot in snapshots.items():
         if not isinstance(snapshot, dict):
             continue
-        balance = snapshot.get("credits") or {}
+        balance = snapshot.get("credits")
         if not isinstance(balance, dict):
+            # Without a credits object nothing shows that credits cannot be spent.
             reasons.append("usage_unreadable")
             balance = {}
         if (
@@ -186,10 +199,16 @@ _AGENT_INSTRUCTIONS = (
     "This thread only carries a voice call, and another system answers every request. "
     "Do not run commands, read files or call tools. End every turn at once without output."
 )
+# Longest a close waits for each of the stop and the thread release.
+_CLOSE_SECONDS = 5
 # Consecutive unreadable usage checks that end a call.
 _UNREADABLE_CHECKS = 3
 # Closures the runtime synthesises when it can no longer see the session.
 _LOST = frozenset({"app_server_exit", "stop_failed"})
+
+
+class _CommandFailedError(RuntimeError):
+    """The Codex CLI ran and exited with an error."""
 
 
 def _is_zero(balance: Any) -> bool:
@@ -462,6 +481,8 @@ class _CodexConnection:
         if method == "thread/realtime/itemAdded":
             item = params.get("item") or {}
             if item.get("type") != "handoff_request" or not item.get("handoff_id"):
+                # v3 adds only delegations here; anything else may be protocol drift.
+                logger.warning("Codex voice ignored a realtime item of type {}", item.get("type"))
                 return None
             return {
                 "type": "session.delegation.created",
@@ -475,11 +496,7 @@ class _CodexConnection:
             # The backing Codex agent must not act on the call's behalf.
             turn = (params.get("turn") or {}).get("id")
             if isinstance(turn, str):
-                self._spawn(
-                    self._server.request(
-                        "turn/interrupt", {"threadId": self._thread, "turnId": turn}
-                    )
-                )
+                self._spawn(self._interrupt(turn))
             return None
         if method == "thread/realtime/started":
             self._started_at = time.monotonic()
@@ -512,6 +529,12 @@ class _CodexConnection:
                 "usage": {"duration_seconds": duration} if duration is not None else {},
             }
         return None
+
+    async def _interrupt(self, turn: str) -> None:
+        try:
+            await self._server.request("turn/interrupt", {"threadId": self._thread, "turnId": turn})
+        except Exception:
+            logger.warning("Codex voice could not interrupt the Codex agent's turn")
 
     def _spawn(self, awaitable: Any) -> None:
         task = asyncio.create_task(awaitable)
@@ -580,8 +603,10 @@ class _CodexConnection:
             )
 
     async def close(self) -> None:
+        # Bounded: a hung app-server must not hold the call's session reservation.
         if not self._closed or self._stop_task is not None:
-            await self._stop(None)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(self._stop(None)), _CLOSE_SECONDS)
         self._stopping = True
         self._watchdog.cancel()
         for task in list(self._tasks):
@@ -590,7 +615,10 @@ class _CodexConnection:
         self._server.unsubscribe(self._thread)
         # Let the app-server release the call's thread; best effort.
         with contextlib.suppress(Exception):
-            await self._server.request("thread/unsubscribe", {"threadId": self._thread})
+            await asyncio.wait_for(
+                self._server.request("thread/unsubscribe", {"threadId": self._thread}),
+                _CLOSE_SECONDS,
+            )
 
 
 class CodexTransport:
@@ -645,7 +673,7 @@ class CodexTransport:
             await proc.wait()
             raise
         if proc.returncode:
-            raise RuntimeError(f"codex {args[0]} exited with {proc.returncode}")
+            raise _CommandFailedError(f"codex {args[0]} exited with {proc.returncode}")
         return stdout
 
     async def _check(self) -> dict:
@@ -654,10 +682,20 @@ class CodexTransport:
             with tempfile.TemporaryDirectory(prefix="assistant-runtime-codex-schema-") as out:
                 stdout = await self._output("--version", timeout=30)
                 version = stdout.decode(errors="ignore").strip().rsplit(" ", 1)[-1] or None
-                await self._output(
-                    "app-server", "generate-json-schema", "--experimental", "--out", out, timeout=60
-                )
-                missing = missing_from_schema(Path(out))
+                try:
+                    await self._output(
+                        "app-server",
+                        "generate-json-schema",
+                        "--experimental",
+                        "--out",
+                        out,
+                        timeout=60,
+                    )
+                except _CommandFailedError:
+                    # The CLI runs but cannot describe its protocol: too old, not missing.
+                    missing = ["app-server generate-json-schema"]
+                else:
+                    missing = missing_from_schema(Path(out))
         except Exception as exc:
             logger.warning("Codex CLI check could not run: {}", type(exc).__name__)
             return {"version": version, "compatible": False, "missing": ["codex_cli"]}
@@ -711,7 +749,11 @@ class CodexTransport:
                 "developerInstructions": _AGENT_INSTRUCTIONS,
             },
         )
-        thread_id = thread["thread"]["id"]
+        thread_id = (thread.get("thread") or {}).get("id")
+        if not isinstance(thread_id, str) or not thread_id:
+            raise VoiceError(
+                "Codex thread/start returned no thread", 502, allocation_status="rejected"
+            )
         queue = self._server.subscribe(thread_id)
         try:
             await self._server.request(
@@ -776,6 +818,13 @@ class CodexTransport:
             queue.put_nowait(message)
         self._created[thread_id] = queue
         return thread_id, answer
+
+    def abandon(self, provider_id: str) -> None:
+        """Stop a session that was created but never attached to a call."""
+        self._created.pop(provider_id, None)
+        task = asyncio.create_task(self._stop_quietly(provider_id))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     async def _stop_quietly(self, thread_id: str) -> None:
         with contextlib.suppress(Exception):
