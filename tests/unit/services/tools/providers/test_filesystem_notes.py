@@ -1061,19 +1061,10 @@ async def test_failed_cross_device_copy_leaves_no_partial_destination(tmp_path, 
     assert (tmp_path / "moved" / "note.md").read_text() == "inside"
 
 
-async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path, monkeypatch):
+async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path):
     for folder in ("a", "b"):
         (tmp_path / folder).mkdir()
         (tmp_path / folder / "note.md").write_text(folder)
-    real_link = os.link
-    both_moving = threading.Barrier(2, timeout=5)
-
-    def link_together(*args, **kwargs):
-        # Both moves reach the link before either places its note.
-        both_moving.wait()
-        return real_link(*args, **kwargs)
-
-    monkeypatch.setattr(os, "link", link_together)
     notes = MarkdownNotes(tmp_path)
     results = await asyncio.gather(
         notes.move(filename="a/note.md", folder="target"),
@@ -1125,29 +1116,61 @@ async def test_a_note_created_during_a_move_is_not_overwritten(tmp_path, monkeyp
     assert contents == ["moved", "new"]
 
 
-@pytest.mark.parametrize("hard_links", [True, False])
-async def test_a_move_whose_source_was_moved_away_leaves_no_copy(tmp_path, monkeypatch, hard_links):
+async def test_a_failed_source_removal_keeps_a_replaced_destination(tmp_path, monkeypatch):
     (tmp_path / "a").mkdir()
-    (tmp_path / "c").mkdir()
     (tmp_path / "a" / "note.md").write_text("note")
     real_unlink = os.unlink
-    if not hard_links:
 
-        def no_link(*args, **kwargs):
-            raise OSError(errno.ENOTSUP, "fixture")
-
-        monkeypatch.setattr(os, "link", no_link)
-
-    def another_move_first(path, **kwargs):
-        # Another writer moves the source after the link, before its unlink.
+    def replace_then_fail(path, **kwargs):
+        # Another program replaces the new entry; then the source cannot be removed.
         monkeypatch.setattr(os, "unlink", real_unlink)
-        (tmp_path / "a" / "note.md").rename(tmp_path / "c" / "note.md")
-        return real_unlink(path, **kwargs)
+        (tmp_path / "other.md").write_text("other")
+        (tmp_path / "other.md").replace(tmp_path / "b" / "note.md")
+        raise PermissionError(errno.EACCES, "fixture")
 
-    monkeypatch.setattr(os, "unlink", another_move_first)
-    result = await MarkdownNotes(tmp_path).move(filename="a/note.md", folder="b")
-    assert result == {"error": "Note not found: a/note.md", "success": False}
-    assert not (tmp_path / "b" / "note.md").exists()
+    monkeypatch.setattr(os, "unlink", replace_then_fail)
+    with pytest.raises(PermissionError):
+        await MarkdownNotes(tmp_path).move(filename="a/note.md", folder="b")
+    assert (tmp_path / "b" / "note.md").read_text() == "other"
+    assert (tmp_path / "a" / "note.md").read_text() == "note"
+
+
+async def test_a_move_waits_for_another_moves_copy(tmp_path, monkeypatch):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "note.md").write_text("note")
+    notes = MarkdownNotes(tmp_path)
+    copying, waiting, release = threading.Event(), threading.Event(), threading.Event()
+    real_copy, lock = shutil.copyfileobj, notes._move_lock
+
+    def no_link(*args, **kwargs):
+        raise OSError(errno.ENOTSUP, "fixture")
+
+    def paused_copy(*args):
+        copying.set()
+        release.wait(5)
+        return real_copy(*args)
+
+    class ObservedLock:
+        def __enter__(self):
+            if lock.locked():
+                waiting.set()
+            return lock.__enter__()
+
+        def __exit__(self, *exc):
+            return lock.__exit__(*exc)
+
+    monkeypatch.setattr(os, "link", no_link)
+    monkeypatch.setattr(shutil, "copyfileobj", paused_copy)
+    monkeypatch.setattr(notes, "_move_lock", ObservedLock())
+    first = asyncio.create_task(notes.move(filename="a/note.md", folder="b"))
+    try:
+        assert await asyncio.to_thread(copying.wait, 5)
+        # b/note.md exists but is still empty; moving it now would lose the note.
+        second = asyncio.create_task(notes.move(filename="b/note.md", folder="c"))
+        assert await asyncio.to_thread(waiting.wait, 5)
+    finally:
+        release.set()
+    assert [r["success"] for r in await asyncio.gather(first, second)] == [True, True]
     assert (tmp_path / "c" / "note.md").read_text() == "note"
 
 

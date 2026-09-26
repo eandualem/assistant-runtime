@@ -132,13 +132,9 @@ class RootedDirectory:
                     _copy_entry(src, source, dst, destination.name)
                 except FileExistsError:
                     return False
-            try:
-                os.unlink(source, dir_fd=src)
-            except BaseException:
-                # A failed move must not leave the note in both places.
-                with suppress(OSError):
-                    os.unlink(destination.name, dir_fd=dst)
-                raise
+            # If this fails the note keeps both names; removing the new one by
+            # name could delete an entry another program put there meanwhile.
+            os.unlink(source, dir_fd=src)
         return True
 
 
