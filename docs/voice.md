@@ -297,8 +297,10 @@ Graceful close sends `session.close` and waits for final usage, bounded by
 `VOICE__CLOSE_TIMEOUT_SECONDS`. A missing final event is `interrupted` with
 `finalized: false`; it does not assert that provider billing stopped. A provider
 allocation or attach failure is not retried automatically, because an allocated
-session may already exist. Inspect provider usage if allocation/finalization is
-unconfirmed. A runtime restart does not resume the provider connection or replay
+session may already exist. If attaching fails after the provider created the
+session, the runtime hangs that session up once in the background, best effort,
+and does not report the result. Inspect provider usage if allocation/finalization
+is unconfirmed. A runtime restart does not resume the provider connection or replay
 actions: a previously active checkpoint is exposed as interrupted, and a new
 voice call must be created. Without Postgres, retained calls are process memory
 only. Session deletion cascades persisted voice records; current session access

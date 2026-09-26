@@ -23,6 +23,7 @@ import contextlib
 import itertools
 import json
 import os
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from typing import Any
 
 from loguru import logger
 
+from assistant_runtime.app.voice.config import CODEX_MODEL, CODEX_VOICES
 from assistant_runtime.app.voice.exceptions import VoiceError
 
 REALTIME_VERSION = "v3"
@@ -637,7 +639,11 @@ class _CodexConnection:
 
 
 class CodexTransport:
-    """Same surface as ``LiveTransport``; the ``api_key`` arguments are unused."""
+    """A ``VoiceTransport``; the ``api_key`` arguments are unused."""
+
+    model = CODEX_MODEL
+    accepts_facts = True
+    reports_usage = True
 
     def __init__(
         self,
@@ -659,12 +665,38 @@ class CodexTransport:
         self._workdir: tempfile.TemporaryDirectory | None = None  # threads' empty cwd
         self._compatibility: dict | None = None
         self._check_lock = asyncio.Lock()
+        self._startup: asyncio.Task | None = None  # the background protocol check
         self._background: set[asyncio.Task] = set()
         self._created: dict[str, asyncio.Queue] = {}  # created, not yet attached
 
     def checked(self) -> dict | None:
         """The completed protocol check, without running one."""
         return self._compatibility
+
+    def status(self) -> dict:
+        status = {
+            "configured": shutil.which(self.command) is not None,
+            "model": self.model,
+            "voices": list(CODEX_VOICES),
+        }
+        if self._startup is not None:
+            # The installed CLI's protocol, not the account; None until checked.
+            status["codex"] = self.checked()
+        return status
+
+    def credentials(self) -> None:
+        return None  # the CLI authenticates with its own login
+
+    def session(
+        self, instructions: str, voice: str, history: list[dict], *, conversation: bool
+    ) -> dict:
+        # v3 initial items: complete role-bearing text, oldest first.
+        return {"instructions": instructions, "voice": voice, "history": history}
+
+    async def start(self) -> None:
+        # The offline CLI check runs once in the background, not in a health probe.
+        if self._startup is None:
+            self._startup = asyncio.create_task(self.compatibility())
 
     async def compatibility(self) -> dict:
         """Check the installed CLI's protocol, offline (no session, no login).
@@ -835,7 +867,7 @@ class CodexTransport:
         self._created[thread_id] = queue
         return thread_id, answer
 
-    def abandon(self, provider_id: str) -> None:
+    def abandon(self, provider_id: str, api_key: str | None = None) -> None:
         """Stop a session that was created but never attached to a call."""
         self._created.pop(provider_id, None)
         self._server.unsubscribe(provider_id)
@@ -856,6 +888,9 @@ class CodexTransport:
         return _CodexConnection(self._server, provider_id, queue, self)
 
     async def stop(self) -> None:
+        if self._startup is not None:
+            self._startup.cancel()
+            await asyncio.gather(self._startup, return_exceptions=True)
         await asyncio.gather(*self._background, return_exceptions=True)
         await self._server.stop()
         if self._workdir is not None:

@@ -424,7 +424,7 @@ async def test_voice_service_runs_codex_calls_without_a_key_and_delegates(codex,
 
 
 async def test_usage_is_reported_only_for_the_codex_provider():
-    service = VoiceService(VoiceConfig(enabled=True), Backend(), transport=object())
+    service = VoiceService(VoiceConfig(enabled=True), Backend())
     with pytest.raises(VoiceError) as live:
         await service.usage()
     assert live.value.status_code == 404
