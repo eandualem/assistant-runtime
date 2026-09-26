@@ -139,6 +139,8 @@ def test_schema_check_names_what_an_installed_cli_lacks(tmp_path):
 class FakeServer:
     """Scripted app-server: records requests and feeds notifications per thread."""
 
+    running = True
+
     def __init__(self):
         self.requests = []
         self.queues = {}
@@ -728,3 +730,128 @@ async def test_status_reports_the_background_check_without_running_it(monkeypatc
         assert (await service.health_check())["codex"]["compatible"] is True
     finally:
         await service.stop()
+
+
+def test_a_zero_balance_in_any_format_is_not_spendable_credit():
+    for balance, allowed in (
+        ("0.00", True),
+        ("0", True),
+        (None, True),
+        ("1.50", False),
+        ("n/a", False),
+    ):
+        report = usage_report(_limits(snapshot={"credits": {"balance": balance}}), 97)
+        assert report["allowed"] is allowed, balance
+
+
+def test_one_unusual_schema_variant_does_not_hide_the_others(tmp_path):
+    _schema(tmp_path)
+    requests = json.loads((tmp_path / "ClientRequest.json").read_text())
+    requests["oneOf"].append({"properties": {"method": {"const": "future/method"}}})
+    requests["oneOf"].append({"properties": {"params": {}}})
+    (tmp_path / "ClientRequest.json").write_text(json.dumps(requests))
+    assert missing_from_schema(tmp_path) == []
+
+
+async def test_an_empty_answer_stops_the_started_session(codex):
+    async def empty(method, params, original=codex._server.request):
+        if method == "thread/realtime/start":
+            codex._server.requests.append((method, params))
+            codex._server.feed(params["threadId"], "thread/realtime/sdp", sdp="")
+            return {}
+        return await original(method, params)
+
+    codex._server.request = empty
+    with pytest.raises(VoiceError) as failed:
+        await codex.create(None, SESSION, "offer-sdp")
+    assert failed.value.metadata == {"allocation_status": "unknown"}
+    await until(lambda: codex._server.sent("thread/realtime/stop"))
+
+
+async def test_usage_is_not_read_while_the_service_is_stopped(codex):
+    started = 0
+
+    async def counted():
+        nonlocal started
+        started += 1
+
+    codex._server.ensure_started = counted
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    with pytest.raises(VoiceError) as stopped:
+        await service.usage()
+    assert stopped.value.status_code == 503
+    assert started == 0
+
+
+async def test_an_old_readers_cleanup_leaves_a_newer_server_alone():
+    from types import SimpleNamespace
+
+    server = _AppServer("codex", 1)
+    old_output = asyncio.StreamReader()
+    server._proc = SimpleNamespace(stdout=old_output, returncode=0)
+    reading = asyncio.create_task(server._read())
+    await asyncio.sleep(0)  # the old reader is waiting on its server
+    server._proc = SimpleNamespace(returncode=None)  # a newer server took over
+    waiting = asyncio.get_running_loop().create_future()
+    server._pending[1] = waiting
+    calls = server.subscribe("thread-1")
+    old_output.feed_eof()
+    await reading
+    assert not waiting.done()
+    assert server._pending == {1: waiting}
+    assert calls.empty()
+
+
+async def test_concurrent_facts_respect_the_per_second_limit(codex, monkeypatch):
+    from assistant_runtime.app.voice.models import VoiceContext
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def slow(method, params, original=codex._server.request):
+        if method == "thread/realtime/appendText":
+            await asyncio.sleep(0.05)
+        return await original(method, params)
+
+    codex._server.request = slow
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    await service.start()
+    try:
+        created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
+        results = await asyncio.gather(
+            *(
+                service.update_context(created["call_id"], VoiceContext(fact=f"Fact {n}"), OWNER)
+                for n in range(3)
+            ),
+            return_exceptions=True,
+        )
+        assert sum(isinstance(r, dict) for r in results) == 1
+        assert sorted(r.status_code for r in results if isinstance(r, VoiceError)) == [429, 429]
+        assert len(codex._server.sent("thread/realtime/appendText")) == 1
+    finally:
+        await service.stop()
+
+
+async def test_a_lost_server_is_not_restarted_to_read_usage(codex):
+    codex.usage_check_seconds = 0.01
+    codex._server.running = False
+    started = 0
+
+    async def counted():
+        nonlocal started
+        started += 1
+
+    codex._server.ensure_started = counted
+    connection = await codex.attach(None, "thread-1")
+    events = await _events(connection, 1)
+    assert events == [{"type": "error", "error": {"code": "usage_unreadable"}}]
+    assert started == 0
+    await connection.close()
+
+
+async def test_a_session_the_provider_ended_is_not_stopped_again(codex):
+    connection = await codex.attach(None, "thread-1")
+    codex._server.feed("thread-1", "thread/realtime/closed", reason="transport_closed")
+    [closed] = await _events(connection, 1)
+    assert closed["reason"] == "transport_closed"
+    await connection.close()
+    assert codex._server.sent("thread/realtime/stop") == []

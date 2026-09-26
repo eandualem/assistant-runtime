@@ -118,7 +118,7 @@ class VoiceService:
         """The Codex usage windows and whether the guard would admit a call now."""
         if not self._codex:
             raise VoiceError("Usage is reported only for the codex voice provider", 404)
-        if not self.config.enabled:
+        if not self._started or not self.config.enabled:
             raise VoiceError("Voice is disabled; set VOICE__ENABLED=true", 503)
         return await self._codex_transport().usage()
 
@@ -330,12 +330,18 @@ class VoiceService:
                 raise VoiceError(
                     "Facts reach GPT-Live through the client data channel, not this endpoint", 409
                 )
-            if call.last_fact_at is not None and time.monotonic() - call.last_fact_at < 1:
+            previous = call.last_fact_at
+            if previous is not None and time.monotonic() - previous < 1:
                 raise VoiceError("At most one fact per second per call", 429)
-            # Deliver first: a refused fact leaves the call's context unchanged.
-            # The host's own words, as context for the voice (not backend context).
-            await call.connection.append_fact(update.fact, speak=update.speak)
+            # Claimed before delivery so concurrent requests see the limit; a
+            # refused fact gives the slot back and leaves the context unchanged.
             call.last_fact_at = time.monotonic()
+            try:
+                # The host's own words, as context for the voice (not backend context).
+                await call.connection.append_fact(update.fact, speak=update.speak)
+            except BaseException:
+                call.last_fact_at = previous
+                raise
         if update.host_context is not None:
             call.offer = call.offer.model_copy(update={"host_context": update.host_context})
             # Context stays structured for the backend. Do not promote host text to

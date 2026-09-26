@@ -69,11 +69,13 @@ _REQUIRED_START_PARAMS = {
 
 
 def _methods(schema: dict) -> set[str]:
-    return {
-        variant["properties"]["method"]["enum"][0]
-        for variant in schema.get("oneOf", [])
-        if "method" in variant.get("properties", {})
-    }
+    methods = set()
+    for variant in schema.get("oneOf", []):
+        method = (variant.get("properties") or {}).get("method") or {}
+        # One unusual variant must not hide the others.
+        names = method.get("enum") or ([method["const"]] if "const" in method else [])
+        methods.update(name for name in names if isinstance(name, str))
+    return methods
 
 
 def missing_from_schema(directory: Path) -> list[str]:
@@ -117,7 +119,7 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
         if (
             balance.get("hasCredits")
             or balance.get("unlimited")
-            or balance.get("balance") not in (None, "0")
+            or not _is_zero(balance.get("balance"))
         ):
             has_credits = True
         if snapshot.get("spendControlReached"):
@@ -161,6 +163,16 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
 _UNREADABLE_CHECKS = 3
 # Closures the runtime synthesises when it can no longer see the session.
 _LOST = frozenset({"app_server_exit", "stop_failed"})
+
+
+def _is_zero(balance: Any) -> bool:
+    """A missing or zero balance; anything unreadable counts as spendable."""
+    if balance is None:
+        return True
+    try:
+        return float(balance) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _error_code(message: str) -> str:
@@ -277,14 +289,19 @@ class _AppServer:
             if proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
-            for future in self._pending.values():
-                if not future.done():
-                    future.set_exception(VoiceError("Codex app-server exited", 502))
-            self._pending.clear()
-            for queue in self._threads.values():
-                queue.put_nowait(
-                    {"method": "thread/realtime/closed", "params": {"reason": "app_server_exit"}}
-                )
+            # A newer server owns the shared state once it has replaced this one.
+            if self._proc is None or self._proc is proc:
+                for future in self._pending.values():
+                    if not future.done():
+                        future.set_exception(VoiceError("Codex app-server exited", 502))
+                self._pending.clear()
+                for queue in self._threads.values():
+                    queue.put_nowait(
+                        {
+                            "method": "thread/realtime/closed",
+                            "params": {"reason": "app_server_exit"},
+                        }
+                    )
 
     async def request(self, method: str, params: dict) -> dict:
         ident = next(self._ids)
@@ -301,6 +318,10 @@ class _AppServer:
             raise VoiceError(f"Codex {method} failed", 502)
         result = message.get("result")
         return result if isinstance(result, dict) else {}
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.returncode is None
 
     def subscribe(self, thread_id: str) -> asyncio.Queue:
         return self._threads.setdefault(thread_id, asyncio.Queue())
@@ -334,6 +355,7 @@ class _CodexConnection:
         self._stopping = False
         self._stop_reason: str | None = None
         self._stop_task: asyncio.Task | None = None
+        self._closed = False  # the provider session has ended
         self._started_at: float | None = None
         self._tasks: set[asyncio.Task] = set()
         self._watchdog = asyncio.create_task(self._watch_usage())
@@ -343,7 +365,8 @@ class _CodexConnection:
         while not self._stopping:
             await asyncio.sleep(self._transport.usage_check_seconds)
             try:
-                reason = (await self._transport.usage())["reason"]
+                # Never start a server for a call whose server has gone.
+                reason = (await self._transport.usage(start=False))["reason"]
                 failures = 0
             except Exception:
                 # One slow read is not a reason to end a call; several in a row are.
@@ -423,6 +446,7 @@ class _CodexConnection:
             logger.warning("Codex realtime error: {}", message_text[:300])
             return {"type": "error", "error": {"code": _error_code(message_text)}}
         if method == "thread/realtime/closed":
+            self._closed = True
             reason = params.get("reason")
             duration = round(time.monotonic() - self._started_at, 3) if self._started_at else None
             return {
@@ -500,7 +524,9 @@ class _CodexConnection:
             )
 
     async def close(self) -> None:
-        await self._stop(None)
+        if not self._closed or self._stop_task is not None:
+            await self._stop(None)
+        self._stopping = True
         self._watchdog.cancel()
         for task in list(self._tasks):
             task.cancel()
@@ -574,8 +600,11 @@ class CodexTransport:
             missing = missing_from_schema(Path(out))
         return {"version": version, "compatible": not missing, "missing": missing}
 
-    async def usage(self) -> dict:
-        await self._server.ensure_started()
+    async def usage(self, *, start: bool = True) -> dict:
+        if start:
+            await self._server.ensure_started()
+        elif not self._server.running:
+            raise VoiceError("Codex app-server is not running", 502)
         limits = await self._server.request("account/rateLimits/read", {})
         return usage_report(limits, self.usage_ceiling_percent)
 
@@ -645,6 +674,10 @@ class CodexTransport:
                             reason=code if code == "usage_limit_reached" else None,
                         )
                     early.append(message)
+            if not isinstance(answer, str) or not answer:
+                raise VoiceError(
+                    "Codex realtime returned no answer", 502, allocation_status="unknown"
+                )
         except BaseException:
             # The session may have started even though no answer arrived; stop it
             # in the background so a cancelled request cannot skip the stop.
@@ -653,9 +686,6 @@ class CodexTransport:
             task.add_done_callback(self._background.discard)
             self._server.unsubscribe(thread_id)
             raise
-        if not isinstance(answer, str) or not answer:
-            self._server.unsubscribe(thread_id)
-            raise VoiceError("Codex realtime returned no answer", 502, allocation_status="unknown")
         for message in early:  # `started` may precede the answer
             queue.put_nowait(message)
         return thread_id, answer
