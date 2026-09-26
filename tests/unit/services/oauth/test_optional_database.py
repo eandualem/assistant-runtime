@@ -79,6 +79,29 @@ async def test_successful_database_save_is_encrypted_and_reported():
     service = OAuthService(OAuthConfig(encryption_key=Fernet.generate_key().decode()))
     await service.start()
     service.set_database_service(SimpleNamespace(healthy=True, session_context=session_context))
+    service._access_token = "test-access"
+    service._account_id = "test-account"
+    try:
+        with patch("assistant_runtime.services.database.repositories.OAuthTokenRepository") as repo:
+            repo.return_value.upsert = AsyncMock()
+            await service._save_token()
+            saved = repo.return_value.upsert.call_args.kwargs
+        assert service.get_device_code_status().persisted
+        assert saved["encrypted_api_key"] != "test-access"
+        assert service._decrypt(saved["encrypted_api_key"]) == "test-access"
+        session.commit.assert_awaited_once()
+    finally:
+        await service.stop()
+
+
+async def test_codex_cli_sync_removes_the_stored_token_instead_of_saving_it():
+    @asynccontextmanager
+    async def session_context():
+        yield SimpleNamespace()
+
+    service = OAuthService(OAuthConfig(encryption_key=Fernet.generate_key().decode()))
+    await service.start()
+    service.set_database_service(SimpleNamespace(healthy=True, session_context=session_context))
     try:
         with (
             patch.object(
@@ -93,12 +116,11 @@ async def test_successful_database_save_is_encrypted_and_reported():
             patch("assistant_runtime.services.database.repositories.OAuthTokenRepository") as repo,
         ):
             repo.return_value.upsert = AsyncMock()
+            repo.return_value.delete = AsyncMock(return_value=True)
             status = await service.sync_from_codex_cli()
-            saved = repo.return_value.upsert.call_args.kwargs
         assert status.connected
-        assert status.persisted
-        assert saved["encrypted_api_key"] != "test-access"
-        assert service._decrypt(saved["encrypted_api_key"]) == "test-access"
-        session.commit.assert_awaited_once()
+        assert status.persisted is False
+        repo.return_value.delete.assert_awaited_once_with("openai")
+        repo.return_value.upsert.assert_not_awaited()
     finally:
         await service.stop()

@@ -486,7 +486,8 @@ class LlmService:
         if self._config.codex_only and not connected:
             raise ProviderConfigError(
                 "Subscription-only routing requires a connected, unexpired Codex session; "
-                "sync or reconnect OAuth. API fallback is disabled."
+                "sync or reconnect OAuth (for a Codex CLI login, run `codex login`). "
+                "API fallback is disabled."
             )
         return connected
 
