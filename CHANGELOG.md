@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- A login imported from the Codex CLI stays owned by the CLI. Refresh tokens
+  are single-use, and the runtime used to refresh the CLI's login itself,
+  which signed the Codex CLI out on that machine. The runtime now re-reads the
+  CLI's auth file near expiry and never refreshes that login. If the Codex CLI
+  goes unused for about ten days, its access token expires. The runtime then
+  reports the subscription disconnected, with an error telling you to run
+  `codex login`, and reconnects on the next request after you do.
+  `OAUTH__CODEX_AUTO_SYNC` no longer fails startup when the CLI's token is
+  near expiry or expired.
+
+### Upgrading from 0.3.0
+
+A Codex CLI login is no longer stored in Postgres: sync again after a restart,
+or enable `OAUTH__CODEX_AUTO_SYNC`. A copy stored by an earlier version is
+recognised at startup while it still matches the CLI's login, removed, and
+handed back to the CLI. If the CLI has refreshed its login since, sync once or
+disconnect while the database is reachable to remove the old copy; a disconnect
+reports `persisted_deleted: true` once it is gone.
+
 ## 0.3.0 — 2026-09-18
 
 - Typed decisions: `POST /api/decisions` sends program state and a set of

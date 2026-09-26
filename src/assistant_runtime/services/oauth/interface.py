@@ -32,6 +32,11 @@ from assistant_runtime.services.oauth.exceptions import (
     OAuthTokenExpiredError,
 )
 
+CODEX_CLI_LOGIN_EXPIRED = (
+    "The Codex CLI login has expired. Run `codex login`; the runtime picks up "
+    "the new login on its next request."
+)
+
 
 class DeviceCodeStatus(StrEnum):
     """State of the device code authorization flow."""
@@ -227,19 +232,27 @@ class OAuthService:
     def get_device_code_status(self) -> AuthStatus:
         """Get current authorization flow status."""
         connected = self.get_codex_session() is not None
+        status, error = self._device_code_status, self._device_code_error
+        if connected:
+            status = DeviceCodeStatus.AUTHORIZED
+        elif self._auth_source == AuthSource.CODEX_CLI and status == DeviceCodeStatus.AUTHORIZED:
+            # A device flow started since the CLI login expired reports its own state.
+            status, error = DeviceCodeStatus.EXPIRED, CODEX_CLI_LOGIN_EXPIRED
         return AuthStatus(
             connected=connected,
-            status=self._device_code_status if not connected else DeviceCodeStatus.AUTHORIZED,
+            status=status,
             source=self._auth_source,
             email=self._email,
             api_key_preview=None,
             expires_at=self._expires_at if self._expires_at > 0 else None,
-            error=self._device_code_error,
+            error=error,
             persisted=self._token_persisted,
         )
 
     def get_codex_session(self) -> CodexSession | None:
         """Return the current ChatGPT/Codex session if it is usable."""
+        if self._auth_source == AuthSource.CODEX_CLI and self.needs_refresh():
+            self._reload_codex_cli_auth()
         if (
             self._access_token is None
             or self._account_id is None
@@ -275,6 +288,11 @@ class OAuthService:
         """Refresh while the caller owns the credential mutation lock."""
         if not self.configured:
             raise OAuthNotConfiguredError()
+        if self._auth_source == AuthSource.CODEX_CLI:
+            # Refresh tokens are single-use: a runtime refresh would strand the
+            # Codex CLI's copy. The CLI rotates this chain; read its newer tokens.
+            self._reload_codex_cli_auth()
+            return
         if self._refresh_token is None:
             raise OAuthTokenExpiredError("No refresh token available — re-authenticate required")
         if self._http is None:
@@ -315,17 +333,11 @@ class OAuthService:
                 raise OAuthNotConfiguredError("OAuth service not started")
 
             tokens = self._read_codex_cli_auth()
-            self._access_token = tokens.access_token
-            self._refresh_token = tokens.refresh_token
-            self._id_token = tokens.id_token
-            self._email = tokens.email
-            self._account_id = tokens.account_id
-            self._sync_token_metadata()
-
-            if self.needs_refresh():
-                await self._refresh_token_chain()
-            else:
-                await self._save_token()
+            self._use_codex_cli_auth(tokens)
+            # The CLI's auth file is this login's only store: a copy in Postgres
+            # would be loaded, and refreshed, after a restart.
+            await self._delete_stored_token(login_only=True)
+            self._token_persisted = False
 
             self._auth_source = AuthSource.CODEX_CLI
             self._device_code_status = DeviceCodeStatus.AUTHORIZED
@@ -353,23 +365,7 @@ class OAuthService:
             self._device_code_status = DeviceCodeStatus.IDLE
             self._device_code_error = None
 
-            deleted = self._db_service is None
-            if self._db_service is not None and self._db_service.healthy:
-                try:
-                    async with self._db_service.session_context() as session:
-                        from assistant_runtime.services.database.repositories import (
-                            OAuthTokenRepository,
-                        )
-
-                        repo = OAuthTokenRepository(session)
-                        await repo.delete("openai")
-                    # DELETE is idempotent: an already absent row also confirms removal.
-                    deleted = True
-                except Exception as exc:
-                    logger.warning(
-                        "OAuth persisted-token deletion failed", error_type=type(exc).__name__
-                    )
-
+            deleted = await self._delete_stored_token()
             logger.info("OpenAI OAuth disconnected", persisted_deleted=deleted)
             return deleted
 
@@ -495,6 +491,17 @@ class OAuthService:
                 self._email = token.email
                 self._sync_token_metadata()
 
+                cli = self._codex_cli_login()
+                if cli is not None and self._refresh_token == cli.refresh_token:
+                    # A copy of the Codex CLI's own login, stored by an earlier version
+                    # or left by a failed cleanup: the CLI owns it, so use its file.
+                    await repo.delete_login("openai")
+                    self._use_codex_cli_auth(cli)
+                    self._auth_source = AuthSource.CODEX_CLI
+                    self._device_code_status = DeviceCodeStatus.AUTHORIZED
+                    logger.info("Stored OpenAI login belongs to the Codex CLI; using its file")
+                    return True
+
                 if self._access_token and self._account_id and not self.needs_refresh():
                     self._token_persisted = True
                     self._auth_source = AuthSource.DATABASE
@@ -541,6 +548,52 @@ class OAuthService:
             logger.warning(
                 "OAuth tokens remain in memory; persistence failed", error_type=type(exc).__name__
             )
+
+    async def _delete_stored_token(self, *, login_only: bool = False) -> bool:
+        """Remove the persisted token; return whether no saved token remains."""
+        if self._db_service is None:
+            return True
+        if not self._db_service.healthy:
+            return False
+        try:
+            async with self._db_service.session_context() as session:
+                from assistant_runtime.services.database.repositories import OAuthTokenRepository
+
+                repo = OAuthTokenRepository(session)
+                if login_only:
+                    # A row without a refresh or id token is a stored API key, which
+                    # belongs to the provider-key store, not to this login.
+                    await repo.delete_login("openai")
+                else:
+                    await repo.delete("openai")
+            # DELETE is idempotent: an already absent row also confirms removal.
+            return True
+        except Exception as exc:
+            logger.warning("OAuth persisted-token deletion failed", error_type=type(exc).__name__)
+            return False
+
+    def _use_codex_cli_auth(self, tokens: CodexCliAuth) -> None:
+        """Hold the Codex CLI's current tokens."""
+        self._access_token = tokens.access_token
+        self._refresh_token = tokens.refresh_token
+        self._id_token = tokens.id_token
+        self._email = tokens.email
+        self._account_id = tokens.account_id
+        self._sync_token_metadata()
+
+    def _codex_cli_login(self) -> CodexCliAuth | None:
+        """The Codex CLI's current login, or None when its auth file is unusable."""
+        try:
+            return self._read_codex_cli_auth()
+        except (OAuthCodexSyncError, OSError):
+            return None
+
+    def _reload_codex_cli_auth(self) -> None:
+        """Pick up tokens the Codex CLI has rotated since the last read."""
+        try:
+            self._use_codex_cli_auth(self._read_codex_cli_auth())
+        except (OAuthCodexSyncError, OSError) as exc:
+            logger.debug("Codex CLI auth file unavailable", error=str(exc))
 
     def _read_codex_cli_auth(self) -> CodexCliAuth:
         """Read ChatGPT/Codex OAuth state from the local Codex CLI auth file."""

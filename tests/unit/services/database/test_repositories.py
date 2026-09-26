@@ -156,3 +156,23 @@ class TestSettingsRepository:
         saved = await SettingsRepository(mock_session).save({})
 
         assert saved is row
+
+
+class TestOAuthTokenRepository:
+    async def test_delete_login_leaves_a_stored_api_key(self, mock_session: AsyncMock) -> None:
+        from assistant_runtime.services.database.repositories import OAuthTokenRepository
+
+        mock_session.execute.return_value = MagicMock(rowcount=0)
+
+        deleted = await OAuthTokenRepository(mock_session).delete_login("openai")
+
+        assert deleted is False
+        statement = mock_session.execute.await_args.args[0]
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        # The login condition is part of the DELETE itself, not a prior read.
+        assert "oauth_tokens.provider = " in sql
+        assert "oauth_tokens.encrypted_refresh_token IS NOT NULL" in sql
+        assert "oauth_tokens.encrypted_refresh_token != " in sql
+        assert "oauth_tokens.encrypted_id_token IS NOT NULL" in sql
+        assert "oauth_tokens.encrypted_id_token != " in sql
+        assert " OR " in sql

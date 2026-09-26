@@ -22,14 +22,16 @@ def _make_jwt(payload: dict[str, object]) -> str:
     return f"{header}.{body}.sig"
 
 
-def _write_codex_auth(path, *, email: str = "assistant@example.com") -> None:
+def _write_codex_auth(
+    path, *, email: str = "assistant@example.com", access_token: str = "access-token"
+) -> None:
     path.write_text(
         json.dumps(
             {
                 "auth_mode": "chatgpt",
                 "last_refresh": "2026-03-15T11:48:53Z",
                 "tokens": {
-                    "access_token": "access-token",
+                    "access_token": access_token,
                     "refresh_token": "refresh-token",
                     "id_token": _make_jwt(
                         {
@@ -122,6 +124,112 @@ class TestOAuthServiceCodexSync:
             await service.sync_from_codex_cli()
 
         await service.stop()
+
+
+def _access_token(expires_in: float, name: str = "cli") -> str:
+    return _make_jwt({"exp": time.time() + expires_in, "name": name})
+
+
+def _no_network(request: httpx.Request) -> httpx.Response:
+    pytest.fail(f"A Codex CLI session must not reach the token endpoint: {request.url}")
+
+
+async def _cli_service(auth_file, *, auto_sync: bool, monkeypatch) -> OAuthService:
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "assistant_runtime.services.oauth.interface.httpx.AsyncClient",
+        lambda **kwargs: real_client(**{"transport": httpx.MockTransport(_no_network), **kwargs}),
+    )
+    service = OAuthService(
+        OAuthConfig(
+            encryption_key=Fernet.generate_key().decode(),
+            codex_auth_file=str(auth_file),
+            codex_auto_sync=auto_sync,
+        )
+    )
+    await service.start()
+    return service
+
+
+async def test_codex_cli_session_near_expiry_is_never_refreshed_by_the_runtime(
+    tmp_path, monkeypatch
+):
+    auth_file = tmp_path / "auth.json"
+    _write_codex_auth(auth_file, access_token=_access_token(60))
+    service = await _cli_service(auth_file, auto_sync=False, monkeypatch=monkeypatch)
+    try:
+        status = await service.sync_from_codex_cli()
+        assert service.needs_refresh()
+        await service.refresh()
+
+        assert status.connected
+        assert service.get_codex_session().access_token == _read_access_token(auth_file)
+    finally:
+        await service.stop()
+
+
+async def test_codex_cli_session_picks_up_the_tokens_the_cli_rotated(tmp_path, monkeypatch):
+    auth_file = tmp_path / "auth.json"
+    _write_codex_auth(auth_file, access_token=_access_token(60, "old"))
+    service = await _cli_service(auth_file, auto_sync=False, monkeypatch=monkeypatch)
+    try:
+        await service.sync_from_codex_cli()
+        rotated = _access_token(10 * 86400, "rotated")
+        _write_codex_auth(auth_file, access_token=rotated)
+
+        assert service.get_codex_session().access_token == rotated
+        assert not service.needs_refresh()
+    finally:
+        await service.stop()
+
+
+async def test_expired_codex_cli_login_leaves_startup_running_and_names_the_fix(
+    tmp_path, monkeypatch
+):
+    auth_file = tmp_path / "auth.json"
+    _write_codex_auth(auth_file, access_token=_access_token(-60))
+    service = await _cli_service(auth_file, auto_sync=True, monkeypatch=monkeypatch)
+    try:
+        status = service.get_device_code_status()
+        assert status.connected is False
+        assert status.source == AuthSource.CODEX_CLI
+        assert status.status == DeviceCodeStatus.EXPIRED
+        assert "run `codex login`" in status.error.lower()
+
+        _write_codex_auth(auth_file, access_token=_access_token(10 * 86400))
+        status = service.get_device_code_status()
+        assert status.connected is True
+        assert status.error is None
+    finally:
+        await service.stop()
+
+
+async def test_device_flow_after_an_expired_codex_cli_login_reports_its_own_state(
+    tmp_path, monkeypatch
+):
+    auth_file = tmp_path / "auth.json"
+    _write_codex_auth(auth_file, access_token=_access_token(-60))
+    service = await _cli_service(auth_file, auto_sync=True, monkeypatch=monkeypatch)
+    await service._http.aclose()
+    service._http = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"device_auth_id": "device", "user_code": "CODE", "interval": 60}
+            )
+        )
+    )
+    try:
+        await service.initiate_device_code()
+
+        status = service.get_device_code_status()
+        assert status.status == DeviceCodeStatus.POLLING
+        assert status.error is None
+    finally:
+        await service.stop()
+
+
+def _read_access_token(auth_file) -> str:
+    return json.loads(auth_file.read_text())["tokens"]["access_token"]
 
 
 async def _service_with_transport(handler) -> OAuthService:

@@ -46,10 +46,23 @@ separate `requested` and `actual` fields. An absent or unrecognized terminal
 provider tier stays `null`; requested Fast mode alone is not proof of priority
 processing.
 
-OAuth works without Postgres: successful sync returns `connected: true`,
-`source: "codex_cli"`, and `persisted: false` when credentials are held only
-in process memory. Re-sync after restart (or enable `OAUTH__CODEX_AUTO_SYNC`).
-When Postgres is reachable, tokens are encrypted at rest. A disconnect during
+A login imported from the Codex CLI stays owned by the CLI. Refresh tokens are
+single-use, so the runtime never refreshes that login itself; doing so would
+sign the Codex CLI out. When the held access token is within
+`OAUTH__REFRESH_BUFFER_SECONDS` of expiry (one hour by default), the runtime
+re-reads the CLI's auth file and picks up the tokens the CLI has rotated as you
+use it. If the file's token has expired too, which happens when the Codex CLI
+goes unused for about ten days (the current token lifetime), status reports
+`connected: false`, `status: "expired"` and an error telling you to run
+`codex login`. The runtime picks up the new login on its next request. The
+CLI's auth file is this login's only store, so it is never saved to Postgres; a
+copy stored by an earlier version is recognised at startup and handed back to the
+CLI, while a stored OpenAI API key is left alone. A sync returns
+`source: "codex_cli"` and `persisted: false`, with `connected: true` while the
+CLI's token is current (`connected: false` and `status: "expired"` otherwise).
+Re-sync after a restart, or enable `OAUTH__CODEX_AUTO_SYNC`.
+A device-flow login belongs to the runtime; it works without Postgres, and when
+Postgres is reachable it is encrypted at rest. A disconnect during
 a database outage clears this process's credentials but cannot remove an
 older persisted token; repeat the disconnect after database recovery before
 restarting. `DELETE` reports this as `persisted_deleted: false`; `true` confirms
