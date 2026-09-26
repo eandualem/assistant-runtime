@@ -269,13 +269,14 @@ The host remains responsible for root configuration and filesystem permissions;
 these tools do not isolate files from other local programs that can modify them.
 
 A note move never replaces an existing destination entry, including a dangling
-symlink or one another program creates while the move runs. Where the
-filesystem allows a hard link, a move retains the original file and its
-metadata. Between filesystems, or where hard links are unavailable, a move
-copies the note, preserving content, permissions, timestamps and supported
-extended attributes. On macOS, copying a file with nonzero file flags fails and
-retains the source: Python cannot safely preserve those flags through an opened
-file descriptor.
+symlink or one another program creates while the move runs. Where the note can
+be hard-linked, a move links it at the destination and then removes the source,
+retaining the original file and its metadata; for that moment the note has both
+names, and a move interrupted there leaves both. Between filesystems, or where
+the filesystem or system policy refuses the link, a move copies the note,
+preserving content, permissions, timestamps and supported extended attributes.
+On macOS, copying a file with nonzero file flags fails and retains the source:
+Python cannot safely preserve those flags through an opened file descriptor.
 
 The GitHub issue tools accept arbitrary repository labels, including an empty
 list. They do not require agent-routing prefixes or a particular issue-body

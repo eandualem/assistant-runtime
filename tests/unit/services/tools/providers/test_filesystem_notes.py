@@ -1061,10 +1061,19 @@ async def test_failed_cross_device_copy_leaves_no_partial_destination(tmp_path, 
     assert (tmp_path / "moved" / "note.md").read_text() == "inside"
 
 
-async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path):
+async def test_concurrent_moves_do_not_overwrite_a_note(tmp_path, monkeypatch):
     for folder in ("a", "b"):
         (tmp_path / folder).mkdir()
         (tmp_path / folder / "note.md").write_text(folder)
+    real_link = os.link
+    both_moving = threading.Barrier(2, timeout=5)
+
+    def link_together(*args, **kwargs):
+        # Both moves reach the link before either places its note.
+        both_moving.wait()
+        return real_link(*args, **kwargs)
+
+    monkeypatch.setattr(os, "link", link_together)
     notes = MarkdownNotes(tmp_path)
     results = await asyncio.gather(
         notes.move(filename="a/note.md", folder="target"),

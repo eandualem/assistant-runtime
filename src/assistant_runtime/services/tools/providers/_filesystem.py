@@ -14,8 +14,6 @@ from typing import TextIO
 
 _DIRECTORY_FLAGS = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _SEARCH_FLAGS = getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY)) | _DIRECTORY_FLAGS
-# Another device, or a filesystem or policy without hard links: a move copies instead.
-_NO_HARD_LINK = {errno.EXDEV, errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EMLINK}
 
 
 @contextmanager
@@ -128,9 +126,8 @@ class RootedDirectory:
                 )
             except FileExistsError:
                 return False
-            except OSError as exc:
-                if exc.errno not in _NO_HARD_LINK:
-                    raise
+            except OSError:
+                # Another device, or a filesystem or policy that refuses the link.
                 try:
                     _copy_entry(src, source, dst, destination.name)
                 except FileExistsError:
@@ -187,7 +184,7 @@ def _copy_entry(src: int, source: str, dst: int, destination: str) -> None:
             if getattr(metadata, "st_flags", 0):
                 raise OSError(
                     errno.ENOTSUP,
-                    "Cross-filesystem note moves cannot preserve file flags on this platform",
+                    "Copying a note cannot preserve file flags on this platform",
                 )
             with _file(dst, destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL) as destination_fd:
                 try:
