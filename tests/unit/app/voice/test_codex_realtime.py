@@ -35,9 +35,13 @@ class FakeServer:
         self.requests = []
         self.queue = asyncio.Queue()
         self.notifications = notifications
+        self.problem = None
 
     async def ensure_started(self):
         pass
+
+    async def usage_problem(self):
+        return self.problem
 
     async def request(self, method, params):
         self.requests.append((method, params))
@@ -109,3 +113,47 @@ async def test_a_voice_the_provider_rejects_is_left_to_its_default():
         None, {"instructions": "x", "audio": {"output": {"voice": "marin"}}}, "offer"
     )
     assert "voice" not in transport._server.requests[-1][1]
+
+
+async def test_history_is_forwarded_as_initial_items():
+    transport = CodexRealtimeTransport(timeout=1)
+    transport._server = FakeServer(
+        [{"method": "thread/realtime/sdp", "params": {"threadId": "t1", "sdp": "answer"}}]
+    )
+    seed = [
+        {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        {"role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+    ]
+    await transport.create(None, {"instructions": "x", "input": seed}, "offer")
+    assert transport._server.requests[-1][1]["initialItems"] == [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "text": "hello"},
+    ]
+
+
+async def test_the_usage_guard_refuses_a_call():
+    transport = CodexRealtimeTransport(timeout=1)
+    transport._server = FakeServer([])
+    transport._server.problem = "the account has credits that could be charged"
+    with pytest.raises(VoiceError, match="usage guard"):
+        await transport.create(None, {"instructions": "x"}, "offer")
+    assert transport._server.requests == []
+
+
+async def test_usage_guard_reasons():
+    server = _codex_realtime._AppServer(1)
+
+    async def limits(method, params):
+        return {"rateLimitsByLimitId": {"codex": snapshot}, "ordinaryUsageAllowed": True}
+
+    server.request = limits
+    snapshot = {
+        "credits": {"hasCredits": False, "unlimited": False, "balance": "0"},
+        "primary": {"usedPercent": 91},
+    }
+    assert await server.usage_problem() is None
+    snapshot["primary"]["usedPercent"] = 97
+    assert "97%" in await server.usage_problem()
+    snapshot["primary"]["usedPercent"] = 50
+    snapshot["credits"]["balance"] = "5"
+    assert "credits" in await server.usage_problem()

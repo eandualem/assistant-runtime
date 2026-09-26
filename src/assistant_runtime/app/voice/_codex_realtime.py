@@ -28,6 +28,9 @@ from assistant_runtime.app.voice.exceptions import VoiceError
 
 # The provider accepts v1 (with an alpha header the CLI does not send) or v3.
 _REALTIME_VERSION = "v3"
+# Guard for the prototype: never spend credits, stop before the included budget runs out.
+USAGE_CEILING_PERCENT = 97
+USAGE_CHECK_SECONDS = 15
 # Voices the provider accepts for v3 (it rejects others, e.g. GPT-Live's default).
 _CODEX_VOICES = frozenset(
     {"arbor", "breeze", "cove", "ember", "juniper", "maple", "sol", "spruce", "vale"}
@@ -122,6 +125,29 @@ class _AppServer:
             raise VoiceError(f"Codex {method} failed", 502, allocation_status="rejected")
         return message.get("result") or {}
 
+    async def usage_problem(self) -> str | None:
+        """Why included usage must not be spent now, or None when it may."""
+        limits = await self.request("account/rateLimits/read", {})
+        snapshots = limits.get("rateLimitsByLimitId") or {"default": limits.get("rateLimits")}
+        for snapshot in snapshots.values():
+            if not snapshot:
+                continue
+            balance = snapshot.get("credits") or {}
+            if (
+                balance.get("hasCredits")
+                or balance.get("unlimited")
+                or balance.get("balance") not in (None, "0")
+            ):
+                return "the account has credits that could be charged"
+            if snapshot.get("spendControlReached"):
+                return "spend control is reached"
+            for window in ("primary", "secondary"):
+                if (snapshot.get(window) or {}).get("usedPercent", 0) >= USAGE_CEILING_PERCENT:
+                    return f"{window} usage is at or above {USAGE_CEILING_PERCENT}%"
+        if limits.get("ordinaryUsageAllowed") is False:
+            return "included usage is not allowed"
+        return None
+
     def subscribe(self, thread_id: str) -> asyncio.Queue:
         return self._threads.setdefault(thread_id, asyncio.Queue())
 
@@ -149,6 +175,18 @@ class _CodexConnection:
     def __init__(self, server: _AppServer, thread_id: str, queue: asyncio.Queue) -> None:
         self._server, self._thread, self._queue = server, thread_id, queue
         self._stopped = False
+        self._watchdog = asyncio.create_task(self._watch_usage())
+
+    async def _watch_usage(self) -> None:
+        while not self._stopped:
+            await asyncio.sleep(USAGE_CHECK_SECONDS)
+            try:
+                problem = await self._server.usage_problem()
+            except Exception:
+                problem = "usage could not be read"
+            if problem and not self._stopped:
+                logger.warning("Codex voice stopped by the usage guard: {}", problem)
+                await self._stop()
 
     def __aiter__(self) -> _CodexConnection:
         return self
@@ -175,6 +213,7 @@ class _CodexConnection:
 
     async def close(self) -> None:
         await self._stop()
+        self._watchdog.cancel()
         self._server.unsubscribe(self._thread)
 
 
@@ -192,6 +231,17 @@ def _translate(message: dict) -> dict | None:
     return None
 
 
+def _initial_items(session: dict) -> list[dict]:
+    """The call's seeded history as v3 role/text items."""
+    items = []
+    for message in session.get("input") or []:
+        role = message.get("role")
+        text = "".join(part.get("text", "") for part in message.get("content") or [])
+        if role in ("user", "assistant") and text:
+            items.append({"role": role, "text": text})
+    return items
+
+
 class CodexRealtimeTransport:
     """Same surface as ``LiveTransport``; the ``api_key`` argument is unused."""
 
@@ -203,6 +253,13 @@ class CodexRealtimeTransport:
 
     async def create(self, api_key: str | None, session: dict, sdp: str) -> tuple[str, str]:
         await self._server.ensure_started()
+        problem = await self._server.usage_problem()
+        if problem:
+            raise VoiceError(
+                f"Codex voice refused by the usage guard: {problem}",
+                409,
+                allocation_status="rejected",
+            )
         thread = await self._server.request(
             "thread/start",
             {
@@ -226,6 +283,7 @@ class CodexRealtimeTransport:
                 "includeStartupContext": False,
                 "clientManagedHandoffs": True,
                 **({"voice": voice} if voice in _CODEX_VOICES else {}),
+                **({"initialItems": items} if (items := _initial_items(session)) else {}),
             },
         )
         answer = None
