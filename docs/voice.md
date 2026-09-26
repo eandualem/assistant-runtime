@@ -228,7 +228,9 @@ The envelope's `event` values are:
   `pending_host`, `superseded`, `cancelled`, `failed`, `result_sent`,
   `result_accepted`, `result_rejected`. An accepted commentary command does not
   mean its result was spoken. Errors may subsequently be followed by a generic
-  failure commentary, so retain the normal backend error event too.
+  failure commentary, so retain the normal backend error event too. A delegation
+  that cannot be queued because the call's work queue is full, on arrival or
+  after `waiting`, is `failed` without a backend turn and gets the same commentary.
 - `usage`: `{usage, finalized}`. Usage is a cumulative provider snapshot; replace
   the previous value rather than summing updates.
 - `provider_error`: sanitized `code` and `client_event_id`, when supplied.

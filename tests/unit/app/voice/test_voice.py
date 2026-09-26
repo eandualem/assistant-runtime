@@ -485,6 +485,95 @@ async def test_second_cancel_discards_delegation_waiting_for_cleanup(setup):
     assert not backend.requests
 
 
+def fill_queue(call):
+    while not call.queue.full():
+        call.queue.put_nowait(("stale", None, None))  # skipped by the worker later
+
+
+def failure_answered(call, connection, ident):
+    events = [e["data"] for _, e in call.events if e["event"] == "delegation"]
+    sent = [e for e in connection.sent if e.get("delegation_id") == ident]
+    return (
+        {"id": ident, "status": "failed"} in events
+        and len(sent) == 1
+        and sent[0]["content"].startswith("The backend could not complete the request.")
+        and ident not in call.inputs
+    )
+
+
+async def test_full_queue_fails_a_new_delegation_without_ending_the_call(setup):
+    service, backend, _ = setup
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def runner(request):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await release.wait()  # the worker stays busy while the queue is full
+        yield {}
+
+    backend.runner = runner
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
+    delegate(connection)
+    await asyncio.wait_for(started.wait(), 2)
+    fill_queue(call)
+    delegate(connection, ident="item_2", text=None, request="Second request")
+    try:
+        await until(lambda: connection.sent)
+    finally:
+        release.set()  # also on failure, so the call can close
+    assert failure_answered(call, connection, "item_2")
+    assert call.delegations["item_1"]["status"] == "superseded"
+    connection.feed("session.usage.updated", usage={"seconds": 9})
+    await until(lambda: call.usage.get("seconds") == 9)  # the reader is still running
+    assert not call.done.is_set()
+
+
+@pytest.mark.parametrize("send_fails", [False, True])
+async def test_full_queue_after_cancel_cleanup_fails_the_waiting_delegation(setup, send_fails):
+    service, backend, _ = setup
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
+    entered, release, busy, unblock = (asyncio.Event() for _ in range(4))
+
+    async def runner(request):
+        busy.set()
+        await unblock.wait()
+        yield {"type": "final_response", "model": "test", "content": "Unrelated"}
+
+    async def cleanup(*args):
+        entered.set()
+        await release.wait()
+        # A busy worker cannot drain the queue before the cleanup checks it.
+        call.queue.put_nowait(("busy", service._request(call, "Busy"), None))
+        await busy.wait()
+        fill_queue(call)
+
+    backend.runner = runner
+    backend.cancel_reserved_work.side_effect = cleanup
+    cancelling = asyncio.create_task(service.cancel_work(call_id, OWNER))
+    await asyncio.wait_for(entered.wait(), 2)
+    delegate(connection, ident="waiting", request="Waiting request")
+    await until(lambda: call.deferred_delegation == "waiting")
+    if send_fails:
+        connection.send = AsyncMock(side_effect=OSError("gone"))
+    release.set()
+    try:
+        # The cancel outcome, not a 429 or the send error.
+        assert await asyncio.wait_for(cancelling, 2) == {"cancelled": False}
+    finally:
+        unblock.set()  # also on failure, so the call can close
+    assert not call.cancelling
+    if send_fails:  # a failed send ends the call, as it does from the reader
+        await asyncio.wait_for(call.done.wait(), 2)
+        assert call.reason == "connection_lost"
+    else:
+        assert failure_answered(call, connection, "waiting")
+        assert not call.stop_requested.is_set()
+
+
 def cancelled_events(call):
     return [
         event["data"]
