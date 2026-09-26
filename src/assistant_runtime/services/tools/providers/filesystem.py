@@ -79,8 +79,8 @@ class MarkdownNotes:
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        # The destination check and the move are separate steps; parallel
-        # tool calls must not interleave them and overwrite a note.
+        # A move checks its destination and then renames; parallel tool calls
+        # must not interleave another move or a creation there and lose a note.
         self._move_lock = threading.Lock()
 
     # --- validation ------------------------------------------------------------
@@ -214,7 +214,7 @@ class MarkdownNotes:
         return {"filename": filename, "path": rel, "title": title, "success": True}
 
     def _create(self, folder: str, slug: str, note: str) -> tuple[str, str]:
-        with rooted(self.root, create=True) as root:
+        with self._move_lock, rooted(self.root, create=True) as root:
             relative = root.relative(self.root / folder)
             with root.directory(root.path / relative, create=True) as parent:
                 filename = _create_exclusive(parent, slug, note)
