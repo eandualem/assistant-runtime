@@ -1,5 +1,6 @@
 """OAuth remains usable when the optional database cannot persist tokens."""
 
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -94,7 +95,15 @@ async def test_successful_database_save_is_encrypted_and_reported():
         await service.stop()
 
 
-async def test_codex_cli_sync_removes_the_stored_token_instead_of_saving_it():
+@pytest.mark.parametrize(
+    ("stored", "removed"),
+    [
+        (SimpleNamespace(encrypted_refresh_token="login", encrypted_id_token=None), True),
+        (SimpleNamespace(encrypted_refresh_token=None, encrypted_id_token=None), False),
+    ],
+    ids=["stored-login", "stored-api-key"],
+)
+async def test_codex_cli_sync_removes_a_stored_login_but_keeps_a_stored_api_key(stored, removed):
     @asynccontextmanager
     async def session_context():
         yield SimpleNamespace()
@@ -115,12 +124,54 @@ async def test_codex_cli_sync_removes_the_stored_token_instead_of_saving_it():
             ),
             patch("assistant_runtime.services.database.repositories.OAuthTokenRepository") as repo,
         ):
+            repo.return_value.get = AsyncMock(return_value=stored)
             repo.return_value.upsert = AsyncMock()
             repo.return_value.delete = AsyncMock(return_value=True)
             status = await service.sync_from_codex_cli()
         assert status.connected
         assert status.persisted is False
-        repo.return_value.delete.assert_awaited_once_with("openai")
+        assert repo.return_value.delete.await_count == int(removed)
         repo.return_value.upsert.assert_not_awaited()
     finally:
         await service.stop()
+
+
+async def test_a_stored_copy_of_the_codex_cli_login_is_handed_back_to_the_cli():
+    fernet_key = Fernet.generate_key().decode()
+    cipher = Fernet(fernet_key.encode())
+
+    @asynccontextmanager
+    async def session_context():
+        yield SimpleNamespace()
+
+    stored = SimpleNamespace(
+        encrypted_api_key=cipher.encrypt(b"old-access").decode(),
+        encrypted_refresh_token=cipher.encrypt(b"cli-refresh").decode(),
+        encrypted_id_token=None,
+        expires_at=time.time() + 60,
+        email=None,
+    )
+    service = OAuthService(OAuthConfig(encryption_key=fernet_key))
+    service.set_database_service(SimpleNamespace(healthy=True, session_context=session_context))
+    with (
+        patch.object(
+            service,
+            "_read_codex_cli_auth",
+            return_value=CodexCliAuth(
+                access_token="cli-access", refresh_token="cli-refresh", account_id="acct"
+            ),
+        ),
+        patch("assistant_runtime.services.database.repositories.OAuthTokenRepository") as repo,
+        patch.object(service, "_refresh_token_chain", AsyncMock()) as refresh,
+    ):
+        repo.return_value.get = AsyncMock(return_value=stored)
+        repo.return_value.delete = AsyncMock(return_value=True)
+        await service.start()
+        try:
+            status = service.get_device_code_status()
+            assert status.source == "codex_cli"
+            assert service._access_token == "cli-access"
+            repo.return_value.delete.assert_awaited_once_with("openai")
+            refresh.assert_not_awaited()
+        finally:
+            await service.stop()

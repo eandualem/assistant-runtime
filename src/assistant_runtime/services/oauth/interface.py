@@ -336,7 +336,7 @@ class OAuthService:
             self._use_codex_cli_auth(tokens)
             # The CLI's auth file is this login's only store: a copy in Postgres
             # would be loaded, and refreshed, after a restart.
-            await self._delete_stored_token()
+            await self._delete_stored_token(login_only=True)
             self._token_persisted = False
 
             self._auth_source = AuthSource.CODEX_CLI
@@ -491,6 +491,17 @@ class OAuthService:
                 self._email = token.email
                 self._sync_token_metadata()
 
+                cli = self._codex_cli_login()
+                if cli is not None and self._refresh_token == cli.refresh_token:
+                    # A copy of the Codex CLI's own login, stored by an earlier version
+                    # or left by a failed cleanup: the CLI owns it, so use its file.
+                    await repo.delete("openai")
+                    self._use_codex_cli_auth(cli)
+                    self._auth_source = AuthSource.CODEX_CLI
+                    self._device_code_status = DeviceCodeStatus.AUTHORIZED
+                    logger.info("Stored OpenAI login belongs to the Codex CLI; using its file")
+                    return True
+
                 if self._access_token and self._account_id and not self.needs_refresh():
                     self._token_persisted = True
                     self._auth_source = AuthSource.DATABASE
@@ -538,7 +549,7 @@ class OAuthService:
                 "OAuth tokens remain in memory; persistence failed", error_type=type(exc).__name__
             )
 
-    async def _delete_stored_token(self) -> bool:
+    async def _delete_stored_token(self, *, login_only: bool = False) -> bool:
         """Remove the persisted token; return whether no saved token remains."""
         if self._db_service is None:
             return True
@@ -548,7 +559,14 @@ class OAuthService:
             async with self._db_service.session_context() as session:
                 from assistant_runtime.services.database.repositories import OAuthTokenRepository
 
-                await OAuthTokenRepository(session).delete("openai")
+                repo = OAuthTokenRepository(session)
+                if login_only:
+                    row = await repo.get("openai")
+                    # Without a refresh or id token the row is a stored API key, which
+                    # belongs to the provider-key store, not to this login.
+                    if row is None or not (row.encrypted_refresh_token or row.encrypted_id_token):
+                        return True
+                await repo.delete("openai")
             # DELETE is idempotent: an already absent row also confirms removal.
             return True
         except Exception as exc:
@@ -563,6 +581,13 @@ class OAuthService:
         self._email = tokens.email
         self._account_id = tokens.account_id
         self._sync_token_metadata()
+
+    def _codex_cli_login(self) -> CodexCliAuth | None:
+        """The Codex CLI's current login, or None when its auth file is unusable."""
+        try:
+            return self._read_codex_cli_auth()
+        except (OAuthCodexSyncError, OSError):
+            return None
 
     def _reload_codex_cli_auth(self) -> None:
         """Pick up tokens the Codex CLI has rotated since the last read."""

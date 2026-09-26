@@ -55,9 +55,12 @@ use it. If the file's token has expired too, which happens when the Codex CLI
 goes unused for about ten days (the current token lifetime), status reports
 `connected: false`, `status: "expired"` and an error telling you to run
 `codex login`. The runtime picks up the new login on its next request. The
-CLI's auth file is this login's only store, so it is never saved to Postgres.
-A successful sync returns `connected: true`, `source: "codex_cli"` and
-`persisted: false`. Re-sync after a restart, or enable `OAUTH__CODEX_AUTO_SYNC`.
+CLI's auth file is this login's only store, so it is never saved to Postgres; a
+copy stored by an earlier version is recognised at startup and handed back to the
+CLI, while a stored OpenAI API key is left alone. A sync returns
+`source: "codex_cli"` and `persisted: false`, with `connected: true` while the
+CLI's token is current (`connected: false` and `status: "expired"` otherwise).
+Re-sync after a restart, or enable `OAUTH__CODEX_AUTO_SYNC`.
 A device-flow login belongs to the runtime; it works without Postgres, and when
 Postgres is reachable it is encrypted at rest. A disconnect during
 a database outage clears this process's credentials but cannot remove an
