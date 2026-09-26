@@ -8,6 +8,9 @@ import re
 
 SESSION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*$")
 MAX_SESSION_NAME_LENGTH = 64
+# How long to keep draining a killed command's pipes; a descendant that holds
+# them open must not stall the caller.
+CLEANUP_SECONDS = 5.0
 
 
 async def _run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str, str]:
@@ -25,8 +28,34 @@ async def _run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
             # Reap the process and finish draining its pipes before propagating
-            # cancellation or reporting a timeout to the caller.
-            await proc.communicate()
+            # cancellation or reporting a timeout to the caller, even if the
+            # caller is cancelled again meanwhile.
+            cleanup = asyncio.ensure_future(proc.communicate())
+            cancelled: asyncio.CancelledError | None = None
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + CLEANUP_SECONDS
+            while not cleanup.done():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    # A descendant still holds the pipes: stop draining and close
+                    # them, so no descriptor stays registered with the loop.
+                    cleanup.cancel()
+                    while not cleanup.done():
+                        try:
+                            await asyncio.wait({cleanup})
+                        except asyncio.CancelledError as exc:
+                            cancelled = exc
+                    transport = getattr(proc, "_transport", None)
+                    if transport is not None:
+                        transport.close()
+                    break
+                try:
+                    await asyncio.wait({cleanup}, timeout=remaining)
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+            if cancelled is not None:
+                # A cancellation during cleanup outranks a timeout.
+                raise cancelled from None
             raise
         return (
             proc.returncode or 0,

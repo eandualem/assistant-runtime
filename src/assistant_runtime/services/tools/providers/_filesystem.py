@@ -175,10 +175,16 @@ def _move_across_devices(src: int, source: str, dst: int, destination: str) -> N
                     "Cross-filesystem note moves cannot preserve file flags on this platform",
                 )
             with _file(dst, destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL) as destination_fd:
-                with (
-                    os.fdopen(source_fd, "rb", closefd=False) as reader,
-                    os.fdopen(destination_fd, "wb", closefd=False) as writer,
-                ):
-                    shutil.copyfileobj(reader, writer)
-                _copy_metadata(source_fd, destination_fd, metadata)
+                try:
+                    with (
+                        os.fdopen(source_fd, "rb", closefd=False) as reader,
+                        os.fdopen(destination_fd, "wb", closefd=False) as writer,
+                    ):
+                        shutil.copyfileobj(reader, writer)
+                    _copy_metadata(source_fd, destination_fd, metadata)
+                except BaseException:
+                    # A partial copy would make every retry report "already exists".
+                    with suppress(OSError):
+                        os.unlink(destination, dir_fd=dst)
+                    raise
     os.unlink(source, dir_fd=src)
