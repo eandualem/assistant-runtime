@@ -37,7 +37,17 @@ async def _run_command(args: list[str], timeout: float = 10.0) -> tuple[int, str
             while not cleanup.done():
                 remaining = deadline - loop.time()
                 if remaining <= 0:
+                    # A descendant still holds the pipes: stop draining and close
+                    # them, so no descriptor stays registered with the loop.
                     cleanup.cancel()
+                    while not cleanup.done():
+                        try:
+                            await asyncio.wait({cleanup})
+                        except asyncio.CancelledError as exc:
+                            cancelled = exc
+                    transport = getattr(proc, "_transport", None)
+                    if transport is not None:
+                        transport.close()
                     break
                 try:
                     await asyncio.wait({cleanup}, timeout=remaining)

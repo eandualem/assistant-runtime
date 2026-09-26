@@ -1,6 +1,7 @@
 """Local CLI processes are reaped before timeout or cancellation is returned."""
 
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -123,3 +124,24 @@ async def test_cleanup_is_bounded_when_pipes_never_close(cancel, monkeypatch):
             code, _, error = await asyncio.wait_for(task, 1)
             assert code == 1
             assert "timed out" in error
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell fixture")
+async def test_bounded_cleanup_closes_pipes_held_by_a_descendant(monkeypatch):
+    monkeypatch.setattr(_local_sessions, "CLEANUP_SECONDS", 0.2)
+    spawned = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def capture(*args, **kwargs):
+        proc = await real_exec(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+    # The background sleep inherits stdout and stderr and outlives the killed shell.
+    code, _, error = await asyncio.wait_for(
+        _run_command(["sh", "-c", "sleep 3 & exec sleep 3"], timeout=0.1), 2
+    )
+    assert code == 1
+    assert "timed out" in error
+    assert spawned[0]._transport.is_closing()
