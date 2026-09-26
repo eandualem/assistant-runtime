@@ -254,8 +254,9 @@ async def test_a_provider_refusal_stops_the_session_and_keeps_its_text_private(c
         "reason": "usage_limit_reached",
     }
     assert "private" not in str(refused.value)
-    assert codex._server.sent("thread/realtime/stop") == [{"threadId": "thread-1"}]
     assert "thread-1" not in codex._server.queues
+    await until(lambda: codex._server.sent("thread/realtime/stop"))
+    assert codex._server.sent("thread/realtime/stop") == [{"threadId": "thread-1"}]
 
 
 async def _events(connection, count):
@@ -554,5 +555,176 @@ async def test_the_live_provider_refuses_facts_through_the_runtime(monkeypatch):
         with pytest.raises(VoiceError) as refused:
             await service.update_context(created["call_id"], VoiceContext(fact="Done."), OWNER)
         assert refused.value.status_code == 409
+    finally:
+        await service.stop()
+
+
+def _fake_codex(tmp_path, source):
+    script = tmp_path / "fake_codex.py"
+    script.write_text(source)
+    command = tmp_path / "codex"
+    command.write_text(f"#!/bin/sh\nexec {sys.executable} {script}\n")
+    command.chmod(command.stat().st_mode | stat.S_IEXEC)
+    return str(command)
+
+
+WRONG_LOGIN = """
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("method") == "initialize":
+        print(json.dumps({"id": message["id"], "result": {}}), flush=True)
+    elif message.get("method") == "account/read":
+        print(json.dumps({"id": message["id"], "result": {"account": {"type": "apiKey"}}}), flush=True)
+"""
+
+OVERSIZED = """
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    method, ident = message.get("method"), message.get("id")
+    if method == "initialize":
+        print(json.dumps({"id": ident, "result": {}}), flush=True)
+    elif method == "account/read":
+        print(json.dumps({"id": ident, "result": {"account": {"type": "chatgpt"}}}), flush=True)
+    elif method == "boom":
+        sys.stdout.write("x" * (2**24 + 10) + "\\n")
+        sys.stdout.flush()
+"""
+
+
+async def test_a_server_on_another_login_is_never_reused(tmp_path):
+    server = _AppServer(_fake_codex(tmp_path, WRONG_LOGIN), 5)
+    try:
+        for _ in range(2):  # the second call checks a new server again
+            with pytest.raises(VoiceError, match="ChatGPT"):
+                await server.ensure_started()
+            assert server._proc is None
+    finally:
+        await server.stop()
+
+
+async def test_a_failed_read_ends_the_server_and_releases_waiters(tmp_path):
+    server = _AppServer(_fake_codex(tmp_path, OVERSIZED), 5)
+    try:
+        await server.ensure_started()
+        calls = server.subscribe("thread-1")
+        with pytest.raises(VoiceError, match="exited"):
+            await server.request("boom", {})
+        closed = await asyncio.wait_for(calls.get(), 5)
+        assert closed["params"]["reason"] == "app_server_exit"
+    finally:
+        await server.stop()
+
+
+async def test_a_cli_that_cannot_run_is_checked_again(tmp_path):
+    transport = CodexTransport(
+        str(tmp_path / "missing-codex"), 1, usage_ceiling_percent=97, usage_check_seconds=60
+    )
+    result = await transport.compatibility()
+    assert result == {"version": None, "compatible": False, "missing": ["codex_cli"]}
+    assert transport.checked() is None
+
+
+async def test_a_cancelled_create_still_stops_the_session(codex):
+    async def silent(method, params, original=codex._server.request):
+        if method == "thread/realtime/start":
+            codex._server.requests.append((method, params))
+            await asyncio.sleep(10)
+        return await original(method, params)
+
+    codex._server.request = silent
+    creating = asyncio.create_task(codex.create(None, SESSION, "offer-sdp"))
+    await until(lambda: codex._server.sent("thread/realtime/start"))
+    creating.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await creating
+    await until(lambda: codex._server.sent("thread/realtime/stop"))
+    workdir = codex._workdir.name
+    await codex.stop()
+    assert not os.path.exists(workdir)
+
+
+async def test_a_slow_stop_survives_the_senders_timeout_and_close_waits_for_it(codex):
+    finished = asyncio.Event()
+
+    async def slow(method, params, original=codex._server.request):
+        if method == "thread/realtime/stop":
+            codex._server.requests.append((method, params))
+            await asyncio.sleep(0.1)
+            finished.set()
+            return {}
+        return await original(method, params)
+
+    codex._server.request = slow
+    connection = await codex.attach(None, "thread-1")
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await connection.send(json.dumps({"type": "session.close"}))
+    await connection.close()
+    assert finished.is_set()
+    assert len(codex._server.sent("thread/realtime/stop")) == 1
+
+
+async def test_only_repeated_unreadable_usage_ends_a_call(codex):
+    codex.usage_check_seconds = 0.01
+    reads = 0
+
+    async def flaky(method, params, original=codex._server.request):
+        nonlocal reads
+        if method == "account/rateLimits/read":
+            reads += 1
+            if reads in (1, 2, 4, 5, 6):
+                raise VoiceError("Codex account/rateLimits/read failed", 502)
+        return await original(method, params)
+
+    codex._server.request = flaky
+    connection = await codex.attach(None, "thread-1")
+    events = await _events(connection, 2)
+    assert reads == 6  # two failures were tolerated; the third in a row stopped it
+    assert events[0] == {"type": "error", "error": {"code": "usage_unreadable"}}
+    assert events[1]["reason"] == "usage_guard"
+    await connection.close()
+
+
+async def test_a_refused_fact_changes_nothing(codex, monkeypatch):
+    from assistant_runtime.app.voice.models import VoiceContext
+    from assistant_runtime.host_context import HostContext
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    await service.start()
+    try:
+        created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
+        call = service._calls[created["call_id"]]
+        codex._server.failures.add("thread/realtime/appendText")
+        update = VoiceContext(fact="Lost.", host_context=HostContext(background={"page": "new"}))
+        with pytest.raises(VoiceError):
+            await service.update_context(call.id, update, OWNER)
+        assert call.offer.host_context is None
+        assert call.last_fact_at is None  # the next fact is not rate-limited
+    finally:
+        await service.stop()
+
+
+async def test_status_reports_the_background_check_without_running_it(monkeypatch):
+    transport = CodexTransport("codex", 1, usage_ceiling_percent=97, usage_check_seconds=60)
+    transport._server = FakeServer()
+    gate = asyncio.Event()
+
+    async def blocked():
+        await gate.wait()
+        return {"version": "0.157.1", "compatible": True, "missing": []}
+
+    transport._check = blocked
+    service = VoiceService(
+        VoiceConfig(enabled=True, provider="codex"), Backend(), transport=transport
+    )
+    await service.start()
+    try:
+        assert (await service.health_check())["codex"] is None
+        gate.set()
+        await until(lambda: transport.checked() is not None)
+        assert (await service.health_check())["codex"]["compatible"] is True
     finally:
         await service.stop()

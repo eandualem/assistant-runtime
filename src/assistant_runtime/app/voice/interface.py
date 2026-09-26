@@ -52,12 +52,19 @@ class VoiceService:
         self._calls: dict[str, VoiceCall] = {}
         self._create_lock = asyncio.Lock()
         self._started = False
+        self._check: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._started = True
+        if self._codex and self.config.enabled:
+            # The offline CLI check runs once in the background, not in a health probe.
+            self._check = asyncio.create_task(self._codex_transport().compatibility())
 
     async def stop(self) -> None:
         self._started = False
+        if self._check is not None:
+            self._check.cancel()
+            await asyncio.gather(self._check, return_exceptions=True)
         async with self._create_lock:
             calls = [call for call in self._calls.values() if not call.done.is_set()]
             for call in calls:
@@ -102,9 +109,9 @@ class VoiceService:
                 model=CODEX_MODEL,
                 voices=list(CODEX_VOICES),
             )
-            if self.config.enabled and status["configured"]:
-                # Offline and cached: the installed CLI's protocol, not the account.
-                status["codex"] = await self._codex_transport().compatibility()
+            if self.config.enabled:
+                # The installed CLI's protocol, not the account; None until checked.
+                status["codex"] = self._codex_transport().checked()
         return status
 
     async def usage(self) -> dict:
@@ -323,10 +330,12 @@ class VoiceService:
                 raise VoiceError(
                     "Facts reach GPT-Live through the client data channel, not this endpoint", 409
                 )
-            now = time.monotonic()
-            if call.last_fact_at is not None and now - call.last_fact_at < 1:
+            if call.last_fact_at is not None and time.monotonic() - call.last_fact_at < 1:
                 raise VoiceError("At most one fact per second per call", 429)
-            call.last_fact_at = now
+            # Deliver first: a refused fact leaves the call's context unchanged.
+            # The host's own words, as context for the voice (not backend context).
+            await call.connection.append_fact(update.fact, speak=update.speak)
+            call.last_fact_at = time.monotonic()
         if update.host_context is not None:
             call.offer = call.offer.model_copy(update={"host_context": update.host_context})
             # Context stays structured for the backend. Do not promote host text to
@@ -334,8 +343,6 @@ class VoiceService:
             self._emit(call, "context_updated", {})
         if update.fact is None:
             return {"updated": True}
-        # The host's own words, as context for the voice (not backend context).
-        await call.connection.append_fact(update.fact, speak=update.speak)
         return {"updated": True, "fact": {"accepted": True, "speak": update.speak}}
 
     async def tool_result(
