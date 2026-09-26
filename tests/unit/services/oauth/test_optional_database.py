@@ -65,7 +65,8 @@ async def test_disconnect_reports_incomplete_deletion_then_retries_on_recovery(r
     with patch("assistant_runtime.services.database.repositories.OAuthTokenRepository") as repo:
         repo.return_value.delete = AsyncMock(return_value=row_existed)
         assert await service.disconnect() is True
-        repo.return_value.delete.assert_awaited_once_with("openai")
+        # Only the login row: a stored OpenAI API key is not this service's to remove.
+        repo.return_value.delete.assert_awaited_once_with("openai", "login")
     session.commit.assert_awaited_once()
 
 
@@ -88,6 +89,7 @@ async def test_successful_database_save_is_encrypted_and_reported():
             await service._save_token()
             saved = repo.return_value.upsert.call_args.kwargs
         assert service.get_device_code_status().persisted
+        assert saved["kind"] == "login"
         assert saved["encrypted_api_key"] != "test-access"
         assert service._decrypt(saved["encrypted_api_key"]) == "test-access"
         session.commit.assert_awaited_once()
@@ -117,14 +119,12 @@ async def test_codex_cli_sync_removes_only_a_stored_login():
             patch("assistant_runtime.services.database.repositories.OAuthTokenRepository") as repo,
         ):
             repo.return_value.upsert = AsyncMock()
-            repo.return_value.delete = AsyncMock()
-            repo.return_value.delete_login = AsyncMock(return_value=True)
+            repo.return_value.delete = AsyncMock(return_value=True)
             status = await service.sync_from_codex_cli()
         assert status.connected
         assert status.persisted is False
-        # A stored API key shares the row; only the login-only delete may touch it.
-        repo.return_value.delete_login.assert_awaited_once_with("openai")
-        repo.return_value.delete.assert_not_awaited()
+        # A stored API key is its own row; only the login row is removed.
+        repo.return_value.delete.assert_awaited_once_with("openai", "login")
         repo.return_value.upsert.assert_not_awaited()
     finally:
         await service.stop()
@@ -159,13 +159,14 @@ async def test_a_stored_copy_of_the_codex_cli_login_is_handed_back_to_the_cli():
         patch.object(service, "_refresh_token_chain", AsyncMock()) as refresh,
     ):
         repo.return_value.get = AsyncMock(return_value=stored)
-        repo.return_value.delete_login = AsyncMock(return_value=True)
+        repo.return_value.delete = AsyncMock(return_value=True)
         await service.start()
         try:
             status = service.get_device_code_status()
             assert status.source == "codex_cli"
             assert service._access_token == "cli-access"
-            repo.return_value.delete_login.assert_awaited_once_with("openai")
+            repo.return_value.get.assert_awaited_once_with("openai", "login")
+            repo.return_value.delete.assert_awaited_once_with("openai", "login")
             refresh.assert_not_awaited()
         finally:
             await service.stop()

@@ -238,6 +238,10 @@ class OAuthTokenORM(Base):
     __tablename__ = "oauth_tokens"
 
     provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # "api_key" (the provider-key store) or "login" (a ChatGPT/Codex login): each
+    # owner has its own row, so neither overwrites or deletes the other's data.
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # A login's access token for kind "login".
     encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     encrypted_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     encrypted_id_token: Mapped[str | None] = mapped_column(Text, nullable=True)

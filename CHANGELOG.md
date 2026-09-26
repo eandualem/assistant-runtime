@@ -6,6 +6,12 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+- A stored OpenAI API key and a ChatGPT/Codex login no longer overwrite or
+  delete each other. They shared one database row: storing the key erased a
+  saved login, a new login replaced the key, and removing either removed both.
+  Each now has its own row. Existing Postgres installations must apply
+  migration `0027` with `assistant-runtime migrate` (or `make db-upgrade`)
+  before running this version; it keeps every stored key and login.
 - A login imported from the Codex CLI stays owned by the CLI. Refresh tokens
   are single-use, and the runtime used to refresh the CLI's login itself,
   which signed the Codex CLI out on that machine. The runtime now re-reads the
