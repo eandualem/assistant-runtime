@@ -18,8 +18,8 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Voice on the ChatGPT/Codex subscription: `VOICE__PROVIDER=codex` runs calls
   through the local Codex CLI's realtime voice on its ChatGPT login, with no API
   key and no API fallback. Delegated calls hand the spoken request to the normal
-  turn pipeline and speak the result; the Codex agent behind the call never acts
-  for it. A usage guard refuses or stops calls near the Codex usage limit, or
+  turn pipeline and speak the result; each turn the Codex agent behind the call
+  starts is interrupted. A usage guard refuses or stops calls near the Codex usage limit, or
   whenever credits could be charged, with a machine-readable `reason`.
   `GET /api/voice/usage` shows the usage windows. An offline check of the
   installed CLI's protocol is reported in `/api/voice/status`.
