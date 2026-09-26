@@ -15,6 +15,16 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `codex login`, and reconnects on the next request after you do.
   `OAUTH__CODEX_AUTO_SYNC` no longer fails startup when the CLI's token is
   near expiry or expired.
+- Voice on the ChatGPT/Codex subscription: `VOICE__PROVIDER=codex` runs calls
+  through the local Codex CLI's realtime voice on its ChatGPT login, with no API
+  key and no API fallback. Delegated calls hand the spoken request to the normal
+  turn pipeline and speak the result; the Codex agent behind the call never acts
+  for it. A usage guard refuses or stops calls near the Codex usage limit, or
+  whenever credits could be charged, with a machine-readable `reason`.
+  `GET /api/voice/usage` shows the usage windows. An offline check of the
+  installed CLI's protocol is reported in `/api/voice/status`.
+- Voice calls report `transcript_done` events and `last_activity_at`, and
+  `events_url` includes the path prefix the runtime is mounted under.
 
 ### Upgrading from 0.3.0
 

@@ -1,8 +1,10 @@
 # GPT-Live voice
 
-The optional `[voice]` integration connects a browser microphone and speaker to
-**GPT-Live 1** using OpenAI's Live API. The runtime owns session creation and a
-server WebSocket connection for delegation, transcripts, usage and closing.
+The optional voice integration connects a browser microphone and speaker to
+**GPT-Live 1** using OpenAI's Live API (an API key), or to the realtime voice of a
+local **Codex CLI** signed in with ChatGPT (no API key; see
+[Codex subscription provider](#codex-subscription-provider)). The runtime owns
+session creation and a server connection for delegation, transcripts, usage and closing.
 In delegated mode, GPT-Live sends work through the existing Pydantic AI turn pipeline, so the
 configured assistant profile, capabilities, tools, host actions, access rules,
 history and budgets still apply to backend work. Conversation-only mode keeps speech
@@ -32,11 +34,12 @@ features before opening the microphone or allocating a provider session.
 `configured` means a key is present, not that model
 access has been tested. Disabled or unconfigured creation returns `503`.
 
-Voice requires a Live API key. This integration does not exchange Codex login
-credentials for voice access. The existing local ChatGPT/Codex backend provider
-can remain configured for delegated work; its authentication is unchanged.
-`VOICE__API_KEY_ENV` selects a different server environment variable if desired.
-Keys are never accepted from the browser or returned by voice endpoints.
+The default `live` provider requires a Live API key; it does not exchange Codex
+login credentials for Live access. `VOICE__API_KEY_ENV` selects a different server
+environment variable if desired. Keys are never accepted from the browser or
+returned by voice endpoints. The `codex` provider below uses the Codex CLI's own
+ChatGPT login instead. Either way, the local ChatGPT/Codex backend provider can
+remain configured for delegated work; its authentication is unchanged.
 
 As documented on September 13, 2026, GPT-Live costs **$0.05 per minute of session
 duration**, with backend model usage billed independently. See the current
@@ -93,6 +96,8 @@ Use the voice control endpoints during a call.
    provider model, voice, key or call limits.
 3. The `201` response contains `call_id`, `session_id`, `provider_session_id`,
    `transport: {type: "webrtc", sdp: "<answer>"}`, resolved `mode` and `events_url`.
+   `events_url` includes the path prefix the runtime is mounted under, so it works
+   through a host server that mounts the runtime's app.
    Apply `await pc.setRemoteDescription({type: "answer", sdp: result.transport.sdp})`.
    The HTTP operation already started the provider session: **do not send
    `session.start`**. Wait for `session.started` before any provider commands.
@@ -188,7 +193,9 @@ responsible for durable conversation context and selecting relevant prior turns.
 
 `GET /api/voice/calls/{call_id}` returns the current snapshot: identity, model,
 voice, resolved `mode`, status/reason, transcript fragments, delegation states,
-`active_delegation`, `pending_tool_call`, cumulative `usage`, `finalized` and `cursor`.
+`active_delegation`, `pending_tool_call`, cumulative `usage`, `finalized`, `cursor`
+and `last_activity_at` (the time of the latest transcript activity, for an
+application-side idle close).
 
 `GET /api/voice/calls/{call_id}/events?after=123` streams SSE. Each event has an
 integer `id` and JSON `data` with this envelope:
@@ -212,6 +219,8 @@ The envelope's `event` values are:
 - `transcript`: ordered provider fragments with `role`, `delta`, `start_ms`, `end_ms`.
   Speakers can overlap. Fragments are not authoritative complete turns and an
   output transcript is not proof the user heard the audio.
+- `transcript_done`: `{role, text}`, the final text of one spoken part, where the
+  provider reports it (the `codex` provider does).
 - `backend`: `{delegation_id, event}` where the inner event is the normal
   [runtime stream event](api.md#socketio-namespace-assistant). Render tool progress and full backend
   responses from these events or saved session history.
@@ -289,6 +298,81 @@ actions: a previously active checkpoint is exposed as interrupted, and a new
 voice call must be created. Without Postgres, retained calls are process memory
 only. Session deletion cascades persisted voice records; current session access
 is checked even for cached calls.
+
+## Codex subscription provider
+
+`VOICE__PROVIDER=codex` routes calls through the realtime voice of the local
+[Codex CLI](https://developers.openai.com/codex/cli) on its ChatGPT login. Install
+the CLI and run `codex login`; no API key and no `[voice]` extra are needed.
+
+```bash
+export VOICE__ENABLED=true
+export VOICE__PROVIDER=codex
+uv run assistant-runtime serve
+```
+
+The runtime starts `codex app-server` itself (`VOICE__CODEX_COMMAND` names the
+executable) and never reads or holds the login: the CLI authenticates. API-key
+variables are removed from the CLI's environment and a login that is not a ChatGPT
+login is refused, so this provider never falls back to API billing. Each call gets
+an ephemeral, read-only Codex thread and a realtime v3 session; the browser's WebRTC
+offer and the provider's answer pass through unchanged, and audio flows directly
+between the browser and the provider. The browser contract above is the same.
+
+**Delegation.** In delegated mode, the realtime model's delegation carries the
+request text; the runtime runs it through the normal turn pipeline (profile, tools,
+host actions, history) and speaks the result back into the call. The Codex agent
+behind the thread is never allowed to act for the call: any turn it starts there is
+interrupted. `delegation` status `result_accepted` means the provider queued the
+spoken result, not that it was heard. Host actions, continuations and cancellation
+behave as described above.
+
+**What differs from GPT-Live.**
+
+- The browser's data channel speaks the Codex realtime protocol. It rejects
+  GPT-Live client events such as `session.thinking.append`, and an unknown client
+  event ends the session. Conversation-only calls are enforced by the runtime and
+  the instructions; the provider has no client-event allowlist.
+- The provider reports no usage for the realtime session. `usage` holds the
+  measured `duration_seconds` once the call closes.
+- Voices: `juniper`, `maple`, `spruce`, `ember`, `vale`, `breeze`, `arbor`, `sol`
+  and `cove` (the default). `VOICE__VOICE` is checked against this list at startup,
+  and `GET /api/voice/status` returns it as `voices`.
+- `provider_error` codes are `codex_realtime_error`, `usage_limit_reached` and
+  `codex_version_mismatch`, or a usage-guard reason; provider error text is logged,
+  never returned.
+
+**Usage window.** Realtime voice draws on the same Codex usage allowance as every
+other Codex use on the machine. Before creating a call, and every
+`VOICE__CODEX_USAGE_CHECK_SECONDS` during it, the runtime reads the account's
+usage and refuses or stops the call when one of these holds. Each has a
+machine-readable `reason`:
+
+| `reason` | Meaning |
+|---|---|
+| `credits_available` | purchased credits could be charged |
+| `spend_control_reached` | the account's spend control is reached |
+| `usage_not_allowed` | the backend does not allow included usage now |
+| `usage_limit_reached` | the backend reports a reached limit |
+| `usage_window_limit` | a usage window is at `VOICE__CODEX_USAGE_CEILING_PERCENT` (97) or above |
+| `usage_unreadable` | usage could not be read during a call |
+
+A refused creation returns `409` with `reason` and `allocation_status: "rejected"`.
+A call stopped by the guard emits `provider_error` with the reason and closes with
+reason `usage_guard`. `GET /api/voice/usage` returns the current windows
+(`used_percent`, `window_minutes`, `resets_at`), `credits_available`,
+`spend_control_reached`, `ordinary_usage_allowed`, and the guard's `allowed` and
+`reason`, so an application can show them before opening a call.
+
+**Codex CLI versions.** The realtime interface is experimental in the CLI, and the
+CLI ignores start parameters it does not know. Before the first call, the runtime
+checks the installed CLI's protocol schema offline (`codex app-server
+generate-json-schema`, no session and no usage) for every method, notification and
+parameter this provider relies on. `GET /api/voice/status` reports the result as
+`codex: {version, compatible, missing}`; an incompatible CLI refuses calls with
+`503` and `reason: "codex_incompatible"`. A session that starts on a realtime
+version other than v3 is closed with `codex_version_mismatch`. This provider was
+developed against Codex CLI 0.157.1.
 
 ## Validation boundary
 

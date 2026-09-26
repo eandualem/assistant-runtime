@@ -9,7 +9,7 @@ An installed runtime prints these pages with `assistant-runtime docs <page>`
 | [reference application](reference-app.md) | Run Design Studio and check a live model or database integration |
 | [concepts](concepts.md) | The vocabulary: sessions, turns, tools, host context, artifacts, envelopes |
 | [subscription](subscription.md) | Local ChatGPT/Codex login, subscription routing and Fast mode |
-| [voice](voice.md) | GPT-Live setup, browser connection, delegation and call accounting |
+| [voice](voice.md) | GPT-Live or Codex-subscription voice setup, browser connection, delegation and call accounting |
 | [decisions](decisions.md) | Typed decisions from a decision model: enabling, the call shape, errors and measured overhead |
 | [configuration](configuration.md) | Every setting, the three configuration tiers, secrets |
 | [api](api.md) | HTTP endpoints, the Socket.IO streaming contract and the AG-UI endpoint |

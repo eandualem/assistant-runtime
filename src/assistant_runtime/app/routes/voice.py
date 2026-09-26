@@ -1,6 +1,6 @@
-"""Authenticated GPT-Live browser negotiation and backend event/control endpoints."""
+"""Authenticated voice browser negotiation and backend event/control endpoints."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from assistant_runtime.app.access.deps import PrincipalDep
@@ -25,9 +25,20 @@ async def status(service: VoiceServiceDep, principal: PrincipalDep) -> dict:
     return await service.health_check()
 
 
+@router.get("/usage")
+async def usage(service: VoiceServiceDep, principal: PrincipalDep) -> dict:
+    return await _http(service.usage())
+
+
 @router.post("/calls", status_code=201)
-async def create_call(offer: VoiceOffer, service: VoiceServiceDep, principal: PrincipalDep) -> dict:
-    return await _http(service.create(offer, principal))
+async def create_call(
+    offer: VoiceOffer, request: Request, service: VoiceServiceDep, principal: PrincipalDep
+) -> dict:
+    result = await _http(service.create(offer, principal))
+    if isinstance(result, dict):
+        # Reachable through the host's server when the runtime is mounted under a prefix.
+        result["events_url"] = request.scope.get("root_path", "") + result["events_url"]
+    return result
 
 
 @router.get("/calls/{call_id}")

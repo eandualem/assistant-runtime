@@ -3,17 +3,42 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# Voices the Codex CLI's realtime v3 accepts (its v1 list; the provider rejects others).
+CODEX_VOICES = ("juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove")
+CODEX_DEFAULT_VOICE = "cove"
+# Reported model name: the CLI picks the realtime v3 model; the runtime does not override it.
+CODEX_MODEL = "codex-realtime-v3"
 
 
 class VoiceConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = False
+    # "live": GPT-Live with an API key. "codex": the local Codex CLI's realtime
+    # interface on its ChatGPT login; no API key and no API fallback.
+    provider: Literal["live", "codex"] = "live"
     delegation_enabled: bool = True
     model: str = Field(default="gpt-live-1", min_length=1, max_length=128)
-    voice: str = Field(default="marin", min_length=1, max_length=128)
+    voice: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="Provider voice; defaults to `marin` for live and `cove` for codex.",
+    )
+    codex_command: str = Field(
+        default="codex", min_length=1, description="Codex CLI executable for the codex provider."
+    )
+    codex_usage_ceiling_percent: int = Field(
+        default=97,
+        ge=1,
+        le=100,
+        description="Refuse or stop codex calls when a Codex usage window reaches this percent.",
+    )
+    codex_usage_check_seconds: float = Field(default=15, ge=5, le=300)
     api_key_env: str = Field(default="OPENAI_API_KEY", pattern=r"^[A-Z][A-Z0-9_]*$")
     instructions: str = Field(
         default=(
@@ -41,6 +66,16 @@ class VoiceConfig(BaseModel):
             "(read at startup), so a checked-in prompt file is the single source."
         ),
     )
+
+    @model_validator(mode="after")
+    def _resolve_voice(self) -> VoiceConfig:
+        if self.voice is None:
+            object.__setattr__(
+                self, "voice", CODEX_DEFAULT_VOICE if self.provider == "codex" else "marin"
+            )
+        elif self.provider == "codex" and self.voice not in CODEX_VOICES:
+            raise ValueError(f"VOICE__VOICE for the codex provider must be one of {CODEX_VOICES}")
+        return self
 
     @model_validator(mode="after")
     def _read_instruction_files(self) -> VoiceConfig:
