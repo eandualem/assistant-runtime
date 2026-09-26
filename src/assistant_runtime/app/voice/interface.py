@@ -465,8 +465,12 @@ class VoiceService:
                     call.delegations[ident]["status"] = status
                     self._emit(call, "delegation", {"id": ident, "status": status})
             if status == "failed":
-                with contextlib.suppress(Exception):
+                try:
                     await self._return_result(call, ident, _BACKEND_FAILED)
+                except Exception:
+                    # A failed send ends the call, as elsewhere; the cancel outcome stands.
+                    call.reason = call.reason or "connection_lost"
+                    call.stop_requested.set()
 
     async def events(
         self, call_id: str, principal: Principal, after: int = 0
