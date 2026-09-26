@@ -1156,15 +1156,16 @@ async def test_a_move_waits_for_another_moves_copy(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "link", _refuse_links)
     monkeypatch.setattr(shutil, "copyfileobj", paused_copy)
     waiting = _observe_lock_waits(monkeypatch, notes)
-    first = asyncio.create_task(notes.move(filename="a/note.md", folder="b"))
+    tasks = [asyncio.create_task(notes.move(filename="a/note.md", folder="b"))]
     try:
         assert await asyncio.to_thread(copying.wait, 5)
         # b/note.md exists but is still empty; moving it now would lose the note.
-        second = asyncio.create_task(notes.move(filename="b/note.md", folder="c"))
+        tasks.append(asyncio.create_task(notes.move(filename="b/note.md", folder="c")))
         assert await asyncio.to_thread(waiting.wait, 5)
     finally:
         release.set()
-    assert [r["success"] for r in await asyncio.gather(first, second)] == [True, True]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert [r["success"] for r in results] == [True, True]
     assert (tmp_path / "c" / "note.md").read_text() == "note"
 
 
@@ -1183,16 +1184,17 @@ async def test_a_move_waits_for_a_create_in_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "link", _refuse_links)
     monkeypatch.setattr(f"{MODULE}.exclusive_text", paused_exclusive)
     waiting = _observe_lock_waits(monkeypatch, notes)
-    create = asyncio.create_task(notes.create(title="Plan", content="body", tags=None, folder="a"))
+    tasks = [asyncio.create_task(notes.create(title="Plan", content="body", tags=None, folder="a"))]
     try:
         assert await asyncio.to_thread(opened.wait, 5)
         # The new note exists but is still empty; moving it now would lose its content.
         name = next((tmp_path / "a").iterdir()).name
-        move = asyncio.create_task(notes.move(filename=f"a/{name}", folder="b"))
+        tasks.append(asyncio.create_task(notes.move(filename=f"a/{name}", folder="b")))
         assert await asyncio.to_thread(waiting.wait, 5)
     finally:
         release.set()
-    assert [r["success"] for r in await asyncio.gather(create, move)] == [True, True]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert [r["success"] for r in results] == [True, True]
     assert "body" in (tmp_path / "b" / name).read_text()
 
 
