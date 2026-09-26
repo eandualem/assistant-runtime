@@ -1125,11 +1125,18 @@ async def test_a_note_created_during_a_move_is_not_overwritten(tmp_path, monkeyp
     assert contents == ["moved", "new"]
 
 
-async def test_a_move_whose_source_was_moved_away_leaves_no_copy(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hard_links", [True, False])
+async def test_a_move_whose_source_was_moved_away_leaves_no_copy(tmp_path, monkeypatch, hard_links):
     (tmp_path / "a").mkdir()
     (tmp_path / "c").mkdir()
     (tmp_path / "a" / "note.md").write_text("note")
     real_unlink = os.unlink
+    if not hard_links:
+
+        def no_link(*args, **kwargs):
+            raise OSError(errno.ENOTSUP, "fixture")
+
+        monkeypatch.setattr(os, "link", no_link)
 
     def another_move_first(path, **kwargs):
         # Another writer moves the source after the link, before its unlink.
