@@ -310,11 +310,12 @@ key is `503`; provider errors map to `422`, `429`, `502` and `504` with
 
 ## Voice calls
 
-The optional [GPT-Live integration](voice.md) exposes authenticated
-`/api/voice/status` and `/api/voice/calls` endpoints. POST an SDP offer to
+The optional [voice integration](voice.md) (GPT-Live, or the Codex CLI's realtime
+voice) exposes authenticated `/api/voice/status`, `/api/voice/usage` (Codex usage
+windows and the guard's verdict; codex provider only) and `/api/voice/calls` endpoints. POST an SDP offer to
 create a call, GET its snapshot or `/events` SSE stream, POST `/close` to
 finalize it, POST `/cancel` to cancel delegated backend work, PATCH `/context`
-to update host context, and POST `/delegations/{id}/tool-result` for a pending
+to update host context, send a fact to a codex call, or both, and POST `/delegations/{id}/tool-result` for a pending
 host action. The voice guide specifies request/response and event shapes.
 An active call reserves its runtime session: ordinary turns, cancellation,
 repair, deletion and reassignment return `409`. A call does not use the

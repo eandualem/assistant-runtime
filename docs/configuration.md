@@ -203,13 +203,18 @@ startup prompt for that call, and `profile` for delegated backend work. The
 conversation guard and startup enablement, credentials and resource ceilings
 remain enforced. See [conversation-only voice](voice.md#conversation-only-calls).
 
-Optional GPT-Live provider policy, fixed at startup; these are not request
+Optional voice provider policy, fixed at startup; these are not request
 or runtime-overlay tunables. Install `[voice]` and see [the frontend contract](voice.md).
 
-`enabled` (`false`), `model` (`gpt-live-1`), `voice` (`marin`), `api_key_env`
-(`OPENAI_API_KEY`, the name of an environment variable), `instructions`
+`enabled` (`false`), `provider` (`live`, or `codex` for the Codex CLI's realtime
+voice on its ChatGPT login), `model` (`gpt-live-1`; live only), `voice` (`marin`
+for live, `cove` for codex, checked against the
+[codex voices](voice.md#codex-subscription-provider)), `api_key_env`
+(`OPENAI_API_KEY`, the name of an environment variable; live only), `instructions`
 (neutral concise speech and backend delegation). Voice instructions are
-separate from the backend assistant's profile and artifacts.
+separate from the backend assistant's profile and artifacts. For the codex
+provider: `codex_command` (`codex`), `codex_usage_ceiling_percent` (`97`, 1–100)
+and `codex_usage_check_seconds` (`15`, 5–300).
 
 `max_sessions` (`4`, 1–100), `max_duration_seconds` (`1800`, 15–7200),
 `connect_timeout_seconds` (`20`, >0–60), `close_timeout_seconds` (`10`, >0–60),

@@ -468,15 +468,20 @@ async def test_second_cancel_discards_delegation_waiting_for_cleanup(setup):
     backend.cancel_reserved_work.side_effect = cleanup
     first = asyncio.create_task(service.cancel_work(call_id, OWNER))
     await asyncio.wait_for(entered.wait(), 2)
-    delegate(connection, ident="waiting")
     call = service._calls[call_id]
+    delegate(connection, ident="superseded", request="First request")
+    await until(lambda: call.deferred_delegation == "superseded")
+    delegate(connection, ident="waiting", request="Second request")
     await until(lambda: call.deferred_delegation == "waiting")
+    assert call.delegations["superseded"]["status"] == "superseded"
+    assert "superseded" not in call.inputs
     second = asyncio.create_task(service.cancel_work(call_id, OWNER))
     await until(lambda: call.deferred_delegation is None)
     release.set()
     assert await first == {"cancelled": False}
     assert await second == {"cancelled": True}
     assert call.delegations["waiting"]["status"] == "cancelled"
+    assert call.inputs == {}  # no delegated request text stays behind
     assert not backend.requests
 
 

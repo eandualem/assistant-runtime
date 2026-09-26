@@ -29,6 +29,9 @@ class VoiceCall:
     transcript_chars: int = 0
     seen_events: set[str] = field(default_factory=set)
     delegations: dict[str, dict] = field(default_factory=dict)
+    inputs: dict[str, str] = field(default_factory=dict)  # delegated request text by id
+    last_activity_at: float | None = None
+    last_fact_at: float | None = None  # monotonic; facts are rate-limited per call
     active_delegation: str | None = None
     pending: dict | None = None
     cursor: int = 0
@@ -59,6 +62,7 @@ class VoiceCall:
             "status": self.status,
             "reason": self.reason,
             "created_at": self.created_at,
+            "last_activity_at": self.last_activity_at,
             "finalized": self.finalized,
             "usage": dict(self.usage),
             "transcript": list(self.transcript),
