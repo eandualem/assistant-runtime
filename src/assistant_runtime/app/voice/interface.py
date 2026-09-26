@@ -856,6 +856,7 @@ class VoiceService:
             await self._return_result(call, ident, _BACKEND_FAILED)
         except Exception:
             # Not raised: the reader keeps reading and a cancel keeps its outcome.
+            logger.warning("Voice failure commentary could not be sent", call_id=call.id)
             call.reason = call.reason or "connection_lost"
             call.stop_requested.set()
 
