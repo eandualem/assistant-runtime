@@ -31,6 +31,7 @@ class VoiceCall:
     delegations: dict[str, dict] = field(default_factory=dict)
     inputs: dict[str, str] = field(default_factory=dict)  # delegated request text by id
     last_activity_at: float | None = None
+    last_fact_at: float | None = None  # monotonic; facts are rate-limited per call
     active_delegation: str | None = None
     pending: dict | None = None
     cursor: int = 0

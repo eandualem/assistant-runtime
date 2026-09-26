@@ -315,7 +315,7 @@ voice) exposes authenticated `/api/voice/status`, `/api/voice/usage` (Codex usag
 windows and the guard's verdict; codex provider only) and `/api/voice/calls` endpoints. POST an SDP offer to
 create a call, GET its snapshot or `/events` SSE stream, POST `/close` to
 finalize it, POST `/cancel` to cancel delegated backend work, PATCH `/context`
-to update host context, and POST `/delegations/{id}/tool-result` for a pending
+to update host context (or send a fact to a codex call), and POST `/delegations/{id}/tool-result` for a pending
 host action. The voice guide specifies request/response and event shapes.
 An active call reserves its runtime session: ordinary turns, cancellation,
 repair, deletion and reassignment return `409`. A call does not use the

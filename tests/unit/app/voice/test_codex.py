@@ -74,6 +74,7 @@ def _schema(directory, *, drop_method=None, drop_param=None, versions=("v1", "v2
         "thread/realtime/start",
         "thread/realtime/stop",
         "thread/realtime/appendSpeech",
+        "thread/realtime/appendText",
         "turn/interrupt",
     ]
     notifications = [
@@ -488,5 +489,70 @@ async def test_a_lost_app_server_leaves_the_call_interrupted_not_finalized(codex
         record = await service.get(created["call_id"], OWNER)
         assert (record["status"], record["finalized"]) == ("interrupted", False)
         assert record["reason"] == "connection_lost"
+    finally:
+        await service.stop()
+
+
+async def test_facts_reach_a_codex_call_quietly_or_as_speech_and_are_acknowledged(
+    codex, monkeypatch
+):
+    from pydantic import ValidationError
+
+    from assistant_runtime.app.voice.models import VoiceContext
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    service = VoiceService(VoiceConfig(enabled=True, provider="codex"), Backend(), transport=codex)
+    await service.start()
+    try:
+        created = await service.create(VoiceOffer(session_id="talk", sdp="offer-sdp"), OWNER)
+        call_id = created["call_id"]
+        [realtime] = codex._server.sent("thread/realtime/start")
+        assert "do not read a fact aloud" in realtime["prompt"]
+
+        quiet = await service.update_context(call_id, VoiceContext(fact="Sent the message."), OWNER)
+        assert quiet == {"updated": True, "fact": {"accepted": True, "speak": False}}
+        assert codex._server.sent("thread/realtime/appendText") == [
+            {"threadId": "thread-1", "text": "Sent the message.", "role": "developer"}
+        ]
+        with pytest.raises(VoiceError) as limited:
+            await service.update_context(call_id, VoiceContext(fact="Too soon."), OWNER)
+        assert limited.value.status_code == 429
+
+        service._calls[call_id].last_fact_at -= 1
+        spoken = await service.update_context(
+            call_id, VoiceContext(fact="The review finished.", speak=True), OWNER
+        )
+        assert spoken["fact"]["speak"] is True
+        assert codex._server.sent("thread/realtime/appendSpeech") == [
+            {"threadId": "thread-1", "text": "The review finished."}
+        ]
+
+        service._calls[call_id].last_fact_at -= 1
+        codex._server.failures.add("thread/realtime/appendText")
+        with pytest.raises(VoiceError) as refused:
+            await service.update_context(call_id, VoiceContext(fact="Lost."), OWNER)
+        assert refused.value.status_code == 502
+    finally:
+        await service.stop()
+
+    for body in ({}, {"fact": " "}, {"fact": "x" * 401}, {"host_context": {}, "speak": True}):
+        with pytest.raises(ValidationError):
+            VoiceContext.model_validate(body)
+
+
+async def test_the_live_provider_refuses_facts_through_the_runtime(monkeypatch):
+    from assistant_runtime.app.voice.models import VoiceContext
+    from tests.voice_helpers import Transport
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-never-sent")
+    service = VoiceService(
+        VoiceConfig(enabled=True, close_timeout_seconds=0.05), Backend(), transport=Transport()
+    )
+    await service.start()
+    try:
+        created = await service.create(VoiceOffer(session_id="talk", sdp="offer"), OWNER)
+        with pytest.raises(VoiceError) as refused:
+            await service.update_context(created["call_id"], VoiceContext(fact="Done."), OWNER)
+        assert refused.value.status_code == 409
     finally:
         await service.stop()

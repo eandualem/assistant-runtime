@@ -42,6 +42,7 @@ _REQUIRED_METHODS = {
         "thread/realtime/start",
         "thread/realtime/stop",
         "thread/realtime/appendSpeech",
+        "thread/realtime/appendText",
         "turn/interrupt",
     },
     "ServerNotification.json": {
@@ -427,6 +428,25 @@ class _CodexConnection:
             self._spawn(self._speak(event.get("event_id"), str(event.get("content") or "")))
         else:
             logger.debug("Codex voice ignores client event", type=event.get("type"))
+
+    async def append_fact(self, text: str, *, speak: bool) -> None:
+        """Deliver a host fact: quiet context, or speech now. Raises when refused.
+
+        On realtime v3 the app-server sends text without a channel and the
+        provider treats that as speakable, so quiet facts rely on the call's
+        instructions, not on the protocol.
+        """
+        if self._stopping:
+            raise VoiceError("Voice call is closing")
+        if speak:
+            await self._server.request(
+                "thread/realtime/appendSpeech", {"threadId": self._thread, "text": text}
+            )
+        else:
+            await self._server.request(
+                "thread/realtime/appendText",
+                {"threadId": self._thread, "text": text, "role": "developer"},
+            )
 
     async def _speak(self, command_id: Any, text: str) -> None:
         try:

@@ -23,6 +23,9 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
   whenever credits could be charged, with a machine-readable `reason`.
   `GET /api/voice/usage` shows the usage windows. An offline check of the
   installed CLI's protocol is reported in `/api/voice/status`.
+- Facts for a Codex voice call: `PATCH /api/voice/calls/{id}/context` accepts a
+  `fact` (up to 400 characters) that the voice receives as quiet context, or says
+  now with `speak: true`; the response confirms the provider accepted it.
 - Voice calls report `transcript_done` events and `last_activity_at`, and
   `events_url` includes the path prefix the runtime is mounted under.
 

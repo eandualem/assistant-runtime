@@ -199,6 +199,11 @@ class VoiceService:
                     if call.mode == "conversation"
                     else self.config.instructions
                 )
+                if self._codex:
+                    instructions += (
+                        "\nThe application may add short background facts during the call. "
+                        "Use them when relevant; do not read a fact aloud just because it arrived."
+                    )
                 if call.mode == "conversation":
                     instructions += (
                         "\nThis call is conversation-only. Do not delegate work or call tools. "
@@ -313,11 +318,25 @@ class VoiceService:
         self, call_id: str, update: VoiceContext, principal: Principal
     ) -> dict:
         call = await self._active(call_id, principal)
-        call.offer = call.offer.model_copy(update={"host_context": update.host_context})
-        # Context stays structured for the backend. Do not promote host text to
-        # provider instructions or send attachments/private tool data to Live.
-        self._emit(call, "context_updated", {})
-        return {"updated": True}
+        if update.fact is not None:
+            if not self._codex:
+                raise VoiceError(
+                    "Facts reach GPT-Live through the client data channel, not this endpoint", 409
+                )
+            now = time.monotonic()
+            if call.last_fact_at is not None and now - call.last_fact_at < 1:
+                raise VoiceError("At most one fact per second per call", 429)
+            call.last_fact_at = now
+        if update.host_context is not None:
+            call.offer = call.offer.model_copy(update={"host_context": update.host_context})
+            # Context stays structured for the backend. Do not promote host text to
+            # provider instructions or send attachments/private tool data to Live.
+            self._emit(call, "context_updated", {})
+        if update.fact is None:
+            return {"updated": True}
+        # The host's own words, as context for the voice (not backend context).
+        await call.connection.append_fact(update.fact, speak=update.speak)
+        return {"updated": True, "fact": {"accepted": True, "speak": update.speak}}
 
     async def tool_result(
         self, call_id: str, delegation_id: str, result: VoiceToolResult, principal: Principal

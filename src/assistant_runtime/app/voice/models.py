@@ -47,9 +47,23 @@ class VoiceOffer(BaseModel):
 
 
 class VoiceContext(BaseModel):
+    """Structured context for backend turns and/or one plain-text fact for the voice."""
+
     model_config = ConfigDict(extra="forbid")
 
-    host_context: HostContext
+    host_context: HostContext | None = None
+    fact: str | None = Field(default=None, min_length=1, max_length=400)
+    speak: bool = False
+
+    @model_validator(mode="after")
+    def something_to_update(self):
+        if self.host_context is None and self.fact is None:
+            raise ValueError("supply host_context, fact, or both")
+        if self.fact is not None and not self.fact.strip():
+            raise ValueError("fact must not be blank")
+        if self.speak and self.fact is None:
+            raise ValueError("speak applies to a fact")
+        return self
 
 
 class VoiceToolResult(BaseModel):

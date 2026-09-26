@@ -261,7 +261,8 @@ Several host actions from one model response are handed over one at a time.
 `PATCH /api/voice/calls/{call_id}/context` with `{"host_context": {...}}` changes
 structured context for subsequent backend turns, including action continuations.
 It does not rewrite Live instructions or send attachments directly to the voice
-model. `POST .../cancel` cancels backend work and resolves unanswered host actions
+model. On the `codex` provider the same request can carry a `fact` for the voice
+itself (see [facts](#facts-for-the-voice)). `POST .../cancel` cancels backend work and resolves unanswered host actions
 as interrupted/cancelled; it leaves the audio conversation connected. Ordinary
 speech interruption alone does not cancel backend work. New client delegations
 supersede older unfinished delegations after native cleanup, except that submitted
@@ -342,6 +343,27 @@ behave as described above.
   `codex_version_mismatch`, or a usage-guard reason; provider error text is logged,
   never returned.
 
+### Facts for the voice
+
+An application that works alongside a call (a background watcher, a controller
+carrying out confirmed actions) can tell the voice what actually happened, so it
+can mention it and never claims an action without a fact:
+
+```json
+{"fact": "Sent the confirmed message to the builder agent."}
+```
+
+`fact` is one plain-text statement of up to 400 characters; `host_context` may be
+sent in the same request or omitted. The fact is added to the call as quiet context:
+the call's instructions tell the voice to use facts when relevant and not to read
+them out as they arrive. Set `"speak": true` to have the voice say it now instead.
+The response `{"updated": true, "fact": {"accepted": true, "speak": false}}` means
+the Codex CLI accepted the fact for the live session; a refusal returns `502`, and
+a call that is closing returns `409`. Send each fact once, at most one per second
+per call (`429` otherwise). On realtime v3 the CLI sends facts without a quiet
+channel, so staying silent is the voice's instruction, not a protocol guarantee.
+GPT-Live calls return `409` here; send facts on that provider's data channel.
+
 **Usage window.** Realtime voice draws on the same Codex usage allowance as every
 other Codex use on the machine. Before creating a call, and every
 `VOICE__CODEX_USAGE_CHECK_SECONDS` during it, the runtime reads the account's
@@ -384,6 +406,14 @@ establish successful provider access, microphone negotiation, audio quality,
 latency or billing. An API-key-backed browser call remains the live acceptance
 step. The thin private transport exists because the installed SDK has no Live
 surface; the native Pydantic AI Realtime adapter implements a different protocol.
+
+The `codex` provider is tested offline against a scripted app-server, and its
+protocol check against the installed CLI. Its session setup, audio in both
+directions and transcripts were confirmed with a real ChatGPT login during
+development. Delegation, facts and the usage guard's in-call stop await the same
+live acceptance, and the Codex realtime interface itself is experimental.
+Its protocol source is the Codex CLI (`codex app-server generate-json-schema
+--experimental`) and the open-source [Codex repository](https://github.com/openai/codex).
 
 Protocol sources: [Live overview](https://developers.openai.com/api/docs/guides/live),
 [client delegation](https://developers.openai.com/api/docs/guides/live-delegation),
