@@ -47,6 +47,9 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     async def _register_ingress(app_state, lifecycle):
         app_state.ingress_service = SimpleNamespace()
 
+    async def _register_tasks(app_state, lifecycle, *, settings=None):
+        return None
+
     monkeypatch.setattr("assistant_runtime.main.register_database", _register_database)
     monkeypatch.setattr("assistant_runtime.main.register_llm", _register_llm)
     monkeypatch.setattr("assistant_runtime.main.register_history", _register_history)
@@ -57,6 +60,7 @@ async def test_lifespan_injects_runtime_settings_into_services(monkeypatch):
     monkeypatch.setattr("assistant_runtime.main.register_heartbeat", _register_heartbeat)
     monkeypatch.setattr("assistant_runtime.main.register_streaming", _register_streaming)
     monkeypatch.setattr("assistant_runtime.main.register_ingress", _register_ingress)
+    monkeypatch.setattr("assistant_runtime.main.register_tasks", _register_tasks)
     monkeypatch.setattr("assistant_runtime.main.setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "assistant_runtime.main.RuntimeSettings.load_from_db",
@@ -110,6 +114,7 @@ async def test_runtime_cleans_up_when_startup_does_not_finish(monkeypatch, stage
         "assistant",
         "streaming",
         "ingress",
+        "tasks",
         "heartbeat",
     ):
         monkeypatch.setattr(f"assistant_runtime.main.register_{name}", AsyncMock())

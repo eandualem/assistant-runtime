@@ -7,6 +7,7 @@ from assistant_runtime.app.access.config import AccessConfig
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.heartbeat.config import HeartbeatConfig
 from assistant_runtime.app.streaming.config import StreamingConfig
+from assistant_runtime.app.tasks.config import TasksConfig
 from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.services.artifacts.config import ArtifactsConfig
 from assistant_runtime.services.database.config import DatabaseConfig
@@ -39,6 +40,7 @@ class AppSettings(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig.from_env)
     assistant: AssistantConfig = AssistantConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
+    tasks: TasksConfig = TasksConfig()
     streaming: StreamingConfig = StreamingConfig()
     voice: VoiceConfig = VoiceConfig()
 

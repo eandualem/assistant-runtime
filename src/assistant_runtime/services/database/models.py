@@ -283,6 +283,38 @@ class PromptSnapshotORM(Base):
     )
 
 
+class TaskORM(Base):
+    """A background task: a turn run in its own session outside any conversation turn."""
+
+    __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed', 'cancelled', 'interrupted')",
+            name="ck_tasks_status_valid",
+        ),
+        Index("ix_tasks_parent_session_id", "parent_session_id"),
+        Index("ix_tasks_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    parent_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    task: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class OAuthTokenORM(Base):
     """OAuth token storage — encrypted tokens for provider subscriptions."""
 

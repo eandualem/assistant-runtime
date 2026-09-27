@@ -53,6 +53,10 @@ in `prompt_snapshots` under its SHA-256, since it repeats across turns.
 Without Postgres the record stays on the in-memory message and the process
 keeps the most recent snapshots.
 
+Background tasks are rows in `tasks` (what was asked, its session, status,
+result and times). When the runtime starts, a task left `queued` or
+`running` is marked `interrupted`; its work is not replayed.
+
 Artifact versions are keyed by profile, subject (empty for profile-scoped
 artifacts) and name. A session created for a subject stores its `profile`
 and `subject` on the row, decided by the session's first saved message

@@ -157,7 +157,8 @@ host changes it. See [concepts](concepts.md#prompt-artifacts-and-profiles).
 
 A host in the same process learns of proposals and decisions without
 polling: `app.state.events.subscribe(handler)` calls `handler` (sync or
-async) with each `artifact_proposal` and `artifact_decision` event,
+async) with each `artifact_proposal`, `artifact_decision` and
+`task_finished` event,
 including those made in sessions the host does not stream (background
 work, voice delegations). Delivery is at most once and in process; after a
 restart, `GET /api/artifact-proposals` lists what is still pending.
