@@ -5,7 +5,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from dotenv import find_dotenv, load_dotenv
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from assistant_runtime.services.database.base import Base
@@ -43,6 +43,11 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
+        # One upgrade at a time across processes (several workers migrating
+        # on start): a second one waits here, then finds nothing left to do.
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended('assistant_runtime:migrate', 0))")
+        )
         context.run_migrations()
 
 

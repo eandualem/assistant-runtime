@@ -170,7 +170,10 @@ status = await schema_status(settings.database)  # reachable, current, head
 against the packaged head. A local server needs no stored password: leave
 `DATABASE__PASSWORD` empty for `trust` authentication, or set
 `DATABASE__HOST` to the socket directory (for example `/tmp`) for `peer`
-authentication.
+authentication. `peer` matches the database user to the operating-system
+user running the runtime, so set `DATABASE__USER` to that user (or map it
+with a PostgreSQL user-name map). Concurrent upgrades, in one process or
+several, run one at a time.
 It is the same schema and the same migrations as production. SQLite is not
 supported: the schema uses `JSONB`, `INSERT ... ON CONFLICT` through the
 Postgres dialect, Postgres server defaults and a partial unique index, and
