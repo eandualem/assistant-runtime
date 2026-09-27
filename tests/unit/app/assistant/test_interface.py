@@ -146,3 +146,39 @@ class TestWorkingMemory:
         await service.update_working_memory("sess-1", ctx, turn_number=1)
 
         assert "working_memory" not in ctx or ctx["working_memory"] is None
+
+
+class TestProfilePrompt:
+    async def test_a_profile_prompt_is_its_artifacts_and_includes_with_versions(
+        self, llm_service, history_service, tool_service
+    ):
+        from assistant_runtime.artifacts import (
+            ArtifactDefinition,
+            AssistantProfile,
+            neutral_profile,
+        )
+        from assistant_runtime.services.artifacts.config import ArtifactsConfig
+        from assistant_runtime.services.artifacts.interface import ArtifactService
+        from assistant_runtime.services.artifacts.models import Actor
+
+        owner = AssistantProfile(
+            name="owner", artifacts=(ArtifactDefinition(name="preferences", default="Be brief"),)
+        )
+        voice = AssistantProfile(
+            name="voice",
+            artifacts=(ArtifactDefinition(name="persona", required=True, default="Speak warmly"),),
+            include=("owner",),
+        )
+        artifacts = ArtifactService(ArtifactsConfig(), neutral_profile(), profiles=[voice, owner])
+        await artifacts.start()
+        await artifacts.for_profile("voice").update("persona", "Speak calmly", actor=Actor("host"))
+        service = AssistantService(
+            config=AssistantConfig(),
+            llm_service=llm_service,
+            history_service=history_service,
+            tool_service=tool_service,
+            artifact_service=artifacts,
+        )
+        text, versions = await service.profile_prompt("voice")
+        assert text == "Speak calmly\n\nBe brief"  # no time, host context or memory
+        assert versions == {"persona": 1, "owner.preferences": None}

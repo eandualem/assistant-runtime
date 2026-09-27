@@ -274,7 +274,8 @@ execution, history, serialization, or the upstream dependency; see
   Conversation-only calls create no backend worker and reject tool-result
   admission; `VOICE__DELEGATION_ENABLED=false` is the startup ceiling.
   Voice enablement, credentials and resource ceilings are startup-only; call creation
-  may select bounded `instructions` and a registered backend `profile`. The Live API key is environment-only,
+  may select bounded `instructions` (or a registered `instructions_profile` persona,
+  recorded on the call) and a registered backend `profile`. The Live API key is environment-only,
   independent of the backend model and subscription authentication. One call
   reserves its backend session; session administration excludes reservation
   throughout asynchronous mutations. Client delegations use the normal planner

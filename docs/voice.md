@@ -85,6 +85,18 @@ Use the voice control endpoints during a call.
    for conversation-only calls; their startup file overrides still apply.
    The runtime always appends the conversation-only guard in that mode.
 
+   Optional `instructions_profile` instead takes the persona from a registered
+   profile: its active artifacts in order, then its included profiles' artifacts,
+   the same text a turn of that profile starts from (without MCP connections, the
+   time, host context or memory). It cannot be combined with `instructions`. The
+   runtime's facts sentence and mode guard follow as usual. The call's snapshot
+   records `instructions: {profile, artifact_versions, content}` with the exact
+   text the voice received, so a host can show which versions a call used. An
+   unknown profile, a required artifact without text, or more than 16,000
+   characters returns `422` before a provider session is allocated. Keep such a
+   profile's artifacts out of the assistant's reach (`assistant_edit = "none"`)
+   when the voice should not change its own persona.
+
    Optional `profile` selects a registered assistant profile by name for backend
    delegations and their host-tool continuations. Names start with a lowercase
    letter and contain only lowercase letters, digits and underscores, up to 64

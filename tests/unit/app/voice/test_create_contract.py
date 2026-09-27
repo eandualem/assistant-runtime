@@ -307,3 +307,30 @@ async def test_valid_call_instructions_accepted_without_overriding_policy(bounda
     assert "Do not delegate work or call tools" in session["instructions"][len(expected) :]
     assert session["model"] == boundary.service.config.model
     assert session["audio"]["output"]["voice"] == boundary.service.config.voice
+
+
+async def test_a_profile_persona_gives_and_records_the_call_instructions(boundary):
+    response = await create(boundary, instructions_profile="neutral")
+    assert response.status_code == 201
+    session = json.loads(boundary.requests[0].content)["session"]
+    assert session["instructions"].startswith("Persona of neutral\n")
+    record = (await boundary.client.get(f"/api/voice/calls/{response.json()['call_id']}")).json()
+    assert record["instructions"] == {
+        "profile": "neutral",
+        "artifact_versions": {"persona": 3},
+        "content": session["instructions"],
+    }
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"instructions_profile": "unregistered"},
+        {"instructions_profile": "neutral", "instructions": "x"},
+    ],
+)
+async def test_an_unusable_profile_persona_is_rejected_before_allocation(boundary, fields):
+    response = await create(boundary, **fields)
+    assert response.status_code == 422
+    assert not boundary.requests
+    assert not boundary.backend.leases

@@ -26,6 +26,8 @@ class VoiceOffer(BaseModel):
     config: TunableOverrides | None = None
     mode: Literal["delegated", "conversation"] | None = None
     instructions: str | None = Field(default=None, min_length=1, max_length=16000)
+    instructions_profile: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    """A registered profile whose artifacts (and includes) are the voice's instructions."""
     profile: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
     history: list[VoiceHistoryMessage] | None = Field(default=None, max_length=128)
 
@@ -36,6 +38,8 @@ class VoiceOffer(BaseModel):
             and sum(len(item.content.encode("utf-8")) for item in self.history) > 7000
         ):
             raise ValueError("history must contain at most 7000 UTF-8 bytes of text")
+        if self.instructions is not None and self.instructions_profile is not None:
+            raise ValueError("supply instructions or instructions_profile, not both")
         return self
 
     @field_validator("sdp", "session_id", "instructions")
