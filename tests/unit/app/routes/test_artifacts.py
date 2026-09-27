@@ -449,6 +449,23 @@ class TestHostLabels:
         )
         assert response.status_code == 422
 
+    async def test_a_label_that_does_not_fit_is_refused_not_cut(self, artifacts):
+        from assistant_runtime.app.access.deps import require_admin
+        from assistant_runtime.principal import Principal
+
+        app = FastAPI()
+        app.include_router(router)
+        app.state.artifact_service = artifacts
+        long_id = Principal(id="p" * 100, roles=frozenset({"admin"}))
+        app.dependency_overrides[require_admin] = lambda: long_id
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            refused = await c.patch(
+                "/artifacts/instructions", json={"content": "x", "label": "a" * 32}
+            )
+            plain = await c.patch("/artifacts/instructions", json={"content": "x"})
+        assert refused.status_code == 422
+        assert plain.json()["proposed_by"] == "p" * 100
+
     async def test_a_rollback_takes_no_label(self, client):
         """A rollback reactivates a decided version; a label would be recorded nowhere."""
         await client.patch("/artifacts/instructions", json={"content": "Help more"})
