@@ -108,6 +108,8 @@ class TestConfirmations:
             await service.update_confirmation(confirmed.id, {"status": "failed"})
         with pytest.raises(ActionConflictError, match="sent"):
             await service.update_confirmation(confirmed.id, {"key_epoch": 4})
+        with pytest.raises(ActionConflictError, match="sent"):
+            await service.update_confirmation(confirmed.id, {"result": None})
         with pytest.raises(ActionError, match="recipient"):
             await service.update_confirmation(confirmed.id, {"recipient": "agent-z"})
         reconciled = await service.update_confirmation(confirmed.id, {"reconciled": "matched"})

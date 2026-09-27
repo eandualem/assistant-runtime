@@ -26,6 +26,18 @@ from assistant_runtime.services.database.models import (
     UserSettingsORM,
 )
 
+
+async def _in_commit_order(session: AsyncSession, feed: str) -> None:
+    """Hold the feed's lock until commit, so its ids become visible in increasing order.
+
+    Identity values are handed out when a row is inserted, not when it
+    commits; without this a reader continuing ``after`` a later id could
+    skip an earlier one that commits afterwards.
+    """
+    key = f"assistant_runtime:{feed}"
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0))))
+
+
 # Severity ordering for unsurfaced inbox queries (highest priority first).
 _SEVERITY_ORDER = {"urgent": 0, "action_needed": 1, "info": 2}
 
@@ -369,6 +381,7 @@ class EventRepository:
 
     async def create_if_new(self, **values: Any) -> tuple[EventORM, bool]:
         """Insert the event, or return the stored one with the same (source, event_id)."""
+        await _in_commit_order(self._session, "events")
         result = await self._session.execute(
             pg_insert(EventORM)
             .values(**values)
@@ -444,6 +457,7 @@ class ActionRepository:
 
     async def add_confirmation(self, **values: Any) -> ActionConfirmationORM | None:
         """Insert a confirmation; None when its id is already taken."""
+        await _in_commit_order(self._session, "action_confirmations")
         result = await self._session.execute(
             pg_insert(ActionConfirmationORM)
             .values(**values)

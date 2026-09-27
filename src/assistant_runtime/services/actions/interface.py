@@ -246,7 +246,8 @@ class ActionService:
         """Sign a confirmation while it is ``confirmed``, settle it once, or note reconciliation.
 
         What was confirmed (recipient, kind, revision, text hash, source,
-        time) never changes.
+        time) never changes, and neither does the status or result once it
+        is settled.
         """
         unknown = set(changes) - _CONFIRMATION_CHANGES
         if unknown:
@@ -260,8 +261,8 @@ class ActionService:
             if current is None or action_id not in (None, current.action_id):
                 raise ActionNotFoundError(f"No confirmation {confirmation_id}")
             if current.status != "confirmed" and (
-                "status" in changes or any(key in changes for key in _SIGNING)
-            ):
+                "status" in changes or "result" in changes or any(k in changes for k in _SIGNING)
+            ):  # settled once: afterwards only its reconciliation is noted
                 raise ActionConflictError(f"Confirmation {confirmation_id} is {current.status}")
             values = {key: changes[key] for key in changes}
             return await tx.update_confirmation(confirmation_id, **values) if values else current
