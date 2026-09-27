@@ -624,6 +624,45 @@ async def test_cancel_during_the_result_send_lets_it_finish(setup, text):
     assert not cancelled_events(call)
 
 
+@pytest.mark.parametrize(
+    ("cancel", "newer"),
+    [(False, ["item_2"]), (False, ["item_2", "item_3"]), (True, ["item_2"])],
+)
+async def test_a_new_delegation_lets_the_previous_result_send_finish(setup, cancel, newer):
+    service, _, _ = setup
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
+    sending, release = asyncio.Event(), asyncio.Event()
+
+    async def send(frame, send=connection.send):
+        if json.loads(frame)["type"] == "session.commentary.append":
+            sending.set()
+            await release.wait()
+        await send(frame)
+
+    connection.send = send
+    delegate(connection)
+    try:
+        await asyncio.wait_for(sending.wait(), 2)
+        if cancel:
+            cancelling = asyncio.create_task(service.cancel_work(call_id, OWNER))
+            await until(lambda: call.cancelling)
+        for ident in newer:
+            delegate(connection, ident=ident, text=None, request="Another request")
+        await until(lambda: newer[-1] in call.delegations)
+        await asyncio.sleep(0.01)  # a cancelled send would be interrupted by now
+    finally:
+        release.set()
+    await until(lambda: len(connection.sent) == 2)
+    assert [event["delegation_id"] for event in connection.sent] == ["item_1", newer[-1]]
+    assert call.delegations["item_1"]["status"] == "result_sent"
+    assert {"id": "item_1", "status": "result_sent"} in [
+        event["data"] for _, event in call.events if event["event"] == "delegation"
+    ]
+    if cancel:
+        assert await asyncio.wait_for(cancelling, 2) == {"cancelled": False}
+
+
 async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup):
     service, backend, _ = setup
     started = asyncio.Event()

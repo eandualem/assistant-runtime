@@ -270,7 +270,8 @@ as interrupted/cancelled; it leaves the audio conversation connected. It returns
 delegation whose result is already sent, or being sent, is left as it is. Ordinary
 speech interruption alone does not cancel backend work. New client delegations
 supersede older unfinished delegations after native cleanup, except that submitted
-host results finish being recorded first.
+host results finish being recorded first. A result that is already being sent is
+delivered before the new delegation runs.
 
 ## Context, history and shutdown boundaries
 
