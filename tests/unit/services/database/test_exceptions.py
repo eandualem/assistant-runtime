@@ -36,6 +36,7 @@ class TestFailureCause:
 
         assert failure_cause(_PgError("3D000")) == "database_missing"
         assert failure_cause(_PgError("28P01")) == "auth_refused"
+        assert failure_cause(_PgError("42501")) == "auth_refused"  # no CONNECT right
         assert failure_cause(ConnectionRefusedError()) == "unreachable"
 
     def test_the_code_is_found_on_a_cause_or_a_wrapped_original(self):

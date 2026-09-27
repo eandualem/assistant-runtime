@@ -87,17 +87,18 @@ async def create_database(database: DatabaseConfig) -> bool:
     try:
         async with engine.connect() as conn:
             name = conn.dialect.identifier_preparer.quote(database.name)
-            await conn.execute(text(f"CREATE DATABASE {name}"))
+            # Raw SQL: a quoted name may contain ':', which text() reads as a parameter.
+            await conn.exec_driver_sql(f"CREATE DATABASE {name}")
         return True
     except Exception as exc:
         # Another process may have created it meanwhile; Postgres reports that
         # race as 42P04 or as a unique violation on its catalog.
         if sqlstate(exc) == "42P04" or await _exists(engine, database.name):
             return False
-        cause = failure_cause(exc)
+        # Whatever stopped it (no CREATEDB right, ...), the database is still missing.
         raise DatabaseUnavailableError(
             f"Database {database.name!r} is missing and could not be created: {exc}",
-            cause=cause if cause != "unreachable" else "database_missing",
+            cause="database_missing",
         ) from exc
     finally:
         await engine.dispose()

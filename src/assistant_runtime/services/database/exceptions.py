@@ -12,11 +12,13 @@ from assistant_runtime.base.exceptions import AssistantRuntimeError
 
 DatabaseCause = Literal["unreachable", "auth_refused", "database_missing", "migration_failed"]
 
-# Postgres error codes: the database does not exist; authentication failed.
+# Postgres error codes: the database does not exist; authentication failed;
+# the role may not connect to the database.
 _SQLSTATE_CAUSES: dict[str, DatabaseCause] = {
     "3D000": "database_missing",
     "28P01": "auth_refused",
     "28000": "auth_refused",
+    "42501": "auth_refused",
 }
 
 

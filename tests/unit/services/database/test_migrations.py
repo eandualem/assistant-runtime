@@ -163,7 +163,7 @@ class TestCreateDatabase:
 
     def _engine(self, execute_error=None, exists=None):
         conn = MagicMock()
-        conn.execute = AsyncMock(side_effect=execute_error)
+        conn.exec_driver_sql = AsyncMock(side_effect=execute_error)
         conn.scalar = AsyncMock(return_value=exists)
         conn.dialect.identifier_preparer.quote = lambda name: f'"{name}"'
         cm = MagicMock()
@@ -182,7 +182,7 @@ class TestCreateDatabase:
             assert await create_database(DatabaseConfig(name="fleet_db")) is True
         assert make.call_args[0][0].database == "postgres"
         assert make.call_args[1]["isolation_level"] == "AUTOCOMMIT"
-        assert 'CREATE DATABASE "fleet_db"' in str(conn.execute.await_args[0][0])
+        assert conn.exec_driver_sql.await_args[0][0] == 'CREATE DATABASE "fleet_db"'
 
     async def test_a_concurrent_creator_is_not_an_error(self):
         from assistant_runtime.services.database.migrations import create_database
