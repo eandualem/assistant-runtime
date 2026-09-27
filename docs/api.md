@@ -367,5 +367,6 @@ the same scope through `?profile=<name>`. See [deployments](deployments.md).
 Top-level `subject` (letters, digits, `.`, `_`, `-`; up to 128) names whom
 the turn is about and selects the profile's subject-scoped artifacts. The
 first message of a session that names a subject binds the session to that
-profile and subject: later requests may omit both and inherit them, and a
-request naming another profile or subject is a session error.
+profile (the default when omitted) and subject: later requests, steering
+and delivered messages may omit both and inherit them, and one naming
+another profile or subject is a session error.

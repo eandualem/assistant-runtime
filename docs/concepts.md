@@ -196,8 +196,9 @@ artifact with `scope = "subject"` keeps one version history per subject,
 selected by the request's top-level `subject` (`?subject=` on the artifact
 routes; the tool follows the turn). Without a subject such an artifact is
 left out of the prompt, and writing it is `422`. A session created with a
-subject keeps its profile and subject: later turns, host continuations and
-delivered messages inherit them, and a request naming another is rejected.
+subject keeps its profile (the default when it named none) and subject:
+later turns, host continuations, steering and delivered messages inherit
+them, and a request naming another is rejected.
 Sessions created without a subject select their profile per turn, as
 before. `GET /api/artifact-subjects?profile=` lists the subjects a profile
 keeps text for.

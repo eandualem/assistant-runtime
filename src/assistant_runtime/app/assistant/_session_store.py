@@ -202,6 +202,9 @@ class SessionStore:
                 profile=profile,
                 subject=subject,
             )
+            if bind:
+                # The row may already exist without a binding (a released reservation).
+                await self._db.set_binding(session_id, profile, subject)
             await self._db.create_message(record)
         if new_owner is not None:
             ctx["owner_id"] = new_owner

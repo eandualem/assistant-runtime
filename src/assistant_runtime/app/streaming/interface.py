@@ -33,7 +33,7 @@ from assistant_runtime.app.streaming._event_builder import (
 )
 from assistant_runtime.app.streaming._host_tool import clear_stale_pending_call
 from assistant_runtime.app.streaming._runner import TurnRunner, format_error_message
-from assistant_runtime.app.streaming._turn import TurnPlanner
+from assistant_runtime.app.streaming._turn import TurnPlanner, apply_binding
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.exceptions import StreamingError, StreamSetupError
 from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal
@@ -316,6 +316,9 @@ class StreamingService:
         """Validate a registered profile without starting work or allocating a call."""
         self._assistant_service.validate_profile(name)
 
+    def _default_profile(self) -> str | None:
+        return getattr(self._assistant_service, "default_profile_name", None)
+
     async def accept_steering(
         self,
         request: AssistantRequest,
@@ -341,6 +344,9 @@ class StreamingService:
                     f"Steering rejected: session '{request.session_id}' does not exist"
                 )
             await self._authorize(request.session_id, principal)
+            # Steering in a subject-bound session is queued with the binding,
+            # so the turn that consumes or promotes it agrees with the record.
+            request = apply_binding(request, session_context, self._default_profile())
 
             if has_live_stream or session_context.get("pending_tool_call_id"):
                 await self._sessions.queue_steering(request.session_id, request)
@@ -443,7 +449,11 @@ class StreamingService:
     ) -> AsyncIterator[dict[str, Any]]:
         """Plan and execute an accepted turn through the shared runner."""
         try:
-            (plan,) = await turn.prepare(TurnPlanner(self._sessions).plan(request, principal))
+            (plan,) = await turn.prepare(
+                TurnPlanner(self._sessions, default_profile=self._default_profile()).plan(
+                    request, principal
+                )
+            )
         except (StreamSetupError, SessionError, AccessDeniedError, RunCancelled) as e:
             # Nothing was emitted yet: send a minimal lifecycle envelope so the
             # client can leave its "thinking" state.

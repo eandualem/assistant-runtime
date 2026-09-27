@@ -163,6 +163,11 @@ class AssistantService:
             duration_ms=(time.monotonic() - started_at) * 1000,
         )
 
+    @property
+    def default_profile_name(self) -> str:
+        """The profile a request that names none uses."""
+        return self._artifacts.profile.name
+
     def validate_profile(self, name: str | None) -> None:
         """Reject selectors that were not registered by the runtime operator."""
         if name is not None:

@@ -268,7 +268,14 @@ class ArtifactService:
                 if text and artifact.scope == "profile":
                     fragments.append((f"{name}.{artifact.name}", text))
         if self._profile.collections:
-            rows = await self._require_store().get_all_active(self._profile.name)
+            try:
+                rows = await self._require_store().get_all_active(self._profile.name)
+            except Exception as e:
+                # The listing is optional prompt text, like the artifacts' own fallback.
+                if getattr(self._database_service, "required", False):
+                    raise ArtifactError(f"Failed to list documents: {e}") from e
+                logger.warning("Failed to list documents, leaving them out", error=str(e))
+                rows = []
             names = sorted(r.name for r in rows if self._profile.collection_of(r.name))
             if names:
                 fragments.append(
