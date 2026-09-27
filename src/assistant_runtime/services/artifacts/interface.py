@@ -187,6 +187,7 @@ class ArtifactService:
                         continue
                     row = await store.propose(scope, artifact.name, content, SEED, actor_kind=SEED)
                     await store.activate(scope, artifact.name, row.version)
+                    await view._prune(store, artifact, "")
                 logger.info(
                     "Seeded artifact from its default",
                     profile=scope,
@@ -709,10 +710,12 @@ async def _seed_replaceable(
 ) -> bool:
     """Whether a changed default may replace the stored seed.
 
-    Only while versions 1..N are all seeds (none pruned) and the newest is
-    active, so no one's edit or rollback is ever overwritten.
+    Only while every stored version is a seed and the newest is active, so
+    no one's edit or rollback is ever overwritten. Retention never deletes
+    the newest version, so after a host or assistant write the newest is
+    theirs for good.
     """
     if newest.actor_kind != SEED or not newest.is_active or newest.content == content:
         return False
     history = await store.get_history(scope, name, newest.version)
-    return len(history) == newest.version and all(v.actor_kind == SEED for v in history)
+    return all(v.actor_kind == SEED for v in history)

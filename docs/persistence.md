@@ -63,8 +63,9 @@ With `DATABASE__REQUIRED`, each profile-scoped artifact of a registered profile 
 no stored version gets its default stored as version 1 at startup (actor
 `seed`), so the text a prompt uses is always a versioned record. A changed
 default is stored and activated as a new seed only while every stored version
-is a seed (versions 1..N, the newest active); any host or assistant version
-stops that for good, so a shipped default never overwrites anyone's choice.
+is a seed and the newest is active; any host or assistant version (or a
+rollback) stops that for good, so a shipped default never overwrites
+anyone's choice.
 
 ## Concurrent artifact edits
 

@@ -244,17 +244,25 @@ class TestSeeding:
             assert [r.version for r in await service.history("instructions")] == [2, 1]
             assert (await service.active_texts())["instructions"] == "Help"
 
-    async def test_a_rollback_or_a_pruned_history_keeps_the_stored_seed(self):
-        rolled, pruned = _DurableMemory(), _DurableMemory()
-        for store in (rolled, pruned):
-            await self._start(store)
-            service = await self._start(store, profile=_seeded("Help more"))
-            if store is rolled:
-                await service.activate("instructions", 1, actor=HOST)  # the host keeps seed 1
-        await pruned.prune_superseded("shop", "instructions", 0)  # as keep_versions may
-        for store, versions in ((rolled, [2, 1]), (pruned, [2])):
-            service = await self._start(store, profile=_seeded("Help most"))
-            assert [r.version for r in await service.history("instructions")] == versions
+    async def test_a_rollback_keeps_the_seed_the_host_chose(self):
+        store = _DurableMemory()
+        await self._start(store)
+        service = await self._start(store, profile=_seeded("Help more"))
+        await service.activate("instructions", 1, actor=HOST)
+        service = await self._start(store, profile=_seeded("Help most"))
+        assert [r.version for r in await service.history("instructions")] == [2, 1]
+        assert (await service.active_texts())["instructions"] == "Help"
+
+    async def test_a_refresh_keeps_only_keep_versions_superseded_seeds(self):
+        def kept(default: str) -> AssistantProfile:
+            instructions = ArtifactDefinition(name="instructions", default=default, keep_versions=1)
+            return AssistantProfile(name="shop", artifacts=(instructions,))
+
+        store = _DurableMemory()
+        for default in ("One", "Two", "Three", "Four"):
+            service = await self._start(store, profile=kept(default))
+        rows = await service.history("instructions")
+        assert [(r.version, r.status) for r in rows] == [(4, "active"), (3, "superseded")]
 
     async def test_optional_database_keeps_defaults_unstored(self):
         service = await self._start(_DurableMemory(), required=False)
