@@ -341,7 +341,7 @@ default `neutral` profile defines `instructions` and `scratchpad`.
 
 | Route | Purpose |
 |---|---|
-| `POST /api/assistant/inject` `{"from", "via", "message", "sessionId"?, "telegramChatId"?}` | deliver a message with a `[via:<via> from:<from>]` envelope into a session; `{"status": "delivered", "session_id", "delivery"}` (`delivery` is `queued` into a live turn or `promoted` to a turn of its own) or `{"status": "queued", "inbox_id"}` when no session exists |
+| `POST /api/assistant/inject` `{"from", "via", "message", "sessionId"?, "telegramChatId"?}` | deliver a message with a `[via:<via> from:<from>]` envelope into a session; `{"status": "delivered", "session_id", "delivery"}` (`delivery` is `queued` into a live turn or `promoted` to a turn of its own) or `{"status": "queued", "inbox_id"}` when no session exists, or when a voice call holds the named session (the message joins that session's next turn) |
 | `POST /api/inbox` `{"from", "message", "severity"?, "context"?}` | leave a note (`context.session_id` and `context.via` are honoured); same delivery and response as above |
 | `GET /api/inbox?surfaced=` | list the queued notes (Postgres) |
 | `PATCH /api/inbox/{id}/surfaced` | mark a note as surfaced (Postgres) |
@@ -369,6 +369,45 @@ When a task ends, `task_finished` is published on `app.state.events` with
 session: the host decides when and how a result is reviewed. A restart
 marks unfinished tasks `interrupted` (and publishes that); nothing is
 replayed.
+
+## Events
+
+The host's record of what other systems reported (`inbound`) and of the
+notices it shows the owner (`outbound`), all administrator routes. An event
+is stored once per `(source, event_id)`; ids increase in arrival order (a
+repeated key can leave a gap), so a reader continues with `after`. An
+inbound event is only stored unless it names `target_session_id`: then it
+is steered into that session as `[via:<source> from:<agent>] <kind>
+(<severity>): <summary>`, queued behind a running turn, or waiting for the
+session's next turn while a voice call holds it. Imported history
+(`history: true`) is never steered.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/events` `{"event_id", "direction", "source", "kind", "agent"?, "severity"?, "summary"?, "payload"?, "target_session_id"?, "history"?, "occurred_at"?}` | store an event (`201`), or return the stored one for a repeated key (`200`; delivered then only if no request ever started delivering it, as when the process stopped right after storing it); `severity` is `info` (default), `warning` or `critical`; `occurred_at` needs a UTC offset |
+| `GET /api/events?after=&direction=&source=&agent=&kind=&news_only=&limit=` | `{events, next_after}` in arrival order; `news_only=true` leaves out history |
+| `GET /api/events/{id}` | one event: its `status` (`received` or `delivered` inbound; `pending`, `delivered`, `heard` outbound), `delivery` (`{session_id, how}` with `how` `queued`, `promoted` or `inbox`, `{session_id, error}`, or `{session_id}` alone while delivery runs, or when the process stopped during it and the outcome is unknown), and times |
+| `PATCH /api/events/{id}` `{"status": "delivered"\|"heard"}` | move a notice forward (`409` backwards or for an inbound event) |
+
+## Actions
+
+Records of actions a host proposes and carries out through its own
+confirmation flow (drafts the owner edits, scheduled sends, undo, results
+per recipient), all administrator routes. The runtime stores them and never
+acts on them. A status is `proposed`, `scheduled`, `sending`, `sent`,
+`failed`, `discarded` or `undone`; which follows which is the host's. Each
+status change is appended to `history` with its time and principal; new
+`text` raises `revision` and keeps the first text as `proposed_text`.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/actions` `{"kind", "text"?, "arguments"?, "profile"?, "subject"?, "status"?}` | record an action (`201`), `proposed` by default; `id` is an increasing integer |
+| `GET /api/actions?status=&kind=&profile=&subject=&limit=` | `{actions}`, newest first |
+| `GET /api/actions/{id}` | the action with its `confirmations` in insertion order |
+| `PATCH /api/actions/{id}` `{"status"?, "text"?, "arguments"?, "confirmed_by"?, "decided_at"?, "results"?, "expected_status"?, "expected_revision"?}` | change it; `results` merge per recipient; with `expected_status` (a list) or `expected_revision`, only while the action matches (`409` otherwise) |
+| `POST /api/actions/{id}/confirmations` `{"id", "recipient", "kind", "revision", "text_sha256", "source", "confirmed_at", "key_epoch"?}` | the owner's confirmation for one recipient, written before the send (`201`; a repeated `id` is `409`); `id` is a UUID4, `kind` `message` or `steer`, `source` `button`, `typed` or `voice`, `confirmed_at` with a UTC offset |
+| `PATCH /api/actions/{id}/confirmations/{cid}` `{"key_epoch"?, "sender"?, "audience"?, "status"?, "result"?, "reconciled"?}` | sign it (only while `confirmed`), settle it once as `sent` or `failed` with its `result`, or note `reconciled` (`matched`, `altered`, `missing`, `undelivered`); what was confirmed never changes |
+| `GET /api/action-confirmations?after=&action_id=&status=&sender=&audience=&signed=&reconciled=&limit=` | `{confirmations, next_after}` in insertion order (`seq`), for reconciling against the receiver's receipts |
 
 ## Media and debugging
 

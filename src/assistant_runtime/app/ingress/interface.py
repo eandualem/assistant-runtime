@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.app.socketio_server import socket_event_name
 
@@ -91,8 +92,10 @@ class IngressService:
         Telegram chat, else the most recently active one. Returns
         ``{"status": "delivered", "session_id", "delivery"}`` with ``delivery``
         ``queued`` (into a live turn) or ``promoted`` (a turn of its own),
-        ``{"status": "queued", "inbox_id"}`` when no session exists, or
-        ``{"status": "skipped"}`` when ``queue_when_unrouted`` is False.
+        ``{"status": "queued", "inbox_id"}`` when no session exists or a voice
+        call (or an administrative change) holds it, the message then joining
+        that session's next turn, or ``{"status": "skipped"}`` when
+        ``queue_when_unrouted`` is False.
         """
         target = await self._resolve_session(session_id, telegram_chat_id)
         if target is None:
@@ -107,7 +110,15 @@ class IngressService:
             message_type="steering",
             content=envelope(via, from_agent, message),
         )
-        action = await self._streaming.accept_steering(request, has_live_stream=False)
+        try:
+            action = await self._streaming.accept_steering(request, has_live_stream=False)
+        except SessionError:
+            try:
+                self._streaming.check_session_available(target)
+            except SessionError:  # held for now: wait for the session's next turn
+                inbox_id = await self._queue(from_agent, via, message, severity, target)
+                return {"status": "queued", "inbox_id": inbox_id, "session_id": target}
+            raise
         if action == "promoted":
             self._run_in_background(request)
         logger.info(

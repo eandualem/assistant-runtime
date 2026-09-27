@@ -97,6 +97,36 @@ class TestDeliver:
         assert result["delivery"] == "queued"
         assert not service._background
 
+    async def test_a_session_held_by_a_voice_call_gets_the_message_at_its_next_turn(self):
+        from assistant_runtime.app.assistant.exceptions import SessionError
+
+        store = await _seeded_store()
+        streaming = MagicMock()
+        held = SessionError("Session is reserved by a voice call; use the voice call endpoints")
+        streaming.accept_steering = AsyncMock(side_effect=held)
+        streaming.check_session_available = MagicMock(side_effect=held)
+        service = _service(store, streaming=streaming)
+        await service.start()
+
+        result = await service.deliver(
+            from_agent="planner", via="tmux", message="x", session_id="sess-1"
+        )
+
+        assert (result["status"], result["session_id"]) == ("queued", "sess-1")
+        assert await service.drain("sess-1") == 1  # joins the session's next turn
+
+    async def test_other_steering_refusals_still_raise(self):
+        from assistant_runtime.app.assistant.exceptions import SessionError
+
+        streaming = MagicMock()
+        streaming.accept_steering = AsyncMock(side_effect=SessionError("no active conversation"))
+        streaming.check_session_available = MagicMock()
+        service = _service(await _seeded_store(), streaming=streaming)
+        await service.start()
+
+        with pytest.raises(SessionError):
+            await service.deliver(from_agent="bot", via="tmux", message="x", session_id="sess-1")
+
     async def test_falls_back_to_the_most_recent_session(self):
         store = await _seeded_store()
         streaming = MagicMock()

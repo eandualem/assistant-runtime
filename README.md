@@ -16,6 +16,7 @@ An assistant backend for the application you already have: it holds the conversa
 
 - **A conversation people can keep working in.** Branch from an earlier message, steer a turn while it runs, retain working memory, and edit the assistant's versioned system prompt, with proposed changes approved or rejected by the application. Keep separate, versioned memory for each subject a conversation is about. Hand bounded work to background tasks that run while the conversation goes on.
 - **An assistant that can use your application.** Send what is on screen and declare actions such as editing a document or moving an object. The runtime requests an action; your app performs it and returns the result to continue the turn.
+- **One store for the application's own records.** Log what other systems report, steering an event into a conversation only when you name it, and keep the notices you show people and the actions they confirm, with each person's confirmation recorded before anything is sent.
 - **A UI that follows the work.** Thinking, text, tool calls and results arrive as ordered events. Cancellation and provider failures preserve partial text and completed tool results.
 - **A second model role in parallel.** A silent controller can return one application action or a structured hold with `output_mode: host_tools`, while another model handles the conversation.
 - **Voice with the same application context.** GPT-Live carries the conversation over WebRTC and can delegate tasks into the shared tool pipeline, or speak alongside an independent controller.
