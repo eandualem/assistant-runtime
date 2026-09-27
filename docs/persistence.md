@@ -60,6 +60,12 @@ covers every task in the database, so run tasks in one process per
 database; a task's end is recorded once, and a later terminal update
 changes nothing.
 
+Host-written records have their own tables: `events` (unique per source and
+event id, numbered in arrival order), `actions` (status history, text
+revisions, per-recipient results) and `action_confirmations` (one row per
+recipient, in insertion order, deleted with their action). Without Postgres
+they live in process memory and are lost on restart.
+
 Artifact versions are keyed by profile, subject (empty for profile-scoped
 artifacts) and name. A session created for a subject stores its `profile`
 and `subject` on the row, decided by the session's first saved message

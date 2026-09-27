@@ -16,6 +16,7 @@ from assistant_runtime.app.access.middleware import BrowserOriginMiddleware
 from assistant_runtime.app.assistant.definition import AssistantDefinition
 from assistant_runtime.app.assistant.exceptions import AssistantError, SessionError
 from assistant_runtime.app.assistant.factory import register_assistant
+from assistant_runtime.app.event_log.factory import register_event_log
 from assistant_runtime.app.heartbeat.factory import register_heartbeat
 from assistant_runtime.app.ingress.factory import register_ingress
 from assistant_runtime.app.routes import router
@@ -29,6 +30,7 @@ from assistant_runtime.base.events import EventHub
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.config import AppSettings
 from assistant_runtime.logging_config import setup_logging
+from assistant_runtime.services.actions.factory import register_actions
 from assistant_runtime.services.artifacts.factory import register_artifacts
 from assistant_runtime.services.database.factory import register_database
 from assistant_runtime.services.decisions.factory import register_decisions
@@ -74,6 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await register_history(app.state, lifecycle, settings=settings)
         await register_media(app.state, lifecycle, settings=settings)
         await register_decisions(app.state, lifecycle, settings=settings)
+        await register_actions(app.state, lifecycle, settings=settings)
         await register_mcp(app.state, lifecycle)
         await register_artifacts(app.state, lifecycle, settings=settings)
         await register_tools(app.state, lifecycle, settings=settings)
@@ -83,6 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await register_ingress(app.state, lifecycle)
         await register_tasks(app.state, lifecycle, settings=settings)
         await register_heartbeat(app.state, lifecycle, settings=settings)
+        await register_event_log(app.state, lifecycle, settings=settings)
 
         await lifecycle.start_all()
 

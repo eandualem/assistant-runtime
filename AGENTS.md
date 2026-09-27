@@ -97,7 +97,8 @@ execution, history, serialization, or the upstream dependency; see
 ## Invariants — do not route around these
 
 - **Every service and app module has the same skeleton** (`services/<name>/`,
-  `app/access`, `app/assistant`, `app/streaming`, `app/voice`, `app/ingress`, `app/tasks`, `app/heartbeat`;
+  `app/access`, `app/assistant`, `app/streaming`, `app/voice`, `app/ingress`, `app/tasks`, `app/heartbeat`,
+  `app/event_log`;
   the leaf modules `base`, `artifacts`, `host_context`, `principal`, `config`
   and the `app/routes` package are exempt).
   `config.py` (a frozen pydantic
@@ -109,8 +110,8 @@ execution, history, serialization, or the upstream dependency; see
   `exceptions.py`, and optionally `models.py`. Files starting with `_` are
   private to their module; other modules use the interface class only.
 - **Startup order is registration order** (`main.py:lifespan`): access,
-  database, oauth, llm, history, media, decisions, mcp, artifacts, tools,
-  assistant, streaming, voice, ingress, tasks, heartbeat.
+  database, oauth, llm, history, media, decisions, actions, mcp, artifacts, tools,
+  assistant, streaming, voice, ingress, tasks, heartbeat, event_log.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
@@ -125,7 +126,8 @@ execution, history, serialization, or the upstream dependency; see
   agent setup) imports services; `app/streaming` (the turn pipeline) imports
   `app/assistant`; `app/ingress` (messages from other systems delivered
   into sessions) and `app/tasks` (background turns in their own sessions)
-  import `app/streaming`, and `app/heartbeat` imports `app/ingress`; `app/routes` and `app/socketio_server` are the HTTP and
+  import `app/streaming`, and `app/heartbeat` and `app/event_log` (host-written events, steered
+  into a session only when targeted) import `app/ingress`; `app/routes` and `app/socketio_server` are the HTTP and
   Socket.IO edges; `main`, `cli` and `config` (which composes every module's config model)
   are the top. `tests/unit/test_imports.py` asserts that nothing below the
   top layer imports `app` and that `_`-prefixed files stay inside their
@@ -257,6 +259,16 @@ execution, history, serialization, or the upstream dependency; see
   Pending actions persist their output mode; receipt-only plans save the result
   without another model, summarization or working-memory call. Hosts own scheduling
   and physical cancellation. Docs: `docs/host-contract.md`.
+- **Events and actions are host-written records.** `app/event_log` stores
+  each event once per `(source, event_id)` in arrival order; an inbound event
+  is steered (through ingress) only into its `target_session_id`, reaching a
+  session a voice call holds at its next turn, and imported history is never
+  steered; outbound notices move `pending` → `delivered` → `heard`.
+  `services/actions` keeps actions (status history, text revisions,
+  per-recipient results) and the owner's per-recipient confirmations: what
+  was confirmed never changes, signing happens only while `confirmed`, and a
+  confirmation is settled once. The runtime never acts on either, and the
+  model is offered no tool for them. Docs: `docs/api.md`.
 - **Decisions are a capability of the application, not of the model.**
   `services/decisions` sends program state plus typed questions (`choice`,
   `score`, `noul`) to a `DecisionProvider` (TypeSafe's System One endpoint in

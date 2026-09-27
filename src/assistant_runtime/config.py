@@ -5,10 +5,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from assistant_runtime.app.access.config import AccessConfig
 from assistant_runtime.app.assistant.config import AssistantConfig
+from assistant_runtime.app.event_log.config import EventLogConfig
 from assistant_runtime.app.heartbeat.config import HeartbeatConfig
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.tasks.config import TasksConfig
 from assistant_runtime.app.voice.config import VoiceConfig
+from assistant_runtime.services.actions.config import ActionsConfig
 from assistant_runtime.services.artifacts.config import ArtifactsConfig
 from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.decisions.config import DecisionsConfig
@@ -35,12 +37,14 @@ class AppSettings(BaseSettings):
     history: HistoryConfig = HistoryConfig()
     media: MediaConfig = MediaConfig()
     decisions: DecisionsConfig = DecisionsConfig()
+    actions: ActionsConfig = ActionsConfig()
     oauth: OAuthConfig = OAuthConfig()
     tools: ToolConfig = ToolConfig()
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig.from_env)
     assistant: AssistantConfig = AssistantConfig()
     heartbeat: HeartbeatConfig = HeartbeatConfig()
     tasks: TasksConfig = TasksConfig()
+    event_log: EventLogConfig = EventLogConfig()
     streaming: StreamingConfig = StreamingConfig()
     voice: VoiceConfig = VoiceConfig()
 

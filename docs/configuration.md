@@ -234,6 +234,11 @@ the rest wait in order. `max_waiting` (`100`): queued and running tasks
 beyond which a start is refused. `timeout_seconds` (`900`): a task's own
 time limit. `result_max_chars` (`20000`): the stored result is cut to this.
 
+### Events and actions (`EVENT_LOG__*`, `ACTIONS__*`)
+
+`EVENT_LOG__MAX_PAGE` and `ACTIONS__MAX_PAGE` (`500`): the most records one
+listing returns.
+
 ### Heartbeat (`HEARTBEAT__*`)
 
 `enabled` (`false`), `interval_seconds` (`300`), `startup_delay_seconds`

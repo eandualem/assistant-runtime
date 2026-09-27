@@ -5,11 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     String,
@@ -313,6 +315,110 @@ class TaskORM(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EventORM(Base):
+    """An event from another system (inbound) or a notice for the owner (outbound)."""
+
+    __tablename__ = "events"
+    __table_args__ = (
+        UniqueConstraint("source", "event_id", name="uq_events_source_event_id"),
+        CheckConstraint("direction IN ('inbound', 'outbound')", name="ck_events_direction"),
+        CheckConstraint("severity IN ('info', 'warning', 'critical')", name="ck_events_severity"),
+        CheckConstraint(
+            "status IN ('received', 'delivered', 'pending', 'heard')", name="ck_events_status"
+        ),
+        Index("ix_events_agent", "agent"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    agent: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    target_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    history: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    delivery: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heard_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ActionORM(Base):
+    """An action a host proposed and carried out, with its status history and results."""
+
+    __tablename__ = "actions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('proposed', 'scheduled', 'sending', 'sent', 'failed', 'discarded', "
+            "'undone')",
+            name="ck_actions_status",
+        ),
+        Index("ix_actions_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    arguments: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    history: Mapped[list] = mapped_column(JSONB, nullable=False)
+    confirmed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    results: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    proposed_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ActionConfirmationORM(Base):
+    """The owner's confirmation of one action for one recipient, written before it is sent."""
+
+    __tablename__ = "action_confirmations"
+    __table_args__ = (
+        CheckConstraint("kind IN ('message', 'steer')", name="ck_confirmations_kind"),
+        CheckConstraint("source IN ('button', 'typed', 'voice')", name="ck_confirmations_source"),
+        CheckConstraint(
+            "status IN ('confirmed', 'sent', 'failed')", name="ck_confirmations_status"
+        ),
+        CheckConstraint(
+            "reconciled IS NULL OR reconciled IN ('matched', 'altered', 'missing', 'undelivered')",
+            name="ck_confirmations_reconciled",
+        ),
+        Index("ix_action_confirmations_action_id", "action_id"),
+    )
+
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    action_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("actions.id", ondelete="CASCADE"), nullable=False
+    )
+    recipient: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    key_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sender: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    audience: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    result: Mapped[dict | list | str | None] = mapped_column(JSONB, nullable=True)
+    reconciled: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class OAuthTokenORM(Base):
