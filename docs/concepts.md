@@ -213,8 +213,10 @@ the documents by name; the assistant reads one with the tool.
 
 `keep_versions` on an artifact or collection bounds its history: after
 each write, superseded versions beyond that number are deleted (active,
-pending and rejected versions never are). A stale write through the tool
-returns the current version and text, so the change can be merged.
+pending and rejected versions never are). `max_chars` bounds the text a
+write may store: a longer one is refused, and the tool's error tells the
+assistant to condense it. A stale write through the tool returns the
+current version and text, so the change can be merged.
 
 After the artifacts come the connected MCP servers, the current time, the
 host context and the session's **working memory**: a small structured

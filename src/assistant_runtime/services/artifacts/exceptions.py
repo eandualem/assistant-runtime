@@ -49,6 +49,12 @@ class ArtifactConflictError(ArtifactError):
         self.current_content = current_content
 
 
+class ArtifactTooLargeError(ArtifactError):
+    """The text is longer than the artifact's ``max_chars``."""
+
+    error_code = "artifact_too_large"
+
+
 class ArtifactVersionNotFoundError(ArtifactError):
     """No stored version matches the request."""
 

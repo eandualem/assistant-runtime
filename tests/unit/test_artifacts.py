@@ -208,6 +208,10 @@ class TestScopesIncludesAndCollections:
             ArtifactDefinition(name="notes", keep_versions=0)
         with pytest.raises(ValueError, match="keep_versions"):
             ArtifactDefinition(name="notes", keep_versions=True)
+        with pytest.raises(ValueError, match="max_chars"):
+            ArtifactDefinition(name="notes", max_chars=0)
+        with pytest.raises(ValueError, match="longer than max_chars"):
+            ArtifactDefinition(name="notes", default="Too long", max_chars=3)
 
     def test_collections_resolve_document_names(self):
         from assistant_runtime.artifacts import (
@@ -255,12 +259,14 @@ include = ["owner"]
 name = "progress"
 scope = "subject"
 keep_versions = 50
+max_chars = 4000
 [artifacts.policy]
 assistant_edit = "autonomous"
 
 [[collections]]
 prefix = "doc_"
 role = "documents the owner asked for"
+max_chars = 20000
 [collections.policy]
 assistant_edit = "autonomous"
 """,
@@ -269,7 +275,8 @@ assistant_edit = "autonomous"
         profile = load_profile_file(path)
         assert profile.include == ("owner",)
         progress = profile.get("progress")
-        assert (progress.scope, progress.keep_versions) == ("subject", 50)
+        assert (progress.scope, progress.keep_versions, progress.max_chars) == ("subject", 50, 4000)
         [collection] = profile.collections
         assert collection.prefix == "doc_"
+        assert profile.get("doc_trip").max_chars == 20000
         assert collection.policy.assistant_edit == "autonomous"

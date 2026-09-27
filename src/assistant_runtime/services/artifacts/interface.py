@@ -35,6 +35,7 @@ from assistant_runtime.services.artifacts.exceptions import (
     ArtifactError,
     ArtifactPermissionError,
     ArtifactSubjectRequiredError,
+    ArtifactTooLargeError,
     ArtifactVersionNotFoundError,
     UnknownArtifactError,
     UnknownProfileError,
@@ -162,12 +163,14 @@ class ArtifactService:
         )
 
     async def _seed_defaults(self) -> None:
-        """Store each default as version 1 where nothing is stored yet.
+        """Store each default as a ``seed`` version where no one else has written.
 
         With ``DATABASE__REQUIRED`` the active text is then always a
-        versioned record; the definition's default is only its seed.
-        Subject-scoped artifacts are seeded by nobody: their subjects are
-        not known in advance.
+        versioned record; the definition's default is only its seed. A
+        changed default is stored and activated as a new seed only while
+        every stored version is a seed; any host or assistant version stops
+        that for good. Subject-scoped artifacts are seeded by nobody: their
+        subjects are not known in advance.
         """
         assert self._store is not None
         for view in self._views.values():
@@ -177,11 +180,20 @@ class ArtifactService:
                 if not content or artifact.scope != "profile":
                     continue
                 async with self._store.transaction(scope, artifact.name) as store:
-                    if await store.get_history(scope, artifact.name, 1):
+                    newest = await store.get_history(scope, artifact.name, 1)
+                    if newest and not await _seed_replaceable(
+                        store, scope, artifact.name, newest[0], content
+                    ):
                         continue
                     row = await store.propose(scope, artifact.name, content, SEED, actor_kind=SEED)
                     await store.activate(scope, artifact.name, row.version)
-                logger.info("Seeded artifact from its default", profile=scope, name=artifact.name)
+                    await view._prune(store, artifact, "")
+                logger.info(
+                    "Seeded artifact from its default",
+                    profile=scope,
+                    name=artifact.name,
+                    version=row.version,
+                )
 
     async def stop(self) -> None:
         if self is not self._owner:
@@ -446,6 +458,11 @@ class ArtifactService:
         self._authorize(artifact, actor, "update" if activate else "propose")
         subject = self._subject_for(artifact)
         content = self._clean_content(name, content)
+        if artifact.max_chars is not None and len(content) > artifact.max_chars:
+            raise ArtifactTooLargeError(
+                f"Artifact '{name}' holds at most {artifact.max_chars} characters and this "
+                f"text has {len(content)}; condense it and write it again"
+            )
         scope = self._profile.name
         async with self._require_store().transaction(scope, name, subject=subject) as store:
             active = await store.get_active(scope, name, subject=subject)
@@ -686,3 +703,19 @@ class ArtifactService:
 def _lines(text: str) -> list[str]:
     """Lines for a diff, each ending in a newline so the last one is not glued on."""
     return (text if text.endswith("\n") else text + "\n").splitlines(keepends=True)
+
+
+async def _seed_replaceable(
+    store: Any, scope: str, name: str, newest: ArtifactVersion, content: str
+) -> bool:
+    """Whether a changed default may replace the stored seed.
+
+    Only while every stored version is a seed and the newest is active, so
+    no one's edit or rollback is ever overwritten. Retention never deletes
+    the newest version, so after a host or assistant write the newest is
+    theirs for good.
+    """
+    if newest.actor_kind != SEED or not newest.is_active or newest.content == content:
+        return False
+    history = await store.get_history(scope, name, newest.version)
+    return all(v.actor_kind == SEED for v in history)

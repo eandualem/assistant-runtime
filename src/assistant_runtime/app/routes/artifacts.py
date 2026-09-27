@@ -22,6 +22,7 @@ from assistant_runtime.services.artifacts.exceptions import (
     ArtifactError,
     ArtifactPermissionError,
     ArtifactSubjectRequiredError,
+    ArtifactTooLargeError,
     ArtifactVersionNotFoundError,
     UnknownArtifactError,
     UnknownProfileError,
@@ -89,6 +90,7 @@ _STATUS = {
     ArtifactConflictError: 409,
     ArtifactVersionNotFoundError: 404,
     ArtifactSubjectRequiredError: 422,
+    ArtifactTooLargeError: 422,
 }
 
 
@@ -237,6 +239,7 @@ async def get_profile(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> 
                 "required": a.required,
                 "scope": a.scope,
                 "keep_versions": a.keep_versions,
+                "max_chars": a.max_chars,
                 "policy": _policy(a.policy),
                 "live_version": active.get(a.name),
             }
@@ -247,6 +250,7 @@ async def get_profile(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> 
                 "prefix": c.prefix,
                 "role": c.role,
                 "keep_versions": c.keep_versions,
+                "max_chars": c.max_chars,
                 "policy": _policy(c.policy),
                 "documents": sorted(name for name in active if c.matches(name)),
             }

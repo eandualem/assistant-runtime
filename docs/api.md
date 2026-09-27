@@ -263,8 +263,9 @@ returns `[]`. Three row shapes:
 
 Versions are durable with Postgres and kept in memory otherwise; every
 mutation response and the profile carry `durable`. The routes act as the
-profile's `host` actor: a policy denial is `403`, an unknown name `422`, a
-stale `expected_version` `409`, a missing version `404`.
+profile's `host` actor: a policy denial is `403`, an unknown name or a text
+longer than the artifact's `max_chars` `422`, a stale `expected_version`
+`409`, a missing version `404`.
 
 | Route | Purpose |
 |---|---|
@@ -294,8 +295,8 @@ together hold at most 128 characters; a longer pair is `422`.
 Every artifact route also takes `?subject=`, needed (`422` otherwise) for
 the profile's subject-scoped artifacts and ignored by the others; versions
 and records carry the `subject`. `GET /api/artifacts/profile` reports each
-artifact's `scope` and `keep_versions`, the profile's `include`, and its
-`collections` with the documents they hold.
+artifact's `scope`, `keep_versions` and `max_chars`, the profile's
+`include`, and its `collections` with the documents they hold.
 
 Every version has a `status`: a proposal is `pending` until it is approved
 (`active`) or `rejected`; an active version that another replaces becomes

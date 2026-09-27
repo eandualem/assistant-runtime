@@ -474,3 +474,21 @@ class TestHostLabels:
             json={"action": "rollback", "version": 1, "label": "owner"},
         )
         assert refused.status_code == 422
+
+
+class TestSizeBound:
+    async def test_a_text_over_max_chars_is_422_and_the_profile_reports_the_bound(self):
+        profile = AssistantProfile(
+            name="shop", artifacts=(ArtifactDefinition(name="notes", max_chars=5),)
+        )
+        service = ArtifactService(ArtifactsConfig(), profile)
+        await service.start()
+        app = FastAPI()
+        app.include_router(router)
+        app.state.artifact_service = service
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            refused = await c.patch("/artifacts/notes", json={"content": "Too long"})
+            described = (await c.get("/artifacts/profile")).json()
+        assert refused.status_code == 422
+        assert "at most 5 characters" in refused.json()["detail"]
+        assert described["artifacts"][0]["max_chars"] == 5
