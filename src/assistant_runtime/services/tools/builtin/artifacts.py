@@ -17,9 +17,11 @@ from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.artifacts.models import Actor, ArtifactVersion, MutationResult
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
-from assistant_runtime.services.tools.request_context import get_current_profile_name
+from assistant_runtime.services.tools.request_context import (
+    get_current_assistant_session_id,
+    get_current_profile_name,
+)
 
-ASSISTANT = Actor(kind="assistant")
 ACTIONS = ("list", "view", "history", "propose", "update", "activate")
 
 
@@ -28,6 +30,7 @@ def _version_dict(row: ArtifactVersion, *, content: bool = False) -> dict[str, A
         "name": row.name,
         "version": row.version,
         "is_active": row.is_active,
+        "status": row.status,
         "proposed_by": row.proposed_by,
         "char_count": len(row.content),
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -58,6 +61,7 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
         content: str = "",
         version: int = 0,
         expected_version: int | None = None,
+        rationale: str = "",
     ) -> dict[str, Any]:
         """Read and evolve the prompt artifacts the profile allows the assistant to change."""
         if action not in ACTIONS:
@@ -80,6 +84,7 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
             }
         try:
             scoped = artifacts.for_profile(get_current_profile_name())
+            assistant = Actor(kind="assistant", session_id=get_current_assistant_session_id())
             if action == "list":
                 return await _list(scoped)
             if action == "view":
@@ -88,17 +93,30 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
                 return await _history(scoped, name)
             if action == "propose":
                 result = await scoped.propose(
-                    name, content, actor=ASSISTANT, expected_version=expected_version
+                    name,
+                    content,
+                    actor=assistant,
+                    expected_version=expected_version,
+                    rationale=rationale,
                 )
-                message = (
-                    "Content already active; nothing changed."
-                    if result.unchanged
-                    else f"Version {result.version.version} proposed; it stays inactive until activated."
-                )
-                return _mutation_dict(result, message)
+                if result.unchanged:
+                    return _mutation_dict(result, "Content already active; nothing changed.")
+                return {
+                    **_mutation_dict(
+                        result,
+                        f"Version {result.version.version} proposed; it stays pending until "
+                        "it is approved or rejected.",
+                    ),
+                    "proposal": {
+                        "profile": scoped.profile.name,
+                        "subject": None,
+                        "name": name,
+                        "version": result.version.version,
+                    },
+                }
             if action == "update":
                 result = await scoped.update(
-                    name, content, actor=ASSISTANT, expected_version=expected_version
+                    name, content, actor=assistant, expected_version=expected_version
                 )
                 message = (
                     "Content already active; nothing changed."
@@ -112,7 +130,7 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
                     "error_code": "missing_version",
                     "success": False,
                 }
-            result = await scoped.activate(name, version, actor=ASSISTANT)
+            result = await scoped.activate(name, version, actor=assistant)
             return _mutation_dict(result, f"Version {version} of '{name}' is now active.")
         except ArtifactError as e:
             return {"error": str(e), "error_code": e.error_code, "success": False}
@@ -214,6 +232,10 @@ def register_artifact_tools(registry: ToolRegistry, artifacts: ArtifactService |
                     "version": {
                         "type": "integer",
                         "description": "Version number (required for activate)",
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Why the change is needed (propose); shown to the reviewer",
                     },
                     "expected_version": {
                         "type": "integer",

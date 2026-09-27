@@ -24,6 +24,7 @@ from assistant_runtime.app.streaming.exceptions import StreamingError
 from assistant_runtime.app.streaming.factory import register_streaming
 from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.app.voice.factory import register_voice
+from assistant_runtime.base.events import EventHub
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.config import AppSettings
 from assistant_runtime.logging_config import setup_logging
@@ -141,6 +142,9 @@ def create_app(
     )
     app.state.assistant_definition = assistant
     app.state.settings = settings
+    # Domain events (artifact proposals and decisions); a host subscribes
+    # here, before or after startup.
+    app.state.events = EventHub()
 
     # CORS: the listed origins plus the origin regex (localhost on any port by
     # default). Socket.IO applies the same AccessConfig in create_asgi_app.
@@ -259,7 +263,7 @@ def create_asgi_app(
     *, assistant: AssistantDefinition | None = None, settings: AppSettings | None = None
 ) -> socketio.ASGIApp:
     """Create the full ASGI application with Socket.IO wrapper."""
-    from assistant_runtime.app.socketio_server import create_sio
+    from assistant_runtime.app.socketio_server import create_sio, forward_session_events
 
     if settings is None:
         # Both transports read the origin rule, so resolve settings once.
@@ -268,6 +272,7 @@ def create_asgi_app(
     sio = create_sio(settings.access)
     sio.fastapi_app = fastapi_app
     fastapi_app.state.sio = sio
+    fastapi_app.state.events.subscribe(forward_session_events(sio))
     return socketio.ASGIApp(sio, fastapi_app)
 
 

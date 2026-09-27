@@ -39,6 +39,11 @@ router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 class ProposeRequest(BaseModel):
     content: str = Field(..., min_length=1)
     expected_version: int | None = None
+    rationale: str | None = None
+
+
+class RejectRequest(BaseModel):
+    reason: str | None = None
 
 
 class UpdateRequest(BaseModel):
@@ -49,10 +54,12 @@ class UpdateRequest(BaseModel):
 class ArtifactActionRequest(BaseModel):
     """Unified action request for a host proxy endpoint."""
 
-    action: str = Field(..., pattern="^(approve|rollback|propose|update)$")
+    action: str = Field(..., pattern="^(approve|rollback|reject|propose|update)$")
     version: int | None = None
     content: str | None = None
     expected_version: int | None = None
+    rationale: str | None = None
+    reason: str | None = None
 
 
 _STATUS = {
@@ -100,9 +107,14 @@ async def _propose(
     content: str,
     proposed_by: str,
     expected_version: int | None,
+    rationale: str | None = None,
 ) -> dict[str, Any]:
     result = await artifacts.propose(
-        name, content, actor=Actor("host", proposed_by), expected_version=expected_version
+        name,
+        content,
+        actor=Actor("host", proposed_by),
+        expected_version=expected_version,
+        rationale=rationale,
     )
     message = (
         "Content already active; nothing changed."
@@ -140,6 +152,15 @@ async def _activate(
         else f"Version {version} approved and now active."
     )
     return _mutation_response(result, message=message)
+
+
+async def _reject(
+    artifacts: ArtifactService, name: str, version: int, actor_id: str, reason: str | None
+) -> dict[str, Any]:
+    result = await artifacts.reject(name, version, actor=Actor("host", actor_id), reason=reason)
+    return _mutation_response(
+        result, message=f"Version {version} of {name} rejected; the active version is unchanged."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +208,32 @@ async def get_profile(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> 
     }
 
 
+@router.get("/proposals")
+async def list_proposals(
+    request: Request,
+    principal: PrincipalDep,
+    profile: str | None = Query(None, description="One registered profile; omit for all of them"),
+    status: str = Query("pending", pattern="^(pending|active|superseded|rejected)$"),
+) -> list[dict]:
+    """Versions in ``status`` (pending proposals by default) as records with their diff.
+
+    Unlike the other routes, an omitted ``profile`` lists every registered
+    profile: an owner reviews all waiting proposals in one place.
+    """
+    service = get_artifact_service(request)
+    try:
+        names = [profile] if profile is not None else list(service.available_profiles)
+        records: list[dict] = []
+        for name in names:
+            records.extend(await service.for_profile(name).proposals(status))
+    except ArtifactError as e:
+        raise _http_error(e) from e
+    except Exception as e:
+        logger.error("Failed to list proposals", error=str(e))
+        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
+    return records
+
+
 @router.get("/{name}")
 async def get_artifact(name: str, artifacts: ScopedArtifactDep, principal: PrincipalDep) -> dict:
     """The active version of an artifact, or its default text when none is active."""
@@ -229,13 +276,29 @@ async def get_artifact_history(
         raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
 
 
+@router.get("/{name}/versions/{version}")
+async def get_artifact_version(
+    name: str, version: int, artifacts: ScopedArtifactDep, principal: PrincipalDep
+) -> dict:
+    """One version as a proposal record: its content, the active text and a unified diff."""
+    try:
+        return await artifacts.version_record(name, version)
+    except ArtifactError as e:
+        raise _http_error(e) from e
+    except Exception as e:
+        logger.error("Failed to get artifact version", name=name, version=version, error=str(e))
+        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
+
+
 @router.post("/{name}/propose", status_code=201)
 async def propose_artifact(
     name: str, body: ProposeRequest, artifacts: ScopedArtifactDep, admin: AdminDep
 ) -> dict:
     """Propose a new version of an artifact (inactive until approved)."""
     try:
-        return await _propose(artifacts, name, body.content, admin.id, body.expected_version)
+        return await _propose(
+            artifacts, name, body.content, admin.id, body.expected_version, body.rationale
+        )
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -271,6 +334,24 @@ async def approve_artifact(
         raise HTTPException(status_code=500, detail="Failed to approve artifact") from e
 
 
+@router.post("/{name}/reject/{version}")
+async def reject_artifact(
+    name: str,
+    version: int,
+    artifacts: ScopedArtifactDep,
+    admin: AdminDep,
+    body: RejectRequest | None = None,
+) -> dict:
+    """Reject a pending version; the active version stays as it is."""
+    try:
+        return await _reject(artifacts, name, version, admin.id, body.reason if body else None)
+    except ArtifactError as e:
+        raise _http_error(e) from e
+    except Exception as e:
+        logger.error("Failed to reject artifact", name=name, version=version, error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to reject artifact") from e
+
+
 @router.post("/{name}/rollback/{version}")
 async def rollback_artifact(
     name: str, version: int, artifacts: ScopedArtifactDep, admin: AdminDep
@@ -289,20 +370,25 @@ async def rollback_artifact(
 async def artifact_action(
     name: str, body: ArtifactActionRequest, artifacts: ScopedArtifactDep, admin: AdminDep
 ) -> dict:
-    """Unified action endpoint: approve, rollback, propose or update a named artifact."""
+    """Unified action endpoint: approve, rollback, reject, propose or update a named artifact."""
     try:
-        if body.action in ("approve", "rollback"):
+        if body.action in ("approve", "rollback", "reject"):
             if body.version is None:
                 raise HTTPException(
                     status_code=422, detail=f"version is required for {body.action}"
                 )
+            if body.action == "reject":
+                return await _reject(artifacts, name, body.version, admin.id, body.reason)
             return await _activate(
                 artifacts, name, body.version, admin.id, rollback=body.action == "rollback"
             )
         if not body.content:
             raise HTTPException(status_code=422, detail=f"content is required for {body.action}")
-        handler = _propose if body.action == "propose" else _update
-        return await handler(artifacts, name, body.content, admin.id, body.expected_version)
+        if body.action == "propose":
+            return await _propose(
+                artifacts, name, body.content, admin.id, body.expected_version, body.rationale
+            )
+        return await _update(artifacts, name, body.content, admin.id, body.expected_version)
     except HTTPException:
         raise
     except ArtifactError as e:

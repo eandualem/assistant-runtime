@@ -11,6 +11,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -31,11 +32,28 @@ class ArtifactStore(Protocol):
 
     async def get_history(self, scope: str, name: str, limit: int) -> list[ArtifactVersion]: ...
 
+    async def get_version(self, scope: str, name: str, version: int) -> ArtifactVersion | None: ...
+
+    async def get_by_status(self, scope: str, status: str, limit: int) -> list[ArtifactVersion]: ...
+
     async def propose(
-        self, scope: str, name: str, content: str, proposed_by: str
+        self,
+        scope: str,
+        name: str,
+        content: str,
+        proposed_by: str,
+        *,
+        actor_kind: str = "host",
+        rationale: str | None = None,
     ) -> ArtifactVersion: ...
 
-    async def activate(self, scope: str, name: str, version: int) -> ArtifactVersion | None: ...
+    async def activate(
+        self, scope: str, name: str, version: int, *, decided_by: str | None = None
+    ) -> ArtifactVersion | None: ...
+
+    async def reject(
+        self, scope: str, name: str, version: int, *, decided_by: str, reason: str | None
+    ) -> ArtifactVersion | None: ...
 
     async def delete(self, scope: str, name: str) -> int: ...
 
@@ -72,8 +90,30 @@ class InMemoryArtifactStore:
         versions = self._versions.get((scope, name), [])
         return sorted(versions, key=lambda v: v.version, reverse=True)[:limit]
 
+    async def get_version(self, scope: str, name: str, version: int) -> ArtifactVersion | None:
+        return next(
+            (v for v in self._versions.get((scope, name), []) if v.version == version), None
+        )
+
+    async def get_by_status(self, scope: str, status: str, limit: int) -> list[ArtifactVersion]:
+        rows = [
+            v
+            for (item_scope, _), versions in self._versions.items()
+            if item_scope == scope
+            for v in versions
+            if v.status == status
+        ]
+        return sorted(rows, key=lambda v: v.id or 0, reverse=True)[:limit]
+
     async def propose(
-        self, scope: str, name: str, content: str, proposed_by: str
+        self,
+        scope: str,
+        name: str,
+        content: str,
+        proposed_by: str,
+        *,
+        actor_kind: str = "host",
+        rationale: str | None = None,
     ) -> ArtifactVersion:
         versions = self._versions[(scope, name)]
         row = ArtifactVersion(
@@ -84,20 +124,52 @@ class InMemoryArtifactStore:
             proposed_by=proposed_by,
             created_at=datetime.now(UTC),
             id=self._next_id,
+            status="pending",
+            actor_kind=actor_kind,
+            rationale=rationale,
         )
         self._next_id += 1
         versions.append(row)
         return row
 
-    async def activate(self, scope: str, name: str, version: int) -> ArtifactVersion | None:
+    async def activate(
+        self, scope: str, name: str, version: int, *, decided_by: str | None = None
+    ) -> ArtifactVersion | None:
         versions = self._versions.get((scope, name), [])
-        if not any(v.version == version for v in versions):
+        target = next((v for v in versions if v.version == version), None)
+        if target is None:
             return None
+        decision = (
+            {"decided_by": decided_by, "decided_at": datetime.now(UTC)}
+            if decided_by is not None and target.status == "pending"
+            else {}
+        )
         updated = [
-            ArtifactVersion(**{**vars(v), "is_active": v.version == version}) for v in versions
+            replace(v, is_active=True, status="active", **decision)
+            if v.version == version
+            else replace(v, is_active=False, status="superseded")
+            if v.is_active
+            else v
+            for v in versions
         ]
         self._versions[(scope, name)] = updated
         return next(v for v in updated if v.version == version)
+
+    async def reject(
+        self, scope: str, name: str, version: int, *, decided_by: str, reason: str | None
+    ) -> ArtifactVersion | None:
+        versions = self._versions.get((scope, name), [])
+        for index, v in enumerate(versions):
+            if v.version == version and v.status == "pending":
+                versions[index] = replace(
+                    v,
+                    status="rejected",
+                    decided_by=decided_by,
+                    decided_at=datetime.now(UTC),
+                    decision_reason=reason,
+                )
+                return versions[index]
+        return None
 
     async def delete(self, scope: str, name: str) -> int:
         return len(self._versions.pop((scope, name), []))
@@ -136,6 +208,12 @@ class DatabaseArtifactStore:
             proposed_by=row.proposed_by,
             created_at=row.created_at,
             id=row.id,
+            status=row.status,
+            actor_kind=row.actor_kind,
+            rationale=row.rationale,
+            decided_by=row.decided_by,
+            decided_at=row.decided_at,
+            decision_reason=row.decision_reason,
         )
 
     def _repository(self, session: Any) -> Any:
@@ -158,16 +236,48 @@ class DatabaseArtifactStore:
             rows = await self._repository(session).get_history(scope, name, limit=limit)
         return [self._to_version(row) for row in rows]
 
+    async def get_version(self, scope: str, name: str, version: int) -> ArtifactVersion | None:
+        async with self._session_context() as session:
+            row = await self._repository(session).get_version(scope, name, version)
+        return self._to_version(row) if row is not None else None
+
+    async def get_by_status(self, scope: str, status: str, limit: int) -> list[ArtifactVersion]:
+        async with self._session_context() as session:
+            rows = await self._repository(session).get_by_status(scope, status, limit=limit)
+        return [self._to_version(row) for row in rows]
+
     async def propose(
-        self, scope: str, name: str, content: str, proposed_by: str
+        self,
+        scope: str,
+        name: str,
+        content: str,
+        proposed_by: str,
+        *,
+        actor_kind: str = "host",
+        rationale: str | None = None,
     ) -> ArtifactVersion:
         async with self._session_context() as session:
-            row = await self._repository(session).propose(scope, name, content, proposed_by)
+            row = await self._repository(session).propose(
+                scope, name, content, proposed_by, actor_kind=actor_kind, rationale=rationale
+            )
             return self._to_version(row)
 
-    async def activate(self, scope: str, name: str, version: int) -> ArtifactVersion | None:
+    async def activate(
+        self, scope: str, name: str, version: int, *, decided_by: str | None = None
+    ) -> ArtifactVersion | None:
         async with self._session_context() as session:
-            row = await self._repository(session).approve(scope, name, version)
+            row = await self._repository(session).approve(
+                scope, name, version, decided_by=decided_by
+            )
+            return self._to_version(row) if row is not None else None
+
+    async def reject(
+        self, scope: str, name: str, version: int, *, decided_by: str, reason: str | None
+    ) -> ArtifactVersion | None:
+        async with self._session_context() as session:
+            row = await self._repository(session).reject(
+                scope, name, version, decided_by=decided_by, reason=reason
+            )
             return self._to_version(row) if row is not None else None
 
     async def delete(self, scope: str, name: str) -> int:

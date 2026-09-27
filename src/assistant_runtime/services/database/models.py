@@ -216,6 +216,21 @@ class ArtifactORM(Base):
             "assistant", "name", "version", name="uq_artifacts_assistant_name_version"
         ),
         Index("ix_artifacts_assistant_name_is_active", "assistant", "name", "is_active"),
+        Index(
+            "uq_artifacts_one_active",
+            "assistant",
+            "name",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+        CheckConstraint(
+            "status IN ('active', 'pending', 'superseded', 'rejected')",
+            name="ck_artifacts_status_valid",
+        ),
+        CheckConstraint("(status = 'active') = is_active", name="ck_artifacts_status_is_active"),
+        CheckConstraint(
+            "actor_kind IN ('assistant', 'host', 'seed')", name="ck_artifacts_actor_kind_valid"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -227,8 +242,14 @@ class ArtifactORM(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     proposed_by: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default=text("'system'")
+        String(128), nullable=False, server_default=text("'system'")
     )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

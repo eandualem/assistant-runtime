@@ -270,3 +270,61 @@ class TestProfileSelection:
         response = await client.request(method, path, params={"profile": "missing"}, json=body)
         assert response.status_code == 404
         assert "Unknown assistant profile" in response.json()["detail"]
+
+
+class TestProposals:
+    async def test_proposals_across_profiles_with_diffs(self, artifacts):
+        other = AssistantProfile(
+            name="support",
+            artifacts=(ArtifactDefinition(name="instructions", default="Assist"),),
+        )
+        service = ArtifactService(ArtifactsConfig(), PROFILE, profiles=[other])
+        await service.start()
+        await service.propose("instructions", "Help more", actor=Actor("assistant"))
+        await service.for_profile("support").propose(
+            "instructions", "Assist more", actor=Actor("assistant"), rationale="Warmer"
+        )
+        app = FastAPI()
+        app.include_router(router)
+        app.state.artifact_service = service
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            everything = (await c.get("/artifacts/proposals")).json()
+            support = (await c.get("/artifacts/proposals", params={"profile": "support"})).json()
+            none_rejected = (await c.get("/artifacts/proposals?status=rejected")).json()
+        assert [(r["profile"], r["version"]) for r in everything] == [("shop", 1), ("support", 1)]
+        assert [r["rationale"] for r in support] == ["Warmer"]
+        assert "+Assist more" in support[0]["diff"]
+        assert none_rejected == []
+
+    async def test_version_record(self, client, artifacts):
+        await artifacts.propose("instructions", "Help more", actor=Actor("assistant"))
+        body = (await client.get("/artifacts/instructions/versions/1")).json()
+        assert body["status"] == "pending"
+        assert body["active_content"] == "Help"
+        assert "+Help more" in body["diff"]
+        assert (await client.get("/artifacts/instructions/versions/5")).status_code == 404
+
+    async def test_propose_with_rationale_then_reject(self, client, artifacts):
+        response = await client.post(
+            "/artifacts/instructions/propose", json={"content": "New", "rationale": "Clearer"}
+        )
+        assert response.status_code == 201
+        assert response.json()["rationale"] == "Clearer"
+        response = await client.post("/artifacts/instructions/reject/1", json={"reason": "Not now"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "rejected"
+        assert body["decision_reason"] == "Not now"
+        assert body["effective_on_next_request"] is False
+        assert (await artifacts.active_texts())["instructions"] == "Help"
+        again = await client.post("/artifacts/instructions/reject/1")
+        assert again.status_code == 409
+
+    async def test_reject_through_the_actions_endpoint(self, client, artifacts):
+        await artifacts.propose("instructions", "New", actor=Actor("assistant"))
+        response = await client.post(
+            "/artifacts/instructions/actions",
+            json={"action": "reject", "version": 1, "reason": "No"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "rejected"

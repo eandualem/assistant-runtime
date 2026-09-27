@@ -115,7 +115,7 @@ execution, history, serialization, or the upstream dependency; see
   on a failed start. `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
 - **Layering, bottom up.** `base` (lifecycle, protocols, resilience,
-  exceptions), `artifacts` (assistant profiles: the artifact schema, the
+  exceptions, the domain event hub), `artifacts` (assistant profiles: the artifact schema, the
   built-in `neutral` and `technical_operator` profiles, TOML loading),
   `host_context` (the host contract), `principal` (trusted identity and the
   ownership rule) and `model_catalog` (providers, their key variables,
@@ -295,6 +295,12 @@ execution, history, serialization, or the upstream dependency; see
   enforces each artifact's `ArtifactPolicy` in code for the `assistant`
   and `host` actors (Postgres when reachable, process memory otherwise,
   scoped by profile name); the tool and the routes never bypass it.
+  A version's `status` is `pending` until approved (`active`) or
+  `rejected`; a replaced active version is `superseded`, and one active
+  version per artifact is a database constraint. Proposals and decisions
+  are published as `artifact_proposal`/`artifact_decision` on the
+  in-process `app.state.events` hub (`base/events.py`), which the
+  Socket.IO edge forwards to the session's room.
 - **Model ids are `provider:name`** and are validated in
   `services/llm/_settings.py`, which also derives provider-specific
   settings (adaptive thinking and effort for current Claude models, no

@@ -20,6 +20,10 @@ from loguru import logger
 from assistant_runtime.app.access.config import AccessConfig
 from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
 from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.app.streaming import (
+    make_artifact_decision_event,
+    make_artifact_proposal_event,
+)
 from assistant_runtime.host_context import host_context_from_payload
 from assistant_runtime.principal import Credentials, Principal
 from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
@@ -41,6 +45,8 @@ _EVENT_TYPE_MAP: dict[str, str] = {
     "tool_error": "assistant:tool_error",
     "final_response": "assistant:final_response",
     "error": "assistant:error",
+    "artifact_proposal": "assistant:artifact_proposal",
+    "artifact_decision": "assistant:artifact_decision",
 }
 
 
@@ -51,6 +57,37 @@ def socket_event_name(event: dict[str, Any]) -> str:
     if name is not None:
         return name
     return "assistant:debug" if event_type.startswith("debug_") else "assistant:unknown"
+
+
+_SESSION_EVENT_BUILDERS: dict[str, Callable[..., dict[str, Any]]] = {
+    "artifact_proposal": make_artifact_proposal_event,
+    "artifact_decision": make_artifact_decision_event,
+}
+
+
+def forward_session_events(sio: socketio.AsyncServer) -> Callable[[dict[str, Any]], Any]:
+    """An ``app.state.events`` handler: send session-bound domain events to the session's room.
+
+    An artifact proposed or decided during a turn reaches the clients that
+    joined that session; events without a session are for in-process
+    subscribers only.
+    """
+
+    async def forward(event: dict[str, Any]) -> None:
+        build = _SESSION_EVENT_BUILDERS.get(event.get("type", ""))
+        session_id = event.get("session_id")
+        if build is None or not session_id:
+            return
+        fields = {key: value for key, value in event.items() if key != "type"}
+        stream_event = build(**fields)
+        await sio.emit(
+            socket_event_name(stream_event),
+            stream_event,
+            room=f"session:{session_id}",
+            namespace="/assistant",
+        )
+
+    return forward
 
 
 def create_sio(access: AccessConfig | None = None) -> socketio.AsyncServer:

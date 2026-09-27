@@ -209,7 +209,7 @@ class TestApprove:
         )
 
         select_result = MagicMock()
-        select_result.scalar_one_or_none.return_value = 11
+        select_result.scalar_one_or_none.return_value = ArtifactORM(id=11, status="pending")
         update_result = MagicMock()
         activate_result = MagicMock()
         activate_result.scalar_one.return_value = target_row
@@ -244,7 +244,7 @@ class TestApprove:
         )
 
         select_result = MagicMock()
-        select_result.scalar_one_or_none.return_value = 9
+        select_result.scalar_one_or_none.return_value = ArtifactORM(id=9, status="superseded")
         update_result = MagicMock()
         activate_result = MagicMock()
         activate_result.scalar_one.return_value = target_row

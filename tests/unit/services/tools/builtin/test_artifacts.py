@@ -116,12 +116,17 @@ class TestReads:
 
 class TestWrites:
     async def test_propose_stays_inactive(self, manage, artifacts):
-        result = await manage(action="propose", name="instructions", content="New")
+        result = await manage(
+            action="propose", name="instructions", content="New", rationale="Shorter"
+        )
         assert result["success"]
         assert result["activated"] is False
         assert result["version"] == 1
+        assert result["status"] == "pending"
         assert result["live_version"] is None
-        assert "inactive" in result["message"]
+        assert "pending" in result["message"]
+        assert result["proposal"]["name"] == "instructions"
+        assert result["proposal"]["version"] == 1
         assert (await artifacts.active_texts())["instructions"] == "Help shoppers"
 
     async def test_review_required_artifact_cannot_be_updated_or_activated(self, manage):

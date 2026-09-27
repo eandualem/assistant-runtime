@@ -33,6 +33,7 @@ async def register_artifacts(
         profile=profile,
         profiles=[resolve_profile(value) for value in settings.assistant.profiles],
         database_service=getattr(app_state, "database_service", None),
+        events=getattr(app_state, "events", None),
     )
     app_state.artifact_service = service
     await lifecycle.register("artifact_service", service)
