@@ -379,6 +379,39 @@ async def test_the_usage_guard_stops_a_running_call(codex):
     await connection.close()
 
 
+async def test_attached_calls_share_one_usage_read_and_stop_together(codex):
+    codex.usage_check_seconds = 0.01
+    reads = 0
+    release = asyncio.Event()
+
+    async def held(method, params, original=codex._server.request):
+        nonlocal reads
+        if method == "account/rateLimits/read":
+            reads += 1
+            await release.wait()
+        return await original(method, params)
+
+    codex._server.request = held
+    calls = [await codex.attach(None, "thread-1"), await codex.attach(None, "thread-2")]
+    try:
+        await until(lambda: reads)
+        await asyncio.sleep(0.05)  # several intervals pass while the read is held
+        assert reads == 1
+        codex._server.results["account/rateLimits/read"] = _limits(ordinaryUsageAllowed=False)
+        release.set()
+        for connection in calls:
+            events = await _events(connection, 2)
+            assert events[0] == {"type": "error", "error": {"code": "usage_not_allowed"}}
+            assert events[1]["reason"] == "usage_guard"
+    finally:
+        release.set()
+        for connection in calls:
+            await connection.close()
+    after_close = reads
+    await asyncio.sleep(0.05)
+    assert reads == after_close  # no call is attached, so nothing reads usage
+
+
 async def test_voice_service_runs_codex_calls_without_a_key_and_delegates(codex, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     backend = Backend()
