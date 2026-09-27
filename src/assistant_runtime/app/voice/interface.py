@@ -318,6 +318,8 @@ class VoiceService:
                 previous = call.active_delegation
                 # The active delegation may be finished, its result sent or
                 # still being sent; it is not interrupted, relabelled or reported.
+                # Work of an earlier delegation, such as its result still being
+                # sent, is not interrupted either.
                 finished = previous is not None and call.delegations[previous]["status"] not in (
                     "running",
                     "pending_host",
@@ -331,7 +333,7 @@ class VoiceService:
                 call.cancelling = True
                 call.active_delegation = None
                 call.pending = None
-                if not finished:
+                if not finished and call.work_delegation == previous:
                     self._cancel_unprotected(call)
                 task = call.cancel_task = asyncio.create_task(
                     self._cancel_backend(call, previous, barrier)
@@ -582,6 +584,10 @@ class VoiceService:
                         call.delegations[previous]["status"] = "superseded"
                         call.inputs.pop(previous, None)
                         self._emit(call, "delegation", {"id": previous, "status": "superseded"})
+                        # Only its own work stops. Other work, such as an earlier
+                        # result already recorded as sent, finishes first.
+                        if call.work_delegation == previous:
+                            self._cancel_unprotected(call)
                     call.active_delegation = ident
                     call.pending = None
                     status = "waiting" if call.cancelling else "running"
@@ -591,7 +597,6 @@ class VoiceService:
                     elif isinstance(delegation.get("input"), str) and delegation["input"]:
                         call.inputs[ident] = delegation["input"][: self.config.context_chars]
                     call.delegations[ident] = {"status": status}
-                    self._cancel_unprotected(call)
                     if call.cancelling:
                         call.deferred_delegation = ident
                     elif status == "running":
@@ -688,6 +693,7 @@ class VoiceService:
                     + transcript,
                 )
             call.work_continuation = request.is_continuation
+            call.work_delegation = ident
             call.work = asyncio.create_task(self._execute(call, ident, request))
             try:
                 await asyncio.shield(call.work)
@@ -707,6 +713,7 @@ class VoiceService:
                 if receipt is not None and not receipt.done():
                     receipt.set_result(None)
                 call.work = None
+                call.work_delegation = None
                 call.work_continuation = False
 
     async def _execute(self, call: VoiceCall, ident: str, request: AssistantRequest) -> None:

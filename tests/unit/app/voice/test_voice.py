@@ -624,6 +624,58 @@ async def test_cancel_during_the_result_send_lets_it_finish(setup, text):
     assert not cancelled_events(call)
 
 
+@pytest.mark.parametrize(
+    ("cancel", "newer"),
+    [
+        (None, ["item_2"]),
+        (None, ["item_2", "item_3"]),
+        ("before", ["item_2"]),
+        ("after", ["item_2"]),
+    ],
+)
+async def test_a_new_delegation_lets_the_previous_result_send_finish(setup, cancel, newer):
+    service, _, _ = setup
+    call_id, connection = await create(setup)
+    call = service._calls[call_id]
+    sending, release = asyncio.Event(), asyncio.Event()
+
+    async def send(frame, send=connection.send):
+        if json.loads(frame)["type"] == "session.commentary.append":
+            sending.set()
+            await release.wait()
+        await send(frame)
+
+    async def start_cancel():
+        task = asyncio.create_task(service.cancel_work(call_id, OWNER))
+        await until(lambda: call.cancelling or task.done())
+        return task
+
+    connection.send = send
+    delegate(connection)
+    try:
+        await asyncio.wait_for(sending.wait(), 2)
+        if cancel == "before":
+            cancelling = await start_cancel()
+        for ident in newer:
+            delegate(connection, ident=ident, text=None, request="Another request")
+        await until(lambda: newer[-1] in call.delegations)
+        if cancel == "after":
+            cancelling = await start_cancel()
+        await asyncio.sleep(0.01)  # a cancelled send would be interrupted by now
+    finally:
+        release.set()
+    if cancel:
+        # A cancel after the new delegation stops that delegation, not the send.
+        assert await asyncio.wait_for(cancelling, 2) == {"cancelled": cancel == "after"}
+    expected = ["item_1"] if cancel == "after" else ["item_1", newer[-1]]
+    await until(lambda: len(connection.sent) == len(expected))
+    assert [event["delegation_id"] for event in connection.sent] == expected
+    assert call.delegations["item_1"]["status"] == "result_sent"
+    assert {"id": "item_1", "status": "result_sent"} in [
+        event["data"] for _, event in call.events if event["event"] == "delegation"
+    ]
+
+
 async def test_cancel_during_a_running_delegation_reports_it_cancelled(setup):
     service, backend, _ = setup
     started = asyncio.Event()

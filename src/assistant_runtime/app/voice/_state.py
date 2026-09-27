@@ -39,6 +39,7 @@ class VoiceCall:
     connection: Any = None
     task: asyncio.Task | None = None
     work: asyncio.Task | None = None
+    work_delegation: str | None = None  # the delegation the running work belongs to
     work_continuation: bool = False
     cancelling: bool = False
     cancel_task: asyncio.Task | None = None
