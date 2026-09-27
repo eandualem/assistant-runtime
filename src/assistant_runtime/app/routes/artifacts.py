@@ -394,23 +394,29 @@ async def list_proposals(
     principal: PrincipalDep,
     profile: str | None = Query(None, description="One registered profile; omit for all of them"),
     status: str = Query("pending", pattern="^(pending|active|superseded|rejected)$"),
-    limit: int | None = Query(None, ge=1, le=1000, description="Newest first; omit for all"),
-) -> list[dict]:
+    limit: int = Query(100, ge=1, le=500, description="Page size, newest first"),
+    before_id: int | None = Query(None, description="The previous page's next_before"),
+) -> dict:
     """Versions in ``status`` (pending proposals by default) as records with their diff.
 
     An omitted ``profile`` lists every registered profile, so an owner reviews
-    all waiting proposals in one place. The path sits outside ``/artifacts``
-    so it never shadows an artifact's own name.
+    all waiting proposals in one place; the profiles' records are merged
+    newest first before the page is cut. ``next_before`` continues to older
+    records (null on the last page). The path sits outside ``/artifacts`` so
+    it never shadows an artifact's own name.
     """
     service = get_artifact_service(request)
     try:
         names = [profile] if profile is not None else list(service.available_profiles)
         records: list[dict] = []
         for name in names:
-            records.extend(await service.for_profile(name).proposals(status, limit))
+            records.extend(await service.for_profile(name).proposals(status, limit + 1, before_id))
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
         logger.error("Failed to list proposals", error=str(e))
         raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
-    return records
+    records.sort(key=lambda record: record["id"] or 0, reverse=True)
+    page = records[:limit]
+    more = len(records) > limit
+    return {"proposals": page, "next_before": page[-1]["id"] if more and page else None}

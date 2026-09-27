@@ -546,14 +546,16 @@ class ArtifactRepository:
         return result.scalar_one_or_none()
 
     async def get_by_status(
-        self, scope: str, status: str, limit: int | None = None
+        self, scope: str, status: str, limit: int | None = None, before_id: int | None = None
     ) -> list[ArtifactORM]:
-        """Versions of the scope in ``status``, newest first; all of them without ``limit``."""
+        """Versions of the scope in ``status``, newest first; ``before_id`` pages back."""
         query = (
             select(ArtifactORM)
             .where(ArtifactORM.assistant == scope, ArtifactORM.status == status)
-            .order_by(ArtifactORM.created_at.desc(), ArtifactORM.id.desc())
+            .order_by(ArtifactORM.id.desc())
         )
+        if before_id is not None:
+            query = query.where(ArtifactORM.id < before_id)
         if limit is not None:
             query = query.limit(limit)
         result = await self._session.execute(query)

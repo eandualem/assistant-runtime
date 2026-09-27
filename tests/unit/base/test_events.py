@@ -48,3 +48,16 @@ async def test_unsubscribe_and_handlers_get_their_own_copy():
     unsubscribe()  # idempotent
     await hub.publish({"type": "y"})
     assert len(seen) == 1
+
+
+async def test_nested_fields_are_not_shared_between_handlers():
+    hub = EventHub()
+    seen = []
+
+    def relabel(event):
+        event["proposed_by"]["label"] = "changed"
+
+    hub.subscribe(relabel)
+    hub.subscribe(seen.append)
+    await hub.publish({"type": "artifact_proposal", "proposed_by": {"label": "assistant"}})
+    assert seen[0]["proposed_by"]["label"] == "assistant"

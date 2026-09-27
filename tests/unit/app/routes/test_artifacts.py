@@ -292,10 +292,25 @@ class TestProposals:
             everything = (await c.get("/artifact-proposals")).json()
             support = (await c.get("/artifact-proposals", params={"profile": "support"})).json()
             none_rejected = (await c.get("/artifact-proposals?status=rejected")).json()
-        assert [(r["profile"], r["version"]) for r in everything] == [("shop", 1), ("support", 1)]
-        assert [r["rationale"] for r in support] == ["Warmer"]
-        assert "+Assist more" in support[0]["diff"]
-        assert none_rejected == []
+            first = (await c.get("/artifact-proposals", params={"limit": 1})).json()
+            second = (
+                await c.get(
+                    "/artifact-proposals", params={"limit": 1, "before_id": first["next_before"]}
+                )
+            ).json()
+        # Newest first across profiles: the support proposal was made last.
+        assert [(r["profile"], r["version"]) for r in everything["proposals"]] == [
+            ("support", 1),
+            ("shop", 1),
+        ]
+        assert everything["next_before"] is None
+        assert [r["rationale"] for r in support["proposals"]] == ["Warmer"]
+        assert "+Assist more" in support["proposals"][0]["diff"]
+        assert none_rejected == {"proposals": [], "next_before": None}
+        # One record per page, and the cursor reaches the older one.
+        assert [r["profile"] for r in first["proposals"]] == ["support"]
+        assert [r["profile"] for r in second["proposals"]] == ["shop"]
+        assert second["next_before"] is None
 
     async def test_version_record(self, client, artifacts):
         await artifacts.propose("instructions", "Help more", actor=Actor("assistant"))

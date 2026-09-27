@@ -35,7 +35,7 @@ class ArtifactStore(Protocol):
     async def get_version(self, scope: str, name: str, version: int) -> ArtifactVersion | None: ...
 
     async def get_by_status(
-        self, scope: str, status: str, limit: int | None
+        self, scope: str, status: str, limit: int | None, before_id: int | None = None
     ) -> list[ArtifactVersion]: ...
 
     async def propose(
@@ -98,14 +98,14 @@ class InMemoryArtifactStore:
         )
 
     async def get_by_status(
-        self, scope: str, status: str, limit: int | None
+        self, scope: str, status: str, limit: int | None, before_id: int | None = None
     ) -> list[ArtifactVersion]:
         rows = [
             v
             for (item_scope, _), versions in self._versions.items()
             if item_scope == scope
             for v in versions
-            if v.status == status
+            if v.status == status and (before_id is None or (v.id or 0) < before_id)
         ]
         return sorted(rows, key=lambda v: v.id or 0, reverse=True)[:limit]  # None: all
 
@@ -246,10 +246,12 @@ class DatabaseArtifactStore:
         return self._to_version(row) if row is not None else None
 
     async def get_by_status(
-        self, scope: str, status: str, limit: int | None
+        self, scope: str, status: str, limit: int | None, before_id: int | None = None
     ) -> list[ArtifactVersion]:
         async with self._session_context() as session:
-            rows = await self._repository(session).get_by_status(scope, status, limit=limit)
+            rows = await self._repository(session).get_by_status(
+                scope, status, limit=limit, before_id=before_id
+            )
         return [self._to_version(row) for row in rows]
 
     async def propose(

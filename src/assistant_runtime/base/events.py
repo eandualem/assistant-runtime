@@ -9,6 +9,7 @@ the event names, through the service or its routes.
 
 from __future__ import annotations
 
+import copy
 import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -42,7 +43,7 @@ class EventHub:
         """
         for handler in list(self._handlers):
             try:
-                result = handler(dict(event))
+                result = handler(copy.deepcopy(event))  # handlers never see each other's edits
                 if inspect.isawaitable(result):
                     await result
             except Exception as e:

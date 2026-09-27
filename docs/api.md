@@ -156,7 +156,7 @@ name produces no response at all.
 
 Each event is a JSON object with the fields below; all are sent only to the
 requesting socket, except the two artifact events, which go to the room of
-the session they happened in (clients join it with `join_session`).
+the session they happened in (clients join it with `assistant_join_session`).
 
 | Event | Fields |
 |---|---|
@@ -271,7 +271,7 @@ stale `expected_version` `409`, a missing version `404`.
 | `GET /api/artifacts/profile` | the profile: artifacts, roles, policies, live versions |
 | `GET /api/artifacts/{name}` | the active version, or the default text (`source: "default"`) |
 | `GET /api/artifacts/{name}/history` | all versions, newest first |
-| `GET /api/artifact-proposals?profile=&status=&limit=` | versions in `status` (`pending` by default) as proposal records, newest first; without `profile`, across every registered profile; without `limit`, all of them |
+| `GET /api/artifact-proposals?profile=&status=&limit=&before_id=` | `{proposals, next_before}`: versions in `status` (`pending` by default) as proposal records, newest first, `limit` per page (100 by default, at most 500); without `profile`, every registered profile merged; pass `next_before` as `before_id` for older ones (null on the last page) |
 | `GET /api/artifacts/{name}/versions/{version}` | one version as a proposal record |
 | `POST /api/artifacts/{name}/propose` `{"content", "expected_version"?, "rationale"?}` | new pending version (`201`), attributed to the calling principal |
 | `PATCH /api/artifacts/{name}` `{"content", "expected_version"?}` | new version, active at once |
@@ -289,7 +289,7 @@ Every version has a `status`: a proposal is `pending` until it is approved
 record is what a host renders for review:
 
 ```json
-{"profile": "neutral", "subject": null, "name": "instructions", "role": "...",
+{"id": 42, "profile": "neutral", "subject": null, "name": "instructions", "role": "...",
  "version": 3, "status": "pending", "content": "...", "rationale": "...",
  "proposed_by": {"kind": "assistant", "label": "assistant"}, "created_at": "...",
  "active_version": 2, "active_content": "...", "diff": "--- instructions (v2)\n+++ ...",

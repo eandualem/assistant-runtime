@@ -214,14 +214,15 @@ class ArtifactService:
         )
 
     async def proposals(
-        self, status: str = "pending", limit: int | None = None
+        self, status: str = "pending", limit: int | None = None, before_id: int | None = None
     ) -> list[dict[str, Any]]:
         """The profile's versions in ``status`` (pending by default) as proposal records.
 
-        Newest first; every one of them unless ``limit`` is given.
+        Newest first (by ``id``); ``limit`` bounds the page and ``before_id``
+        continues from the last ``id`` of the previous one.
         """
         store = self._require_store()
-        rows = await store.get_by_status(self._profile.name, status, limit)
+        rows = await store.get_by_status(self._profile.name, status, limit, before_id)
         known = [row for row in rows if self._profile.get(row.name) is not None]
         active = {row.name: row for row in await store.get_all_active(self._profile.name)}
         return [self._record(row, active.get(row.name)) for row in known]
@@ -413,6 +414,7 @@ class ArtifactService:
             _lines(active_content), _lines(row.content), before, f"{row.name} (v{row.version})"
         )
         return {
+            "id": row.id,
             **self._event_ids(row),
             "role": definition.role,
             "status": row.status,
