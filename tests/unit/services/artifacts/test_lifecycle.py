@@ -14,6 +14,7 @@ from assistant_runtime.services.artifacts.config import ArtifactsConfig
 from assistant_runtime.services.artifacts.exceptions import (
     ArtifactConflictError,
     ArtifactPermissionError,
+    ArtifactTooLargeError,
     ArtifactVersionNotFoundError,
 )
 from assistant_runtime.services.artifacts.interface import ArtifactService
@@ -31,10 +32,18 @@ PROFILE = AssistantProfile(
 )
 
 
-async def _service(*, database=None) -> tuple[ArtifactService, list[dict]]:
+def _seeded(default: str) -> AssistantProfile:
+    """The same profile with another default for its instructions."""
+    instructions = ArtifactDefinition(
+        name="instructions", role="purpose", required=True, default=default
+    )
+    return AssistantProfile(name="shop", artifacts=(instructions, PROFILE.artifacts[1]))
+
+
+async def _service(*, database=None, profile=PROFILE) -> tuple[ArtifactService, list[dict]]:
     hub, seen = EventHub(), []
     hub.subscribe(seen.append)
-    service = ArtifactService(ArtifactsConfig(), PROFILE, database_service=database, events=hub)
+    service = ArtifactService(ArtifactsConfig(), profile, database_service=database, events=hub)
     await service.start()
     return service, seen
 
@@ -183,13 +192,13 @@ class _DurableMemory(InMemoryArtifactStore):
 
 
 class TestSeeding:
-    async def _start(self, store, *, required: bool) -> ArtifactService:
+    async def _start(self, store, *, required: bool = True, profile=PROFILE) -> ArtifactService:
         database = SimpleNamespace(healthy=True, required=required)
         with patch(
             "assistant_runtime.services.artifacts.interface.DatabaseArtifactStore",
             return_value=store,
         ):
-            service, _ = await _service(database=database)
+            service, _ = await _service(database=database, profile=profile)
         return service
 
     async def test_required_database_stores_defaults_as_version_one(self):
@@ -211,6 +220,62 @@ class TestSeeding:
         await self._start(store, required=True)
         assert [row.version for row in await service.history("instructions")] == [2, 1]
 
+    async def test_a_changed_default_replaces_a_seed_no_one_changed(self):
+        store = _DurableMemory()
+        await self._start(store)
+        service = await self._start(store, profile=_seeded("Help more"))
+        await self._start(store, profile=_seeded("Help more"))  # the same default: nothing new
+        rows = await service.history("instructions")
+        assert [(r.version, r.actor_kind, r.status) for r in rows] == [
+            (2, "seed", "active"),
+            (1, "seed", "superseded"),
+        ]
+        assert (await service.active_texts())["instructions"] == "Help more"
+
+    async def test_a_host_or_assistant_version_stops_seed_refresh_for_good(self):
+        edited, proposed = _DurableMemory(), _DurableMemory()
+        service = await self._start(edited)
+        await service.update("instructions", "Edited", actor=HOST)
+        await service.activate("instructions", 1, actor=HOST)  # back to the seed
+        service = await self._start(proposed)
+        await service.propose("instructions", "Idea", actor=ASSISTANT)
+        for store in (edited, proposed):
+            service = await self._start(store, profile=_seeded("Help more"))
+            assert [r.version for r in await service.history("instructions")] == [2, 1]
+            assert (await service.active_texts())["instructions"] == "Help"
+
+    async def test_a_rollback_or_a_pruned_history_keeps_the_stored_seed(self):
+        rolled, pruned = _DurableMemory(), _DurableMemory()
+        for store in (rolled, pruned):
+            await self._start(store)
+            service = await self._start(store, profile=_seeded("Help more"))
+            if store is rolled:
+                await service.activate("instructions", 1, actor=HOST)  # the host keeps seed 1
+        await pruned.prune_superseded("shop", "instructions", 0)  # as keep_versions may
+        for store, versions in ((rolled, [2, 1]), (pruned, [2])):
+            service = await self._start(store, profile=_seeded("Help most"))
+            assert [r.version for r in await service.history("instructions")] == versions
+
     async def test_optional_database_keeps_defaults_unstored(self):
         service = await self._start(_DurableMemory(), required=False)
         assert await service.history("instructions") == []
+
+
+class TestSizeBound:
+    async def test_a_write_longer_than_max_chars_is_refused(self):
+        profile = AssistantProfile(
+            name="shop",
+            artifacts=(
+                ArtifactDefinition(
+                    name="scratchpad",
+                    policy=ArtifactPolicy(assistant_edit="autonomous"),
+                    max_chars=10,
+                ),
+            ),
+        )
+        service, _ = await _service(profile=profile)
+        await service.update("scratchpad", "Ten chars.", actor=ASSISTANT)
+        for write in (service.update, service.propose):
+            with pytest.raises(ArtifactTooLargeError, match="at most 10 characters.*has 11"):
+                await write("scratchpad", "Eleven char", actor=HOST)
+        assert [r.version for r in await service.history("scratchpad")] == [1]

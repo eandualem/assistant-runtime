@@ -70,6 +70,8 @@ class ArtifactDefinition:
     by the request's ``subject``; without a subject it is left out."""
     keep_versions: int | None = None
     """Superseded versions kept per artifact and subject; ``None`` keeps all."""
+    max_chars: int | None = None
+    """Longest text a write may store; a longer one is refused. ``None`` sets no bound."""
 
     def __post_init__(self) -> None:
         if not _NAME_PATTERN.match(self.name):
@@ -82,7 +84,10 @@ class ArtifactDefinition:
             raise ValueError(f"Artifact {self.name!r} scope must be profile or subject")
         if self.required and self.scope == "subject":
             raise ValueError(f"Subject-scoped artifact {self.name!r} cannot be required")
-        _check_keep_versions(self.name, self.keep_versions)
+        _check_bound(self.name, "keep_versions", self.keep_versions)
+        _check_bound(self.name, "max_chars", self.max_chars)
+        if self.max_chars is not None and len(self.default.strip()) > self.max_chars:
+            raise ValueError(f"Artifact {self.name!r} default is longer than max_chars")
 
 
 @dataclass(frozen=True)
@@ -98,6 +103,7 @@ class ArtifactCollection:
     role: str = ""
     policy: ArtifactPolicy = field(default_factory=ArtifactPolicy)
     keep_versions: int | None = None
+    max_chars: int | None = None
 
     def __post_init__(self) -> None:
         if not _PREFIX_PATTERN.match(self.prefix):
@@ -105,7 +111,8 @@ class ArtifactCollection:
                 "Collection prefix must be lowercase letters, digits and underscores, "
                 f"ending in '_': {self.prefix!r}"
             )
-        _check_keep_versions(self.prefix, self.keep_versions)
+        _check_bound(self.prefix, "keep_versions", self.keep_versions)
+        _check_bound(self.prefix, "max_chars", self.max_chars)
 
     def matches(self, name: str) -> bool:
         return (
@@ -116,13 +123,17 @@ class ArtifactCollection:
 
     def definition(self, name: str) -> ArtifactDefinition:
         return ArtifactDefinition(
-            name=name, role=self.role, policy=self.policy, keep_versions=self.keep_versions
+            name=name,
+            role=self.role,
+            policy=self.policy,
+            keep_versions=self.keep_versions,
+            max_chars=self.max_chars,
         )
 
 
-def _check_keep_versions(owner: str, value: int | None) -> None:
+def _check_bound(owner: str, field_name: str, value: int | None) -> None:
     if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
-        raise ValueError(f"{owner!r} keep_versions must be a positive integer or None")
+        raise ValueError(f"{owner!r} {field_name} must be a positive integer or None")
 
 
 @dataclass(frozen=True)
@@ -294,11 +305,11 @@ def load_profile_file(path: str | Path) -> AssistantProfile:
         host_edit = true
 
     An artifact may also set ``scope = "subject"`` (one text per request
-    ``subject``) and ``keep_versions``. A profile may ``include = ["owner"]``
-    (other registered profiles' artifacts follow its own in the prompt) and
-    declare ``[[collections]]`` with a ``prefix`` (for example ``"doc_"``),
-    ``role``, ``policy`` and ``keep_versions``: documents the assistant
-    creates itself.
+    ``subject``), ``keep_versions`` and ``max_chars``. A profile may
+    ``include = ["owner"]`` (other registered profiles' artifacts follow its
+    own in the prompt) and declare ``[[collections]]`` with a ``prefix`` (for
+    example ``"doc_"``), ``role``, ``policy``, ``keep_versions`` and
+    ``max_chars``: documents the assistant creates itself.
     """
     path = Path(path)
     try:
@@ -345,6 +356,7 @@ def profile_from_mapping(data: dict[str, Any], *, base_dir: Path | None = None) 
                 policy=ArtifactPolicy(**policy_data),
                 scope=item.get("scope", "profile"),
                 keep_versions=item.get("keep_versions"),
+                max_chars=item.get("max_chars"),
             )
         )
     collections_data = data.get("collections", [])
@@ -363,6 +375,7 @@ def profile_from_mapping(data: dict[str, Any], *, base_dir: Path | None = None) 
                 role=str(item.get("role", "")),
                 policy=ArtifactPolicy(**policy_data),
                 keep_versions=item.get("keep_versions"),
+                max_chars=item.get("max_chars"),
             )
         )
     include = data.get("include", [])

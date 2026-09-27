@@ -61,8 +61,10 @@ versions an artifact keeps; the rest are deleted as new ones are written.
 
 With `DATABASE__REQUIRED`, each profile-scoped artifact of a registered profile that has
 no stored version gets its default stored as version 1 at startup (actor
-`seed`), so the text a prompt uses is always a versioned record; later
-changes to the default do not replace it.
+`seed`), so the text a prompt uses is always a versioned record. A changed
+default is stored and activated as a new seed only while every stored version
+is a seed (versions 1..N, the newest active); any host or assistant version
+stops that for good, so a shipped default never overwrites anyone's choice.
 
 ## Concurrent artifact edits
 
