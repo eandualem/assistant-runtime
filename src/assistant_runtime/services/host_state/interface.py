@@ -5,7 +5,8 @@ event source at, application settings, a daily budget) keeps it here
 instead of in a database of its own. Each value has a version that rises
 with every write; a write or delete can require the version the host last
 read (``0`` for a key that must not exist yet), so two writers never
-silently overwrite each other. The runtime never reads the values.
+silently overwrite each other. A deleted key keeps counting, so a version
+is never reused. The runtime never reads the values.
 """
 
 from __future__ import annotations
@@ -71,10 +72,16 @@ class HostStateService:
             raise HostStateNotFoundError(f"Nothing is stored at {namespace}/{key}")
         return entry
 
-    async def list(self, namespace: str) -> list[HostStateEntry]:
-        """Every value in a namespace, by key."""
+    async def list(
+        self, namespace: str, *, after: str | None = None, limit: int | None = None
+    ) -> tuple[list[HostStateEntry], str | None]:
+        """Values in a namespace by key, after ``after``; and the key to continue from, if any."""
         _check(namespace)
-        return await self._require_store().list(namespace, self._config.max_page)
+        limit = min(limit or self._config.max_page, self._config.max_page)
+        entries = await self._require_store().list(namespace, after, limit + 1)
+        more = len(entries) > limit
+        entries = entries[:limit]
+        return entries, entries[-1].key if more else None
 
     async def put(
         self,
@@ -99,10 +106,10 @@ class HostStateService:
         return entry
 
     async def delete(
-        self, namespace: str, key: str, *, expected_version: int | None = None
+        self, namespace: str, key: str, *, by: str, expected_version: int | None = None
     ) -> None:
         _check(namespace, key)
-        if not await self._require_store().delete(namespace, key, expected_version):
+        if not await self._require_store().delete(namespace, key, by, expected_version):
             if expected_version is None:
                 raise HostStateNotFoundError(f"Nothing is stored at {namespace}/{key}")
             raise await self._conflict(namespace, key, expected_version)

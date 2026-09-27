@@ -242,7 +242,7 @@ listing returns.
 ### Host state (`HOST_STATE__*`)
 
 `max_value_bytes` (`262144`): the largest value, measured as compact UTF-8
-JSON. `max_page` (`1000`): the most keys one namespace listing returns.
+JSON. `max_page` (`1000`): the most keys one page of a namespace listing returns.
 
 ### Heartbeat (`HEARTBEAT__*`)
 

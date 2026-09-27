@@ -31,6 +31,6 @@ async def test_put_get_list_and_delete_with_versions():
     assert (created.status_code, created.json()["version"]) == (200, 1)
     assert created.json()["updated_by"] == "local"
     assert stale.status_code == 409
-    assert [e["value"] for e in listed["entries"]] == [{"after": 3}]
+    assert ([e["value"] for e in listed["entries"]], listed["next_after"]) == ([{"after": 3}], None)
     assert (wrong.status_code, deleted.status_code, gone.status_code) == (409, 204, 404)
     assert bad.status_code == 422

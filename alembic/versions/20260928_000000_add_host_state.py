@@ -19,8 +19,10 @@ def upgrade() -> None:
         "host_state",
         sa.Column("namespace", sa.String(64), primary_key=True),
         sa.Column("key", sa.String(200), primary_key=True),
-        sa.Column("value", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("value", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("version", sa.Integer(), nullable=False),
+        # A deleted key stays as a tombstone, so its version never repeats.
+        sa.Column("deleted", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("updated_by", sa.String(128), nullable=False),
         sa.Column(
             "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()

@@ -415,12 +415,13 @@ Small values a host keeps in the runtime instead of a database of its own
 (the cursor it last read a source at, settings, a daily budget), under a
 `namespace` and `key`, all administrator routes. Each write raises the
 value's `version`; a write or delete with `expected_version` happens only
-over that version (`0`: the key must not exist yet), otherwise `409`. The
-runtime never reads the values.
+over that version (`0`: the key must not exist yet), otherwise `409`. A
+deleted key keeps counting, so a version is never reused. The runtime never
+reads the values.
 
 | Route | Purpose |
 |---|---|
-| `GET /api/host-state/{namespace}` | `{namespace, entries}`, every value by key |
+| `GET /api/host-state/{namespace}?after=&limit=` | `{namespace, entries, next_after}`: values by key after `after`; `next_after` continues, null on the last page |
 | `GET /api/host-state/{namespace}/{key}` | `{namespace, key, value, version, updated_by, updated_at}` (`404` when absent) |
 | `PUT /api/host-state/{namespace}/{key}` `{"value", "expected_version"?}` | store any JSON value (at most `HOST_STATE__MAX_VALUE_BYTES`) |
 | `DELETE /api/host-state/{namespace}/{key}?expected_version=` | remove it (`204`) |

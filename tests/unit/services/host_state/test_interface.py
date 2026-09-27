@@ -38,14 +38,39 @@ async def test_values_are_listed_by_key_and_deleted_on_the_expected_version():
     await state.put("settings", "voice", "cove", by="local")
     await state.put("settings", "budget", 5, by="local")
     await state.put("other", "x", True, by="local")
-    assert [e.key for e in await state.list("settings")] == ["budget", "voice"]
+    entries, more = await state.list("settings")
+    assert ([e.key for e in entries], more) == (["budget", "voice"], None)
     with pytest.raises(HostStateConflictError):
-        await state.delete("settings", "voice", expected_version=7)
-    await state.delete("settings", "voice", expected_version=1)
+        await state.delete("settings", "voice", by="local", expected_version=7)
+    await state.delete("settings", "voice", by="local", expected_version=1)
     with pytest.raises(HostStateNotFoundError):
         await state.get("settings", "voice")
     with pytest.raises(HostStateNotFoundError):
-        await state.delete("settings", "voice")
+        await state.delete("settings", "voice", by="local")
+
+
+async def test_a_version_is_never_reused_after_a_delete():
+    state = await _service()
+    await state.put("settings", "voice", "cove", by="local")  # version 1
+    await state.delete("settings", "voice", by="local", expected_version=1)
+    recreated = await state.put("settings", "voice", "marin", by="local", expected_version=0)
+    assert recreated.version == 3  # the deletion counted
+    with pytest.raises(HostStateConflictError):  # a writer still holding version 1 is stale
+        await state.put("settings", "voice", "old", by="local", expected_version=1)
+
+
+async def test_listing_continues_after_a_key_and_values_are_copied():
+    state = await _service(max_page=2)
+    value = {"items": [1]}
+    for key in ("a", "b", "c"):
+        await state.put("ns", key, value, by="local")
+    value["items"].append(2)  # the caller's object is not the stored one
+    first, after = await state.list("ns")
+    second, done = await state.list("ns", after=after)
+    assert ([e.key for e in first], after) == (["a", "b"], "b")
+    assert ([e.key for e in second], done) == (["c"], None)
+    first[0].value["items"].append(3)  # nor is what a read returns
+    assert (await state.get("ns", "a")).value == {"items": [1]}
 
 
 async def test_names_and_sizes_are_bounded():

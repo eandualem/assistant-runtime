@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_runtime.app.access.deps import AdminDep
@@ -33,13 +33,23 @@ def _http_error(exc: HostStateError) -> HTTPException:
 
 
 @router.get("/{namespace}")
-async def list_values(namespace: str, state: HostStateServiceDep, admin: AdminDep) -> dict:
-    """Every value in the namespace, by key."""
+async def list_values(
+    namespace: str,
+    state: HostStateServiceDep,
+    admin: AdminDep,
+    after: str | None = None,
+    limit: int | None = Query(None, ge=1, le=10_000),
+) -> dict:
+    """Values by key after ``after``; ``next_after`` continues, null on the last page."""
     try:
-        entries = await state.list(namespace)
+        entries, next_after = await state.list(namespace, after=after, limit=limit)
     except HostStateError as e:
         raise _http_error(e) from e
-    return {"namespace": namespace, "entries": [e.to_dict() for e in entries]}
+    return {
+        "namespace": namespace,
+        "entries": [e.to_dict() for e in entries],
+        "next_after": next_after,
+    }
 
 
 @router.get("/{namespace}/{key}")
@@ -73,6 +83,6 @@ async def delete_value(
     expected_version: int | None = None,
 ) -> None:
     try:
-        await state.delete(namespace, key, expected_version=expected_version)
+        await state.delete(namespace, key, by=admin.id, expected_version=expected_version)
     except HostStateError as e:
         raise _http_error(e) from e
