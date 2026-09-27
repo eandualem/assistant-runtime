@@ -111,6 +111,20 @@ class TestProposals:
         with pytest.raises(ArtifactVersionNotFoundError):
             await service.reject("instructions", 9, actor=HOST)
 
+    async def test_a_rejected_version_is_not_activated_later(self):
+        """A decision stands: reconsidering is a new proposal with its own record."""
+        service, seen = await _service()
+        await service.update("instructions", "v1", actor=HOST)
+        await service.propose("instructions", "v2", actor=ASSISTANT)
+        await service.reject("instructions", 2, actor=HOST, reason="No")
+        seen.clear()
+        with pytest.raises(ArtifactConflictError, match="was rejected"):
+            await service.activate("instructions", 2, actor=HOST)
+        assert (await service.active_texts())["instructions"] == "v1"
+        [row] = [r for r in await service.history("instructions") if r.version == 2]
+        assert (row.status, row.decision_reason) == ("rejected", "No")
+        assert seen == []
+
     async def test_rejecting_needs_the_activation_permission(self):
         service, _ = await _service()
         await service.propose("instructions", "v1", actor=ASSISTANT)
@@ -147,6 +161,13 @@ class TestRecords:
         assert "-Old\n+New\n" in record["diff"]
         with pytest.raises(ArtifactVersionNotFoundError):
             await service.version_record("instructions", 7)
+
+    async def test_every_pending_proposal_is_listed_unless_limited(self):
+        service, _ = await _service()
+        for n in range(25):  # more than the history display limit
+            await service.propose("instructions", f"v{n}", actor=ASSISTANT)
+        assert len(await service.proposals()) == 25
+        assert [r["version"] for r in await service.proposals(limit=2)] == [25, 24]
 
     async def test_decided_proposals_leave_the_pending_list(self):
         service, _ = await _service()

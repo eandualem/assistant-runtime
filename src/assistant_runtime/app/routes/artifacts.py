@@ -29,6 +29,7 @@ from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.artifacts.models import Actor, MutationResult
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
+proposals_router = APIRouter(prefix="/artifact-proposals", tags=["artifacts"])
 
 
 # ---------------------------------------------------------------------------
@@ -208,32 +209,6 @@ async def get_profile(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> 
     }
 
 
-@router.get("/proposals")
-async def list_proposals(
-    request: Request,
-    principal: PrincipalDep,
-    profile: str | None = Query(None, description="One registered profile; omit for all of them"),
-    status: str = Query("pending", pattern="^(pending|active|superseded|rejected)$"),
-) -> list[dict]:
-    """Versions in ``status`` (pending proposals by default) as records with their diff.
-
-    Unlike the other routes, an omitted ``profile`` lists every registered
-    profile: an owner reviews all waiting proposals in one place.
-    """
-    service = get_artifact_service(request)
-    try:
-        names = [profile] if profile is not None else list(service.available_profiles)
-        records: list[dict] = []
-        for name in names:
-            records.extend(await service.for_profile(name).proposals(status))
-    except ArtifactError as e:
-        raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to list proposals", error=str(e))
-        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
-    return records
-
-
 @router.get("/{name}")
 async def get_artifact(name: str, artifacts: ScopedArtifactDep, principal: PrincipalDep) -> dict:
     """The active version of an artifact, or its default text when none is active."""
@@ -411,3 +386,31 @@ async def delete_artifact(name: str, artifacts: ScopedArtifactDep, admin: AdminD
     if count == 0:
         raise HTTPException(status_code=404, detail=f"No stored versions for artifact: {name}")
     return {"success": True, "name": name, "deleted_versions": count, "durable": artifacts.durable}
+
+
+@proposals_router.get("")
+async def list_proposals(
+    request: Request,
+    principal: PrincipalDep,
+    profile: str | None = Query(None, description="One registered profile; omit for all of them"),
+    status: str = Query("pending", pattern="^(pending|active|superseded|rejected)$"),
+    limit: int | None = Query(None, ge=1, le=1000, description="Newest first; omit for all"),
+) -> list[dict]:
+    """Versions in ``status`` (pending proposals by default) as records with their diff.
+
+    An omitted ``profile`` lists every registered profile, so an owner reviews
+    all waiting proposals in one place. The path sits outside ``/artifacts``
+    so it never shadows an artifact's own name.
+    """
+    service = get_artifact_service(request)
+    try:
+        names = [profile] if profile is not None else list(service.available_profiles)
+        records: list[dict] = []
+        for name in names:
+            records.extend(await service.for_profile(name).proposals(status, limit))
+    except ArtifactError as e:
+        raise _http_error(e) from e
+    except Exception as e:
+        logger.error("Failed to list proposals", error=str(e))
+        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
+    return records

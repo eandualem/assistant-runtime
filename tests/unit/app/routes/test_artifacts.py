@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from assistant_runtime.app.routes.artifacts import router
+from assistant_runtime.app.routes.artifacts import proposals_router, router
 from assistant_runtime.artifacts import ArtifactDefinition, ArtifactPolicy, AssistantProfile
 from assistant_runtime.services.artifacts.config import ArtifactsConfig
 from assistant_runtime.services.artifacts.interface import ArtifactService
@@ -286,11 +286,12 @@ class TestProposals:
         )
         app = FastAPI()
         app.include_router(router)
+        app.include_router(proposals_router)
         app.state.artifact_service = service
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            everything = (await c.get("/artifacts/proposals")).json()
-            support = (await c.get("/artifacts/proposals", params={"profile": "support"})).json()
-            none_rejected = (await c.get("/artifacts/proposals?status=rejected")).json()
+            everything = (await c.get("/artifact-proposals")).json()
+            support = (await c.get("/artifact-proposals", params={"profile": "support"})).json()
+            none_rejected = (await c.get("/artifact-proposals?status=rejected")).json()
         assert [(r["profile"], r["version"]) for r in everything] == [("shop", 1), ("support", 1)]
         assert [r["rationale"] for r in support] == ["Warmer"]
         assert "+Assist more" in support[0]["diff"]
@@ -328,3 +329,17 @@ class TestProposals:
         )
         assert response.status_code == 200
         assert response.json()["status"] == "rejected"
+
+    async def test_an_artifact_named_proposals_stays_readable(self):
+        named = AssistantProfile(
+            name="shop", artifacts=(ArtifactDefinition(name="proposals", default="Offer list"),)
+        )
+        service = ArtifactService(ArtifactsConfig(), named)
+        await service.start()
+        app = FastAPI()
+        app.include_router(router)
+        app.include_router(proposals_router)
+        app.state.artifact_service = service
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            body = (await c.get("/artifacts/proposals")).json()
+        assert body["content"] == "Offer list"

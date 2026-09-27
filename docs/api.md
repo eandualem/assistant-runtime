@@ -271,11 +271,11 @@ stale `expected_version` `409`, a missing version `404`.
 | `GET /api/artifacts/profile` | the profile: artifacts, roles, policies, live versions |
 | `GET /api/artifacts/{name}` | the active version, or the default text (`source: "default"`) |
 | `GET /api/artifacts/{name}/history` | all versions, newest first |
-| `GET /api/artifacts/proposals?profile=&status=` | versions in `status` (`pending` by default) as proposal records; without `profile`, across every registered profile |
+| `GET /api/artifact-proposals?profile=&status=&limit=` | versions in `status` (`pending` by default) as proposal records, newest first; without `profile`, across every registered profile; without `limit`, all of them |
 | `GET /api/artifacts/{name}/versions/{version}` | one version as a proposal record |
 | `POST /api/artifacts/{name}/propose` `{"content", "expected_version"?, "rationale"?}` | new pending version (`201`), attributed to the calling principal |
 | `PATCH /api/artifacts/{name}` `{"content", "expected_version"?}` | new version, active at once |
-| `POST /api/artifacts/{name}/approve/{version}` | activate a version (a pending one is approved) |
+| `POST /api/artifacts/{name}/approve/{version}` | activate a version (a pending one is approved; a rejected one is `409`: propose it again) |
 | `POST /api/artifacts/{name}/reject/{version}` `{"reason"?}` | reject a pending version; the active one is unchanged (`409` if it is not pending) |
 | `POST /api/artifacts/{name}/rollback/{version}` | reactivate an older version |
 | `POST /api/artifacts/{name}/actions` `{"action": "propose"\|"update"\|"approve"\|"reject"\|"rollback", ...}` | the five above behind one endpoint |

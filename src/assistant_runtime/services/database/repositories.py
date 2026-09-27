@@ -545,14 +545,18 @@ class ArtifactRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_by_status(self, scope: str, status: str, limit: int = 100) -> list[ArtifactORM]:
-        """Versions of the scope in ``status``, newest first."""
-        result = await self._session.execute(
+    async def get_by_status(
+        self, scope: str, status: str, limit: int | None = None
+    ) -> list[ArtifactORM]:
+        """Versions of the scope in ``status``, newest first; all of them without ``limit``."""
+        query = (
             select(ArtifactORM)
             .where(ArtifactORM.assistant == scope, ArtifactORM.status == status)
             .order_by(ArtifactORM.created_at.desc(), ArtifactORM.id.desc())
-            .limit(limit)
         )
+        if limit is not None:
+            query = query.limit(limit)
+        result = await self._session.execute(query)
         return list(result.scalars().all())
 
     async def propose(

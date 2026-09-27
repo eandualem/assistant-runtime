@@ -213,10 +213,15 @@ class ArtifactService:
             self._profile.name, name, limit or self._config.history_limit
         )
 
-    async def proposals(self, status: str = "pending") -> list[dict[str, Any]]:
-        """The profile's versions in ``status`` (pending by default) as proposal records."""
+    async def proposals(
+        self, status: str = "pending", limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """The profile's versions in ``status`` (pending by default) as proposal records.
+
+        Newest first; every one of them unless ``limit`` is given.
+        """
         store = self._require_store()
-        rows = await store.get_by_status(self._profile.name, status, self._config.history_limit)
+        rows = await store.get_by_status(self._profile.name, status, limit)
         known = [row for row in rows if self._profile.get(row.name) is not None]
         active = {row.name: row for row in await store.get_all_active(self._profile.name)}
         return [self._record(row, active.get(row.name)) for row in known]
@@ -317,11 +322,17 @@ class ArtifactService:
         self._authorize(artifact, actor, "activate")
         async with self._require_store().transaction(self._profile.name, name) as store:
             before = await store.get_version(self._profile.name, name, version)
+            if before is None:
+                raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
+            if before.status == "rejected":
+                # A decision stands; reconsidering is a new proposal with its own record.
+                raise ArtifactConflictError(
+                    f"Version {version} of '{name}' was rejected; propose it again to reconsider"
+                )
             row = await store.activate(
                 self._profile.name, name, version, decided_by=actor.proposed_by
             )
-            if before is None or row is None:
-                raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
+            assert row is not None  # the version exists under the artifact's lock
         self.invalidate()
         logger.info("Activated artifact version", name=name, version=version, by=actor.kind)
         if before.status == "pending":

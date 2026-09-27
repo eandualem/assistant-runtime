@@ -155,7 +155,7 @@ polling: `app.state.events.subscribe(handler)` calls `handler` (sync or
 async) with each `artifact_proposal` and `artifact_decision` event,
 including those made in sessions the host does not stream (background
 work, voice delegations). Delivery is at most once and in process; after a
-restart, `GET /api/artifacts/proposals` lists what is still pending.
+restart, `GET /api/artifact-proposals` lists what is still pending.
 
 ```python
 app = create_app(assistant=definition)
