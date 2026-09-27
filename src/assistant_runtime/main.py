@@ -35,6 +35,7 @@ from assistant_runtime.services.artifacts.factory import register_artifacts
 from assistant_runtime.services.database.factory import register_database
 from assistant_runtime.services.decisions.factory import register_decisions
 from assistant_runtime.services.history.factory import register_history
+from assistant_runtime.services.host_state.factory import register_host_state
 from assistant_runtime.services.llm.factory import register_llm
 from assistant_runtime.services.mcp.factory import register_mcp
 from assistant_runtime.services.media.factory import register_media
@@ -77,6 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await register_media(app.state, lifecycle, settings=settings)
         await register_decisions(app.state, lifecycle, settings=settings)
         await register_actions(app.state, lifecycle, settings=settings)
+        await register_host_state(app.state, lifecycle, settings=settings)
         await register_mcp(app.state, lifecycle)
         await register_artifacts(app.state, lifecycle, settings=settings)
         await register_tools(app.state, lifecycle, settings=settings)

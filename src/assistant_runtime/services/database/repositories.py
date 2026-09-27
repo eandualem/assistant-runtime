@@ -15,6 +15,7 @@ from assistant_runtime.services.database.models import (
     ActionORM,
     ArtifactORM,
     EventORM,
+    HostStateORM,
     InboxItemORM,
     MessageORM,
     OAuthTokenORM,
@@ -511,6 +512,79 @@ class ActionRepository:
             )
         result = await self._session.execute(query.order_by(model.seq).limit(limit))
         return list(result.scalars().all())
+
+
+class HostStateRepository:
+    """Versioned host values. Every write is one conditional statement, so none is lost."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, namespace: str, key: str) -> HostStateORM | None:
+        result = await self._session.execute(
+            select(HostStateORM).where(HostStateORM.namespace == namespace, HostStateORM.key == key)
+        )
+        return result.scalar_one_or_none()
+
+    async def list(self, namespace: str, limit: int) -> list[HostStateORM]:
+        result = await self._session.execute(
+            select(HostStateORM)
+            .where(HostStateORM.namespace == namespace)
+            .order_by(HostStateORM.key)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def put(
+        self, namespace: str, key: str, value: Any, by: str, expected_version: int | None
+    ) -> HostStateORM | None:
+        """Write the value; None when ``expected_version`` does not match what is stored.
+
+        ``expected_version`` 0 means the key must not exist yet; ``None``
+        writes whatever is there.
+        """
+        model = HostStateORM
+        if expected_version is None or expected_version == 0:
+            statement = pg_insert(model).values(
+                namespace=namespace, key=key, value=value, version=1, updated_by=by
+            )
+            if expected_version is None:
+                statement = statement.on_conflict_do_update(
+                    index_elements=["namespace", "key"],
+                    set_={
+                        "value": statement.excluded.value,
+                        "version": model.version + 1,
+                        "updated_by": statement.excluded.updated_by,
+                        "updated_at": func.now(),
+                    },
+                )
+            else:
+                statement = statement.on_conflict_do_nothing(index_elements=["namespace", "key"])
+        else:
+            statement = (
+                update(model)
+                .where(
+                    model.namespace == namespace,
+                    model.key == key,
+                    model.version == expected_version,
+                )
+                .values(
+                    value=value, version=model.version + 1, updated_by=by, updated_at=func.now()
+                )
+            )
+        result = await self._session.execute(statement.returning(model))
+        await self._session.flush()
+        return result.scalar_one_or_none()
+
+    async def delete(self, namespace: str, key: str, expected_version: int | None) -> bool:
+        statement = delete(HostStateORM).where(
+            HostStateORM.namespace == namespace, HostStateORM.key == key
+        )
+        if expected_version is not None:
+            statement = statement.where(HostStateORM.version == expected_version)
+        result = await self._session.execute(statement.returning(HostStateORM.key))
+        await self._session.flush()
+        return result.scalar_one_or_none() is not None
 
 
 class SteeringRepository:

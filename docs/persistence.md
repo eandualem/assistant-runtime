@@ -63,8 +63,9 @@ changes nothing.
 Host-written records have their own tables: `events` (unique per source and
 event id, numbered in arrival order), `actions` (status history, text
 revisions, per-recipient results) and `action_confirmations` (one row per
-recipient, in insertion order, deleted with their action). Without Postgres
-they live in process memory and are lost on restart.
+recipient, in insertion order, deleted with their action). Host state is
+`host_state` (namespace, key, JSON value, version). Without Postgres they
+live in process memory and are lost on restart.
 
 Artifact versions are keyed by profile, subject (empty for profile-scoped
 artifacts) and name. A session created for a subject stores its `profile`
