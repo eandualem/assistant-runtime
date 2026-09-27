@@ -184,6 +184,99 @@ class TestDatabaseServiceRequired:
         }
 
 
+class _PgError(Exception):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.sqlstate = code
+
+
+def _engine_failing_then(first: Exception | None, *, then_ok: bool = True):
+    """An engine whose first connection test fails with ``first``; later ones succeed."""
+    mock_engine, _ = _make_mock_engine()
+    calls = {"n": 0}
+    ok_cm = mock_engine.begin.return_value
+
+    def begin():
+        calls["n"] += 1
+        if calls["n"] == 1 and first is not None:
+            failing = MagicMock()
+            failing.__aenter__ = AsyncMock(side_effect=first)
+            failing.__aexit__ = AsyncMock(return_value=False)
+            return failing
+        if not then_ok:
+            failing = MagicMock()
+            failing.__aenter__ = AsyncMock(side_effect=first)
+            failing.__aexit__ = AsyncMock(return_value=False)
+            return failing
+        return ok_cm
+
+    mock_engine.begin.side_effect = begin
+    return mock_engine
+
+
+class TestMissingDatabase:
+    _ENGINE = "assistant_runtime.services.database.interface.create_async_engine"
+    _CREATE = "assistant_runtime.services.database.interface.create_database"
+    _MIGRATE = "assistant_runtime.services.database.interface.migrate"
+
+    async def test_required_migrating_runtime_creates_its_database_then_migrates(self):
+        config = DatabaseConfig(required=True, migrate_on_start=True)
+        service = DatabaseService(config=config)
+        engine = _engine_failing_then(_PgError("3D000"))
+        with (
+            patch(self._ENGINE, return_value=engine),
+            patch(self._CREATE, new=AsyncMock(return_value=True)) as create,
+            patch(self._MIGRATE, new=AsyncMock()) as migrate,
+        ):
+            await service.start()
+        create.assert_awaited_once_with(config)
+        migrate.assert_awaited_once_with(config)
+        assert service.healthy is True
+
+    async def test_a_missing_database_without_migrate_on_start_is_not_created(self):
+        service = DatabaseService(config=DatabaseConfig(required=True))
+        engine = _engine_failing_then(_PgError("3D000"))
+        with (
+            patch(self._ENGINE, return_value=engine),
+            patch(self._CREATE, new=AsyncMock()) as create,
+            pytest.raises(DatabaseUnavailableError) as caught,
+        ):
+            await service.start()
+        create.assert_not_awaited()
+        assert caught.value.cause == "database_missing"
+
+    async def test_a_database_that_cannot_be_created_fails_startup(self):
+        service = DatabaseService(config=DatabaseConfig(required=True, migrate_on_start=True))
+        engine = _engine_failing_then(_PgError("3D000"))
+        refused = DatabaseUnavailableError(
+            "missing and could not be created", cause="database_missing"
+        )
+        with (
+            patch(self._ENGINE, return_value=engine),
+            patch(self._CREATE, new=AsyncMock(side_effect=refused)),
+            pytest.raises(DatabaseUnavailableError, match="could not be created") as caught,
+        ):
+            await service.start()
+        assert caught.value.cause == "database_missing"
+        engine.dispose.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("error", "cause"),
+        [(_PgError("28P01"), "auth_refused"), (ConnectionRefusedError("no"), "unreachable")],
+    )
+    async def test_other_failures_carry_their_cause(self, error, cause):
+        service = DatabaseService(config=DatabaseConfig(required=True, migrate_on_start=True))
+        engine = _engine_failing_then(error, then_ok=False)
+        with (
+            patch(self._ENGINE, return_value=engine),
+            patch(self._CREATE, new=AsyncMock()) as create,
+            pytest.raises(DatabaseUnavailableError) as caught,
+        ):
+            await service.start()
+        create.assert_not_awaited()
+        assert caught.value.cause == cause
+
+
 class TestDatabaseServiceStop:
     """Stop lifecycle — engine disposal."""
 

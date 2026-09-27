@@ -31,7 +31,16 @@ then fails with `DatabaseUnavailableError` when Postgres is unreachable,
 nothing falls back to process memory, an artifact read error fails the turn
 instead of building the prompt from the defaults, a runtime-settings change
 that cannot be saved is refused with 503 rather than kept in memory, and
-`/health` reports a database lost later as unhealthy.
+`/health` reports a database lost later as unhealthy. With
+`DATABASE__MIGRATE_ON_START` as well, the runtime creates its database when
+the server is reachable but the database does not exist, then migrates it;
+a host needs only a running PostgreSQL server.
+
+`DatabaseUnavailableError` and `MigrationError` carry a machine-readable
+`cause`, so a host can word them for its own users: `unreachable` (no
+server answers), `auth_refused` (the server refused the role),
+`database_missing` (the database does not exist and was not, or could not
+be, created) or `migration_failed`.
 
 The substrate is deliberately the application's own tables. The upstream
 options were compared and deferred; see [the decision](#upstream-decision)
@@ -168,10 +177,14 @@ with the same migrations, and can show the result:
 from assistant_runtime.services.database.migrations import migrate, schema_status
 
 await migrate(settings.database)          # raises MigrationError
-status = await schema_status(settings.database)  # reachable, current, head
+status = await schema_status(settings.database)  # state, current, head, error
 ```
 
 `DATABASE__MIGRATE_ON_START=true` does the same before the services start.
+`schema_status()` never raises; its `state` is `unreachable`,
+`auth_refused`, `database_missing` (created at start in required mode
+with `migrate_on_start`), `behind` (upgraded at start with
+`migrate_on_start`) or `ready`, and `error` keeps the driver's message.
 `assistant-runtime doctor` reports reachability and the schema revision
 against the packaged head. A local server needs no stored password: leave
 `DATABASE__PASSWORD` empty for `trust` authentication, or set

@@ -13,12 +13,19 @@ import asyncio
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from assistant_runtime.services.database.config import DatabaseConfig
-from assistant_runtime.services.database.exceptions import MigrationError
+from assistant_runtime.services.database.exceptions import (
+    DatabaseCause,
+    DatabaseUnavailableError,
+    MigrationError,
+    failure_cause,
+    sqlstate,
+)
 
 
 def migrations_dir() -> Path | None:
@@ -59,10 +66,7 @@ async def migrate(database: DatabaseConfig, revision: str = "head") -> None:
     """Upgrade ``database`` to ``revision``; raise :class:`MigrationError` on failure."""
     directory = migrations_dir()
     if directory is None:
-        raise MigrationError(
-            "No migrations found: reinstall assistant-runtime from a wheel that ships them, "
-            "or run from a checkout."
-        )
+        raise MigrationError("The packaged schema migrations are missing from this install")
     config = _alembic_config(directory, database)
     try:
         # Alembic's environment runs its own event loop.
@@ -71,18 +75,73 @@ async def migrate(database: DatabaseConfig, revision: str = "head") -> None:
         raise MigrationError(f"Schema upgrade to {revision} failed: {exc}") from exc
 
 
+async def create_database(database: DatabaseConfig) -> bool:
+    """Create the configured database; False when it already exists.
+
+    Connects to the server's ``postgres`` maintenance database with the same
+    role. A role that may not create databases raises
+    :class:`DatabaseUnavailableError` with ``cause="database_missing"``.
+    """
+    maintenance = database.model_copy(update={"name": "postgres"})
+    engine = create_async_engine(maintenance.url(), isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            name = conn.dialect.identifier_preparer.quote(database.name)
+            await conn.execute(text(f"CREATE DATABASE {name}"))
+        return True
+    except Exception as exc:
+        # Another process may have created it meanwhile; Postgres reports that
+        # race as 42P04 or as a unique violation on its catalog.
+        if sqlstate(exc) == "42P04" or await _exists(engine, database.name):
+            return False
+        cause = failure_cause(exc)
+        raise DatabaseUnavailableError(
+            f"Database {database.name!r} is missing and could not be created: {exc}",
+            cause=cause if cause != "unreachable" else "database_missing",
+        ) from exc
+    finally:
+        await engine.dispose()
+
+
+async def _exists(engine: Any, name: str) -> bool:
+    try:
+        async with engine.connect() as conn:
+            found = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": name}
+            )
+    except Exception:
+        return False
+    return found is not None
+
+
 @dataclass(frozen=True)
 class SchemaStatus:
-    """Whether the database answers, and its revision against the packaged head."""
+    """Whether the database answers, and its revision against the packaged head.
+
+    ``state`` names the case: ``unreachable`` (no server), ``auth_refused``,
+    ``database_missing`` (created at start in required mode with
+    ``migrate_on_start``), ``behind`` (upgraded at start with
+    ``migrate_on_start``) or ``ready``. ``error`` keeps the underlying cause.
+    """
 
     reachable: bool
+    """The server answered (even if it refused the role or lacks the database)."""
     current: str | None = None
     head: str | None = None
     error: str | None = None
+    cause: DatabaseCause | None = None
+
+    @property
+    def state(self) -> str:
+        if self.cause is not None:
+            return self.cause
+        if not self.reachable:
+            return "unreachable"
+        return "ready" if self.head is not None and self.current == self.head else "behind"
 
     @property
     def up_to_date(self) -> bool:
-        return self.reachable and self.head is not None and self.current == self.head
+        return self.state == "ready"
 
 
 def _head_revision() -> str | None:
@@ -107,7 +166,13 @@ async def schema_status(database: DatabaseConfig, *, timeout: float = 5.0) -> Sc
                 else None
             )
     except Exception as exc:
-        return SchemaStatus(reachable=False, head=head, error=str(exc) or type(exc).__name__)
+        cause = failure_cause(exc)
+        return SchemaStatus(
+            reachable=cause != "unreachable",
+            head=head,
+            error=str(exc) or type(exc).__name__,
+            cause=cause,
+        )
     finally:
         await engine.dispose()
     return SchemaStatus(reachable=True, current=current, head=head)
