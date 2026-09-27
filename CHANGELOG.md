@@ -6,6 +6,9 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+- A GPT-Live session that the provider created but the runtime could not attach
+  to is now hung up, best effort, as Codex sessions already were. Previously
+  nothing closed it.
 - A stored OpenAI API key and a ChatGPT/Codex login no longer overwrite or
   delete each other. They shared one database row: storing the key erased a
   saved login, a new login replaced the key, and removing either removed both.

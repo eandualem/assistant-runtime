@@ -4,6 +4,8 @@ import asyncio
 import json
 from unittest.mock import AsyncMock
 
+from assistant_runtime.app.voice._transport import LiveTransport
+
 
 class Connection:
     def __init__(self):
@@ -34,8 +36,11 @@ class Connection:
         self.closed = True
 
 
-class Transport:
+class Transport(LiveTransport):
+    """GPT-Live's session shape and status; the provider calls are recorded offline."""
+
     def __init__(self):
+        super().__init__(1)
         self.connection = Connection()
         self.created = []
         self.attach = AsyncMock(return_value=self.connection)
@@ -45,7 +50,11 @@ class Transport:
         self.created.append((key, config, sdp))
         return "live_provider", "answer"
 
+    def abandon(self, provider_id, key):
+        pass  # offline: there is no provider session to hang up
+
     async def stop(self):
+        await super().stop()
         self.stopped = True
 
 

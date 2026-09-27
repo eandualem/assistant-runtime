@@ -18,7 +18,7 @@ from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.interface import VoiceService
 from tests.unit.app.voice.test_voice import OWNER, Backend
-from tests.voice_helpers import Transport
+from tests.voice_helpers import Transport, until
 
 
 # Narrow fixture transcribed from the public Live DataChannelConfig contract:
@@ -44,9 +44,20 @@ async def boundary(monkeypatch):
     backend, sideband = Backend(), Transport()
     transport = LiveTransport(1)
     await transport.http.aclose()
-    state = SimpleNamespace(status=201, requests=[], failure=None, headers={}, malformed=False)
+    state = SimpleNamespace(
+        status=201,
+        requests=[],
+        failure=None,
+        headers={},
+        malformed=False,
+        hangups=[],
+        hangup_status=200,
+    )
 
     async def provider(request):
+        if request.url.path.endswith("/hangup"):
+            state.hangups.append(request)
+            return httpx.Response(state.hangup_status)
         state.requests.append(request)
         if state.failure:
             raise state.failure
@@ -189,6 +200,24 @@ async def test_attach_failure_remains_unknown_after_successful_creation(boundary
     assert not boundary.backend.leases
     assert len(boundary.requests) == 1
     assert "private-sdp" not in response.text + boundary.logs.getvalue()
+
+
+@pytest.mark.parametrize("hangup_status", [200, 500])
+async def test_a_session_that_was_never_attached_is_hung_up(boundary, hangup_status):
+    boundary.hangup_status = hangup_status
+    boundary.sideband.attach.side_effect = RuntimeError("attach failed")
+    response = await create(boundary)
+    assert response.json()["allocation_status"] == "unknown"
+    await until(lambda: boundary.hangups)
+    [hangup] = boundary.hangups
+    assert hangup.method == "POST"
+    assert hangup.url.path == "/v1/live/sessions/live_provider/hangup"
+    assert hangup.headers["authorization"] == "Bearer secret-key-never-log"
+    assert hangup.content == b""
+    await boundary.transport.stop()  # waits for the hangup; a failed one is only logged
+    logs = boundary.logs.getvalue()
+    assert ("provider_status_code=500" in logs) is (hangup_status == 500)
+    assert "secret-key-never-log" not in logs
 
 
 async def test_local_policy_rejection_has_no_provider_request(boundary):

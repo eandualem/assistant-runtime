@@ -11,12 +11,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
-import shutil
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
 
 from loguru import logger
 
@@ -25,8 +22,8 @@ from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.app.voice._persistence import VoicePersistence
 from assistant_runtime.app.voice._state import VoiceCall
-from assistant_runtime.app.voice._transport import LiveTransport, send
-from assistant_runtime.app.voice.config import CODEX_MODEL, CODEX_VOICES, VoiceConfig
+from assistant_runtime.app.voice._transport import VoiceTransport, build_transport, send
+from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.models import VoiceContext, VoiceOffer, VoiceToolResult
 from assistant_runtime.principal import Principal, can_access_session
@@ -35,6 +32,11 @@ from assistant_runtime.services.database.interface import DatabaseService
 
 # Spoken for a delegation the backend could not complete or could not queue.
 _BACKEND_FAILED = "The backend could not complete the request. Do not claim the action succeeded."
+# Added to the call's instructions when its provider takes facts through the runtime.
+_FACTS_NOTE = (
+    "\nThe application may add short background facts during the call. "
+    "Use them when relevant; do not read a fact aloud just because it arrived."
+)
 
 
 class VoiceService:
@@ -46,7 +48,7 @@ class VoiceService:
         streaming_service: StreamingService,
         database_service: DatabaseService | None = None,
         *,
-        transport: Any = None,
+        transport: VoiceTransport | None = None,
     ):
         self.config = config
         self._streaming = streaming_service
@@ -55,19 +57,14 @@ class VoiceService:
         self._calls: dict[str, VoiceCall] = {}
         self._create_lock = asyncio.Lock()
         self._started = False
-        self._check: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._started = True
-        if self._codex and self.config.enabled:
-            # The offline CLI check runs once in the background, not in a health probe.
-            self._check = asyncio.create_task(self._codex_transport().compatibility())
+        if self.config.enabled:
+            await self._voice().start()
 
     async def stop(self) -> None:
         self._started = False
-        if self._check is not None:
-            self._check.cancel()
-            await asyncio.gather(self._check, return_exceptions=True)
         async with self._create_lock:
             calls = [call for call in self._calls.values() if not call.done.is_set()]
             for call in calls:
@@ -77,54 +74,33 @@ class VoiceService:
             if self._transport is not None:
                 await self._transport.stop()
 
-    @property
-    def _codex(self) -> bool:
-        return self.config.provider == "codex"
-
-    def _codex_transport(self) -> Any:
+    def _voice(self) -> VoiceTransport:
+        """The configured provider's transport, which owns all provider-specific behaviour."""
         if self._transport is None:
-            from assistant_runtime.app.voice._codex import CodexTransport
-
-            self._transport = CodexTransport(
-                self.config.codex_command,
-                self.config.connect_timeout_seconds,
-                usage_ceiling_percent=self.config.codex_usage_ceiling_percent,
-                usage_check_seconds=self.config.codex_usage_check_seconds,
-                close_timeout=self.config.close_timeout_seconds,
-            )
+            self._transport = build_transport(self.config)
         return self._transport
 
     async def health_check(self) -> dict:
-        status = {
+        return {
             "healthy": self._started,
             "enabled": self.config.enabled,
             "provider": self.config.provider,
             "delegation_enabled": self.config.delegation_enabled,
             "conversation_mode_supported": True,
             "call_instructions_supported": True,
-            "configured": bool(os.getenv(self.config.api_key_env)),
-            "model": self.config.model,
             "voice": self.config.voice,
             "active_calls": sum(not c.done.is_set() for c in self._calls.values()),
+            **self._voice().status(),
         }
-        if self._codex:
-            status.update(
-                configured=shutil.which(self.config.codex_command) is not None,
-                model=CODEX_MODEL,
-                voices=list(CODEX_VOICES),
-            )
-            if self.config.enabled:
-                # The installed CLI's protocol, not the account; None until checked.
-                status["codex"] = self._codex_transport().checked()
-        return status
 
     async def usage(self) -> dict:
-        """The Codex usage windows and whether the guard would admit a call now."""
-        if not self._codex:
-            raise VoiceError("Usage is reported only for the codex voice provider", 404)
+        """The provider's usage windows and whether its guard would admit a call now."""
+        transport = self._voice()
+        if not transport.reports_usage:
+            raise VoiceError("This voice provider reports no usage", 404)
         if not self._started or not self.config.enabled:
             raise VoiceError("Voice is disabled; set VOICE__ENABLED=true", 503)
-        return await self._codex_transport().usage()
+        return await transport.usage()
 
     async def create(self, offer: VoiceOffer, principal: Principal) -> dict:
         if not self._started or not self.config.enabled:
@@ -141,26 +117,8 @@ class VoiceService:
                 self._streaming.validate_profile(offer.profile)
             except UnknownProfileError as exc:
                 raise VoiceError(str(exc), 422, allocation_status="rejected") from exc
-        key = None if self._codex else os.getenv(self.config.api_key_env)
-        if not self._codex and not key:
-            raise VoiceError(
-                f"GPT-Live requires {self.config.api_key_env}; for the ChatGPT/Codex login "
-                "set VOICE__PROVIDER=codex",
-                503,
-                allocation_status="rejected",
-            )
-        if self._codex:
-            self._codex_transport()
-        elif self._transport is None:
-            try:
-                from websockets.asyncio.client import connect  # noqa: F401
-            except ImportError as exc:
-                raise VoiceError(
-                    "Install assistant-runtime[voice] to enable voice",
-                    503,
-                    allocation_status="rejected",
-                ) from exc
-            self._transport = LiveTransport(self.config.connect_timeout_seconds)
+        transport = self._voice()
+        key = transport.credentials()
         async with self._create_lock:
             if not self._started:
                 raise VoiceError("Voice service is stopping", 503, allocation_status="rejected")
@@ -173,7 +131,7 @@ class VoiceService:
                 offer=offer,
                 principal=principal,
                 lease=str(uuid.uuid4()),
-                model=CODEX_MODEL if self._codex else self.config.model,
+                model=transport.model,
                 voice=self.config.voice,
                 mode=mode,
             )
@@ -188,20 +146,7 @@ class VoiceService:
                     content = item["content"].encode()[-remaining:].decode(errors="ignore")
                     if not content:
                         break
-                    seed.append(
-                        {
-                            "type": "message",
-                            "role": item["role"],
-                            "content": [
-                                {
-                                    "type": "input_text"
-                                    if item["role"] == "user"
-                                    else "output_text",
-                                    "text": content,
-                                }
-                            ],
-                        }
-                    )
+                    seed.append({"role": item["role"], "text": content})
                     remaining -= len(content.encode())
                     if remaining <= 0:
                         break
@@ -210,11 +155,8 @@ class VoiceService:
                     if call.mode == "conversation"
                     else self.config.instructions
                 )
-                if self._codex:
-                    instructions += (
-                        "\nThe application may add short background facts during the call. "
-                        "Use them when relevant; do not read a fact aloud just because it arrived."
-                    )
+                if transport.accepts_facts:
+                    instructions += _FACTS_NOTE
                 if call.mode == "conversation":
                     instructions += (
                         "\nThis call is conversation-only. Do not delegate work or call tools. "
@@ -222,45 +164,14 @@ class VoiceService:
                         "without claiming actions have started or completed until the application "
                         "supplies confirmed execution facts."
                     )
-                session = (
-                    {
-                        "instructions": instructions,
-                        "voice": self.config.voice,
-                        # v3 initial items: complete role-bearing text, oldest first.
-                        "history": [
-                            {"role": item["role"], "text": item["content"][0]["text"]}
-                            for item in reversed(seed)
-                        ],
-                    }
-                    if self._codex
-                    else {
-                        "model": self.config.model,
-                        "instructions": instructions,
-                        "audio": {"output": {"voice": self.config.voice}},
-                        # Live has no disabled delegation type. Runtime policy blocks dispatch.
-                        "delegation": {"type": "client"},
-                        **(
-                            {
-                                "client": {
-                                    "data_channel": {
-                                        "allowed_client_events": [
-                                            "session.instructions.append",
-                                            "session.thinking.append",
-                                            "session.input_audio.mute",
-                                            "session.input_audio.unmute",
-                                        ]
-                                    }
-                                }
-                            }
-                            if call.mode == "conversation"
-                            else {}
-                        ),
-                        "input": list(reversed(seed)),
-                        "store": False,
-                    }
+                session = transport.session(
+                    instructions,
+                    self.config.voice,
+                    list(reversed(seed)),
+                    conversation=call.mode == "conversation",
                 )
-                call.provider_id, answer = await self._transport.create(key, session, offer.sdp)
-                call.connection = await self._transport.attach(key, call.provider_id)
+                call.provider_id, answer = await transport.create(key, session, offer.sdp)
+                call.connection = await transport.attach(key, call.provider_id)
                 call.status = "connected"
                 self._calls[call.id] = call
                 self._emit(call, "status", {"status": "connected"})
@@ -276,9 +187,8 @@ class VoiceService:
                 }
             except BaseException as exc:
                 self._streaming.release_session(offer.session_id, call.lease)
-                abandon = getattr(self._transport, "abandon", None)
-                if call.provider_id and call.connection is None and abandon is not None:
-                    abandon(call.provider_id)  # created but never attached: stop it
+                if call.provider_id and call.connection is None:
+                    transport.abandon(call.provider_id, key)  # created, never attached: stop it
                 if call.connection is not None:
                     with contextlib.suppress(Exception):
                         await call.connection.close()
@@ -333,10 +243,8 @@ class VoiceService:
     ) -> dict:
         call = await self._active(call_id, principal)
         if update.fact is not None:
-            if not self._codex:
-                raise VoiceError(
-                    "Facts reach GPT-Live through the client data channel, not this endpoint", 409
-                )
+            if not self._voice().accepts_facts:
+                raise VoiceError("This voice provider does not take facts through the runtime", 409)
             previous = call.last_fact_at
             if previous is not None and time.monotonic() - previous < 1:
                 raise VoiceError("At most one fact per second per call", 429)
