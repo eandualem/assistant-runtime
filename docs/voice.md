@@ -379,8 +379,9 @@ GPT-Live calls return `409` here; send facts on that provider's data channel.
 **Usage window.** Realtime voice draws on the same Codex usage allowance as every
 other Codex use on the machine. Before creating a call, and every
 `VOICE__CODEX_USAGE_CHECK_SECONDS` during it, the runtime reads the account's
-usage and refuses or stops the call when one of these holds. Each has a
-machine-readable `reason`:
+usage and refuses or stops the call when one of these holds. While calls are
+open, one read per interval serves all of them, and a refusal stops them all
+together. Each refusal has a machine-readable `reason`:
 
 | `reason` | Meaning |
 |---|---|

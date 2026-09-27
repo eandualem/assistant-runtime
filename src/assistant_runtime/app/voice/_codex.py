@@ -443,29 +443,15 @@ class _CodexConnection:
         self._closed = False  # the provider session has ended
         self._started_at: float | None = None
         self._tasks: set[asyncio.Task] = set()
-        self._watchdog = asyncio.create_task(self._watch_usage())
+        transport._watch(self)
 
-    async def _watch_usage(self) -> None:
-        failures = 0
-        while not self._stopping:
-            await asyncio.sleep(self._transport.usage_check_seconds)
-            try:
-                # Never start a server for a call whose server has gone.
-                reason = (await self._transport.usage(start=False))["reason"]
-            except Exception:
-                reason = "usage_unreadable"
-            if reason == "usage_unreadable":
-                # One bad read is not a reason to end a call; several in a row are.
-                failures += 1
-                if failures < _UNREADABLE_CHECKS:
-                    reason = None
-            else:
-                failures = 0
-            if reason and not self._stopping:
-                logger.warning("Codex voice stopped by the usage guard: {}", reason)
-                # Queued ahead of the closed notification the stop produces.
-                self._queue.put_nowait({"method": "usage_guard", "params": {"code": reason}})
-                await asyncio.shield(self._stop("usage_guard"))
+    def _guard(self, reason: str) -> None:
+        """End the call on the usage guard's verdict, which every attached call shares."""
+        if not self._stopping:
+            logger.warning("Codex voice stopped by the usage guard: {}", reason)
+            # Queued ahead of the closed notification the stop produces.
+            self._queue.put_nowait({"method": "usage_guard", "params": {"code": reason}})
+            self._stop("usage_guard")
 
     def __aiter__(self) -> _CodexConnection:
         return self
@@ -625,10 +611,10 @@ class _CodexConnection:
                     asyncio.shield(self._stop(None)), self._transport.close_timeout
                 )
         self._stopping = True
-        self._watchdog.cancel()
+        await self._transport._unwatch(self)
         for task in list(self._tasks):
             task.cancel()
-        await asyncio.gather(self._watchdog, *self._tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks, return_exceptions=True)
         self._server.unsubscribe(self._thread)
         # Let the app-server release the call's thread; best effort.
         with contextlib.suppress(Exception):
@@ -668,6 +654,41 @@ class CodexTransport:
         self._startup: asyncio.Task | None = None  # the background protocol check
         self._background: set[asyncio.Task] = set()
         self._created: dict[str, asyncio.Queue] = {}  # created, not yet attached
+        self._calls: set[_CodexConnection] = set()  # attached, not yet closed
+        self._poller: asyncio.Task | None = None  # reads usage while any call is attached
+
+    def _watch(self, call: _CodexConnection) -> None:
+        self._calls.add(call)
+        if self._poller is None or self._poller.done():
+            self._poller = asyncio.create_task(self._poll_usage())
+
+    async def _unwatch(self, call: _CodexConnection) -> None:
+        self._calls.discard(call)
+        if not self._calls and self._poller is not None:
+            poller, self._poller = self._poller, None
+            poller.cancel()
+            await asyncio.gather(poller, return_exceptions=True)
+
+    async def _poll_usage(self) -> None:
+        """One usage read per interval for every attached call; one verdict for all."""
+        failures = 0
+        while True:
+            await asyncio.sleep(self.usage_check_seconds)
+            try:
+                # Never start a server for calls whose server has gone.
+                reason = (await self.usage(start=False))["reason"]
+            except Exception:
+                reason = "usage_unreadable"
+            if reason == "usage_unreadable":
+                # One bad read is not a reason to end the calls; several in a row are.
+                failures += 1
+                if failures < _UNREADABLE_CHECKS:
+                    reason = None
+            else:
+                failures = 0
+            if reason:
+                for call in list(self._calls):
+                    call._guard(reason)
 
     def checked(self) -> dict | None:
         """The completed protocol check, without running one."""
@@ -891,6 +912,10 @@ class CodexTransport:
         if self._startup is not None:
             self._startup.cancel()
             await asyncio.gather(self._startup, return_exceptions=True)
+        if self._poller is not None:
+            self._poller.cancel()
+            await asyncio.gather(self._poller, return_exceptions=True)
+            self._poller = None
         await asyncio.gather(*self._background, return_exceptions=True)
         await self._server.stop()
         if self._workdir is not None:
