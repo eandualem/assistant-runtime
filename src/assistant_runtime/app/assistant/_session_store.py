@@ -178,10 +178,15 @@ class SessionStore:
         assert ctx is not None
         if request.id in ctx["message_index"]:
             raise ValueError(f"Message '{request.id}' already exists")
-        # The first message of a session about a subject binds it (see the planner).
-        bind = request.subject is not None and ctx["message_count"] == 0 and not ctx.get("subject")
-        profile = request.profile if bind else ctx.get("profile")
-        subject = request.subject if bind else ctx.get("subject")
+        # The first saved message decides the binding (see the planner): an
+        # earlier first message whose write failed may have left one on the row,
+        # so it is rewritten (or cleared) whenever either side names a subject.
+        first = ctx["message_count"] == 0
+        bind = first and (request.subject is not None or ctx.get("subject") is not None)
+        subject = request.subject if first else ctx.get("subject")
+        profile = (
+            (request.profile if subject is not None else None) if first else ctx.get("profile")
+        )
 
         record: MessageRecord = {
             "id": request.id,
@@ -203,7 +208,7 @@ class SessionStore:
                 subject=subject,
             )
             if bind:
-                # The row may already exist without a binding (a released reservation).
+                # The row may already exist (a released reservation, a failed first write).
                 await self._db.set_binding(session_id, profile, subject)
             await self._db.create_message(record)
         if new_owner is not None:

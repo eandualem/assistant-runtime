@@ -114,7 +114,9 @@ def apply_binding(
     subject select their profile per turn, as before. Call it only after the
     caller is allowed on the session: the rejection names the binding.
     """
-    bound_subject = (session_context or {}).get("subject")
+    context = session_context or {}
+    # A binding takes effect with the first saved message; an empty session has none yet.
+    bound_subject = context.get("subject") if context.get("message_count", 0) > 0 else None
     if not bound_subject:
         if request.subject is not None and request.profile is None and default_profile:
             return request.model_copy(update={"profile": default_profile})

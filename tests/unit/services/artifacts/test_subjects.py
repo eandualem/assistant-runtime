@@ -80,6 +80,17 @@ class TestSubjects:
         with pytest.raises(ArtifactSubjectRequiredError):
             await service.history("progress")
 
+    async def test_the_subject_view_cache_is_bounded(self):
+        from assistant_runtime.services.artifacts import interface
+
+        service = await _service()
+        first = service.for_subject("agent-0")
+        for n in range(1, interface._SUBJECT_VIEWS + 5):
+            service.for_subject(f"agent-{n}")
+        assert len(service._subject_views) == interface._SUBJECT_VIEWS
+        assert "agent-0" not in service._subject_views
+        assert service.for_subject("agent-0") is not first  # rebuilt on demand
+
     async def test_views_are_stable_per_subject(self):
         service = await _service()
         assert service.for_subject("agent-a") is service.for_subject("agent-a")

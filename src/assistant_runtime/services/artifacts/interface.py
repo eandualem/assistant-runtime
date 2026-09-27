@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import difflib
 import time
+from collections import OrderedDict
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
 
 Action = Literal["propose", "update", "activate", "reject", "delete"]
 SEED = "seed"
+# Subject views kept per profile; the least recently used is dropped beyond this.
+_SUBJECT_VIEWS = 128
 
 
 class ArtifactService:
@@ -75,7 +78,7 @@ class ArtifactService:
         self._owner = self
         self._base = self
         self._subject = ""
-        self._subject_views: dict[str, ArtifactService] = {}
+        self._subject_views: OrderedDict[str, ArtifactService] = OrderedDict()
         self._views: dict[str, ArtifactService] = {profile.name: self}
         for additional in profiles:
             if additional.name in self._views:
@@ -124,6 +127,10 @@ class ArtifactService:
         view = base._subject_views.get(subject)
         if view is None:
             view = base._subject_views[subject] = self._view(base._profile, subject)
+            while len(base._subject_views) > _SUBJECT_VIEWS:
+                base._subject_views.popitem(last=False)  # a view holds only a text cache
+        else:
+            base._subject_views.move_to_end(subject)
         return view
 
     @property

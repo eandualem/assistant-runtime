@@ -48,8 +48,8 @@ below.
 
 Artifact versions are keyed by profile, subject (empty for profile-scoped
 artifacts) and name. A session created for a subject stores its `profile`
-and `subject` on the row, written once when the session is created, so a
-restart keeps the binding. `keep_versions` bounds how many superseded
+and `subject` on the row, decided by the session's first saved message
+(an empty session enforces none), so a restart keeps the binding. `keep_versions` bounds how many superseded
 versions an artifact keeps; the rest are deleted as new ones are written.
 
 With `DATABASE__REQUIRED`, each profile-scoped artifact of a registered profile that has

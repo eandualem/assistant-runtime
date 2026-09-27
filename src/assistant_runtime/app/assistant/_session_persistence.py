@@ -102,7 +102,7 @@ class SessionPersistence:
                     subject=subject,
                 )
 
-    async def set_binding(self, session_id: str, profile: str | None, subject: str) -> None:
+    async def set_binding(self, session_id: str, profile: str | None, subject: str | None) -> None:
         """Record the profile and subject of a session's first message (a row may predate it)."""
         async with self._db.session_context() as db_session:
             await SessionRepository(db_session).update(session_id, profile=profile, subject=subject)

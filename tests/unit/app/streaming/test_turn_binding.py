@@ -108,3 +108,23 @@ async def test_the_binding_reaches_a_row_created_before_the_first_message():
         owner_id="alice",
     )
     db.set_binding.assert_awaited_once_with("s-1", "tracker", "agent-a")
+
+
+async def test_a_binding_left_by_a_failed_first_message_is_rewritten():
+    """The first *saved* message decides: an empty session enforces no binding."""
+    sessions = SessionStore()
+    stale = sessions.get_context("s-1")  # as loaded: row bound, first message never saved
+    stale["profile"], stale["subject"] = "tracker", "agent-a"
+    planner = TurnPlanner(sessions)
+    plan = await planner.plan(_request("m1", profile="tracker", subject="agent-b"))
+    assert plan.request.subject == "agent-b"
+    assert sessions.get_context("s-1")["subject"] == "agent-b"
+
+
+async def test_a_first_message_without_a_subject_clears_a_stale_binding():
+    sessions = SessionStore()
+    stale = sessions.get_context("s-1")
+    stale["profile"], stale["subject"] = "tracker", "agent-a"
+    await TurnPlanner(sessions).plan(_request("m1", profile="other"))
+    context = sessions.get_context("s-1")
+    assert (context["profile"], context["subject"]) == (None, None)

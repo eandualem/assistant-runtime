@@ -207,8 +207,8 @@ execution, history, serialization, or the upstream dependency; see
   session tracks the active leaf and the path to it is the model history.
   A message without `parent_id` is the root when the session is empty and
   continues from the active leaf otherwise. A session created with a
-  `subject` is bound to that profile and subject (row columns, written on
-  creation only); the planner fills them into later requests and rejects
+  `subject` is bound to that profile and subject (row columns, decided by
+  the first saved message; an empty session enforces none); the planner fills them into later requests and rejects
   others. Sessions without a subject keep per-turn profile selection.
   `message_type` is `standard` or `steering`: steering is queued while a
   stream is live and promoted into the conversation otherwise. A host tool
