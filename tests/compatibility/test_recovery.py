@@ -30,6 +30,7 @@ class FakePersistence:
     messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     steering: dict[str, dict[str, Any]] = field(default_factory=dict)
     state_saves: list[dict[str, Any] | None] = field(default_factory=list)
+    snapshots: dict[str, str] = field(default_factory=dict)
     ops: list[tuple[str, Any]] = field(default_factory=list)
     """Every write, in order, for assertions about crash windows."""
 
@@ -54,7 +55,9 @@ class FakePersistence:
         self.ops.append(("create_message", record["id"]))
         self.messages[record["id"]] = copy.deepcopy(record)
 
-    async def update_message(self, message_id, *, content=None, segments=None, usage=None):
+    async def update_message(
+        self, message_id, *, content=None, segments=None, usage=None, prompt=None
+    ):
         self.ops.append(("update_message", message_id))
         row = self.messages[message_id]
         if content is not None:
@@ -63,6 +66,14 @@ class FakePersistence:
             row["segments"] = copy.deepcopy(segments)
         if usage is not None:
             row["usage"] = usage
+        if prompt is not None:
+            row["prompt"] = copy.deepcopy(prompt)
+
+    async def save_prompt_snapshot(self, snapshot_hash, content):
+        self.snapshots[snapshot_hash] = content
+
+    async def prompt_snapshot(self, snapshot_hash):
+        return self.snapshots.get(snapshot_hash)
 
     async def update_segments(self, repaired):
         for message_id, segments in repaired:

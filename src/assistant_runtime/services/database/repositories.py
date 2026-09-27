@@ -15,6 +15,7 @@ from assistant_runtime.services.database.models import (
     InboxItemORM,
     MessageORM,
     OAuthTokenORM,
+    PromptSnapshotORM,
     SessionORM,
     SteeringORM,
     TraceORM,
@@ -209,6 +210,7 @@ class MessageRepository:
         content: str,
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> MessageORM:
         result = await self._session.execute(
             insert(MessageORM)
@@ -221,6 +223,7 @@ class MessageRepository:
                 content=content,
                 segments=segments,
                 usage=usage,
+                prompt=prompt,
             )
             .returning(MessageORM)
         )
@@ -256,6 +259,7 @@ class MessageRepository:
         content: str | None = None,
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> None:
         fields: dict[str, Any] = {}
         if content is not None:
@@ -264,12 +268,36 @@ class MessageRepository:
             fields["segments"] = segments
         if usage is not None:
             fields["usage"] = usage
+        if prompt is not None:
+            fields["prompt"] = prompt
         if not fields:
             return
         await self._session.execute(
             update(MessageORM).where(MessageORM.id == message_id).values(**fields)
         )
         await self._session.flush()
+
+
+class PromptSnapshotRepository:
+    """Stable prompt texts by hash. Uses flush() — caller owns commit."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def put(self, snapshot_hash: str, content: str) -> None:
+        """Store the text unless its hash is already there."""
+        await self._session.execute(
+            pg_insert(PromptSnapshotORM)
+            .values(hash=snapshot_hash, content=content)
+            .on_conflict_do_nothing(index_elements=["hash"])
+        )
+        await self._session.flush()
+
+    async def get(self, snapshot_hash: str) -> str | None:
+        result = await self._session.execute(
+            select(PromptSnapshotORM.content).where(PromptSnapshotORM.hash == snapshot_hash)
+        )
+        return result.scalar_one_or_none()
 
 
 class SteeringRepository:

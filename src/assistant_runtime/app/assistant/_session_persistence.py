@@ -20,6 +20,7 @@ from assistant_runtime.app.assistant._serialization import MessageRecord, Steeri
 from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.services.database.repositories import (
     MessageRepository,
+    PromptSnapshotRepository,
     SessionRepository,
     SteeringRepository,
 )
@@ -122,6 +123,7 @@ class SessionPersistence:
                 content=record["content"],
                 segments=record["segments"],
                 usage=record["usage"],
+                prompt=record.get("prompt"),
             )
 
     async def update_message(
@@ -131,11 +133,20 @@ class SessionPersistence:
         content: str | None = None,
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> None:
         async with self._db.session_context() as db_session:
             await MessageRepository(db_session).update(
-                message_id, content=content, segments=segments, usage=usage
+                message_id, content=content, segments=segments, usage=usage, prompt=prompt
             )
+
+    async def save_prompt_snapshot(self, snapshot_hash: str, content: str) -> None:
+        async with self._db.session_context() as db_session:
+            await PromptSnapshotRepository(db_session).put(snapshot_hash, content)
+
+    async def prompt_snapshot(self, snapshot_hash: str) -> str | None:
+        async with self._db.session_context() as db_session:
+            return await PromptSnapshotRepository(db_session).get(snapshot_hash)
 
     async def update_segments(self, repaired: list[tuple[str, list[dict[str, Any]]]]) -> None:
         """Write repaired segments for several messages in one transaction."""
@@ -256,6 +267,7 @@ class SessionPersistence:
                             "content": m.content,
                             "segments": m.segments,
                             "usage": m.usage,
+                            "prompt": m.prompt,
                             "created_at": m.created_at,
                         }
                         for m in messages

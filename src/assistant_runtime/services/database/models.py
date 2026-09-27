@@ -106,6 +106,8 @@ class MessageORM(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     segments: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    prompt: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    """What the assistant message was produced with (see ``app/assistant/prompt_record``)."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -267,6 +269,18 @@ class ArtifactORM(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PromptSnapshotORM(Base):
+    """The stable part of a system prompt, stored once under its SHA-256."""
+
+    __tablename__ = "prompt_snapshots"
+
+    hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class OAuthTokenORM(Base):

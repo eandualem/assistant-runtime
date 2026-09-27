@@ -130,6 +130,23 @@ async def get_session_messages(
     return merge_display_messages(path, steering)
 
 
+@router.get("/sessions/{session_id}/messages/{message_id}/prompt")
+async def get_message_prompt(
+    session_id: str, message_id: str, service: AssistantServiceDep, principal: PrincipalDep
+) -> dict:
+    """The system prompt an assistant message was produced with: record and full text.
+
+    ``content`` is null when the stable part is no longer available (no
+    database, and this process has not kept it).
+    """
+    sessions = service.get_session_store()
+    await _get_session_context(session_id, sessions, principal)
+    prompt = await service.message_prompt(session_id, message_id)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail="No prompt is recorded for this message")
+    return prompt
+
+
 @router.get("/sessions/{session_id}/tree")
 async def get_session_tree(
     session_id: str, service: AssistantServiceDep, principal: PrincipalDep

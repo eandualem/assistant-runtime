@@ -27,6 +27,7 @@ from assistant_runtime.app.assistant.models import (
     HoldDecision,
     PromptResult,
 )
+from assistant_runtime.app.assistant.prompt_record import prompt_record, prompt_text
 from assistant_runtime.app.assistant.usage import usage_dict
 from assistant_runtime.app.settings import RuntimeSettings, resolve_effective_config
 from assistant_runtime.host_context import view_name_of
@@ -163,6 +164,45 @@ class AssistantService:
             duration_ms=(time.monotonic() - started_at) * 1000,
         )
 
+    async def message_prompt(self, session_id: str, message_id: str) -> dict[str, Any] | None:
+        """The prompt record of a stored assistant message with its full text; None if none."""
+        if self._sessions is None:
+            return None
+        record = self._sessions.get_message(session_id, message_id)
+        prompt = (record or {}).get("prompt")
+        if not prompt:
+            return None
+        snapshot = await self._sessions.prompt_snapshot(prompt["snapshot_hash"])
+        return {
+            **prompt,
+            "message_id": message_id,
+            "content": prompt_text(prompt, snapshot) if snapshot is not None else None,
+        }
+
+    async def preview_prompt(self, profile: str | None, subject: str | None) -> dict[str, Any]:
+        """The system prompt a turn would start from now, without host context or session memory."""
+        artifacts = (
+            self._artifacts.for_profile(profile) if profile is not None else self._artifacts
+        ).for_subject(subject)
+        (texts, extras, versions), mcp_summary = await asyncio.gather(
+            artifacts.prompt_inputs(), self._tools.get_mcp_summary()
+        )
+        prompt = build_system_prompt(
+            available_tools=self._tools.get_available_tools(None),
+            session_context={},
+            mcp_summary=mcp_summary,
+            artifacts=texts,
+            profile=artifacts.profile,
+            artifact_extras=extras,
+        )
+        record, _ = prompt_record(
+            prompt,
+            profile=artifacts.profile.name,
+            subject=artifacts.subject,
+            artifact_versions=versions,
+        )
+        return {**record, "content": prompt.content}
+
     @property
     def default_profile_name(self) -> str:
         """The profile a request that names none uses."""
@@ -225,8 +265,7 @@ class AssistantService:
             mcp_summary_task = asyncio.create_task(
                 asyncio.sleep(0, result=None) if host_only else self._tools.get_mcp_summary()
             )
-            artifacts_task = asyncio.create_task(artifacts_service.active_texts())
-            extras_task = asyncio.create_task(artifacts_service.prompt_extras())
+            inputs_task = asyncio.create_task(artifacts_service.prompt_inputs())
 
             # 2. Config resolution can run while prompt inputs load.
             effective = resolve_effective_config(
@@ -240,8 +279,8 @@ class AssistantService:
             )
 
             # 3. MCP + artifacts + system prompt
-            mcp_summary, artifacts, artifact_extras = await asyncio.gather(
-                mcp_summary_task, artifacts_task, extras_task
+            mcp_summary, (artifacts, artifact_extras, artifact_versions) = await asyncio.gather(
+                mcp_summary_task, inputs_task
             )
 
             prompt_result = build_system_prompt(
@@ -268,6 +307,12 @@ class AssistantService:
             elif available_tools.host_tools:
                 output_type = [str, DeferredToolRequests]
 
+            record, snapshot = prompt_record(
+                prompt_result,
+                profile=artifacts_service.profile.name,
+                subject=artifacts_service.subject,
+                artifact_versions=artifact_versions,
+            )
             agent = self._llm.build_agent(
                 system_prompt=prompt_result.content,
                 toolsets=toolsets,
@@ -291,6 +336,8 @@ class AssistantService:
             mcp_summary=mcp_summary,
             deps=deps,
             profile_name=artifacts_service.profile.name,
+            prompt_record=record,
+            prompt_snapshot=snapshot,
         )
 
     async def update_working_memory(

@@ -167,6 +167,9 @@ class _RunState:
     history: HistoryProcessor | None = None
     # The usage written on the assistant row: the run's own plus auxiliary work.
     stored_usage: dict[str, Any] | None = None
+    # What the latest run of the turn was given (app/assistant/prompt_record).
+    prompt_record: dict[str, Any] | None = None
+    prompt_snapshot: str | None = None
 
 
 class TurnRunner:
@@ -276,6 +279,7 @@ class TurnRunner:
                 _timed(lambda: self._assistant.prepare_agent_context(request, session_context)),
             )
             control.check_cancelled()
+            state.prompt_record, state.prompt_snapshot = ctx.prompt_record, ctx.prompt_snapshot
             resolved_model = ctx.resolved_model
             state.history = (
                 None
@@ -759,6 +763,10 @@ class TurnRunner:
         state.stored_usage = with_auxiliary(state.usage, "summarization", summarisation)
         # Auxiliary sections already on the row (a background extraction that
         # finished after this turn took its snapshot) are kept, not erased.
+        if state.prompt_record is not None and state.prompt_snapshot is not None:
+            await self._sessions.save_prompt_snapshot(
+                state.prompt_record["snapshot_hash"], state.prompt_snapshot
+            )
         if plan.assistant_parent_id is not None and not state.persisted:
             await self._sessions.register_assistant_message(
                 plan.session_id,
@@ -768,6 +776,7 @@ class TurnRunner:
                 segments=segments,
                 usage=state.stored_usage,
                 created_at=timestamp,
+                prompt=state.prompt_record,
             )
         else:
             record = await self._sessions.update_message(
@@ -776,6 +785,7 @@ class TurnRunner:
                 content=content,
                 segments=segments,
                 usage=lambda current: _keep_row_auxiliary(state.stored_usage, {"usage": current}),
+                prompt=state.prompt_record,
             )
             state.stored_usage = record.get("usage")
         state.persisted = True

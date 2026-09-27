@@ -32,6 +32,7 @@ from assistant_runtime.services.artifacts.models import Actor, MutationResult
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 proposals_router = APIRouter(prefix="/artifact-proposals", tags=["artifacts"])
 subjects_router = APIRouter(prefix="/artifact-subjects", tags=["artifacts"])
+prompt_router = APIRouter(prefix="/artifact-prompt", tags=["artifacts"])
 
 
 # ---------------------------------------------------------------------------
@@ -463,3 +464,23 @@ async def list_subjects(
     except Exception as e:
         logger.error("Failed to list subjects", error=str(e))
         raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
+
+
+@prompt_router.get("")
+async def preview_prompt(
+    request: Request,
+    principal: PrincipalDep,
+    profile: str | None = Query(None, description="Registered assistant profile name"),
+    subject: str | None = Query(None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"),
+) -> dict:
+    """The system prompt a turn of ``profile`` about ``subject`` would start from now.
+
+    The same record as a message's prompt, with ``content``; there is no
+    host context or session working memory, since no turn is running.
+    """
+    try:
+        return await request.app.state.assistant_service.preview_prompt(profile, subject)
+    except ArtifactError as e:
+        raise _http_error(e) from e
+    except ValueError as e:  # a required artifact without text
+        raise HTTPException(status_code=422, detail=str(e)) from e

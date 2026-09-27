@@ -48,6 +48,7 @@ class TestMessageORM:
             "content",
             "segments",
             "usage",
+            "prompt",
             "created_at",
         }
         assert isinstance(columns["segments"].type, JSONB)

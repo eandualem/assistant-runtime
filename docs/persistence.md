@@ -46,6 +46,13 @@ The substrate is deliberately the application's own tables. The upstream
 options were compared and deferred; see [the decision](#upstream-decision)
 below.
 
+Every assistant message stores the record of the system prompt it was
+produced with in `messages.prompt`; the stable part of a prompt (the
+artifacts, included profiles, documents, MCP connections) is stored once
+in `prompt_snapshots` under its SHA-256, since it repeats across turns.
+Without Postgres the record stays on the in-memory message and the process
+keeps the most recent snapshots.
+
 Artifact versions are keyed by profile, subject (empty for profile-scoped
 artifacts) and name. A session created for a subject stores its `profile`
 and `subject` on the row, decided by the session's first saved message
