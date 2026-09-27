@@ -93,7 +93,10 @@ class TestAssistantConfigValidation:
 
     def test_session_ttl_hours_below_min(self):
         with pytest.raises(ValidationError):
-            AssistantConfig(session_ttl_hours=0)
+            AssistantConfig(session_ttl_hours=-1)
+
+    def test_session_ttl_hours_zero_means_no_expiry(self):
+        assert AssistantConfig(session_ttl_hours=0).session_ttl_hours == 0
 
     def test_session_ttl_hours_above_max(self):
         with pytest.raises(ValidationError):

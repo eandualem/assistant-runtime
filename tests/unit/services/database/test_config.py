@@ -133,3 +133,32 @@ class TestDatabaseConfigPoolValidation:
     def test_port_as_int(self):
         config = DatabaseConfig(port=5432)
         assert isinstance(config.port, int)
+
+
+class TestDatabaseConfigConnection:
+    """Connections without secrets, escaping, and the durability switches."""
+
+    def test_durability_switches_default_off(self):
+        config = DatabaseConfig()
+        assert config.required is False
+        assert config.migrate_on_start is False
+
+    def test_empty_password_is_omitted(self):
+        config = DatabaseConfig(password="")
+        assert config.async_url == (
+            "postgresql+asyncpg://assistant_runtime@localhost:5434/assistant_runtime"
+        )
+
+    def test_password_is_escaped(self):
+        config = DatabaseConfig(password="p@ss:w/rd%")
+        assert config.url().password == "p@ss:w/rd%"
+        assert "p%40ss%3Aw%2Frd%25@localhost" in config.async_url
+
+    def test_socket_directory_goes_to_the_driver(self):
+        from sqlalchemy.dialects.postgresql.asyncpg import dialect
+
+        config = DatabaseConfig(host="/tmp/pg", password="")
+        _, kwargs = dialect().create_connect_args(config.url())
+        assert kwargs["host"] == "/tmp/pg"
+        assert kwargs["port"] == 5434
+        assert "password" not in kwargs

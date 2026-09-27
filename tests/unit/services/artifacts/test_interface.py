@@ -144,6 +144,13 @@ class TestActiveTexts:
         service._store.get_all_active = AsyncMock(side_effect=RuntimeError("down"))
         assert (await service.active_texts())["instructions"] == "Default help"
 
+    async def test_store_failure_raises_when_the_database_is_required(self):
+        """DATABASE__REQUIRED: a prompt from defaults would drop the stored versions."""
+        service = await _service(database=SimpleNamespace(healthy=True, required=True))
+        service._store.get_all_active = AsyncMock(side_effect=RuntimeError("down"))
+        with pytest.raises(ArtifactError, match="down"):
+            await service.active_texts()
+
     async def test_rows_outside_the_profile_are_ignored(self):
         service = await _service()
         await service._store.propose("default", "legacy", "old text", "system")

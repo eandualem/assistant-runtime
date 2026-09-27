@@ -10,3 +10,11 @@ class DatabaseError(AssistantRuntimeError):
         kwargs.setdefault("category", "database")
         kwargs.setdefault("severity", "high")
         super().__init__(message, **kwargs)
+
+
+class DatabaseUnavailableError(DatabaseError):
+    """Postgres is unreachable and ``DATABASE__REQUIRED`` forbids running without it."""
+
+
+class MigrationError(DatabaseError):
+    """The schema could not be upgraded."""

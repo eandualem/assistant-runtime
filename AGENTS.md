@@ -156,11 +156,13 @@ execution, history, serialization, or the upstream dependency; see
   recorded under `usage.auxiliary`.
   Secrets (provider keys, tokens) come from the environment only and are
   never persisted except through the encrypted provider-key store.
-- **Postgres is optional and every request path must work without it.**
-  `DatabaseService.healthy` is false when it is unreachable; then sessions
-  live in memory, prompt artifacts come from the built-in profiles,
-  runtime settings are not persisted, and database-backed routes return
-  503. Guard new database use the same way; never let it fail a chat.
+- **Postgres is optional and every request path must work without it**,
+  unless `DATABASE__REQUIRED` is set. `DatabaseService.healthy` is false
+  when it is unreachable; then sessions live in memory, prompt artifacts
+  come from the built-in profiles, runtime settings are not persisted, and
+  database-backed routes return 503. Guard new database use the same way;
+  never let it fail a chat. With `DATABASE__REQUIRED`, startup fails with
+  `DatabaseUnavailableError` instead and nothing falls back to memory.
 - **Tools are registered, never hardcoded into the agent.** A backend tool
   is a `ToolDefinition` plus an async handler registered through
   `register_backend_tool`. Handlers return dicts (`{"success": False,

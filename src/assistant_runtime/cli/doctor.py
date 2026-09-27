@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import importlib.util
 import os
 import sys
@@ -14,6 +13,8 @@ from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 
 from assistant_runtime.model_catalog import PROVIDER_ENV_VARS
+from assistant_runtime.services.database.config import DatabaseConfig
+from assistant_runtime.services.database.migrations import SchemaStatus
 
 OK, WARN, FAIL = "ok  ", "warn", "FAIL"
 
@@ -73,28 +74,28 @@ def _models() -> list[Line]:
     return lines
 
 
-async def _database_async() -> Line:
-    from assistant_runtime.config import AppSettings
-    from assistant_runtime.services.database.interface import DatabaseService
-
-    config = AppSettings().database
-    service = DatabaseService(config=config)
-    try:
-        await asyncio.wait_for(service.start(), timeout=5.0)
-        healthy = service.healthy
-    except Exception:
-        healthy = False
-    finally:
-        with contextlib.suppress(Exception):
-            await service.stop()
-    where = f"{config.host}:{config.port}/{config.name}"
-    if healthy:
-        return OK, f"postgres reachable at {where}"
-    return WARN, f"postgres not reachable at {where} (sessions stay in memory)"
+def database_line(status: SchemaStatus, database: DatabaseConfig) -> Line:
+    """One doctor line for the database: reachability, then schema against head."""
+    where = f"{database.host}:{database.port}/{database.name}"
+    if not status.reachable:
+        if database.required:
+            return FAIL, f"postgres not reachable at {where} and DATABASE__REQUIRED is set"
+        return WARN, f"postgres not reachable at {where} (sessions stay in memory)"
+    if status.up_to_date:
+        return OK, f"postgres reachable at {where}, schema at {status.current}"
+    return (
+        WARN,
+        f"postgres reachable at {where}, schema {status.current or 'empty'}, "
+        f"head {status.head or 'unknown'}: run `assistant-runtime migrate`",
+    )
 
 
 def _database() -> Line:
-    return asyncio.run(_database_async())
+    from assistant_runtime.config import AppSettings
+    from assistant_runtime.services.database.migrations import schema_status
+
+    database = AppSettings().database
+    return database_line(asyncio.run(schema_status(database)), database)
 
 
 def _codex() -> Line:

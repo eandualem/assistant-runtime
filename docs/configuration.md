@@ -85,7 +85,7 @@ sampling parameters are not sent a temperature.
 | `request_models` | `[]` (any) | model ids a request's `config` may pick for any `*_model` tunable; a request naming another keeps the host's value. Empty allows any model: fine for development, list the allowed ones for a deployment |
 | `max_turns` | `10` | agent loop iterations per request |
 | `enable_working_memory` | `true` | extract working memory after each turn |
-| `session_ttl_hours` | `24` | Postgres-backed sessions older than this are cleaned up |
+| `session_ttl_hours` | `24` | Postgres-backed sessions older than this are cleaned up; `0` keeps them until they are deleted |
 | `profile` | unset (neutral) | `neutral`, `technical_operator`, or the path of a TOML profile file; `AssistantDefinition.profile` takes precedence |
 | `profiles` | `[]` | Additional built-in names or TOML paths registered at startup; requests select the profile name with top-level `profile`, never a path. Duplicate names fail startup. |
 
@@ -241,6 +241,17 @@ default.
 (`false`). Postgres is optional: when unreachable, sessions and runtime
 settings and artifact versions stay in process memory, and
 database-backed endpoints return 503.
+
+- `required` (`false`): fail startup with `DatabaseUnavailableError` when
+  Postgres is unreachable, instead of keeping state in memory. Artifact
+  read errors then fail the turn instead of falling back to the defaults,
+  and `/health` reports an unreachable database as unhealthy.
+- `migrate_on_start` (`false`): upgrade the schema to the packaged head
+  before the services start; a failed upgrade fails startup with
+  `MigrationError`.
+- An empty `password` connects without one (local `trust`
+  authentication). A `host` starting with `/` is a Unix-socket directory,
+  for `peer` or `trust` authentication over the socket.
 
 ### Application
 

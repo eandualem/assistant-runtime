@@ -154,6 +154,10 @@ class ArtifactService:
                 if row.name in texts:
                     texts[row.name] = row.content
         except Exception as e:
+            # With DATABASE__REQUIRED the stored versions are the only
+            # source; a prompt from defaults would silently drop them.
+            if getattr(self._database_service, "required", False):
+                raise ArtifactError(f"Failed to load artifacts: {e}") from e
             logger.warning("Failed to load artifacts, using defaults", error=str(e))
             return texts
         if generation == self._cache_generation:

@@ -20,8 +20,17 @@ The session store is a write-through cache: every change is written to the
 row before the in-memory context is updated. The row may be ahead while a
 write completes, but memory is never durably ahead of the row. A session that is not in
 the cache is loaded from its rows on first use. Postgres-backed sessions expire after
-`ASSISTANT__SESSION_TTL_HOURS`; expiry deletes the session with its messages,
-steering and pending action.
+`ASSISTANT__SESSION_TTL_HOURS` (`0` keeps them until they are deleted);
+expiry deletes the session with its messages, steering and pending action.
+
+## Requiring Postgres
+
+The table's right-hand column is a fallback, chosen once at startup. A
+deployment that must not lose state sets `DATABASE__REQUIRED=true`: startup
+then fails with `DatabaseUnavailableError` when Postgres is unreachable,
+nothing falls back to process memory, an artifact read error fails the turn
+instead of building the prompt from the defaults, and `/health` reports a
+database lost later as unhealthy.
 
 The substrate is deliberately the application's own tables. The upstream
 options were compared and deferred; see [the decision](#upstream-decision)
@@ -144,6 +153,23 @@ The documented local persistent setup is Postgres in Docker:
 `make db-up && make db-upgrade` from a checkout, or `assistant-runtime migrate`
 from an installed package (the migrations ship in the wheel); see
 [getting started](getting-started.md#6-optional-postgres).
+
+A host that builds its settings in code upgrades the schema from Python
+with the same migrations, and can show the result:
+
+```python
+from assistant_runtime.services.database.migrations import migrate, schema_status
+
+await migrate(settings.database)          # raises MigrationError
+status = await schema_status(settings.database)  # reachable, current, head
+```
+
+`DATABASE__MIGRATE_ON_START=true` does the same before the services start.
+`assistant-runtime doctor` reports reachability and the schema revision
+against the packaged head. A local server needs no stored password: leave
+`DATABASE__PASSWORD` empty for `trust` authentication, or set
+`DATABASE__HOST` to the socket directory (for example `/tmp`) for `peer`
+authentication.
 It is the same schema and the same migrations as production. SQLite is not
 supported: the schema uses `JSONB`, `INSERT ... ON CONFLICT` through the
 Postgres dialect, Postgres server defaults and a partial unique index, and
