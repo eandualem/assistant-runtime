@@ -386,15 +386,11 @@ async def reject_artifact(
 
 @router.post("/{name}/rollback/{version}")
 async def rollback_artifact(
-    name: str,
-    version: int,
-    artifacts: ScopedArtifactDep,
-    admin: AdminDep,
-    body: LabelRequest | None = None,
+    name: str, version: int, artifacts: ScopedArtifactDep, admin: AdminDep
 ) -> dict:
     """Reactivate an earlier version of an artifact."""
     try:
-        return await _activate(artifacts, name, version, _who(admin, body), rollback=True)
+        return await _activate(artifacts, name, version, admin.id, rollback=True)
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -413,6 +409,9 @@ async def artifact_action(
                 raise HTTPException(
                     status_code=422, detail=f"version is required for {body.action}"
                 )
+            if body.action == "rollback" and body.label:
+                # A rollback reactivates a decided version and records no new decider.
+                raise HTTPException(status_code=422, detail="label is not recorded for rollback")
             if body.action == "reject":
                 return await _reject(artifacts, name, body.version, _who(admin, body), body.reason)
             return await _activate(

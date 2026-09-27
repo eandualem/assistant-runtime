@@ -448,3 +448,12 @@ class TestHostLabels:
             "/artifacts/instructions", json={"content": "x", "label": "Not A Label"}
         )
         assert response.status_code == 422
+
+    async def test_a_rollback_takes_no_label(self, client):
+        """A rollback reactivates a decided version; a label would be recorded nowhere."""
+        await client.patch("/artifacts/instructions", json={"content": "Help more"})
+        refused = await client.post(
+            "/artifacts/instructions/actions",
+            json={"action": "rollback", "version": 1, "label": "owner"},
+        )
+        assert refused.status_code == 422

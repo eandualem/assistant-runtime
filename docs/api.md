@@ -284,8 +284,8 @@ stale `expected_version` `409`, a missing version `404`.
 | `POST /api/artifacts/{name}/actions` `{"action": "propose"\|"update"\|"approve"\|"reject"\|"rollback", ...}` | the five above behind one endpoint |
 | `DELETE /api/artifacts/{name}` | delete every version; the default applies again |
 
-Host writes (`propose`, `PATCH`, `approve`, `reject`, `rollback`, and the
-same through `/actions`) take an optional `label` (lowercase, up to 32
+Host writes (`propose`, `PATCH`, `approve`, `reject`, and the same through
+`/actions`) take an optional `label` (lowercase, up to 32
 characters, for example `owner` or `import`), recorded after the principal
 as `proposed_by` or `decided_by` (`local:owner`): who in the host made the
 change. It never changes what the host may do.
