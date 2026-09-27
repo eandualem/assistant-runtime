@@ -110,22 +110,25 @@ class TestMigrate:
         import alembic.command
 
         from assistant_runtime.cli import migrate as migrate_module
+        from assistant_runtime.services.database import migrations
 
         monkeypatch.setenv("DATABASE__HOST", "db.example")
         monkeypatch.setenv("DATABASE__NAME", "prod_db")
-        monkeypatch.setattr(migrate_module, "migrations_dir", lambda: tmp_path)
+        monkeypatch.setattr(migrations, "migrations_dir", lambda: tmp_path)
         called: dict[str, object] = {}
         monkeypatch.setattr(
             alembic.command,
             "upgrade",
             lambda config, revision: called.update(
-                revision=revision, location=config.get_main_option("script_location")
+                revision=revision,
+                location=config.get_main_option("script_location"),
+                host=config.attributes["connection_url"].host,
             ),
         )
 
         assert migrate_module.cmd_migrate(argparse.Namespace(revision="head")) == 0
 
-        assert called == {"revision": "head", "location": str(tmp_path)}
+        assert called == {"revision": "head", "location": str(tmp_path), "host": "db.example"}
         out = capsys.readouterr().out
         assert "db.example" in out
         assert "prod_db" in out
@@ -150,10 +153,11 @@ class TestMigrate:
 
     def test_migrate_without_migrations_reports_and_fails(self, monkeypatch, capsys):
         from assistant_runtime.cli import migrate as migrate_module
+        from assistant_runtime.services.database import migrations
 
-        monkeypatch.setattr(migrate_module, "migrations_dir", lambda: None)
+        monkeypatch.setattr(migrations, "migrations_dir", lambda: None)
         assert migrate_module.cmd_migrate(argparse.Namespace(revision="head")) == 1
-        assert "no migrations found" in capsys.readouterr().out
+        assert "no migrations found" in capsys.readouterr().out.lower()
 
 
 class TestServeReplace:
@@ -536,3 +540,38 @@ class TestRuntimeMarker:
             lambda url, timeout: Response(b'{"healthy": true, "runtime": "assistant-runtime"}'),
         )
         assert serve.is_assistant_runtime("127.0.0.1", 7100) is True
+
+
+class TestDoctorDatabase:
+    def _line(self, status, **config):
+        from assistant_runtime.cli.doctor import database_line
+        from assistant_runtime.services.database.config import DatabaseConfig
+
+        return database_line(status, DatabaseConfig(**config))
+
+    def test_unreachable_optional_database_warns(self):
+        from assistant_runtime.services.database.migrations import SchemaStatus
+
+        status, message = self._line(SchemaStatus(reachable=False))
+        assert status == WARN
+        assert "in memory" in message
+
+    def test_unreachable_required_database_fails(self):
+        from assistant_runtime.services.database.migrations import SchemaStatus
+
+        status, message = self._line(SchemaStatus(reachable=False), required=True)
+        assert status == FAIL
+        assert "DATABASE__REQUIRED" in message
+
+    def test_schema_behind_head_asks_for_migrate(self):
+        from assistant_runtime.services.database.migrations import SchemaStatus
+
+        status, message = self._line(SchemaStatus(reachable=True, current="0026", head="0027"))
+        assert status == WARN
+        assert "assistant-runtime migrate" in message
+
+    def test_schema_at_head_is_ok(self):
+        from assistant_runtime.services.database.migrations import SchemaStatus
+
+        status, _ = self._line(SchemaStatus(reachable=True, current="0027", head="0027"))
+        assert status == OK

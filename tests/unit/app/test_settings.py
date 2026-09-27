@@ -308,6 +308,30 @@ class TestRuntimeSettingsDB:
         await rs.load_from_db()  # Should not raise
         assert rs.overrides == {}
 
+    @pytest.mark.asyncio
+    async def test_load_from_db_raises_when_the_database_is_required(self):
+        """DATABASE__REQUIRED: settings may not silently fall back to defaults."""
+        from assistant_runtime.services.database.exceptions import DatabaseUnavailableError
+
+        mock_db = self._make_mock_db(healthy=False)
+        mock_db.required = True
+        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
+        with pytest.raises(DatabaseUnavailableError):
+            await rs.load_from_db()
+
+    @pytest.mark.asyncio
+    async def test_unsaved_update_is_refused_when_the_database_is_required(self):
+        """The change is not published in memory when it could not be stored."""
+        from assistant_runtime.services.database.exceptions import DatabaseUnavailableError
+
+        mock_db = self._make_mock_db(healthy=False)
+        mock_db.required = True
+        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
+        with pytest.raises(DatabaseUnavailableError):
+            await rs.update(temperature=0.5)
+        assert rs.overrides == {}
+        assert rs.to_response_dict()["updated_at"] is None
+
     # -- _persist_to_db tests --
 
     @pytest.mark.asyncio

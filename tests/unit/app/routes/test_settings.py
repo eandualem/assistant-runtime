@@ -192,3 +192,19 @@ class TestPatchSettings:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             response = await c.patch("/api/settings", json={"subagent_thinking_budget": 200000})
         assert response.status_code == 422
+
+
+class TestPatchSettingsRequiredDatabase:
+    @pytest.mark.asyncio
+    async def test_unsaved_change_is_503(self):
+        from types import SimpleNamespace
+
+        rs = RuntimeSettings(
+            frozen_config=AssistantConfig(),
+            database_service=SimpleNamespace(healthy=False, required=True),
+        )
+        app = _make_app(rs)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            response = await c.patch("/api/settings", json={"temperature": 0.5})
+        assert response.status_code == 503
+        assert rs.overrides == {}

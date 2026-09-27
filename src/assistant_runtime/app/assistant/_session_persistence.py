@@ -37,6 +37,11 @@ _DB_RETRYABLE_EXCEPTIONS = (
 )
 
 
+# ``ASSISTANT__SESSION_TTL_HOURS=0``: a far-future expiry keeps the existing
+# ``expires_at > now()`` reads and cleanup unchanged.
+NEVER_EXPIRES = datetime(9999, 1, 1, tzinfo=UTC)
+
+
 @dataclass(frozen=True)
 class LoadedSession:
     """A session row with its messages and steering, as stored."""
@@ -68,6 +73,8 @@ class SessionPersistence:
         return self._write_locks.setdefault((kind, record_id), asyncio.Lock())
 
     def _expires_at(self) -> datetime:
+        if self._session_ttl_hours == 0:
+            return NEVER_EXPIRES
         return datetime.now(UTC) + timedelta(hours=self._session_ttl_hours)
 
     async def ensure_session(

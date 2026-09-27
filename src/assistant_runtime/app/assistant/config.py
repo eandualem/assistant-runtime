@@ -73,9 +73,9 @@ class AssistantConfig(BaseModel):
     )
     session_ttl_hours: int = Field(
         default=24,
-        ge=1,
+        ge=0,
         le=168,
-        description="Session TTL in hours.",
+        description="Session TTL in hours; 0 keeps sessions until they are deleted.",
     )
     codex_service_tier: Literal["default", "fast"] | None = Field(
         default=None,

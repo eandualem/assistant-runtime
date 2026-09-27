@@ -134,3 +134,14 @@ async def test_delayed_background_usage_write_cannot_replace_continuation_totals
     assert store.get_message("session", "answer")["usage"] == db.stored["usage"]
     assert not store._db._write_locks
     assert not store._message_write_locks
+
+
+def test_ttl_zero_never_expires():
+    """ASSISTANT__SESSION_TTL_HOURS=0 keeps sessions until they are deleted."""
+    from datetime import UTC, datetime, timedelta
+
+    from assistant_runtime.app.assistant._session_persistence import NEVER_EXPIRES
+
+    assert SessionPersistence(SimpleNamespace(), 0)._expires_at() == NEVER_EXPIRES
+    ordinary = SessionPersistence(SimpleNamespace(), 24)._expires_at()
+    assert ordinary - datetime.now(UTC) <= timedelta(hours=24)

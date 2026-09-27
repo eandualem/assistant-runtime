@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from assistant_runtime.services.database.config import DatabaseConfig
-from assistant_runtime.services.database.exceptions import DatabaseError
+from assistant_runtime.services.database.exceptions import (
+    DatabaseError,
+    DatabaseUnavailableError,
+    MigrationError,
+)
 from assistant_runtime.services.database.interface import DatabaseService
 
 
@@ -78,7 +82,7 @@ class TestDatabaseServiceStart:
             await service.start()
 
             call_kwargs = mock_create.call_args
-            assert call_kwargs[0][0] == config.async_url
+            assert call_kwargs[0][0] == config.url()
             assert call_kwargs[1]["pool_pre_ping"] is True
             assert call_kwargs[1]["pool_size"] == config.pool_size
             assert call_kwargs[1]["max_overflow"] == config.pool_overflow
@@ -111,6 +115,73 @@ class TestDatabaseServiceStart:
             await service.start()
             assert service._started is True
             assert service._healthy is False
+
+
+class TestDatabaseServiceRequired:
+    """DATABASE__REQUIRED and DATABASE__MIGRATE_ON_START."""
+
+    _ENGINE = "assistant_runtime.services.database.interface.create_async_engine"
+    _MIGRATE = "assistant_runtime.services.database.interface.migrate"
+
+    async def test_unreachable_required_database_fails_startup(self):
+        service = DatabaseService(config=DatabaseConfig(required=True))
+        mock_engine, _ = _make_mock_engine(connect_ok=False)
+        with (
+            patch(self._ENGINE, return_value=mock_engine),
+            pytest.raises(DatabaseUnavailableError, match="DATABASE__REQUIRED"),
+        ):
+            await service.start()
+        mock_engine.dispose.assert_awaited_once()
+        assert service._started is False
+        assert service.healthy is False
+
+    async def test_migrates_once_reachable(self):
+        config = DatabaseConfig(migrate_on_start=True)
+        service = DatabaseService(config=config)
+        mock_engine, _ = _make_mock_engine()
+        with (
+            patch(self._ENGINE, return_value=mock_engine),
+            patch(self._MIGRATE, new=AsyncMock()) as migrate,
+        ):
+            await service.start()
+        migrate.assert_awaited_once_with(config)
+        assert service.healthy is True
+
+    async def test_failed_migration_fails_startup(self):
+        service = DatabaseService(config=DatabaseConfig(migrate_on_start=True))
+        mock_engine, _ = _make_mock_engine()
+        with (
+            patch(self._ENGINE, return_value=mock_engine),
+            patch(self._MIGRATE, new=AsyncMock(side_effect=MigrationError("bad revision"))),
+            pytest.raises(MigrationError, match="bad revision"),
+        ):
+            await service.start()
+        mock_engine.dispose.assert_awaited_once()
+
+    async def test_no_migration_when_unreachable_and_optional(self):
+        service = DatabaseService(config=DatabaseConfig(migrate_on_start=True))
+        mock_engine, _ = _make_mock_engine(connect_ok=False)
+        with (
+            patch(self._ENGINE, return_value=mock_engine),
+            patch(self._MIGRATE, new=AsyncMock()) as migrate,
+        ):
+            await service.start()
+        migrate.assert_not_awaited()
+        assert service.healthy is False
+
+    async def test_required_database_lost_later_is_unhealthy(self):
+        service = DatabaseService(config=DatabaseConfig(required=True))
+        mock_engine, _ = _make_mock_engine()
+        with patch(self._ENGINE, return_value=mock_engine):
+            await service.start()
+        mock_engine.begin.return_value.__aenter__ = AsyncMock(
+            side_effect=ConnectionRefusedError("gone")
+        )
+        assert await service.health_check() == {
+            "healthy": False,
+            "reachable": False,
+            "host": "localhost",
+        }
 
 
 class TestDatabaseServiceStop:

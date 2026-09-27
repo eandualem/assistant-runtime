@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from assistant_runtime.app.access.deps import AdminDep, PrincipalDep
 from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.app.settings import RuntimeSettings
+from assistant_runtime.services.database.exceptions import DatabaseUnavailableError
 
 router = APIRouter()
 
@@ -37,7 +38,10 @@ async def patch_settings(
     updates = body.model_dump(exclude_unset=True)
     persisted = True
     if updates:
-        persisted = await runtime_settings.update(**updates)
+        try:
+            persisted = await runtime_settings.update(**updates)
+        except DatabaseUnavailableError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
     response = runtime_settings.to_response_dict()
     response["persisted"] = persisted
     return response

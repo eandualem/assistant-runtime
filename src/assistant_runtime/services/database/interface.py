@@ -19,7 +19,11 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from assistant_runtime.services.database.config import DatabaseConfig
-from assistant_runtime.services.database.exceptions import DatabaseError
+from assistant_runtime.services.database.exceptions import (
+    DatabaseError,
+    DatabaseUnavailableError,
+)
+from assistant_runtime.services.database.migrations import migrate
 
 
 class DatabaseService:
@@ -33,9 +37,15 @@ class DatabaseService:
         self._healthy = False
 
     async def start(self) -> None:
-        """Create engine, session factory, and test connectivity."""
+        """Create engine, session factory, and test connectivity.
+
+        An unreachable database leaves the runtime in memory, unless
+        ``required`` is set: then startup fails with
+        :class:`DatabaseUnavailableError`. ``migrate_on_start`` upgrades the
+        schema once the database answers.
+        """
         self._engine = create_async_engine(
-            self._config.async_url,
+            self._config.url(),
             pool_pre_ping=True,
             pool_size=self._config.pool_size,
             max_overflow=self._config.pool_overflow,
@@ -59,13 +69,27 @@ class DatabaseService:
                 database=self._config.name,
             )
         except Exception as e:
+            self._healthy = False
+            if self._config.required:
+                await self.stop()
+                raise DatabaseUnavailableError(
+                    f"Postgres is not reachable at {self._config.host}:{self._config.port}/"
+                    f"{self._config.name} and DATABASE__REQUIRED is set: {e}"
+                ) from e
             logger.warning(
                 "Database not reachable — degraded mode",
                 host=self._config.host,
                 port=self._config.port,
                 error=str(e),
             )
-            self._healthy = False
+            return
+        if self._config.migrate_on_start:
+            try:
+                await migrate(self._config)
+            except Exception:
+                await self.stop()
+                raise
+            logger.info("Database schema upgraded to head")
 
     async def stop(self) -> None:
         """Dispose engine and clean up."""
@@ -82,8 +106,8 @@ class DatabaseService:
 
         Postgres is optional: an unreachable database is reported as
         ``reachable: false`` but does not make the runtime unhealthy, because
-        every request path works without it. A service that never started is
-        a genuine failure.
+        every request path works without it — unless ``required`` is set,
+        when it does. A service that never started is a genuine failure.
         """
         if not self._started or self._engine is None:
             return {"healthy": False, "reachable": False}
@@ -93,12 +117,18 @@ class DatabaseService:
             self._healthy = True
         except Exception:
             self._healthy = False
-        return {"healthy": True, "reachable": self._healthy, "host": self._config.host}
+        healthy = self._healthy or not self._config.required
+        return {"healthy": healthy, "reachable": self._healthy, "host": self._config.host}
 
     @property
     def healthy(self) -> bool:
         """Whether the database is reachable."""
         return self._healthy
+
+    @property
+    def required(self) -> bool:
+        """Whether the runtime may not fall back to memory (``DATABASE__REQUIRED``)."""
+        return self._config.required
 
     @asynccontextmanager
     async def session_context(self) -> AsyncIterator[AsyncSession]:
