@@ -393,7 +393,8 @@ key is `503`; provider errors map to `422`, `429`, `502` and `504` with
 The optional [voice integration](voice.md) (GPT-Live, or the Codex CLI's realtime
 voice) exposes authenticated `/api/voice/status`, `/api/voice/usage` (Codex usage
 windows and the guard's verdict; codex provider only) and `/api/voice/calls` endpoints. POST an SDP offer to
-create a call, GET its snapshot or `/events` SSE stream, POST `/close` to
+create a call (its persona from `instructions`, or from a registered profile's
+artifacts with `instructions_profile`, recorded on the call), GET its snapshot or `/events` SSE stream, POST `/close` to
 finalize it, POST `/cancel` to cancel delegated backend work, PATCH `/context`
 to update host context, send a fact to a codex call, or both, and POST `/delegations/{id}/tool-result` for a pending
 host action. The voice guide specifies request/response and event shapes.

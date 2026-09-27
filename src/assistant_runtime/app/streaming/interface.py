@@ -316,6 +316,10 @@ class StreamingService:
         """Validate a registered profile without starting work or allocating a call."""
         self._assistant_service.validate_profile(name)
 
+    async def profile_prompt(self, name: str) -> tuple[str, dict[str, int | None]]:
+        """A registered profile's own text and artifact versions (see AssistantService)."""
+        return await self._assistant_service.profile_prompt(name)
+
     def _default_profile(self) -> str | None:
         return getattr(self._assistant_service, "default_profile_name", None)
 

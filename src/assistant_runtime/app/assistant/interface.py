@@ -203,6 +203,25 @@ class AssistantService:
         )
         return {**record, "content": prompt.content}
 
+    async def profile_prompt(self, profile: str) -> tuple[str, dict[str, int | None]]:
+        """A profile's own text (its artifacts and includes) and the versions it came from.
+
+        The stable part of a turn's system prompt without MCP connections or
+        dynamic fragments, for a caller that is not a turn, such as a voice
+        persona.
+        """
+        artifacts = self._artifacts.for_profile(profile)
+        texts, extras, versions = await artifacts.prompt_inputs()
+        prompt = build_system_prompt(
+            available_tools=self._tools.get_available_tools(None),
+            session_context={},
+            artifacts=texts,
+            profile=artifacts.profile,
+            artifact_extras=extras,
+        )
+        _, stable = prompt_record(prompt, profile=profile, subject=None, artifact_versions=versions)
+        return stable, versions
+
     @property
     def default_profile_name(self) -> str:
         """The profile a request that names none uses."""

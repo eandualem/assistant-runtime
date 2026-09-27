@@ -117,6 +117,7 @@ class VoiceService:
                 self._streaming.validate_profile(offer.profile)
             except UnknownProfileError as exc:
                 raise VoiceError(str(exc), 422, allocation_status="rejected") from exc
+        persona = await self._persona(offer.instructions_profile)
         transport = self._voice()
         key = transport.credentials()
         async with self._create_lock:
@@ -150,7 +151,7 @@ class VoiceService:
                     remaining -= len(content.encode())
                     if remaining <= 0:
                         break
-                instructions = offer.instructions or (
+                instructions = (persona[0] if persona else offer.instructions) or (
                     self.config.conversation_instructions
                     if call.mode == "conversation"
                     else self.config.instructions
@@ -164,6 +165,12 @@ class VoiceService:
                         "without claiming actions have started or completed until the application "
                         "supplies confirmed execution facts."
                     )
+                if persona is not None:
+                    call.instructions = {
+                        "profile": offer.instructions_profile,
+                        "artifact_versions": persona[1],
+                        "content": instructions,
+                    }
                 session = transport.session(
                     instructions,
                     self.config.voice,
@@ -202,6 +209,22 @@ class VoiceService:
                     502,
                     allocation_status="unknown",
                 ) from exc
+
+    async def _persona(self, profile: str | None) -> tuple[str, dict[str, int | None]] | None:
+        """The instructions a profile persona gives a call, and its artifact versions."""
+        if profile is None:
+            return None
+        try:
+            text, versions = await self._streaming.profile_prompt(profile)
+        except (UnknownProfileError, ValueError) as exc:  # unknown, or a required text is empty
+            raise VoiceError(str(exc), 422, allocation_status="rejected") from exc
+        if not text or len(text) > 16000:
+            raise VoiceError(
+                f"Profile '{profile}' must give 1 to 16000 characters of instructions",
+                422,
+                allocation_status="rejected",
+            )
+        return text, versions
 
     async def get(self, call_id: str, principal: Principal) -> dict:
         call = self._calls.get(call_id)

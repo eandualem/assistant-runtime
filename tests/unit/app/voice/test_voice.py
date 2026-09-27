@@ -36,6 +36,10 @@ class Backend:
         if name not in {"neutral", "technical_operator"}:
             raise UnknownProfileError(f"Unknown assistant profile: {name}")
 
+    async def profile_prompt(self, name):
+        self.validate_profile(name)
+        return f"Persona of {name}", {"persona": 3}
+
     async def authorize_session(self, session_id, principal):
         if self.owners.get(session_id) != principal.id and not principal.is_admin:
             raise AccessDeniedError("Session denied")

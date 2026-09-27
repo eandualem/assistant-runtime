@@ -19,6 +19,7 @@ class VoiceCall:
     model: str
     voice: str
     mode: Literal["delegated", "conversation"] = "delegated"
+    instructions: dict | None = None  # profile, artifact versions and text of a profile persona
     provider_id: str = ""
     status: str = "connecting"
     reason: str | None = None
@@ -60,6 +61,7 @@ class VoiceCall:
             "model": self.model,
             "voice": self.voice,
             "mode": self.mode,
+            "instructions": self.instructions,
             "status": self.status,
             "reason": self.reason,
             "created_at": self.created_at,
