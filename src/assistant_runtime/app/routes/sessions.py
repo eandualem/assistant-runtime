@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import json
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assistant_runtime.app.access.deps import AdminDep, PrincipalDep
 from assistant_runtime.app.access.exceptions import AccessDeniedError
 from assistant_runtime.app.access.interface import AccessService
 from assistant_runtime.app.assistant import (
+    SessionError,
     find_tool_entry,
     merge_display_messages,
     tree_messages_to_tree,
@@ -48,6 +50,32 @@ def _authorize(ctx: dict, principal: Principal, session_id: str) -> None:
 
 class OwnerUpdate(BaseModel):
     owner_id: str | None = Field(default=None, max_length=128)
+
+
+class ComponentSegment(BaseModel):
+    """A card for people to see; the model never receives it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["component"]
+    type: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.-]*$")
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class HostMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = Field(default=None, min_length=1, max_length=64)
+    content: str = Field(default="", max_length=20_000)
+    """What the model reads of this message in later turns; empty for none."""
+    segments: list[ComponentSegment] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def bounded(self):
+        size = len(json.dumps([s.model_dump() for s in self.segments]).encode())
+        if size > 65_536:
+            raise ValueError("segments hold at most 65,536 bytes of JSON")
+        return self
 
 
 @router.get("/sessions")
@@ -128,6 +156,29 @@ async def get_session_messages(
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     return merge_display_messages(path, steering)
+
+
+@router.post("/sessions/{session_id}/messages", status_code=201)
+async def append_host_message(
+    session_id: str, body: HostMessageRequest, streaming: StreamingServiceDep, admin: AdminDep
+) -> dict:
+    """Add a card the host made outside any turn to the conversation, as a ``host`` message.
+
+    ``409`` while a turn, a pending host action or a voice call has the session.
+    """
+    try:
+        record = await streaming.append_host_message(
+            session_id,
+            content=body.content,
+            segments=[segment.model_dump() for segment in body.segments],
+            message_id=body.id,
+            principal=admin,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except (SessionError, ValueError) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return merge_display_messages([record], [])[0]
 
 
 @router.get("/sessions/{session_id}/messages/{message_id}/prompt")

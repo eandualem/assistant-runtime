@@ -222,7 +222,12 @@ class StreamingService:
             if ctx.get("pending_tool_call_id"):
                 raise SessionError("Resolve the pending host action before starting voice")
             path = await self._sessions.get_message_path(session_id)
-            return [{"role": m["role"], "content": m["content"]} for m in path if m["content"]]
+            # A host message reaches a model as request-side text, as in a turn's history.
+            return [
+                {"role": "user" if m["role"] == "host" else m["role"], "content": m["content"]}
+                for m in path
+                if m["content"]
+            ]
         except BaseException:
             self.release_session(session_id, lease)
             raise
@@ -322,6 +327,41 @@ class StreamingService:
 
     def _default_profile(self) -> str | None:
         return getattr(self._assistant_service, "default_profile_name", None)
+
+    async def append_host_message(
+        self,
+        session_id: str,
+        *,
+        content: str,
+        segments: list[dict[str, Any]],
+        message_id: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict[str, Any]:
+        """Add a message the host wrote (a card made outside any turn) at the active leaf.
+
+        Only while the session is idle: a running turn, a pending host action
+        or a voice call would otherwise find its conversation moved under it.
+        The model sees ``content`` in later turns; ``segments`` are for display.
+        """
+        async with self._admission_lock(session_id):
+            self.check_session_available(session_id)
+            session_context = await self._sessions.get_context_if_exists_async(session_id)
+            if session_context is None:
+                raise LookupError(f"Session '{session_id}' does not exist")
+            await self._authorize(session_id, principal)
+            if (
+                session_id in self._active_turns
+                or session_context.get("pending_tool_call_id")
+                or session_context.get("current_assistant_message_id") is not None
+                or session_context.get("pending_assistant_message_id") is not None
+            ):
+                raise SessionError("A turn or a host action is in progress in this session")
+            return await self._sessions.register_host_message(
+                session_id,
+                message_id=message_id or str(uuid.uuid4()),
+                content=content,
+                segments=segments,
+            )
 
     async def accept_steering(
         self,

@@ -63,6 +63,9 @@ def path_records_to_model_history(messages: list[MessageRecord]) -> list[ModelMe
             history.append(_user_record_to_request(message))
         elif role == "assistant":
             history.extend(_assistant_record_to_messages(message))
+        elif role == "host" and message.get("content"):
+            # A host message reaches the model as its text only; its components are for people.
+            history.append(_user_record_to_request(message))
     return history
 
 
@@ -79,6 +82,19 @@ def tree_messages_to_display(messages: list[MessageRecord]) -> list[dict[str, An
                     "role": "user",
                     "text": message.get("content", ""),
                     "message_type": message.get("message_type", "standard"),
+                    "timestamp": _iso(message.get("created_at")),
+                }
+            )
+            continue
+
+        if role == "host":
+            display.append(
+                {
+                    "id": message["id"],
+                    "parent_id": message.get("parent_id"),
+                    "role": "host",
+                    "text": message.get("content", ""),
+                    "segments": list(message.get("segments") or []),
                     "timestamp": _iso(message.get("created_at")),
                 }
             )

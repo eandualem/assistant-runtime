@@ -80,7 +80,7 @@ class MessageORM(Base):
 
     __tablename__ = "messages"
     __table_args__ = (
-        CheckConstraint("role IN ('user', 'assistant')", name="ck_messages_role_valid"),
+        CheckConstraint("role IN ('user', 'assistant', 'host')", name="ck_messages_role_valid"),
         CheckConstraint(
             "message_type = 'standard'",
             name="ck_messages_message_type_valid",
