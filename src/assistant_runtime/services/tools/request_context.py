@@ -31,6 +31,9 @@ _current_assistant_session_id: ContextVar[str | None] = ContextVar(
 )
 _current_profile_name: ContextVar[str | None] = ContextVar("_current_profile_name", default=None)
 _current_subject: ContextVar[str | None] = ContextVar("_current_subject", default=None)
+_current_subagent_config: ContextVar[dict[str, Any] | None] = ContextVar(
+    "_current_subagent_config", default=None
+)
 _current_screenshot: ContextVar[str | None] = ContextVar("_current_screenshot", default=None)
 _current_principal: ContextVar[Principal | None] = ContextVar("_current_principal", default=None)
 _current_host_context: ContextVar[dict[str, Any] | None] = ContextVar(
@@ -51,6 +54,7 @@ def assistant_request_context(
     host_context: dict[str, Any] | None = None,
     profile_name: str | None = None,
     subject: str | None = None,
+    subagent_config: dict[str, Any] | None = None,
 ) -> Iterator[None]:
     """Bind session, profile, subject, screenshot, principal and host context for tools."""
     session_token = _current_assistant_session_id.set(session_id)
@@ -59,12 +63,14 @@ def assistant_request_context(
     host_token = _current_host_context.set(host_context)
     profile_token = _current_profile_name.set(profile_name)
     subject_token = _current_subject.set(subject)
+    subagent_token = _current_subagent_config.set(subagent_config)
     telegram_token = _current_telegram_chat_binding.set(_TelegramChatBinding())
     try:
         yield
     finally:
         _current_telegram_chat_binding.reset(telegram_token)
         _current_subject.reset(subject_token)
+        _current_subagent_config.reset(subagent_token)
         _current_profile_name.reset(profile_token)
         _current_host_context.reset(host_token)
         _current_principal.reset(principal_token)
@@ -75,6 +81,15 @@ def assistant_request_context(
 def get_current_subject() -> str | None:
     """The subject this turn is about (see ``AssistantRequest.subject``), or None."""
     return _current_subject.get()
+
+
+def get_current_subagent_config() -> dict[str, Any] | None:
+    """The turn's resolved ``subagent_model`` and ``subagent_thinking_budget``.
+
+    Resolved through all three configuration tiers, so a request's ``config``
+    reaches the subagent; None outside a turn.
+    """
+    return _current_subagent_config.get()
 
 
 def get_current_profile_name() -> str | None:

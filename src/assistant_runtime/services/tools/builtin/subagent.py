@@ -12,6 +12,7 @@ from pydantic_ai.usage import UsageLimits
 
 from assistant_runtime.services.tools._registry import ToolRegistry
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
+from assistant_runtime.services.tools.request_context import get_current_subagent_config
 
 
 @dataclass
@@ -122,19 +123,25 @@ def register_subagent_tools(
         # Import here to avoid circular imports at module level
         from assistant_runtime.services.tools.builtin._subagent_executor import execute_subagent
 
-        # The runtime overlay over the frozen ASSISTANT__SUBAGENT_* defaults.
-        frozen = defaults or {}
-        settings = runtime_settings()
-        model_override = (
-            settings.get("subagent_model", frozen.get("subagent_model"))
-            if settings
-            else frozen.get("subagent_model")
-        )
-        thinking_override = (
-            settings.get("subagent_thinking_budget", frozen.get("subagent_thinking_budget"))
-            if settings
-            else frozen.get("subagent_thinking_budget")
-        )
+        turn = get_current_subagent_config()
+        if turn is not None:
+            # The turn's values: frozen defaults < runtime overlay < request config.
+            model_override = turn.get("subagent_model")
+            thinking_override = turn.get("subagent_thinking_budget")
+        else:
+            # Outside a turn: the runtime overlay over the frozen ASSISTANT__SUBAGENT_* defaults.
+            frozen = defaults or {}
+            settings = runtime_settings()
+            model_override = (
+                settings.get("subagent_model", frozen.get("subagent_model"))
+                if settings
+                else frozen.get("subagent_model")
+            )
+            thinking_override = (
+                settings.get("subagent_thinking_budget", frozen.get("subagent_thinking_budget"))
+                if settings
+                else frozen.get("subagent_thinking_budget")
+            )
 
         return await execute_subagent(
             definition=definition,

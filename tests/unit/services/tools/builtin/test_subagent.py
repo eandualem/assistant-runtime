@@ -289,3 +289,33 @@ class TestFrozenSubagentDefaults:
             overlay["subagent_model"] = "anthropic:claude-haiku-4-5"
             await handler(MagicMock(usage=None), task="t")
             assert execute.call_args.kwargs["model_override"] == "anthropic:claude-haiku-4-5"
+
+
+async def test_a_request_config_reaches_the_subagent():
+    """The turn's resolved values (request config included) win over the overlay."""
+    from assistant_runtime.services.tools._registry import ToolRegistry
+    from assistant_runtime.services.tools.config import ToolConfig
+    from assistant_runtime.services.tools.request_context import assistant_request_context
+
+    registry = ToolRegistry(ToolConfig())
+    register_subagent_tools(
+        registry,
+        MagicMock(),
+        backend_toolsets=lambda: [],
+        runtime_settings=lambda: MagicMock(get=lambda k, d=None: "anthropic:claude-haiku-4-5"),
+        defaults={"subagent_model": "cerebras:qwen-3.8-27b"},
+    )
+    handler = registry._backend_handlers["run_subagent"]
+    with (
+        patch(
+            "assistant_runtime.services.tools.builtin._subagent_executor.execute_subagent",
+            new=AsyncMock(return_value={"result": "ok"}),
+        ) as execute,
+        assistant_request_context(
+            "s-1",
+            subagent_config={"subagent_model": "openai:gpt-5.4", "subagent_thinking_budget": 512},
+        ),
+    ):
+        await handler(MagicMock(usage=None), task="t")
+    assert execute.call_args.kwargs["model_override"] == "openai:gpt-5.4"
+    assert execute.call_args.kwargs["thinking_budget_override"] == 512
