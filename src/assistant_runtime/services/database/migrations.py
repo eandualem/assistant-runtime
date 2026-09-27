@@ -10,6 +10,7 @@ use the same function.
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,18 @@ def migrations_dir() -> Path | None:
     return None
 
 
+# Alembic's ``context`` and ``op`` are process-global: two upgrades running
+# at once would read each other's connection.
+_ALEMBIC_LOCK = threading.Lock()
+
+
+def _upgrade(config, revision: str) -> None:
+    from alembic import command
+
+    with _ALEMBIC_LOCK:
+        command.upgrade(config, revision)
+
+
 def _alembic_config(directory: Path, database: DatabaseConfig):
     from alembic.config import Config
 
@@ -50,12 +63,10 @@ async def migrate(database: DatabaseConfig, revision: str = "head") -> None:
             "No migrations found: reinstall assistant-runtime from a wheel that ships them, "
             "or run from a checkout."
         )
-    from alembic import command
-
     config = _alembic_config(directory, database)
     try:
         # Alembic's environment runs its own event loop.
-        await asyncio.to_thread(command.upgrade, config, revision)
+        await asyncio.to_thread(_upgrade, config, revision)
     except Exception as exc:
         raise MigrationError(f"Schema upgrade to {revision} failed: {exc}") from exc
 

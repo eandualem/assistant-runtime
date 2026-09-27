@@ -22,6 +22,7 @@ from assistant_runtime.app.assistant.config import (
     AssistantConfig,
     TunableOverrides,
 )
+from assistant_runtime.services.database.exceptions import DatabaseUnavailableError
 
 if TYPE_CHECKING:
     from assistant_runtime.services.database.interface import DatabaseService
@@ -96,15 +97,22 @@ class RuntimeSettings:
             raise ValueError(f"Invalid settings: {problems}") from e
 
         async with self._lock:
+            overrides = dict(self._overrides)
             for field in kwargs:
                 value = getattr(validated, field)
                 if value is None:
-                    self._overrides.pop(field, None)
+                    overrides.pop(field, None)
                 else:
-                    self._overrides[field] = value
+                    overrides[field] = value
+            persisted = await self._persist_to_db(overrides)
+            # With DATABASE__REQUIRED an unsaved change is refused, not kept in memory.
+            if not persisted and self._required:
+                raise DatabaseUnavailableError(
+                    "Runtime settings were not saved: the database is required and unavailable"
+                )
+            self._overrides = overrides
             self._updated_at = datetime.now(UTC)
-
-            return await self._persist_to_db()
+            return persisted
 
     async def load_from_db(self) -> None:
         """Load persisted overrides on startup; silently skipped without a database.
@@ -117,6 +125,10 @@ class RuntimeSettings:
         if not self._db.healthy:
             await self._db.health_check()
             if not self._db.healthy:
+                if self._required:
+                    raise DatabaseUnavailableError(
+                        "Runtime settings could not be loaded: the database is unavailable"
+                    )
                 return
         try:
             from assistant_runtime.services.database.repositories import SettingsRepository
@@ -133,15 +145,22 @@ class RuntimeSettings:
                     self._updated_at = row.updated_at
             logger.info("Loaded persisted settings from DB", overrides=sorted(self._overrides))
         except Exception as e:
+            if self._required:
+                raise DatabaseUnavailableError(f"Runtime settings could not be loaded: {e}") from e
             logger.warning(
                 "Failed to load settings from DB — proceeding with defaults", error=str(e)
             )
 
-    async def _persist_to_db(self) -> bool:
+    @property
+    def _required(self) -> bool:
+        """``DATABASE__REQUIRED``: no overlay may live only in memory."""
+        return getattr(self._db, "required", False) is True
+
+    async def _persist_to_db(self, overrides: dict[str, Any]) -> bool:
         """Write the full overlay (unset fields as NULL). Best-effort."""
         if self._db is None or not getattr(self._db, "healthy", True):
             return False
-        state = {field: self._overrides.get(field) for field in TUNABLE_FIELDS}
+        state = {field: overrides.get(field) for field in TUNABLE_FIELDS}
         try:
             from assistant_runtime.services.database.repositories import SettingsRepository
 

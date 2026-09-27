@@ -50,6 +50,32 @@ class TestMigrate:
             await migrate(DatabaseConfig())
 
 
+async def test_concurrent_migrations_run_one_at_a_time(monkeypatch, tmp_path):
+    """Alembic's context is process-global; overlapping upgrades would mix connections."""
+    import threading
+    import time
+
+    import alembic.command
+
+    monkeypatch.setattr(migrations, "migrations_dir", lambda: tmp_path)
+    running, overlaps = [0], []
+    guard = threading.Lock()
+
+    def upgrade(config, revision):
+        with guard:
+            running[0] += 1
+            overlaps.append(running[0])
+        time.sleep(0.05)
+        with guard:
+            running[0] -= 1
+
+    monkeypatch.setattr(alembic.command, "upgrade", upgrade)
+    import asyncio
+
+    await asyncio.gather(*(migrate(DatabaseConfig(name=f"db{i}")) for i in range(3)))
+    assert overlaps == [1, 1, 1]
+
+
 def _engine(*, connect_error: Exception | None = None, revision: str | None = "0027"):
     conn = MagicMock()
     conn.scalar = AsyncMock(side_effect=[revision is not None, revision])

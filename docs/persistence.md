@@ -29,8 +29,9 @@ The table's right-hand column is a fallback, chosen once at startup. A
 deployment that must not lose state sets `DATABASE__REQUIRED=true`: startup
 then fails with `DatabaseUnavailableError` when Postgres is unreachable,
 nothing falls back to process memory, an artifact read error fails the turn
-instead of building the prompt from the defaults, and `/health` reports a
-database lost later as unhealthy.
+instead of building the prompt from the defaults, a runtime-settings change
+that cannot be saved is refused with 503 rather than kept in memory, and
+`/health` reports a database lost later as unhealthy.
 
 The substrate is deliberately the application's own tables. The upstream
 options were compared and deferred; see [the decision](#upstream-decision)

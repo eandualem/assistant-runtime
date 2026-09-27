@@ -245,7 +245,9 @@ database-backed endpoints return 503.
 - `required` (`false`): fail startup with `DatabaseUnavailableError` when
   Postgres is unreachable, instead of keeping state in memory. Artifact
   read errors then fail the turn instead of falling back to the defaults,
-  and `/health` reports an unreachable database as unhealthy.
+  a runtime-settings change that cannot be saved is refused (`PATCH
+  /api/settings` returns 503), and `/health` reports an unreachable
+  database as unhealthy.
 - `migrate_on_start` (`false`): upgrade the schema to the packaged head
   before the services start; a failed upgrade fails startup with
   `MigrationError`.
