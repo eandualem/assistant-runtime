@@ -429,3 +429,48 @@ class TestPromptPreview:
             ).json()
         assert body["content"] == "Help"
         assert calls == [("lead", "agent-a")]
+
+
+class TestHostLabels:
+    async def test_a_label_records_who_in_the_host_wrote(self, client, artifacts):
+        written = await client.patch(
+            "/artifacts/instructions", json={"content": "Help more", "label": "owner"}
+        )
+        assert written.json()["proposed_by"] == "local:owner"
+        await artifacts.propose("instructions", "Proposal", actor=Actor("assistant"))
+        approved = await client.post("/artifacts/instructions/approve/2", json={"label": "watcher"})
+        assert approved.json()["decided_by"] == "local:watcher"
+        plain = await client.patch("/artifacts/instructions", json={"content": "Plain"})
+        assert plain.json()["proposed_by"] == "local"
+
+    async def test_a_label_must_be_a_short_name(self, client):
+        response = await client.patch(
+            "/artifacts/instructions", json={"content": "x", "label": "Not A Label"}
+        )
+        assert response.status_code == 422
+
+    async def test_a_label_that_does_not_fit_is_refused_not_cut(self, artifacts):
+        from assistant_runtime.app.access.deps import require_admin
+        from assistant_runtime.principal import Principal
+
+        app = FastAPI()
+        app.include_router(router)
+        app.state.artifact_service = artifacts
+        long_id = Principal(id="p" * 100, roles=frozenset({"admin"}))
+        app.dependency_overrides[require_admin] = lambda: long_id
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            refused = await c.patch(
+                "/artifacts/instructions", json={"content": "x", "label": "a" * 32}
+            )
+            plain = await c.patch("/artifacts/instructions", json={"content": "x"})
+        assert refused.status_code == 422
+        assert plain.json()["proposed_by"] == "p" * 100
+
+    async def test_a_rollback_takes_no_label(self, client):
+        """A rollback reactivates a decided version; a label would be recorded nowhere."""
+        await client.patch("/artifacts/instructions", json={"content": "Help more"})
+        refused = await client.post(
+            "/artifacts/instructions/actions",
+            json={"action": "rollback", "version": 1, "label": "owner"},
+        )
+        assert refused.status_code == 422

@@ -52,3 +52,40 @@ async def test_duplicate_profile_names_fail_before_lifecycle_registration():
         )
     lifecycle.register.assert_not_awaited()
     assert not hasattr(state, "artifact_service")
+
+
+async def test_a_definition_registers_its_role_profiles():
+    """An embedded host registers its roles from Python; includes span all of them."""
+    from assistant_runtime.app.assistant.definition import AssistantDefinition
+    from assistant_runtime.artifacts import ArtifactDefinition, AssistantProfile
+
+    owner = AssistantProfile(
+        name="owner", artifacts=(ArtifactDefinition(name="preferences", default="Short"),)
+    )
+    lead = AssistantProfile(
+        name="lead",
+        artifacts=(ArtifactDefinition(name="instructions", required=True, default="Lead"),),
+        include=("owner",),
+    )
+    definition = AssistantDefinition(profile=lead, profiles=[owner])
+    assert definition.profiles == (owner,)
+    state = SimpleNamespace(assistant_definition=definition)
+    settings = AppSettings(assistant={"profiles": ["technical_operator"]})
+    await register_artifacts(state, SimpleNamespace(register=AsyncMock()), settings=settings)
+    service = state.artifact_service
+    assert service.available_profiles == ("lead", "technical_operator", "owner")
+    await service.start()
+    assert await service.prompt_extras() == [("owner.preferences", "Short")]
+    await service.stop()
+
+
+async def test_a_definition_profile_may_not_repeat_a_registered_name():
+    from assistant_runtime.app.assistant.definition import AssistantDefinition
+
+    definition = AssistantDefinition(profiles=[neutral_profile()])
+    with pytest.raises(ValueError, match="Duplicate assistant profile name"):
+        await register_artifacts(
+            SimpleNamespace(assistant_definition=definition),
+            SimpleNamespace(register=AsyncMock()),
+            settings=AppSettings(),
+        )

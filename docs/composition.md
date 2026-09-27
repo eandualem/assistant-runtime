@@ -145,6 +145,11 @@ names never share them, and the built-ins use `neutral` and
 latter). A host that wants the original technical-operator assistant uses
 `technical_operator_profile()`.
 
+A host whose roles are profiles registers the others from Python with
+`AssistantDefinition(profile=..., profiles=[...])`, alongside any
+`ASSISTANT__PROFILES`; requests select them by name, and a duplicate name
+fails startup. A profile may `include` any registered one.
+
 Policies are enforced by the runtime, so the example above lets the model
 rewrite its `scratchpad` immediately, propose a new `tone` for the host to
 approve through `/api/artifacts`, and only read `instructions` until the

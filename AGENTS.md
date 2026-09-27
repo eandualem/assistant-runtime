@@ -296,7 +296,7 @@ execution, history, serialization, or the upstream dependency; see
   exact text is recoverable (the builder marks which fragments are
   dynamic). The profile comes from
   `AssistantDefinition.profile`, else `ASSISTANT__PROFILE` (a built-in name
-  or a TOML path), else the neutral built-in. `ASSISTANT__PROFILES` registers additional profiles;
+  or a TOML path), else the neutral built-in. `ASSISTANT__PROFILES` and `AssistantDefinition.profiles` register additional profiles;
   top-level request `profile` selects one by name on every turn/continuation.
   Artifact routes use `?profile=`, and the tool follows the turn context.
   This is artifact scoping, not an authorization boundary. The example texts ship in

@@ -40,19 +40,33 @@ prompt_router = APIRouter(prefix="/artifact-prompt", tags=["artifacts"])
 # ---------------------------------------------------------------------------
 
 
+_LABEL = r"^[a-z][a-z0-9_-]{0,31}$"
+
+
 class ProposeRequest(BaseModel):
     content: str = Field(..., min_length=1)
     expected_version: int | None = None
     rationale: str | None = None
+    label: str | None = Field(default=None, pattern=_LABEL)
+    """Who in the host made the change (``owner``, ``import``, ...), recorded after the principal."""
 
 
 class RejectRequest(BaseModel):
     reason: str | None = None
+    label: str | None = Field(default=None, pattern=_LABEL)
+    """Who in the host made the change (``owner``, ``import``, ...), recorded after the principal."""
 
 
 class UpdateRequest(BaseModel):
     content: str = Field(..., min_length=1)
     expected_version: int | None = None
+    label: str | None = Field(default=None, pattern=_LABEL)
+    """Who in the host made the change (``owner``, ``import``, ...), recorded after the principal."""
+
+
+class LabelRequest(BaseModel):
+    label: str | None = Field(default=None, pattern=_LABEL)
+    """Who in the host made the change (``owner``, ``import``, ...), recorded after the principal."""
 
 
 class ArtifactActionRequest(BaseModel):
@@ -64,6 +78,8 @@ class ArtifactActionRequest(BaseModel):
     expected_version: int | None = None
     rationale: str | None = None
     reason: str | None = None
+    label: str | None = Field(default=None, pattern=_LABEL)
+    """Who in the host made the change (``owner``, ``import``, ...), recorded after the principal."""
 
 
 _STATUS = {
@@ -74,6 +90,17 @@ _STATUS = {
     ArtifactVersionNotFoundError: 404,
     ArtifactSubjectRequiredError: 422,
 }
+
+
+def _who(admin: Any, body: Any) -> str:
+    """The principal, and the host's own label for the change when it gave one."""
+    label = getattr(body, "label", None)
+    if not label:
+        return admin.id
+    who = f"{admin.id}:{label}"
+    if len(who) > 128:  # the column's width; a cut label would misattribute the change
+        raise HTTPException(status_code=422, detail="Principal id and label exceed 128 characters")
+    return who
 
 
 def _http_error(exc: ArtifactError) -> HTTPException:
@@ -297,9 +324,10 @@ async def propose_artifact(
     name: str, body: ProposeRequest, artifacts: ScopedArtifactDep, admin: AdminDep
 ) -> dict:
     """Propose a new version of an artifact (inactive until approved)."""
+    who = _who(admin, body)
     try:
         return await _propose(
-            artifacts, name, body.content, admin.id, body.expected_version, body.rationale
+            artifacts, name, body.content, who, body.expected_version, body.rationale
         )
     except ArtifactError as e:
         raise _http_error(e) from e
@@ -313,8 +341,9 @@ async def update_artifact(
     name: str, body: UpdateRequest, artifacts: ScopedArtifactDep, admin: AdminDep
 ) -> dict:
     """Write a new version and activate it at once."""
+    who = _who(admin, body)
     try:
-        return await _update(artifacts, name, body.content, admin.id, body.expected_version)
+        return await _update(artifacts, name, body.content, who, body.expected_version)
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -324,11 +353,16 @@ async def update_artifact(
 
 @router.post("/{name}/approve/{version}")
 async def approve_artifact(
-    name: str, version: int, artifacts: ScopedArtifactDep, admin: AdminDep
+    name: str,
+    version: int,
+    artifacts: ScopedArtifactDep,
+    admin: AdminDep,
+    body: LabelRequest | None = None,
 ) -> dict:
     """Approve (activate) a specific version of an artifact."""
+    who = _who(admin, body)
     try:
-        return await _activate(artifacts, name, version, admin.id, rollback=False)
+        return await _activate(artifacts, name, version, who, rollback=False)
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -345,8 +379,9 @@ async def reject_artifact(
     body: RejectRequest | None = None,
 ) -> dict:
     """Reject a pending version; the active version stays as it is."""
+    who = _who(admin, body)
     try:
-        return await _reject(artifacts, name, version, admin.id, body.reason if body else None)
+        return await _reject(artifacts, name, version, who, body.reason if body else None)
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -379,18 +414,28 @@ async def artifact_action(
                 raise HTTPException(
                     status_code=422, detail=f"version is required for {body.action}"
                 )
+            if body.action == "rollback" and body.label:
+                # A rollback reactivates a decided version and records no new decider.
+                raise HTTPException(status_code=422, detail="label is not recorded for rollback")
             if body.action == "reject":
-                return await _reject(artifacts, name, body.version, admin.id, body.reason)
+                return await _reject(artifacts, name, body.version, _who(admin, body), body.reason)
             return await _activate(
-                artifacts, name, body.version, admin.id, rollback=body.action == "rollback"
+                artifacts, name, body.version, _who(admin, body), rollback=body.action == "rollback"
             )
         if not body.content:
             raise HTTPException(status_code=422, detail=f"content is required for {body.action}")
         if body.action == "propose":
             return await _propose(
-                artifacts, name, body.content, admin.id, body.expected_version, body.rationale
+                artifacts,
+                name,
+                body.content,
+                _who(admin, body),
+                body.expected_version,
+                body.rationale,
             )
-        return await _update(artifacts, name, body.content, admin.id, body.expected_version)
+        return await _update(
+            artifacts, name, body.content, _who(admin, body), body.expected_version
+        )
     except HTTPException:
         raise
     except ArtifactError as e:
