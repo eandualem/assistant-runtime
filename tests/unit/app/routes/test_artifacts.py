@@ -429,3 +429,22 @@ class TestPromptPreview:
             ).json()
         assert body["content"] == "Help"
         assert calls == [("lead", "agent-a")]
+
+
+class TestHostLabels:
+    async def test_a_label_records_who_in_the_host_wrote(self, client, artifacts):
+        written = await client.patch(
+            "/artifacts/instructions", json={"content": "Help more", "label": "owner"}
+        )
+        assert written.json()["proposed_by"] == "local:owner"
+        await artifacts.propose("instructions", "Proposal", actor=Actor("assistant"))
+        approved = await client.post("/artifacts/instructions/approve/2", json={"label": "watcher"})
+        assert approved.json()["decided_by"] == "local:watcher"
+        plain = await client.patch("/artifacts/instructions", json={"content": "Plain"})
+        assert plain.json()["proposed_by"] == "local"
+
+    async def test_a_label_must_be_a_short_name(self, client):
+        response = await client.patch(
+            "/artifacts/instructions", json={"content": "x", "label": "Not A Label"}
+        )
+        assert response.status_code == 422

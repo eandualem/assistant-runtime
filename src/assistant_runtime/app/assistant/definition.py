@@ -32,6 +32,10 @@ class AssistantDefinition[DepsT]:
     ``Principal`` (or None to reject) when ``ACCESS__MODE=host``. It may be
     async. This is where an existing identity system plugs in.
 
+    ``profiles`` registers further profiles alongside ``profile`` (and the
+    ``ASSISTANT__PROFILES`` ones), for a host whose roles are profiles;
+    requests select them by name. A duplicate name fails startup.
+
     ``usage_limits`` are native per-turn ceilings; where both they and the
     ``ASSISTANT__BUDGET__*`` settings set a limit, the stricter one applies,
     and a request's ``config`` can only narrow what the host allows.
@@ -47,6 +51,7 @@ class AssistantDefinition[DepsT]:
     deps_type: type[DepsT] = type(None)
     deps_factory: Callable[[AssistantRequest], DepsT | Awaitable[DepsT]] | None = None
     profile: AssistantProfile | None = None
+    profiles: Sequence[AssistantProfile] = ()
     authenticate: Callable[[Credentials], Principal | None | Awaitable[Principal | None]] | None = (
         None
     )
@@ -54,7 +59,7 @@ class AssistantDefinition[DepsT]:
 
     def __post_init__(self) -> None:
         # Snapshot containers, while keeping the native extension objects intact.
-        for name in ("tools", "toolsets", "capabilities"):
+        for name in ("tools", "toolsets", "capabilities", "profiles"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
 
 
