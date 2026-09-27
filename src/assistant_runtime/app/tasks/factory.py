@@ -20,6 +20,9 @@ async def register_tasks(
         database_service=getattr(app_state, "database_service", None),
         events=getattr(app_state, "events", None),
         tool_service=getattr(app_state, "tool_service", None),
+        default_profile=getattr(
+            getattr(app_state, "assistant_service", None), "default_profile_name", None
+        ),
     )
     app_state.task_service = service
     await lifecycle.register("task_service", service)

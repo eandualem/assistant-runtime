@@ -35,6 +35,7 @@ class FakeStreaming:
         self.running = 0
         self.peak = 0
         self.fail: dict[str, Exception] = {}
+        self.pending: dict[str, dict] = {}
 
     def validate_profile(self, name):
         if name == "nope":
@@ -51,7 +52,11 @@ class FakeStreaming:
             await self.gate(request.content).wait()
             if request.content in self.fail:
                 raise self.fail[request.content]
-            return SimpleNamespace(content=f"done: {request.content}", usage={"requests": 1})
+            return SimpleNamespace(
+                content=f"done: {request.content}",
+                usage={"requests": 1},
+                pending_tool_call=self.pending.get(request.content),
+            )
         finally:
             self.running -= 1
 
@@ -136,6 +141,29 @@ class TestRunning:
         assert record.status == "failed"
         assert "Timed out" in record.error
 
+    async def test_a_turn_that_waits_on_the_host_fails_the_task(self):
+        service, streaming, _ = await _service()
+        streaming.pending["act"] = {"tool_name": "select_item", "call_id": "c1"}
+        record = await service.start_task("act", principal=ALICE)
+        streaming.gate("act").set()
+        await _settle()
+        failed = await service.get(record.id, ALICE)
+        assert failed.status == "failed"
+        assert "select_item" in failed.error
+
+    async def test_the_default_profile_is_resolved_so_one_subject_stays_serial(self):
+        hub = EventHub()
+        streaming = FakeStreaming()
+        service = TaskService(
+            TasksConfig(enabled=True), streaming, events=hub, default_profile="neutral"
+        )
+        await service.start()
+        implicit = await service.start_task("first", subject="agent-a", principal=ALICE)
+        await service.start_task("second", profile="neutral", subject="agent-a", principal=ALICE)
+        await _settle()
+        assert implicit.profile == "neutral"
+        assert streaming.started == ["first"]
+
 
 class _RaisingTimeout:
     async def __aenter__(self):
@@ -154,6 +182,31 @@ class TestControl:
         assert (await service.cancel(queued.id, ALICE)).status == "cancelled"
         assert (await service.cancel(running.id, ALICE)).status == "cancelled"
         assert {e["status"] for e in seen} == {"cancelled"}
+
+    async def test_cancelling_before_the_worker_starts_still_finishes_the_task(self):
+        service, _, seen = await _service(max_waiting=1)
+        record = await service.start_task("x", principal=ALICE)
+        cancelled = await service.cancel(record.id, ALICE)  # no await in between: never ran
+        assert cancelled.status == "cancelled"
+        assert [e["status"] for e in seen] == ["cancelled"]
+        await service.start_task("next", principal=ALICE)  # the waiting place was freed
+
+    async def test_concurrent_starts_respect_the_waiting_limit(self):
+        service, _, _ = await _service(max_waiting=1)
+        store = service._store
+        create = store.create
+
+        async def slow_create(record):
+            await asyncio.sleep(0.01)
+            return await create(record)
+
+        store.create = slow_create
+        results = await asyncio.gather(
+            *(service.start_task(f"t{n}", principal=ALICE) for n in range(5)),
+            return_exceptions=True,
+        )
+        assert sum(not isinstance(r, Exception) for r in results) == 1
+        assert sum(isinstance(r, TaskLimitError) for r in results) == 4
 
     async def test_stopping_the_service_interrupts_what_runs(self):
         service, _, seen = await _service()

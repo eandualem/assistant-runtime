@@ -54,9 +54,12 @@ class TaskService:
         database_service: DatabaseService | None = None,
         events: EventHub | None = None,
         tool_service: ToolService | None = None,
+        default_profile: str | None = None,
     ) -> None:
         self._config = config
         self._tool_service = tool_service
+        self._default_profile = default_profile
+        self._reserved = 0
         self._streaming = streaming_service
         self._database = database_service
         self._events = events
@@ -82,12 +85,13 @@ class TaskService:
         logger.info("Task service started", enabled=self._config.enabled)
 
     async def stop(self) -> None:
-        running = list(self._running.values())
-        for task in running:
+        running = list(self._running.items())
+        for _, task in running:
             task.cancel()
-        for task in running:
+        for task_id, task in running:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+            await self._finish_unstarted(task_id, "interrupted")
         self._store = None
         logger.info("Task service stopped")
 
@@ -125,28 +129,35 @@ class TaskService:
             )
         except ValidationError as e:
             raise TaskError(f"Invalid profile or subject: {e.errors()[0]['msg']}") from e
-        if len(self._running) >= self._config.max_waiting:
+        # Reserve a place before any await, so concurrent starts cannot all pass.
+        if len(self._running) + self._reserved >= self._config.max_waiting:
             raise TaskLimitError(
-                f"{len(self._running)} tasks are queued or running; wait for some to finish"
+                f"{len(self._running) + self._reserved} tasks are queued or running; "
+                "wait for some to finish"
             )
+        self._reserved += 1
         principal = principal or LOCAL_PRINCIPAL
         task_id = str(uuid.uuid4())
-        record = await store.create(
-            TaskRecord(
-                id=task_id,
-                session_id=f"task-{task_id}",
-                task=task,
-                status="queued",
-                created_by=principal.id,
-                profile=profile,
-                subject=subject,
-                context=(context or "").strip() or None,
-                parent_session_id=parent_session_id,
+        try:
+            record = await store.create(
+                TaskRecord(
+                    id=task_id,
+                    session_id=f"task-{task_id}",
+                    task=task,
+                    status="queued",
+                    created_by=principal.id,
+                    # The default resolved now: omitting it and naming it are the same profile.
+                    profile=profile or self._default_profile,
+                    subject=subject,
+                    context=(context or "").strip() or None,
+                    parent_session_id=parent_session_id,
+                )
             )
-        )
-        self._running[task_id] = asyncio.create_task(
-            self._run(record, principal), name=f"task-{task_id}"
-        )
+            self._running[task_id] = asyncio.create_task(
+                self._run(record, principal), name=f"task-{task_id}"
+            )
+        finally:
+            self._reserved -= 1
         logger.info("Task queued", task_id=task_id, profile=profile, subject=subject)
         return record
 
@@ -183,6 +194,7 @@ class TaskService:
         running.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await running
+        await self._finish_unstarted(task_id, "cancelled")
         return await self.get(task_id, principal)
 
     # --- running ---
@@ -202,6 +214,12 @@ class TaskService:
                 )
                 async with asyncio.timeout(self._config.timeout_seconds):
                     result = await self._streaming.run_message(request, principal=principal)
+            if result.pending_tool_call:
+                # A task has no host to perform an action and send its result back.
+                raise TaskError(
+                    "The task asked the host to perform "
+                    f"'{result.pending_tool_call.get('tool_name')}', which a task cannot answer"
+                )
             final = await store.update(
                 record.id,
                 status="done",
@@ -232,6 +250,24 @@ class TaskService:
         finally:
             self._running.pop(record.id, None)
             self._cancel_requested.discard(record.id)
+        if final is not None:
+            await self._publish(final)
+
+    async def _finish_unstarted(self, task_id: str, status: str) -> None:
+        """Record the end of a task whose worker was cancelled before it ever ran.
+
+        asyncio does not enter a coroutine cancelled before its first step, so
+        its own handler and ``finally`` never run; this does their work.
+        """
+        if self._running.pop(task_id, None) is None:
+            return  # the worker ran and finished its record itself
+        self._cancel_requested.discard(task_id)
+        final = await self._require_store().update(
+            task_id,
+            status=status,
+            error=None if status == "cancelled" else _INTERRUPTED,
+            finished_at=_now(),
+        )
         if final is not None:
             await self._publish(final)
 
