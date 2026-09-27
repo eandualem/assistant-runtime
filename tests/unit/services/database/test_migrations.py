@@ -210,3 +210,17 @@ class TestCreateDatabase:
         ):
             await create_database(DatabaseConfig())
         assert caught.value.cause == "database_missing"
+
+
+class TestStatusNeverRaises:
+    async def test_setup_failures_become_a_status(self):
+        with (
+            patch.object(migrations, "_head_revision", side_effect=RuntimeError("bad scripts")),
+            patch(
+                "assistant_runtime.services.database.migrations.create_async_engine",
+                side_effect=ValueError("no driver"),
+            ),
+        ):
+            status = await schema_status(DatabaseConfig())
+        assert (status.state, status.head) == ("unreachable", None)
+        assert "no driver" in status.error

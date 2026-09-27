@@ -156,9 +156,13 @@ def _head_revision() -> str | None:
 
 async def schema_status(database: DatabaseConfig, *, timeout: float = 5.0) -> SchemaStatus:
     """Probe the database and read its Alembic revision. Never raises."""
-    head = _head_revision()
-    engine = create_async_engine(database.url())
     try:
+        head = _head_revision()
+    except Exception:
+        head = None  # the packaged scripts could not be read; the probe still says why not
+    engine = None
+    try:
+        engine = create_async_engine(database.url())
         async with asyncio.timeout(timeout), engine.connect() as conn:
             has_table = await conn.scalar(text("SELECT to_regclass('alembic_version') IS NOT NULL"))
             current = (
@@ -175,5 +179,6 @@ async def schema_status(database: DatabaseConfig, *, timeout: float = 5.0) -> Sc
             cause=cause,
         )
     finally:
-        await engine.dispose()
+        if engine is not None:
+            await engine.dispose()
     return SchemaStatus(reachable=True, current=current, head=head)
