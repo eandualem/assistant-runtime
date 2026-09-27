@@ -384,9 +384,9 @@ session's next turn while a voice call holds it. Imported history
 
 | Route | Purpose |
 |---|---|
-| `POST /api/events` `{"event_id", "direction", "source", "kind", "agent"?, "severity"?, "summary"?, "payload"?, "target_session_id"?, "history"?, "occurred_at"?}` | store an event (`201`), or return the stored one for a repeated key (`200`, never delivered again); `severity` is `info` (default), `warning` or `critical`; `occurred_at` needs a UTC offset |
+| `POST /api/events` `{"event_id", "direction", "source", "kind", "agent"?, "severity"?, "summary"?, "payload"?, "target_session_id"?, "history"?, "occurred_at"?}` | store an event (`201`), or return the stored one for a repeated key (`200`; delivered then only if no request ever started delivering it, as when the process stopped right after storing it); `severity` is `info` (default), `warning` or `critical`; `occurred_at` needs a UTC offset |
 | `GET /api/events?after=&direction=&source=&agent=&kind=&news_only=&limit=` | `{events, next_after}` in arrival order; `news_only=true` leaves out history |
-| `GET /api/events/{id}` | one event: its `status` (`received` or `delivered` inbound; `pending`, `delivered`, `heard` outbound), `delivery` (`{session_id, how}` with `how` `queued`, `promoted` or `inbox`, or `{session_id, error}`), and times |
+| `GET /api/events/{id}` | one event: its `status` (`received` or `delivered` inbound; `pending`, `delivered`, `heard` outbound), `delivery` (`{session_id, how}` with `how` `queued`, `promoted` or `inbox`, `{session_id, error}`, or `{session_id}` alone while delivery runs, or when the process stopped during it and the outcome is unknown), and times |
 | `PATCH /api/events/{id}` `{"status": "delivered"\|"heard"}` | move a notice forward (`409` backwards or for an inbound event) |
 
 ## Actions

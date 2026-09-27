@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from assistant_runtime.app.event_log.config import EventLogConfig
@@ -77,6 +79,38 @@ class TestInbound:
         assert call["severity"] == "urgent"  # the inbox's own ordering name
         await service.record(**_event(event_id="e2", target_session_id="chat"))
         assert len(ingress.calls) == 1  # a repeat is never delivered again
+
+    async def test_a_repeat_delivers_an_event_only_if_no_request_started_to(self):
+        ingress = FakeIngress()
+        service = await _service(ingress)
+        # The process stopped between storing the event and delivering it.
+        async with service._store.transaction() as tx:
+            await tx.create_if_new(
+                **_event(target_session_id="chat"), severity="info", status="received"
+            )
+        record, created = await service.record(**_event(target_session_id="chat"))
+        assert (created, record.status, len(ingress.calls)) == (False, "delivered", 1)
+
+        started, gate = asyncio.Event(), asyncio.Event()
+        slow = FakeIngress()
+        original = slow.deliver
+
+        async def deliver(**kwargs):
+            started.set()
+            await gate.wait()
+            return await original(**kwargs)
+
+        slow.deliver = deliver
+        service = await _service(slow)
+        first = asyncio.create_task(service.record(**_event(target_session_id="chat")))
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            repeat, _ = await service.record(**_event(target_session_id="chat"))
+            assert repeat.delivery == {"session_id": "chat"}  # started, outcome not known yet
+        finally:
+            gate.set()
+        delivered, _ = await first
+        assert (delivered.status, len(slow.calls)) == ("delivered", 1)
 
     async def test_held_history_and_failed_deliveries_are_recorded_as_such(self):
         held = FakeIngress({"status": "queued", "inbox_id": "i1", "session_id": "chat"})

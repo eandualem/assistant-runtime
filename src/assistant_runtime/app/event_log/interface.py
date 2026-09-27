@@ -94,7 +94,8 @@ class EventLogService:
 
         A new inbound event with a target, not imported history, is steered
         into the target session. A repeated ``(source, event_id)`` returns the
-        stored event and is never delivered again.
+        stored event; it is delivered then only if no request ever started
+        delivering it (the process stopped after storing it), never again.
         """
         if direction not in DIRECTIONS:
             raise EventLogError("direction is inbound or outbound")
@@ -117,7 +118,7 @@ class EventLogService:
                 occurred_at=occurred_at,
                 status="received" if direction == "inbound" else "pending",
             )
-        if created and target_session_id is not None and not history:
+        if record.target_session_id is not None and not record.history and record.delivery is None:
             record = await self._deliver(record)
         return record, created
 
@@ -174,8 +175,18 @@ class EventLogService:
             return await tx.update(event_id, **values)
 
     async def _deliver(self, record: EventRecord) -> EventRecord:
-        """Steer an inbound event into its target session and note how it went."""
+        """Steer an inbound event into its target session and note how it went.
+
+        The start is recorded first (``delivery`` holds only the session), so
+        concurrent requests never deliver an event twice; one left like that
+        by a stopped process has an unknown outcome and is not retried.
+        """
         target = record.target_session_id
+        async with self._require_store().transaction() as tx:
+            current = await tx.get(record.id, lock=True)
+            if current is None or current.delivery is not None:
+                return current or record  # another request has started it
+            await tx.update(record.id, delivery={"session_id": target})
         if self._ingress is None:
             delivery: dict[str, Any] = {"session_id": target, "error": "No ingress service"}
         else:
