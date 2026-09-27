@@ -356,12 +356,20 @@ class StreamingService:
                 or session_context.get("pending_assistant_message_id") is not None
             ):
                 raise SessionError("A turn or a host action is in progress in this session")
-            return await self._sessions.register_host_message(
-                session_id,
-                message_id=message_id or str(uuid.uuid4()),
-                content=content,
-                segments=segments,
-            )
+            # Hold the session's turn slot while writing: a turn arriving now waits for it.
+            hold = TurnControl(accepting_cancel=False)
+            self._active_turns[session_id] = hold
+            try:
+                return await self._sessions.register_host_message(
+                    session_id,
+                    message_id=message_id or str(uuid.uuid4()),
+                    content=content,
+                    segments=segments,
+                )
+            finally:
+                if self._active_turns.get(session_id) is hold:
+                    self._active_turns.pop(session_id)
+                hold.done.set()
 
     async def accept_steering(
         self,

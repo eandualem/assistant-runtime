@@ -94,3 +94,43 @@ async def test_a_card_waits_for_an_idle_session(runtime, script):
         await runtime.streaming.append_host_message("compat", content="x", segments=[CARD])
     runtime.streaming.release_session("compat", "voice-lease")
     await runtime.streaming.append_host_message("compat", content="x", segments=[CARD])
+
+
+async def test_a_turn_arriving_during_the_append_waits_and_continues_after_the_card(
+    runtime, script
+):
+    import asyncio
+
+    script.steps = [["First reply."], ["Second reply."]]
+    assert_terminal([e async for e in runtime.streaming.stream_message(request("u1", "Hi"))])
+    sessions, gate = runtime.sessions, asyncio.Event()
+    write = sessions.register_host_message
+
+    async def slow_write(*args, **kwargs):
+        await gate.wait()  # the host message is still being saved
+        return await write(*args, **kwargs)
+
+    sessions.register_host_message = slow_write
+    append = asyncio.create_task(
+        runtime.streaming.append_host_message("compat", content="Card", segments=[CARD])
+    )
+    await asyncio.sleep(0)
+    turn = asyncio.create_task(
+        _collect(runtime.streaming.stream_message(request("u2", "Meanwhile")))
+    )
+    await asyncio.sleep(0.01)
+    waited = not turn.done()
+    gate.set()
+    host = await append
+    assert_terminal(await turn)
+    assert waited  # the turn waited for the card to be saved
+    path = await sessions.get_message_path("compat")
+    assert [(m["role"], m["parent_id"]) for m in path[-3:]] == [
+        ("host", path[1]["id"]),
+        ("user", host["id"]),
+        ("assistant", "u2"),
+    ]
+
+
+async def _collect(stream):
+    return [event async for event in stream]
