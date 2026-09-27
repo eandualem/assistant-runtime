@@ -636,6 +636,12 @@ class TurnRunner:
                         subject=plan.request.subject,
                         principal=plan.principal,
                         host_context=plan.session_context.get("last_host_context"),
+                        subagent_config={
+                            "subagent_model": ctx.effective_config.subagent_model,
+                            "subagent_thinking_budget": (
+                                ctx.effective_config.subagent_thinking_budget
+                            ),
+                        },
                     ),
                     capture_run_messages() as captured,
                 ):
