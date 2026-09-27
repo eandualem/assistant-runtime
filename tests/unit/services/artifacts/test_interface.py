@@ -146,7 +146,8 @@ class TestActiveTexts:
 
     async def test_store_failure_raises_when_the_database_is_required(self):
         """DATABASE__REQUIRED: a prompt from defaults would drop the stored versions."""
-        service = await _service(database=SimpleNamespace(healthy=True, required=True))
+        # An in-memory store keeps the test service-free; `required` is what is under test.
+        service = await _service(database=SimpleNamespace(healthy=False, required=True))
         service._store.get_all_active = AsyncMock(side_effect=RuntimeError("down"))
         with pytest.raises(ArtifactError, match="down"):
             await service.active_texts()

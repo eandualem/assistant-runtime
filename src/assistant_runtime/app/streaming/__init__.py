@@ -1,5 +1,9 @@
 """Streaming module — event streaming for assistant responses."""
 
+from assistant_runtime.app.streaming._event_builder import (
+    make_artifact_decision_event,
+    make_artifact_proposal_event,
+)
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.deps import StreamingServiceDep
 from assistant_runtime.app.streaming.exceptions import (
@@ -18,4 +22,6 @@ __all__ = [
     "StreamingError",
     "StreamingService",
     "StreamingServiceDep",
+    "make_artifact_decision_event",
+    "make_artifact_proposal_event",
 ]

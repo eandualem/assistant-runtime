@@ -150,6 +150,23 @@ rewrite its `scratchpad` immediately, propose a new `tone` for the host to
 approve through `/api/artifacts`, and only read `instructions` until the
 host changes it. See [concepts](concepts.md#prompt-artifacts-and-profiles).
 
+A host in the same process learns of proposals and decisions without
+polling: `app.state.events.subscribe(handler)` calls `handler` (sync or
+async) with each `artifact_proposal` and `artifact_decision` event,
+including those made in sessions the host does not stream (background
+work, voice delegations). Delivery is at most once and in process; after a
+restart, `GET /api/artifact-proposals` lists what is still pending.
+
+```python
+import asyncio
+
+events: asyncio.Queue[dict] = asyncio.Queue()
+# `app` is the application created above; its FastAPI application holds the hub.
+app.other_asgi_app.state.events.subscribe(events.put_nowait)
+```
+
+With `create_app`, the hub is `app.state.events`.
+
 ## Budgets
 
 `AssistantDefinition(usage_limits=UsageLimits(...))` sets native per-turn

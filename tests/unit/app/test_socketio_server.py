@@ -755,3 +755,41 @@ class TestAssistantNamespaceCancellation:
 
         assert closed.is_set()
         assert namespace._active_streams == {}
+
+
+class TestSessionEventForwarding:
+    async def test_session_bound_artifact_events_go_to_the_session_room(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from assistant_runtime.app.socketio_server import forward_session_events
+
+        sio = AsyncMock()
+        forward = forward_session_events(sio)
+        event = {
+            "type": "artifact_proposal",
+            "profile": "shop",
+            "subject": None,
+            "name": "instructions",
+            "version": 2,
+            "active_version": 1,
+            "rationale": None,
+            "proposed_by": {"kind": "assistant", "label": "assistant"},
+            "session_id": "s-1",
+        }
+        await forward(event)
+        sio.emit.assert_awaited_once()
+        args, kwargs = sio.emit.await_args
+        assert args[0] == "assistant:artifact_proposal"
+        assert args[1]["version"] == 2
+        assert kwargs == {"room": "session:s-1", "namespace": "/assistant"}
+
+    async def test_events_without_a_session_or_unknown_types_stay_in_process(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from assistant_runtime.app.socketio_server import forward_session_events
+
+        sio = AsyncMock()
+        forward = forward_session_events(sio)
+        await forward({"type": "artifact_decision", "session_id": None})
+        await forward({"type": "task_finished", "session_id": "s-1"})
+        sio.emit.assert_not_awaited()

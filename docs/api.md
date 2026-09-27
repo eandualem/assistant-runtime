@@ -155,7 +155,8 @@ name produces no response at all.
 ### Server to client
 
 Each event is a JSON object with the fields below; all are sent only to the
-requesting socket.
+requesting socket, except the two artifact events, which go to the room of
+the session they happened in (clients join it with `assistant_join_session`).
 
 | Event | Fields |
 |---|---|
@@ -167,6 +168,8 @@ requesting socket.
 | `assistant:tool_error` | `tool_name`, `error`, `call_id` |
 | `assistant:final_response` | `content`, `model`, `streamed`, `session_id`?, `message_id`?, `trace_id`?, `usage`?, `error`?, `error_type`? (including `cancelled`), `decision`? (`hold`, `pending`, `completed`), `pending_tool_call`? (`{tool_name, call_id, arguments, queued}`) |
 | `assistant:error` | `type`, `message`, `error_type`?, `terminal`?, `retry_allowed`?; turn errors use `type: "error"` and a specific `error_type`: `rate_limit`, `provider_error`, `connection_error`, `timeout`, `provider_auth`, `provider_client_error` for provider failures (a timed-out or interrupted provider request is `timeout`, retryable), `usage_limit`, `cancelled`, `session_error`, `forbidden`, `setup_error`, and `internal` only for failures inside the runtime |
+| `assistant:artifact_proposal` | `profile`, `subject`, `name`, `version`, `active_version`, `rationale`, `proposed_by` (`{kind, label}`), `session_id` |
+| `assistant:artifact_decision` | `profile`, `subject`, `name`, `version`, `status` (`active` when approved, or `rejected`), `decided_by`, `decision_reason`, `session_id` |
 | `assistant:debug` | `type` is one of `debug_request`, `debug_system_prompt`, `debug_history`, `debug_tool_selection`, `debug_agent_config`, `debug_thinking`, `debug_final_response`, `debug_usage`, `debug_error`, `debug_completed`; off by default, on with `STREAMING__EMIT_DEBUG_EVENTS=true` |
 
 Segment metadata on deltas: `segment_id`, `segment_index`, `delta_index`,
@@ -268,12 +271,33 @@ stale `expected_version` `409`, a missing version `404`.
 | `GET /api/artifacts/profile` | the profile: artifacts, roles, policies, live versions |
 | `GET /api/artifacts/{name}` | the active version, or the default text (`source: "default"`) |
 | `GET /api/artifacts/{name}/history` | all versions, newest first |
-| `POST /api/artifacts/{name}/propose` `{"content", "expected_version"?}` | new inactive version (`201`), attributed to the calling principal |
+| `GET /api/artifact-proposals?profile=&status=&limit=&before_id=` | `{proposals, next_before}`: versions in `status` (`pending` by default) as proposal records, newest first, `limit` per page (100 by default, at most 500); without `profile`, every registered profile merged; pass `next_before` as `before_id` for older ones (null on the last page) |
+| `GET /api/artifacts/{name}/versions/{version}` | one version as a proposal record |
+| `POST /api/artifacts/{name}/propose` `{"content", "expected_version"?, "rationale"?}` | new pending version (`201`), attributed to the calling principal |
 | `PATCH /api/artifacts/{name}` `{"content", "expected_version"?}` | new version, active at once |
-| `POST /api/artifacts/{name}/approve/{version}` | activate a version |
+| `POST /api/artifacts/{name}/approve/{version}` | activate a version (a pending one is approved; a rejected one is `409`: propose it again) |
+| `POST /api/artifacts/{name}/reject/{version}` `{"reason"?}` | reject a pending version; the active one is unchanged (`409` if it is not pending) |
 | `POST /api/artifacts/{name}/rollback/{version}` | reactivate an older version |
-| `POST /api/artifacts/{name}/actions` `{"action": "propose"\|"update"\|"approve"\|"rollback", ...}` | the four above behind one endpoint |
+| `POST /api/artifacts/{name}/actions` `{"action": "propose"\|"update"\|"approve"\|"reject"\|"rollback", ...}` | the five above behind one endpoint |
 | `DELETE /api/artifacts/{name}` | delete every version; the default applies again |
+
+Every version has a `status`: a proposal is `pending` until it is approved
+(`active`) or `rejected`; an active version that another replaces becomes
+`superseded`. Versions also carry `actor_kind` (`assistant`, `host`, or
+`seed` for a default stored at startup under `DATABASE__REQUIRED`),
+`rationale`, `decided_by`, `decided_at` and `decision_reason`. A proposal
+record is what a host renders for review:
+
+```json
+{"id": 42, "profile": "neutral", "subject": null, "name": "instructions", "role": "...",
+ "version": 3, "status": "pending", "content": "...", "rationale": "...",
+ "proposed_by": {"kind": "assistant", "label": "assistant"}, "created_at": "...",
+ "active_version": 2, "active_content": "...", "diff": "--- instructions (v2)\n+++ ...",
+ "decided_by": null, "decided_at": null, "decision_reason": null}
+```
+
+`diff` is a unified diff from the active text (the default when no version
+is active) to the version. An approval takes effect on the next turn.
 
 Artifact names come from the active profile; `GET /api/artifacts/profile`
 lists them. The built-in `technical_operator` profile defines `soul`,

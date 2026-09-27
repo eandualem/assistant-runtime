@@ -534,8 +534,44 @@ class ArtifactRepository:
         )
         return list(result.scalars().all())
 
-    async def propose(self, scope: str, name: str, content: str, proposed_by: str) -> ArtifactORM:
-        """Create an inactive version inside the caller's locked artifact transaction."""
+    async def get_version(self, scope: str, name: str, version: int) -> ArtifactORM | None:
+        """One stored version, or None."""
+        result = await self._session.execute(
+            select(ArtifactORM).where(
+                ArtifactORM.assistant == scope,
+                ArtifactORM.name == name,
+                ArtifactORM.version == version,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_status(
+        self, scope: str, status: str, limit: int | None = None, before_id: int | None = None
+    ) -> list[ArtifactORM]:
+        """Versions of the scope in ``status``, newest first; ``before_id`` pages back."""
+        query = (
+            select(ArtifactORM)
+            .where(ArtifactORM.assistant == scope, ArtifactORM.status == status)
+            .order_by(ArtifactORM.id.desc())
+        )
+        if before_id is not None:
+            query = query.where(ArtifactORM.id < before_id)
+        if limit is not None:
+            query = query.limit(limit)
+        result = await self._session.execute(query)
+        return list(result.scalars().all())
+
+    async def propose(
+        self,
+        scope: str,
+        name: str,
+        content: str,
+        proposed_by: str,
+        *,
+        actor_kind: str = "host",
+        rationale: str | None = None,
+    ) -> ArtifactORM:
+        """Create a pending version inside the caller's locked artifact transaction."""
         max_result = await self._session.execute(
             select(func.max(ArtifactORM.version)).where(
                 ArtifactORM.assistant == scope, ArtifactORM.name == name
@@ -549,47 +585,74 @@ class ArtifactRepository:
                 content=content,
                 version=(max_result.scalar_one_or_none() or 0) + 1,
                 is_active=False,
+                status="pending",
                 proposed_by=proposed_by,
+                actor_kind=actor_kind,
+                rationale=rationale,
             )
             .returning(ArtifactORM)
         )
         await self._session.flush()
         return result.scalar_one()
 
-    async def approve(self, scope: str, name: str, version: int) -> ArtifactORM | None:
-        """Approve a version: deactivate current active, activate target.
+    async def approve(
+        self, scope: str, name: str, version: int, *, decided_by: str | None = None
+    ) -> ArtifactORM | None:
+        """Activate a version; the previously active one becomes superseded.
 
+        ``decided_by`` is recorded when the target was a pending proposal.
         Returns None if the target version doesn't exist.
         """
-        result = await self._session.execute(
-            select(ArtifactORM.id).where(
-                ArtifactORM.assistant == scope,
-                ArtifactORM.name == name,
-                ArtifactORM.version == version,
-            )
-        )
-        target_id = result.scalar_one_or_none()
-        if target_id is None:
+        target = await self.get_version(scope, name, version)
+        if target is None:
             return None
+        target_id, was_pending = target.id, target.status == "pending"
 
+        # Deactivate first: at most one active row per artifact (a unique index).
         await self._session.execute(
             update(ArtifactORM)
             .where(
                 ArtifactORM.assistant == scope,
                 ArtifactORM.name == name,
                 ArtifactORM.is_active.is_(True),
+                ArtifactORM.id != target_id,
             )
-            .values(is_active=False)
+            .values(is_active=False, status="superseded")
         )
-
+        values: dict[str, Any] = {"is_active": True, "status": "active"}
+        if decided_by is not None and was_pending:
+            values.update(decided_by=decided_by, decided_at=func.now())
         result = await self._session.execute(
             update(ArtifactORM)
             .where(ArtifactORM.id == target_id)
-            .values(is_active=True)
+            .values(**values)
             .returning(ArtifactORM)
         )
         await self._session.flush()
         return result.scalar_one()
+
+    async def reject(
+        self, scope: str, name: str, version: int, *, decided_by: str, reason: str | None
+    ) -> ArtifactORM | None:
+        """Mark a pending version rejected; None when it is not pending (or absent)."""
+        result = await self._session.execute(
+            update(ArtifactORM)
+            .where(
+                ArtifactORM.assistant == scope,
+                ArtifactORM.name == name,
+                ArtifactORM.version == version,
+                ArtifactORM.status == "pending",
+            )
+            .values(
+                status="rejected",
+                decided_by=decided_by,
+                decided_at=func.now(),
+                decision_reason=reason,
+            )
+            .returning(ArtifactORM)
+        )
+        await self._session.flush()
+        return result.scalar_one_or_none()
 
 
 class OAuthTokenRepository:

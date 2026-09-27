@@ -65,6 +65,12 @@ def _row(**overrides):
         "is_active": True,
         "proposed_by": "host",
         "created_at": datetime(2026, 9, 5, tzinfo=UTC),
+        "status": "active",
+        "actor_kind": "host",
+        "rationale": None,
+        "decided_by": None,
+        "decided_at": None,
+        "decision_reason": None,
     }
     return SimpleNamespace(**{**base, **overrides})
 
@@ -105,7 +111,9 @@ class TestDatabaseArtifactStore:
             proposed = await store.propose("shop", "persona", "new", "host")
             assert proposed.version == 3
             assert proposed.is_active is False
-            repo.propose.assert_awaited_once_with("shop", "persona", "new", "host")
+            repo.propose.assert_awaited_once_with(
+                "shop", "persona", "new", "host", actor_kind="host", rationale=None
+            )
             assert await store.activate("shop", "persona", 9) is None
             assert await store.delete("shop", "persona") == 3
 
@@ -137,11 +145,11 @@ async def test_database_update_uses_one_locked_transaction(activation_fails):
         events.append("read")
         return
 
-    async def propose(*args):
+    async def propose(*args, **kwargs):
         events.append("propose")
         return _row(version=1, is_active=False)
 
-    async def approve(*args):
+    async def approve(*args, **kwargs):
         events.append("activate")
         if activation_fails:
             raise RuntimeError("write failed")

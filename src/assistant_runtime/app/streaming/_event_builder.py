@@ -385,3 +385,53 @@ def make_debug_completed_event(
 def make_voice_event(call_id: str, event: str, data: dict) -> dict:
     """Voice call events are distinct from delegated backend turn completion."""
     return {"type": "voice", "call_id": call_id, "event": event, "data": data}
+
+
+def make_artifact_proposal_event(
+    *,
+    profile: str,
+    subject: str | None,
+    name: str,
+    version: int,
+    active_version: int | None,
+    rationale: str | None,
+    proposed_by: dict[str, str],
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """A new pending artifact version; its record is ``GET /api/artifacts/{name}/versions/{version}``."""
+    return {
+        "type": "artifact_proposal",
+        "profile": profile,
+        "subject": subject,
+        "name": name,
+        "version": version,
+        "active_version": active_version,
+        "rationale": rationale,
+        "proposed_by": proposed_by,
+        "session_id": session_id,
+    }
+
+
+def make_artifact_decision_event(
+    *,
+    profile: str,
+    subject: str | None,
+    name: str,
+    version: int,
+    status: str,
+    decided_by: str | None,
+    decision_reason: str | None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """A pending artifact version approved (``status: active``) or ``rejected``."""
+    return {
+        "type": "artifact_decision",
+        "profile": profile,
+        "subject": subject,
+        "name": name,
+        "version": version,
+        "status": status,
+        "decided_by": decided_by,
+        "decision_reason": decision_reason,
+        "session_id": session_id,
+    }

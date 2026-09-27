@@ -37,10 +37,16 @@ The substrate is deliberately the application's own tables. The upstream
 options were compared and deferred; see [the decision](#upstream-decision)
 below.
 
+With `DATABASE__REQUIRED`, each artifact of a registered profile that has
+no stored version gets its default stored as version 1 at startup (actor
+`seed`), so the text a prompt uses is always a versioned record; later
+changes to the default do not replace it.
+
 ## Concurrent artifact edits
 
-Artifact version checks, writes and activation run in one transaction, serialized
-per profile/artifact in Postgres. An edit with a stale `expected_version` returns
+Artifact version checks, writes, activation and rejection run in one
+transaction, serialized per profile/artifact in Postgres; a unique index
+allows at most one active version of an artifact. An edit with a stale `expected_version` returns
 409. A failed activation rolls back the proposed version, and a prompt-cache read
 started before an edit cannot hide that edit from subsequent prompts.
 

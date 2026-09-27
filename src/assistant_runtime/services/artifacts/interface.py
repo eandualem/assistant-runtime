@@ -11,6 +11,7 @@ every result says so (``durable=False``).
 
 from __future__ import annotations
 
+import difflib
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
@@ -35,9 +36,11 @@ from assistant_runtime.services.artifacts.exceptions import (
 from assistant_runtime.services.artifacts.models import Actor, ArtifactVersion, MutationResult
 
 if TYPE_CHECKING:
+    from assistant_runtime.base.events import EventHub
     from assistant_runtime.services.database.interface import DatabaseService
 
-Action = Literal["propose", "update", "activate", "delete"]
+Action = Literal["propose", "update", "activate", "reject", "delete"]
+SEED = "seed"
 
 
 class ArtifactService:
@@ -50,10 +53,12 @@ class ArtifactService:
         database_service: DatabaseService | None = None,
         *,
         profiles: Sequence[AssistantProfile] = (),
+        events: EventHub | None = None,
     ) -> None:
         self._config = config
         self._profile = profile
         self._database_service = database_service
+        self._events = events
         self._store: ArtifactStore | None = None
         self._cache: dict[str, str] | None = None
         self._cached_at = 0.0
@@ -98,6 +103,8 @@ class ArtifactService:
             self._store = DatabaseArtifactStore(database)
         else:
             self._store = InMemoryArtifactStore()
+        if self._store.durable and getattr(database, "required", False) is True:
+            await self._seed_defaults()
         for view in self._views.values():
             view.invalidate()
         self._started = True
@@ -107,6 +114,26 @@ class ArtifactService:
             artifacts=list(self._profile.names),
             durable=self._store.durable,
         )
+
+    async def _seed_defaults(self) -> None:
+        """Store each default as version 1 where nothing is stored yet.
+
+        With ``DATABASE__REQUIRED`` the active text is then always a
+        versioned record; the definition's default is only its seed.
+        """
+        assert self._store is not None
+        for view in self._views.values():
+            scope = view._profile.name
+            for artifact in view._profile.artifacts:
+                content = (artifact.default or "").strip()
+                if not content:
+                    continue
+                async with self._store.transaction(scope, artifact.name) as store:
+                    if await store.get_history(scope, artifact.name, 1):
+                        continue
+                    row = await store.propose(scope, artifact.name, content, SEED, actor_kind=SEED)
+                    await store.activate(scope, artifact.name, row.version)
+                logger.info("Seeded artifact from its default", profile=scope, name=artifact.name)
 
     async def stop(self) -> None:
         if self is not self._owner:
@@ -186,6 +213,29 @@ class ArtifactService:
             self._profile.name, name, limit or self._config.history_limit
         )
 
+    async def proposals(
+        self, status: str = "pending", limit: int | None = None, before_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """The profile's versions in ``status`` (pending by default) as proposal records.
+
+        Newest first (by ``id``); ``limit`` bounds the page and ``before_id``
+        continues from the last ``id`` of the previous one.
+        """
+        store = self._require_store()
+        rows = await store.get_by_status(self._profile.name, status, limit, before_id)
+        known = [row for row in rows if self._profile.get(row.name) is not None]
+        active = {row.name: row for row in await store.get_all_active(self._profile.name)}
+        return [self._record(row, active.get(row.name)) for row in known]
+
+    async def version_record(self, name: str, version: int) -> dict[str, Any]:
+        """One version as a proposal record: its content against the active text, with a diff."""
+        self._definition(name)
+        store = self._require_store()
+        row = await store.get_version(self._profile.name, name, version)
+        if row is None:
+            raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
+        return self._record(row, await store.get_active(self._profile.name, name))
+
     def allowed_actions(self, name: str, actor_kind: Literal["assistant", "host"]) -> list[str]:
         """The mutations ``actor_kind`` may perform on ``name``."""
         artifact = self._definition(name)
@@ -198,10 +248,18 @@ class ArtifactService:
     # --- Writes ---
 
     async def propose(
-        self, name: str, content: str, *, actor: Actor, expected_version: int | None = None
+        self,
+        name: str,
+        content: str,
+        *,
+        actor: Actor,
+        expected_version: int | None = None,
+        rationale: str | None = None,
     ) -> MutationResult:
-        """Store a new inactive version; an authorized actor activates it later."""
-        return await self._write(name, content, actor, expected_version, activate=False)
+        """Store a new pending version; an authorized actor approves or rejects it later."""
+        return await self._write(
+            name, content, actor, expected_version, activate=False, rationale=rationale
+        )
 
     async def update(
         self, name: str, content: str, *, actor: Actor, expected_version: int | None = None
@@ -210,7 +268,14 @@ class ArtifactService:
         return await self._write(name, content, actor, expected_version, activate=True)
 
     async def _write(
-        self, name: str, content: str, actor: Actor, expected_version: int | None, *, activate: bool
+        self,
+        name: str,
+        content: str,
+        actor: Actor,
+        expected_version: int | None,
+        *,
+        activate: bool,
+        rationale: str | None = None,
     ) -> MutationResult:
         artifact = self._definition(name)
         self._authorize(artifact, actor, "update" if activate else "propose")
@@ -224,7 +289,14 @@ class ArtifactService:
                 )
             if active is not None and active.content == content:
                 return self._result(active, activated=True, live=active, unchanged=True)
-            row = await store.propose(self._profile.name, name, content, actor.proposed_by)
+            row = await store.propose(
+                self._profile.name,
+                name,
+                content,
+                actor.proposed_by,
+                actor_kind=actor.kind,
+                rationale=(rationale or "").strip() or None,
+            )
             if activate:
                 row = await store.activate(self._profile.name, name, row.version)
                 assert row is not None
@@ -232,19 +304,68 @@ class ArtifactService:
         if activate:
             self.invalidate()
         logger.info("Wrote artifact version", name=name, version=row.version, by=actor.kind)
+        if not activate:
+            await self._publish(
+                {
+                    "type": "artifact_proposal",
+                    **self._event_ids(row),
+                    "active_version": active.version if active is not None else None,
+                    "rationale": row.rationale,
+                    "proposed_by": {"kind": actor.kind, "label": actor.proposed_by},
+                    "session_id": actor.session_id,
+                }
+            )
         return self._result(row, activated=activate, live=active)
 
     async def activate(self, name: str, version: int, *, actor: Actor) -> MutationResult:
-        """Make ``version`` the active one (approval or rollback)."""
+        """Make ``version`` the active one (approval of a proposal, or rollback)."""
         artifact = self._definition(name)
         self._authorize(artifact, actor, "activate")
         async with self._require_store().transaction(self._profile.name, name) as store:
-            row = await store.activate(self._profile.name, name, version)
-            if row is None:
+            before = await store.get_version(self._profile.name, name, version)
+            if before is None:
                 raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
+            if before.status == "rejected":
+                # A decision stands; reconsidering is a new proposal with its own record.
+                raise ArtifactConflictError(
+                    f"Version {version} of '{name}' was rejected; propose it again to reconsider"
+                )
+            row = await store.activate(
+                self._profile.name, name, version, decided_by=actor.proposed_by
+            )
+            assert row is not None  # the version exists under the artifact's lock
         self.invalidate()
         logger.info("Activated artifact version", name=name, version=version, by=actor.kind)
+        if before.status == "pending":
+            await self._publish_decision(row, actor)
         return self._result(row, activated=True, live=row)
+
+    async def reject(
+        self, name: str, version: int, *, actor: Actor, reason: str | None = None
+    ) -> MutationResult:
+        """Decline a pending version; the active version stays as it is."""
+        artifact = self._definition(name)
+        self._authorize(artifact, actor, "reject")
+        async with self._require_store().transaction(self._profile.name, name) as store:
+            current = await store.get_version(self._profile.name, name, version)
+            if current is None:
+                raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
+            if current.status != "pending":
+                raise ArtifactConflictError(
+                    f"Version {version} of '{name}' is {current.status}, not pending"
+                )
+            row = await store.reject(
+                self._profile.name,
+                name,
+                version,
+                decided_by=actor.proposed_by,
+                reason=(reason or "").strip() or None,
+            )
+            assert row is not None  # pending under the artifact's lock
+            active = await store.get_active(self._profile.name, name)
+        logger.info("Rejected artifact version", name=name, version=version, by=actor.kind)
+        await self._publish_decision(row, actor)
+        return self._result(row, activated=False, live=active)
 
     async def delete(self, name: str, *, actor: Actor) -> int:
         """Remove every stored version; the default text applies again."""
@@ -257,6 +378,57 @@ class ArtifactService:
         return count
 
     # --- Internals ---
+
+    def _event_ids(self, row: ArtifactVersion) -> dict[str, Any]:
+        return {
+            "profile": self._profile.name,
+            "subject": None,
+            "name": row.name,
+            "version": row.version,
+        }
+
+    async def _publish(self, event: dict[str, Any]) -> None:
+        if self._owner._events is not None:
+            await self._owner._events.publish(event)
+
+    async def _publish_decision(self, row: ArtifactVersion, actor: Actor) -> None:
+        await self._publish(
+            {
+                "type": "artifact_decision",
+                **self._event_ids(row),
+                "status": row.status,
+                "decided_by": row.decided_by or actor.proposed_by,
+                "decision_reason": row.decision_reason,
+                "session_id": actor.session_id,
+            }
+        )
+
+    def _record(self, row: ArtifactVersion, active: ArtifactVersion | None) -> dict[str, Any]:
+        """A version as the proposal record hosts render: current and proposed, and the diff."""
+        definition = self._definition(row.name)
+        active_content = active.content if active is not None else definition.default
+        before = (
+            f"{row.name} (v{active.version})" if active is not None else f"{row.name} (default)"
+        )
+        diff = difflib.unified_diff(
+            _lines(active_content), _lines(row.content), before, f"{row.name} (v{row.version})"
+        )
+        return {
+            "id": row.id,
+            **self._event_ids(row),
+            "role": definition.role,
+            "status": row.status,
+            "content": row.content,
+            "rationale": row.rationale,
+            "proposed_by": {"kind": row.actor_kind, "label": row.proposed_by},
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "active_version": active.version if active is not None else None,
+            "active_content": active_content,
+            "diff": "".join(diff),
+            "decided_by": row.decided_by,
+            "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+            "decision_reason": row.decision_reason,
+        }
 
     def _require_store(self) -> ArtifactStore:
         if self._owner._store is None:
@@ -280,7 +452,7 @@ class ArtifactService:
             return policy.assistant_edit in ("propose", "autonomous")
         if action == "update":
             return policy.assistant_edit == "autonomous"
-        if action == "activate":
+        if action in ("activate", "reject"):
             return policy.assistant_activate
         return False
 
@@ -312,3 +484,8 @@ class ArtifactService:
             unchanged=unchanged,
             durable=self._require_store().durable,
         )
+
+
+def _lines(text: str) -> list[str]:
+    """Lines for a diff, each ending in a newline so the last one is not glued on."""
+    return (text if text.endswith("\n") else text + "\n").splitlines(keepends=True)

@@ -582,3 +582,38 @@ class TestFinalResponseEventUsage:
         assert event["streamed"] is True
         assert event["usage"] == usage
         assert event["model"] == "claude-3-5-sonnet"
+
+
+class TestArtifactEvents:
+    def test_proposal(self):
+        from assistant_runtime.app.streaming._event_builder import make_artifact_proposal_event
+
+        event = make_artifact_proposal_event(
+            profile="shop",
+            subject=None,
+            name="instructions",
+            version=2,
+            active_version=1,
+            rationale="Warmer",
+            proposed_by={"kind": "assistant", "label": "assistant"},
+            session_id="s-1",
+        )
+        assert event["type"] == "artifact_proposal"
+        assert (event["name"], event["version"], event["active_version"]) == ("instructions", 2, 1)
+        assert event["session_id"] == "s-1"
+
+    def test_decision(self):
+        from assistant_runtime.app.streaming._event_builder import make_artifact_decision_event
+
+        event = make_artifact_decision_event(
+            profile="shop",
+            subject=None,
+            name="instructions",
+            version=2,
+            status="rejected",
+            decided_by="owner",
+            decision_reason="No",
+        )
+        assert event["type"] == "artifact_decision"
+        assert (event["status"], event["decided_by"]) == ("rejected", "owner")
+        assert event["session_id"] is None
