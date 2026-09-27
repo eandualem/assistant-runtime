@@ -12,6 +12,7 @@ when a database is available.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,10 @@ if TYPE_CHECKING:
 _MAX_MEMORY_SESSIONS = 200
 
 
+# Stable prompt texts kept in process; without a database they are the only copy.
+_SNAPSHOT_CACHE_SIZE = 256
+
+
 class SessionStore:
     """Session state storage with optional database persistence."""
 
@@ -50,6 +55,7 @@ class SessionStore:
         session_ttl_hours: int = 24,
     ) -> None:
         self._sessions: dict[str, dict[str, Any]] = {}
+        self._snapshots: OrderedDict[str, str] = OrderedDict()
         self._db: SessionPersistence | None = (
             SessionPersistence(database_service, session_ttl_hours)
             if database_service is not None
@@ -236,6 +242,7 @@ class SessionStore:
         segments: list[dict[str, Any]] | None,
         usage: dict[str, Any] | None,
         created_at: datetime | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> MessageRecord:
         """Persist a single assistant message row and update cache state."""
         ctx = await self.get_context_if_exists_async(session_id)
@@ -257,6 +264,7 @@ class SessionStore:
             "content": content,
             "segments": segments,
             "usage": usage,
+            "prompt": prompt,
             "created_at": created_at or datetime.now(UTC),
         }
         if self._db is not None:
@@ -276,6 +284,7 @@ class SessionStore:
         usage: dict[str, Any]
         | Callable[[dict[str, Any] | None], dict[str, Any] | None]
         | None = None,
+        prompt: dict[str, Any] | None = None,
     ) -> MessageRecord:
         """Commit an update before publishing it to the cache.
 
@@ -295,15 +304,38 @@ class SessionStore:
                 record["segments"] = segments
             if resolved_usage is not None:
                 record["usage"] = resolved_usage
+            if prompt is not None:
+                record["prompt"] = prompt
             if self._db is not None:
                 await self._db.update_message(
-                    message_id, content=content, segments=segments, usage=resolved_usage
+                    message_id,
+                    content=content,
+                    segments=segments,
+                    usage=resolved_usage,
+                    prompt=prompt,
                 )
             ctx["message_index"][message_id] = record
             ctx["cached_path"] = [
                 record if message["id"] == message_id else message for message in ctx["cached_path"]
             ]
             return record
+
+    async def save_prompt_snapshot(self, snapshot_hash: str, content: str) -> None:
+        """Keep the stable text a prompt record names (stored once per hash)."""
+        self._snapshots[snapshot_hash] = content
+        self._snapshots.move_to_end(snapshot_hash)
+        while len(self._snapshots) > _SNAPSHOT_CACHE_SIZE:
+            self._snapshots.popitem(last=False)
+        if self._db is not None:
+            await self._db.save_prompt_snapshot(snapshot_hash, content)
+
+    async def prompt_snapshot(self, snapshot_hash: str) -> str | None:
+        """The stable text under ``snapshot_hash``, from the cache or the database."""
+        if snapshot_hash in self._snapshots:
+            return self._snapshots[snapshot_hash]
+        if self._db is not None:
+            return await self._db.prompt_snapshot(snapshot_hash)
+        return None
 
     def get_message(self, session_id: str, message_id: str) -> MessageRecord | None:
         """The cached record of one message, or None when the session or message is not cached."""

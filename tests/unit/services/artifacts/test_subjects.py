@@ -184,3 +184,18 @@ class TestRetention:
         lead._database_service = service._database_service
         with pytest.raises(ArtifactError, match="db gone"):
             await lead.prompt_extras()
+
+
+class TestPromptVersions:
+    async def test_versions_name_what_each_prompt_text_came_from(self):
+        service = await _service()
+        view = service.for_subject("agent-a")
+        await view.update("progress", "Busy", actor=ASSISTANT)
+        await service.for_profile("owner").update("preferences", "Bullets", actor=HOST)
+        await service.for_profile("owner").update("preferences", "Lists", actor=HOST)
+        assert await view.prompt_versions() == {
+            "instructions": None,
+            "progress": 1,
+            "notes": None,
+            "owner.preferences": 2,
+        }

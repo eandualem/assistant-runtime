@@ -307,3 +307,30 @@ class TestRequestIdLimits:
             AssistantRequest(id="m1", session_id="s" * 65, content="hi")
         with pytest.raises(ValidationError):
             AssistantRequest(id="", session_id="s1", content="hi")
+
+
+class TestMessagePrompt:
+    async def test_returns_the_recorded_prompt_or_404(self) -> None:
+        from unittest.mock import AsyncMock
+
+        sessions = SessionStore()
+        await sessions.register_user_message(
+            AssistantRequest(id="u1", session_id="s1", content="Hi"), owner_id="local"
+        )
+        app = _create_test_app(sessions=sessions)
+        service = app.state.assistant_service
+        service.message_prompt = AsyncMock(
+            side_effect=lambda session_id, message_id: (
+                {"message_id": message_id, "content": "Help", "profile": "neutral"}
+                if message_id == "a1"
+                else None
+            )
+        )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            found = await client.get("/api/sessions/s1/messages/a1/prompt")
+            missing = await client.get("/api/sessions/s1/messages/u1/prompt")
+            unknown = await client.get("/api/sessions/nope/messages/a1/prompt")
+        assert found.status_code == 200
+        assert found.json()["content"] == "Help"
+        assert missing.status_code == 404
+        assert unknown.status_code == 404

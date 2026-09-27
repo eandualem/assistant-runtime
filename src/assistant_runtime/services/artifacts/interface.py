@@ -70,6 +70,7 @@ class ArtifactService:
         self._events = events
         self._store: ArtifactStore | None = None
         self._cache: dict[str, str] | None = None
+        self._cached_versions: dict[str, int | None] = {}
         self._cached_at = 0.0
         self._cached_generation = -1
         self._generation = 0
@@ -218,6 +219,25 @@ class ArtifactService:
         through the service invalidates every view, so it affects the next
         prompt built.
         """
+        texts, _ = await self._load_active()
+        return dict(texts)
+
+    async def prompt_versions(self) -> dict[str, int | None]:
+        """The version behind each artifact text of the prompt; ``None`` where the default applies.
+
+        The profile's own artifacts by name, then the included profiles'
+        as ``<profile>.<artifact>``, matching the prompt's fragments.
+        """
+        _, versions = await self._load_active()
+        result = dict(versions)
+        for name in self._profile.include:
+            _, included = await self._owner._views[name]._load_active()
+            for artifact in self._owner._views[name]._profile.artifacts:
+                if artifact.scope == "profile":
+                    result[f"{name}.{artifact.name}"] = included.get(artifact.name)
+        return result
+
+    async def _load_active(self) -> tuple[dict[str, str], dict[str, int | None]]:
         store = self._require_store()
         owner = self._owner
         now = time.monotonic()
@@ -226,13 +246,14 @@ class ArtifactService:
             and self._cached_generation == owner._generation
             and now - self._cached_at < self._config.cache_ttl_seconds
         ):
-            return dict(self._cache)
+            return self._cache, self._cached_versions
         generation = owner._generation
         scope = self._profile.name
         texts = {
             a.name: a.default if a.scope == "profile" or self._subject else ""
             for a in self._profile.artifacts
         }
+        versions: dict[str, int | None] = dict.fromkeys(texts)
         try:
             rows = await store.get_all_active(scope)
             if self._subject:
@@ -246,18 +267,20 @@ class ArtifactService:
                     and (definition.scope == "subject") == bool(row.subject)
                 ):
                     texts[row.name] = row.content
+                    versions[row.name] = row.version
         except Exception as e:
             # With DATABASE__REQUIRED the stored versions are the only
             # source; a prompt from defaults would silently drop them.
             if getattr(self._database_service, "required", False):
                 raise ArtifactError(f"Failed to load artifacts: {e}") from e
             logger.warning("Failed to load artifacts, using defaults", error=str(e))
-            return texts
+            return texts, dict.fromkeys(texts)
         if generation == owner._generation:
             self._cache = dict(texts)
+            self._cached_versions = dict(versions)
             self._cached_generation = generation
             self._cached_at = now
-        return texts
+        return texts, versions
 
     async def prompt_extras(self) -> list[tuple[str, str]]:
         """Fragments that follow the profile's own artifacts in the prompt.

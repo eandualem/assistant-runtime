@@ -406,3 +406,26 @@ class TestSubjects:
         assert [a["scope"] for a in body["artifacts"]] == ["profile", "subject"]
         assert body["include"] == []
         assert body["collections"] == []
+
+
+class TestPromptPreview:
+    async def test_preview_returns_the_record_with_content(self):
+        from types import SimpleNamespace
+
+        from assistant_runtime.app.routes.artifacts import prompt_router
+
+        calls = []
+
+        async def preview_prompt(profile, subject):
+            calls.append((profile, subject))
+            return {"profile": profile, "subject": subject, "content": "Help"}
+
+        app = FastAPI()
+        app.include_router(prompt_router)
+        app.state.assistant_service = SimpleNamespace(preview_prompt=preview_prompt)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            body = (
+                await c.get("/artifact-prompt", params={"profile": "lead", "subject": "agent-a"})
+            ).json()
+        assert body["content"] == "Help"
+        assert calls == [("lead", "agent-a")]

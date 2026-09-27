@@ -290,7 +290,11 @@ execution, history, serialization, or the upstream dependency; see
   included profiles' artifacts and the list of the profile's collection
   documents, then MCP connections, the current time, the host context
   and working memory. Stable fragments come first so provider prompt
-  caching works; dynamic fragments go last. The profile comes from
+  caching works; dynamic fragments go last. Each assistant message records
+  what it was produced with (`app/assistant/prompt_record.py`: artifact
+  versions, a snapshot of the stable part, the dynamic fragments), so the
+  exact text is recoverable; keep `DYNAMIC_FRAGMENTS` in step with the
+  builder. The profile comes from
   `AssistantDefinition.profile`, else `ASSISTANT__PROFILE` (a built-in name
   or a TOML path), else the neutral built-in. `ASSISTANT__PROFILES` registers additional profiles;
   top-level request `profile` selects one by name on every turn/continuation.

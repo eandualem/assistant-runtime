@@ -205,6 +205,7 @@ latest `usage` of each assistant message for a session total, not every
 | `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `arguments`, `assistant_message_id`, `queued`: further call ids from the same response still to be handed over, or null): everything a host needs to perform the waiting action and continue |
 | `GET /api/sessions/{id}/messages?leaf_id=` | the root-to-leaf path for display (see below); `leaf_id` selects another leaf's path, for branch switching |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
+| `GET /api/sessions/{id}/messages/{message_id}/prompt` | the system prompt an assistant message was produced with (see below); `404` when none is recorded |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |
 | `POST /api/sessions/{id}/repair` | resolve the pending host action and every call without a result as `unknown`, so the session can continue |
 | `DELETE /api/sessions/{id}` | delete the session |
@@ -271,6 +272,7 @@ stale `expected_version` `409`, a missing version `404`.
 | `GET /api/artifacts/profile` | the profile: artifacts, roles, policies, live versions |
 | `GET /api/artifacts/{name}` | the active version, or the default text (`source: "default"`) |
 | `GET /api/artifacts/{name}/history` | all versions, newest first |
+| `GET /api/artifact-prompt?profile=&subject=` | the system prompt a turn would start from now, as a prompt record with `content` (no host context or session memory) |
 | `GET /api/artifact-subjects?profile=` | the subjects a profile keeps subject-scoped versions for |
 | `GET /api/artifact-proposals?profile=&status=&limit=&before_id=` | `{proposals, next_before}`: versions in `status` (`pending` by default) as proposal records, newest first, `limit` per page (100 by default, at most 500); without `profile`, every registered profile merged; pass `next_before` as `before_id` for older ones (null on the last page) |
 | `GET /api/artifacts/{name}/versions/{version}` | one version as a proposal record |
@@ -305,6 +307,22 @@ record is what a host renders for review:
 
 `diff` is a unified diff from the active text (the default when no version
 is active) to the version. An approval takes effect on the next turn.
+
+Each assistant message records the system prompt it was produced with,
+independent of debug events and kept as long as the session:
+
+```json
+{"profile": "neutral", "subject": null,
+ "artifact_versions": {"instructions": 4, "owner.preferences": null},
+ "snapshot_hash": "…", "dynamic": [["datetime", "…"], ["host_context", "…"]],
+ "suffix": "", "fragments": [{"name": "instructions", "chars": 812}, …],
+ "message_id": "…", "content": "the exact text"}
+```
+
+`artifact_versions` names the version behind each artifact text (`null`
+where the default applied); the stable text is stored once per
+`snapshot_hash`. A host continuation replaces the record with the prompt of
+its own model request.
 
 Artifact names come from the active profile; `GET /api/artifacts/profile`
 lists them. The built-in `technical_operator` profile defines `soul`,

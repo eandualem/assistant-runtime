@@ -77,6 +77,10 @@ class AgentSetupContext:
     mcp_summary: list[dict[str, Any]] | None
     deps: Any = None
     profile_name: str | None = None
+    prompt_record: dict[str, Any] | None = None
+    """What the agent receives, for the assistant message (see ``prompt_record``)."""
+    prompt_snapshot: str | None = None
+    """The stable prompt text ``prompt_record['snapshot_hash']`` names."""
 
 
 # Keys under which a host may carry a screenshot data URI, at the top level
