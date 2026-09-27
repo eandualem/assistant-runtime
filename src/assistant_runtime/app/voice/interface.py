@@ -318,6 +318,8 @@ class VoiceService:
                 previous = call.active_delegation
                 # The active delegation may be finished, its result sent or
                 # still being sent; it is not interrupted, relabelled or reported.
+                # Work of an earlier delegation, such as its result still being
+                # sent, is not interrupted either.
                 finished = previous is not None and call.delegations[previous]["status"] not in (
                     "running",
                     "pending_host",
@@ -331,7 +333,7 @@ class VoiceService:
                 call.cancelling = True
                 call.active_delegation = None
                 call.pending = None
-                if not finished:
+                if not finished and call.work_delegation == previous:
                     self._cancel_unprotected(call)
                 task = call.cancel_task = asyncio.create_task(
                     self._cancel_backend(call, previous, barrier)
