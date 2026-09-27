@@ -75,13 +75,21 @@ def _models() -> list[Line]:
 
 
 def database_line(status: SchemaStatus, database: DatabaseConfig) -> Line:
-    """One doctor line for the database: reachability, then schema against head."""
+    """One doctor line for the database, by the case ``schema_status`` found."""
     where = f"{database.host}:{database.port}/{database.name}"
-    if not status.reachable:
+    bad = FAIL if database.required else WARN
+    state = status.state
+    if state == "unreachable":
         if database.required:
             return FAIL, f"postgres not reachable at {where} and DATABASE__REQUIRED is set"
         return WARN, f"postgres not reachable at {where} (sessions stay in memory)"
-    if status.up_to_date:
+    if state == "auth_refused":
+        return bad, f"postgres at {where} refused user {database.user!r}"
+    if state == "database_missing":
+        if database.required and database.migrate_on_start:
+            return OK, f"postgres reachable at {where}; the database is created at start"
+        return bad, f"postgres reachable, but database {database.name!r} does not exist"
+    if state == "ready":
         return OK, f"postgres reachable at {where}, schema at {status.current}"
     return (
         WARN,

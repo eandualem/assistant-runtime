@@ -157,7 +157,7 @@ class TestMigrate:
 
         monkeypatch.setattr(migrations, "migrations_dir", lambda: None)
         assert migrate_module.cmd_migrate(argparse.Namespace(revision="head")) == 1
-        assert "no migrations found" in capsys.readouterr().out.lower()
+        assert "migrations are missing" in capsys.readouterr().out.lower()
 
 
 class TestServeReplace:
@@ -575,3 +575,18 @@ class TestDoctorDatabase:
 
         status, _ = self._line(SchemaStatus(reachable=True, current="0027", head="0027"))
         assert status == OK
+
+    def test_a_missing_database_the_runtime_creates_is_ok(self):
+        from assistant_runtime.services.database.migrations import SchemaStatus
+
+        missing = SchemaStatus(reachable=True, cause="database_missing")
+        assert self._line(missing, required=True, migrate_on_start=True)[0] == OK
+        assert self._line(missing, required=True)[0] == FAIL
+        assert self._line(missing)[0] == WARN
+
+    def test_a_refused_role_is_reported(self):
+        from assistant_runtime.services.database.migrations import SchemaStatus
+
+        status, message = self._line(SchemaStatus(reachable=True, cause="auth_refused"))
+        assert status == WARN
+        assert "refused" in message

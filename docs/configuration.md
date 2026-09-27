@@ -250,7 +250,9 @@ database-backed endpoints return 503.
   database as unhealthy.
 - `migrate_on_start` (`false`): upgrade the schema to the packaged head
   before the services start; a failed upgrade fails startup with
-  `MigrationError`.
+  `MigrationError`. With `required` too, a reachable server that lacks the
+  database gets it created first (the role needs the right to create
+  databases).
 - An empty `password` connects without one (local `trust`
   authentication). A `host` starting with `/` is a Unix-socket directory,
   for `peer` or `trust` authentication over the socket.

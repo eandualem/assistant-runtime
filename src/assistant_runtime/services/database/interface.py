@@ -22,8 +22,9 @@ from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.database.exceptions import (
     DatabaseError,
     DatabaseUnavailableError,
+    failure_cause,
 )
-from assistant_runtime.services.database.migrations import migrate
+from assistant_runtime.services.database.migrations import create_database, migrate
 
 
 class DatabaseService:
@@ -41,8 +42,10 @@ class DatabaseService:
 
         An unreachable database leaves the runtime in memory, unless
         ``required`` is set: then startup fails with
-        :class:`DatabaseUnavailableError`. ``migrate_on_start`` upgrades the
-        schema once the database answers.
+        :class:`DatabaseUnavailableError` (its ``cause`` says why).
+        ``migrate_on_start`` upgrades the schema once the database answers;
+        with ``required`` too, a reachable server that lacks the database
+        gets it created first.
         """
         self._engine = create_async_engine(
             self._config.url(),
@@ -58,9 +61,16 @@ class DatabaseService:
         self._started = True
 
         # Test connectivity — degrade gracefully if DB is unavailable
-        try:
-            async with self._engine.begin() as conn:
-                await conn.execute(text("SELECT 1"))
+        failure = await self._probe()
+        if failure is not None and self._creates_missing(failure):
+            try:
+                await create_database(self._config)
+            except DatabaseUnavailableError:
+                await self.stop()
+                raise
+            logger.info("Created the missing database", database=self._config.name)
+            failure = await self._probe()
+        if failure is None:
             self._healthy = True
             logger.info(
                 "Database service started",
@@ -68,13 +78,15 @@ class DatabaseService:
                 port=self._config.port,
                 database=self._config.name,
             )
-        except Exception as e:
+        else:
+            e = failure
             self._healthy = False
             if self._config.required:
                 await self.stop()
                 raise DatabaseUnavailableError(
-                    f"Postgres is not reachable at {self._config.host}:{self._config.port}/"
-                    f"{self._config.name} and DATABASE__REQUIRED is set: {e}"
+                    f"Postgres at {self._config.host}:{self._config.port}/{self._config.name} "
+                    f"cannot be used and DATABASE__REQUIRED is set: {e}",
+                    cause=failure_cause(e),
                 ) from e
             logger.warning(
                 "Database not reachable — degraded mode",
@@ -90,6 +102,23 @@ class DatabaseService:
                 await self.stop()
                 raise
             logger.info("Database schema upgraded to head")
+
+    async def _probe(self) -> Exception | None:
+        assert self._engine is not None
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception as e:
+            return e
+        return None
+
+    def _creates_missing(self, failure: Exception) -> bool:
+        """Only a required database that migrates on start is created by the runtime."""
+        return (
+            self._config.required
+            and self._config.migrate_on_start
+            and failure_cause(failure) == "database_missing"
+        )
 
     async def stop(self) -> None:
         """Dispose engine and clean up."""
