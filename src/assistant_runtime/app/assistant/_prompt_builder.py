@@ -315,7 +315,8 @@ def build_system_prompt(
     if mcp_frag:
         named_fragments.append(("mcp_connections", mcp_frag))
 
-    # Dynamic fragments (change per request)
+    # Dynamic fragments (change per request); everything before them is stable.
+    stable_count = len(named_fragments)
     named_fragments.append(("datetime", _datetime_fragment()))
 
     host_frag = _host_context_fragment(host_context)
@@ -329,7 +330,8 @@ def build_system_prompt(
     # Build content and metadata
     content_parts = [frag for _, frag in named_fragments]
     fragment_metadata = [
-        {"name": name, "char_count": len(frag), "content": frag} for name, frag in named_fragments
+        {"name": name, "char_count": len(frag), "content": frag, "dynamic": index >= stable_count}
+        for index, (name, frag) in enumerate(named_fragments)
     ]
 
     return PromptResult(

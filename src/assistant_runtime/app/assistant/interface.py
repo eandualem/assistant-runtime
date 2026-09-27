@@ -184,11 +184,8 @@ class AssistantService:
         artifacts = (
             self._artifacts.for_profile(profile) if profile is not None else self._artifacts
         ).for_subject(subject)
-        texts, extras, versions, mcp_summary = await asyncio.gather(
-            artifacts.active_texts(),
-            artifacts.prompt_extras(),
-            artifacts.prompt_versions(),
-            self._tools.get_mcp_summary(),
+        (texts, extras, versions), mcp_summary = await asyncio.gather(
+            artifacts.prompt_inputs(), self._tools.get_mcp_summary()
         )
         prompt = build_system_prompt(
             available_tools=self._tools.get_available_tools(None),
@@ -268,9 +265,7 @@ class AssistantService:
             mcp_summary_task = asyncio.create_task(
                 asyncio.sleep(0, result=None) if host_only else self._tools.get_mcp_summary()
             )
-            artifacts_task = asyncio.create_task(artifacts_service.active_texts())
-            extras_task = asyncio.create_task(artifacts_service.prompt_extras())
-            versions_task = asyncio.create_task(artifacts_service.prompt_versions())
+            inputs_task = asyncio.create_task(artifacts_service.prompt_inputs())
 
             # 2. Config resolution can run while prompt inputs load.
             effective = resolve_effective_config(
@@ -284,8 +279,8 @@ class AssistantService:
             )
 
             # 3. MCP + artifacts + system prompt
-            mcp_summary, artifacts, artifact_extras, artifact_versions = await asyncio.gather(
-                mcp_summary_task, artifacts_task, extras_task, versions_task
+            mcp_summary, (artifacts, artifact_extras, artifact_versions) = await asyncio.gather(
+                mcp_summary_task, inputs_task
             )
 
             prompt_result = build_system_prompt(

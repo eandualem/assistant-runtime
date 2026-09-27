@@ -57,3 +57,22 @@ def test_the_snapshot_is_the_same_from_turn_to_turn():
         artifact_versions={},
     )
     assert first["snapshot_hash"] == second["snapshot_hash"]
+
+
+def test_an_artifact_named_like_a_dynamic_fragment_keeps_its_place():
+    profile = AssistantProfile(
+        artifacts=(
+            ArtifactDefinition(name="working_memory", default="w"),
+            ArtifactDefinition(name="instructions", required=True, default="i"),
+        )
+    )
+    prompt = build_system_prompt(
+        available_tools=ToolSet(),
+        session_context={},
+        artifacts={"working_memory": "REMEMBER", "instructions": "HELP"},
+        profile=profile,
+    )
+    appended = PromptResult(content=prompt.content + "\n\nPick one.", fragments=prompt.fragments)
+    record, snapshot = prompt_record(appended, profile="p", subject=None, artifact_versions={})
+    assert snapshot == "REMEMBER\n\nHELP"
+    assert prompt_text(record, snapshot) == appended.content

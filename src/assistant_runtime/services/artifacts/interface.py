@@ -222,6 +222,30 @@ class ArtifactService:
         texts, _ = await self._load_active()
         return dict(texts)
 
+    async def prompt_inputs(
+        self,
+    ) -> tuple[dict[str, str], list[tuple[str, str]], dict[str, int | None]]:
+        """Texts, extra fragments and versions for one prompt, from one read per profile.
+
+        The versions are those of the texts returned, so a prompt record
+        names exactly what the prompt used even while versions change.
+        """
+        texts, versions = await self._load_active()
+        texts, versions = dict(texts), dict(versions)
+        extras: list[tuple[str, str]] = []
+        for name in self._profile.include:
+            included = self._owner._views[name]
+            included_texts, included_versions = await included._load_active()
+            for artifact in included._profile.artifacts:
+                if artifact.scope != "profile":
+                    continue
+                versions[f"{name}.{artifact.name}"] = included_versions.get(artifact.name)
+                text = (included_texts.get(artifact.name) or "").strip()
+                if text:
+                    extras.append((f"{name}.{artifact.name}", text))
+        extras.extend(await self._document_listing())
+        return texts, extras, versions
+
     async def prompt_versions(self) -> dict[str, int | None]:
         """The version behind each artifact text of the prompt; ``None`` where the default applies.
 
@@ -289,34 +313,31 @@ class ArtifactService:
         ``<profile>.<artifact>``, then the names of the documents in the
         profile's collections (their text is read with the artifact tool).
         """
-        fragments: list[tuple[str, str]] = []
-        for name in self._profile.include:
-            included = self._owner._views[name]
-            texts = await included.active_texts()
-            for artifact in included._profile.artifacts:
-                text = (texts.get(artifact.name) or "").strip()
-                if text and artifact.scope == "profile":
-                    fragments.append((f"{name}.{artifact.name}", text))
-        if self._profile.collections:
-            try:
-                rows = await self._require_store().get_all_active(self._profile.name)
-            except Exception as e:
-                # The listing is optional prompt text, like the artifacts' own fallback.
-                if getattr(self._database_service, "required", False):
-                    raise ArtifactError(f"Failed to list documents: {e}") from e
-                logger.warning("Failed to list documents, leaving them out", error=str(e))
-                rows = []
-            names = sorted(r.name for r in rows if self._profile.collection_of(r.name))
-            if names:
-                fragments.append(
-                    (
-                        "documents",
-                        "Documents you keep (read one with manage_artifacts view): "
-                        + ", ".join(names)
-                        + ".",
-                    )
-                )
-        return fragments
+        _, extras, _ = await self.prompt_inputs()
+        return extras
+
+    async def _document_listing(self) -> list[tuple[str, str]]:
+        if not self._profile.collections:
+            return []
+        try:
+            rows = await self._require_store().get_all_active(self._profile.name)
+        except Exception as e:
+            # The listing is optional prompt text, like the artifacts' own fallback.
+            if getattr(self._database_service, "required", False):
+                raise ArtifactError(f"Failed to list documents: {e}") from e
+            logger.warning("Failed to list documents, leaving them out", error=str(e))
+            return []
+        names = sorted(r.name for r in rows if self._profile.collection_of(r.name))
+        if not names:
+            return []
+        return [
+            (
+                "documents",
+                "Documents you keep (read one with manage_artifacts view): "
+                + ", ".join(names)
+                + ".",
+            )
+        ]
 
     def invalidate(self) -> None:
         """Forget cached texts in every view so the next prompt reads the store."""

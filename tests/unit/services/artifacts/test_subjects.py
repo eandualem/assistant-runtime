@@ -199,3 +199,20 @@ class TestPromptVersions:
             "notes": None,
             "owner.preferences": 2,
         }
+
+    async def test_texts_and_versions_come_from_the_same_read(self):
+        """An activation between two reads must not pair one version's text with another's number."""
+        service = await _service()
+        owner = service.for_profile("owner")
+        await owner.update("preferences", "First", actor=HOST)
+        load = owner._load_active
+
+        async def load_then_change():
+            result = await load()
+            await owner.update("preferences", "Second", actor=HOST)  # lands mid-prompt
+            return result
+
+        owner._load_active = load_then_change
+        texts, extras, versions = await service.for_subject("agent-a").prompt_inputs()
+        assert ("owner.preferences", "First") in extras
+        assert versions["owner.preferences"] == 1

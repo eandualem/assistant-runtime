@@ -16,7 +16,6 @@ from typing import Any
 
 from assistant_runtime.app.assistant.models import PromptResult
 
-DYNAMIC_FRAGMENTS = frozenset({"datetime", "host_context", "working_memory"})
 _SEPARATOR = "\n\n"
 
 
@@ -28,12 +27,9 @@ def prompt_record(
     artifact_versions: dict[str, int | None],
 ) -> tuple[dict[str, Any], str]:
     """The record for a message, and the stable snapshot text it points at."""
-    stable = _SEPARATOR.join(
-        f["content"] for f in prompt.fragments if f["name"] not in DYNAMIC_FRAGMENTS
-    )
-    dynamic = [
-        [f["name"], f["content"]] for f in prompt.fragments if f["name"] in DYNAMIC_FRAGMENTS
-    ]
+    # The builder marks its dynamic fragments; an artifact may share a name with one.
+    stable = _SEPARATOR.join(f["content"] for f in prompt.fragments if not f.get("dynamic"))
+    dynamic = [[f["name"], f["content"]] for f in prompt.fragments if f.get("dynamic")]
     joined = _join(stable, dynamic)
     suffix = prompt.content[len(joined) :] if prompt.content.startswith(joined) else ""
     record = {
