@@ -63,6 +63,23 @@ class TestProfiles:
         assert [f["name"] for f in result.fragments] == ["policies", "tone", "notes", "datetime"]
         assert result.content.startswith("Refund within 30 days\n\nBe kind\n\nn")
 
+    def test_artifact_extras_follow_the_profile_artifacts(self):
+        profile = AssistantProfile(
+            artifacts=(ArtifactDefinition(name="instructions", required=True, default="i"),)
+        )
+        result = _build_system_prompt(
+            available_tools=ToolSet(),
+            session_context={},
+            artifacts={"instructions": "Help"},
+            profile=profile,
+            artifact_extras=[("owner.preferences", "Short"), ("documents", " ")],
+        )
+        assert [f["name"] for f in result.fragments] == [
+            "instructions",
+            "owner.preferences",
+            "datetime",
+        ]
+
     def test_optional_artifact_without_text_is_omitted(self):
         profile = AssistantProfile(
             artifacts=(

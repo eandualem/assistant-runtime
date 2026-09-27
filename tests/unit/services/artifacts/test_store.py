@@ -71,6 +71,7 @@ def _row(**overrides):
         "decided_by": None,
         "decided_at": None,
         "decision_reason": None,
+        "subject": "",
     }
     return SimpleNamespace(**{**base, **overrides})
 
@@ -104,15 +105,15 @@ class TestDatabaseArtifactStore:
             assert active.id == 7
             assert active.is_active is True
             assert active.version == 2
-            repo.get_active.assert_awaited_once_with("shop", "persona")
+            repo.get_active.assert_awaited_once_with("shop", "persona", subject="")
             assert [v.name for v in await store.get_all_active("shop")] == ["a", "b"]
             assert [v.version for v in await store.get_history("shop", "persona", 5)] == [2, 1]
-            repo.get_history.assert_awaited_once_with("shop", "persona", limit=5)
+            repo.get_history.assert_awaited_once_with("shop", "persona", limit=5, subject="")
             proposed = await store.propose("shop", "persona", "new", "host")
             assert proposed.version == 3
             assert proposed.is_active is False
             repo.propose.assert_awaited_once_with(
-                "shop", "persona", "new", "host", actor_kind="host", rationale=None
+                "shop", "persona", "new", "host", subject="", actor_kind="host", rationale=None
             )
             assert await store.activate("shop", "persona", 9) is None
             assert await store.delete("shop", "persona") == 3
@@ -138,10 +139,10 @@ async def test_database_update_uses_one_locked_transaction(activation_fails):
         else:
             events.append("commit")
 
-    async def lock(scope, name):
+    async def lock(scope, name, **kwargs):
         events.append("lock")
 
-    async def active(scope, name):
+    async def active(scope, name, **kwargs):
         events.append("read")
         return
 

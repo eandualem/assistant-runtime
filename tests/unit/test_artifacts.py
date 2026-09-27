@@ -194,3 +194,82 @@ class TestResolvePrecedence:
     def test_definition_profile_wins_over_setting(self):
         own = AssistantProfile(name="own")
         assert resolve_profile("technical_operator", own) is own
+
+
+class TestScopesIncludesAndCollections:
+    def test_scope_and_retention_are_validated(self):
+        from assistant_runtime.artifacts import ArtifactDefinition
+
+        with pytest.raises(ValueError, match="scope"):
+            ArtifactDefinition(name="notes", scope="global")
+        with pytest.raises(ValueError, match="cannot be required"):
+            ArtifactDefinition(name="notes", scope="subject", required=True, default="x")
+        with pytest.raises(ValueError, match="keep_versions"):
+            ArtifactDefinition(name="notes", keep_versions=0)
+        with pytest.raises(ValueError, match="keep_versions"):
+            ArtifactDefinition(name="notes", keep_versions=True)
+
+    def test_collections_resolve_document_names(self):
+        from assistant_runtime.artifacts import (
+            ArtifactCollection,
+            ArtifactDefinition,
+            AssistantProfile,
+        )
+
+        profile = AssistantProfile(
+            artifacts=(ArtifactDefinition(name="instructions"),),
+            collections=(ArtifactCollection(prefix="doc_", role="kept", keep_versions=3),),
+        )
+        document = profile.get("doc_travel")
+        assert (document.name, document.role, document.keep_versions) == ("doc_travel", "kept", 3)
+        assert profile.get("doc_") is None
+        assert profile.get("other") is None
+        with pytest.raises(ValueError, match="ending in '_'"):
+            ArtifactCollection(prefix="doc")
+        with pytest.raises(ValueError, match="matches a declared artifact"):
+            AssistantProfile(
+                artifacts=(ArtifactDefinition(name="doc_one"),),
+                collections=(ArtifactCollection(prefix="doc_"),),
+            )
+        with pytest.raises(ValueError, match="overlaps"):
+            AssistantProfile(
+                collections=(ArtifactCollection(prefix="doc_"), ArtifactCollection(prefix="doc_a_"))
+            )
+
+    def test_a_profile_cannot_include_itself(self):
+        from assistant_runtime.artifacts import AssistantProfile
+
+        with pytest.raises(ValueError, match="cannot include"):
+            AssistantProfile(name="owner", include=("owner",))
+
+    def test_toml_carries_scope_retention_includes_and_collections(self, tmp_path):
+        from assistant_runtime.artifacts import load_profile_file
+
+        path = tmp_path / "tracker.toml"
+        path.write_text(
+            """
+name = "tracker"
+include = ["owner"]
+
+[[artifacts]]
+name = "progress"
+scope = "subject"
+keep_versions = 50
+[artifacts.policy]
+assistant_edit = "autonomous"
+
+[[collections]]
+prefix = "doc_"
+role = "documents the owner asked for"
+[collections.policy]
+assistant_edit = "autonomous"
+""",
+            encoding="utf-8",
+        )
+        profile = load_profile_file(path)
+        assert profile.include == ("owner",)
+        progress = profile.get("progress")
+        assert (progress.scope, progress.keep_versions) == ("subject", 50)
+        [collection] = profile.collections
+        assert collection.prefix == "doc_"
+        assert collection.policy.assistant_edit == "autonomous"

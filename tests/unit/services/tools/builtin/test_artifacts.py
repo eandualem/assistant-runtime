@@ -279,3 +279,72 @@ class TestProfileScope:
                 fail_inside_profile()
             assert get_current_profile_name() == "shop"
         assert get_current_profile_name() is None
+
+
+class TestSubjectsAndDocuments:
+    PROFILE = None
+
+    @pytest.fixture
+    async def tracker(self):
+        from assistant_runtime.artifacts import ArtifactCollection
+
+        profile = AssistantProfile(
+            name="tracker",
+            artifacts=(
+                ArtifactDefinition(name="instructions", required=True, default="Track"),
+                ArtifactDefinition(
+                    name="progress",
+                    scope="subject",
+                    policy=ArtifactPolicy(assistant_edit="autonomous"),
+                ),
+            ),
+            collections=(
+                ArtifactCollection(
+                    prefix="doc_", policy=ArtifactPolicy(assistant_edit="autonomous")
+                ),
+            ),
+        )
+        service = ArtifactService(ArtifactsConfig(), profile)
+        await service.start()
+        return service
+
+    async def test_the_tool_follows_the_turn_subject(self, tracker):
+        from assistant_runtime.services.tools.request_context import assistant_request_context
+
+        manage = build_manage_artifacts(tracker)
+        with assistant_request_context("s-1", subject="agent-a"):
+            assert (await manage(action="update", name="progress", content="Parser done"))[
+                "success"
+            ]
+            listed = await manage(action="list")
+        assert "progress" in [item["name"] for item in listed["artifacts"]]
+        assert (await tracker.for_subject("agent-a").get_active("progress")).content == (
+            "Parser done"
+        )
+        with assistant_request_context("s-2"):
+            without = await manage(action="update", name="progress", content="x")
+            listed = await manage(action="list")
+        assert without["error_code"] == "artifact_subject_required"
+        assert "progress" not in [item["name"] for item in listed["artifacts"]]
+
+    async def test_a_stale_write_hands_back_the_current_text(self, tracker):
+        from assistant_runtime.services.tools.request_context import assistant_request_context
+
+        manage = build_manage_artifacts(tracker)
+        with assistant_request_context("s-1", subject="agent-a"):
+            await manage(action="update", name="progress", content="Theirs")
+            stale = await manage(
+                action="update", name="progress", content="Mine", expected_version=0
+            )
+        assert stale["error_code"] == "artifact_version_conflict"
+        assert (stale["current_version"], stale["current_content"]) == (1, "Theirs")
+
+    async def test_documents_are_created_and_listed(self, tracker):
+        manage = build_manage_artifacts(tracker)
+        created = await manage(action="update", name="doc_travel", content="Friday flights")
+        assert created["success"]
+        listed = await manage(action="list")
+        assert "doc_travel" in [item["name"] for item in listed["artifacts"]]
+        assert listed["collections"] == [{"prefix": "doc_", "role": ""}]
+        viewed = await manage(action="view", name="doc_travel")
+        assert viewed["content"] == "Friday flights"

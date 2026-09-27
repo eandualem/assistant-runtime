@@ -12,7 +12,7 @@ from typing import Any
 
 from loguru import logger
 
-from assistant_runtime.services.artifacts.exceptions import ArtifactError
+from assistant_runtime.services.artifacts.exceptions import ArtifactConflictError, ArtifactError
 from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.artifacts.models import Actor, ArtifactVersion, MutationResult
 from assistant_runtime.services.tools._registry import ToolRegistry
@@ -20,6 +20,7 @@ from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition
 from assistant_runtime.services.tools.request_context import (
     get_current_assistant_session_id,
     get_current_profile_name,
+    get_current_subject,
 )
 
 ACTIONS = ("list", "view", "history", "propose", "update", "activate")
@@ -83,7 +84,9 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
                 "success": False,
             }
         try:
-            scoped = artifacts.for_profile(get_current_profile_name())
+            scoped = artifacts.for_profile(get_current_profile_name()).for_subject(
+                get_current_subject()
+            )
             assistant = Actor(kind="assistant", session_id=get_current_assistant_session_id())
             if action == "list":
                 return await _list(scoped)
@@ -109,7 +112,7 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
                     ),
                     "proposal": {
                         "profile": scoped.profile.name,
-                        "subject": None,
+                        "subject": result.version.subject or None,
                         "name": name,
                         "version": result.version.version,
                     },
@@ -132,6 +135,15 @@ def build_manage_artifacts(artifacts: ArtifactService | None) -> Callable[..., A
                 }
             result = await scoped.activate(name, version, actor=assistant)
             return _mutation_dict(result, f"Version {version} of '{name}' is now active.")
+        except ArtifactConflictError as e:
+            # A stale write: hand back the current text so the change can be merged into it.
+            return {
+                "error": str(e),
+                "error_code": e.error_code,
+                "current_version": e.current_version,
+                "current_content": e.current_content,
+                "success": False,
+            }
         except ArtifactError as e:
             return {"error": str(e), "error_code": e.error_code, "success": False}
 
@@ -143,6 +155,8 @@ async def _list(artifacts: ArtifactService) -> dict[str, Any]:
     active = {row.name: row for row in await artifacts.list_active()}
     items = []
     for definition in artifacts.profile.artifacts:
+        if definition.scope == "subject" and artifacts.subject is None:
+            continue  # kept per subject; this turn names none
         row = active.get(definition.name)
         items.append(
             {
@@ -157,7 +171,29 @@ async def _list(artifacts: ArtifactService) -> dict[str, Any]:
                 ),
             }
         )
-    return {"artifacts": items, "count": len(items), "durable": artifacts.durable, "success": True}
+    declared = set(artifacts.profile.names)
+    for row in await artifacts.list_active():
+        if row.name not in declared:  # a document of one of the profile's collections
+            items.append(
+                {
+                    "name": row.name,
+                    "role": artifacts.profile.get(row.name).role,  # type: ignore[union-attr]
+                    "required": False,
+                    "allowed_actions": artifacts.allowed_actions(row.name, "assistant"),
+                    **_version_dict(row),
+                }
+            )
+    result: dict[str, Any] = {
+        "artifacts": items,
+        "count": len(items),
+        "durable": artifacts.durable,
+        "success": True,
+    }
+    if artifacts.profile.collections:
+        result["collections"] = [
+            {"prefix": c.prefix, "role": c.role} for c in artifacts.profile.collections
+        ]
+    return result
 
 
 async def _view(artifacts: ArtifactService, name: str) -> dict[str, Any]:
@@ -195,6 +231,10 @@ def register_artifact_tools(registry: ToolRegistry, artifacts: ArtifactService |
             for a in profile.artifacts
         ]
         catalog = "Artifacts: " + "; ".join(lines) + ". "
+        catalog += "".join(
+            f"You may create documents named {c.prefix}<name> ({c.role or 'no role given'}). "
+            for c in profile.collections
+        )
         names = profile.names_text()
     else:
         catalog = "Use list to discover the current profile’s artifacts and permissions. "
@@ -210,7 +250,8 @@ def register_artifact_tools(registry: ToolRegistry, artifacts: ArtifactService |
                 "view (active content), history (all versions), propose (new inactive version "
                 "for review), update (write and activate at once, only where allowed), "
                 "activate (make a version live, only where allowed). Pass expected_version to "
-                "fail instead of overwriting a change you have not seen."
+                "fail instead of overwriting a change you have not seen; a stale write "
+                "returns the current text to merge into."
             ),
             parameters_schema={
                 "type": "object",

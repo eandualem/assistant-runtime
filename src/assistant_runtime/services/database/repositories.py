@@ -37,6 +37,8 @@ class SessionRepository:
         title: str | None = None,
         expires_at: datetime | None = None,
         owner_id: str | None = None,
+        profile: str | None = None,
+        subject: str | None = None,
     ) -> SessionORM:
         """Create a new session row."""
         values: dict[str, object] = {
@@ -44,6 +46,8 @@ class SessionRepository:
             "title": title,
             "turn_number": 0,
             "owner_id": owner_id,
+            "profile": profile,
+            "subject": subject,
         }
         if expires_at is not None:
             values["expires_at"] = expires_at
@@ -143,13 +147,16 @@ class SessionRepository:
         expires_at: datetime | None = None,
         owner_id: str | None = None,
         pending_action: dict | None = None,
+        profile: str | None = None,
+        subject: str | None = None,
     ) -> None:
         """Atomic INSERT ... ON CONFLICT DO UPDATE.
 
         Eliminates the race condition in check-then-insert patterns. The
         owner is written on insert only: reassignment goes through
         ``update()``, so a stale state save can never restore an owner an
-        administrator cleared or changed.
+        administrator cleared or changed. The profile and subject binding
+        is written on insert only too: it never changes.
         """
         values: dict[str, object] = {
             "id": session_id,
@@ -160,6 +167,8 @@ class SessionRepository:
             "telegram_bound_at": telegram_bound_at,
             "owner_id": owner_id,
             "pending_action": pending_action,
+            "profile": profile,
+            "subject": subject,
         }
         if expires_at is not None:
             values["expires_at"] = expires_at
@@ -482,65 +491,88 @@ class InboxRepository:
 class ArtifactRepository:
     """CRUD operations for versioned prompt artifacts. Uses flush() — caller owns commit.
 
-    Every method takes the profile ``scope`` first: rows of different
-    assistants never mix, even when artifact names coincide.
+    Every method takes the profile ``scope`` first and a ``subject`` (empty
+    for a profile-scoped artifact): rows of different assistants or subjects
+    never mix, even when artifact names coincide.
     """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def lock(self, scope: str, name: str) -> None:
+    @staticmethod
+    def _key(scope: str, subject: str, name: str) -> Any:
+        return (
+            (ArtifactORM.assistant == scope)
+            & (ArtifactORM.subject == subject)
+            & (ArtifactORM.name == name)
+        )
+
+    async def lock(self, scope: str, name: str, *, subject: str = "") -> None:
         """Serialize mutations until commit, including an artifact's first version."""
-        key = json.dumps([scope, name])
+        key = json.dumps([scope, name] if not subject else [scope, subject, name])
         await self._session.execute(
             select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0)))
         )
 
-    async def get_active(self, scope: str, name: str) -> ArtifactORM | None:
+    async def get_active(self, scope: str, name: str, *, subject: str = "") -> ArtifactORM | None:
         """Get the active version of an artifact by name."""
         result = await self._session.execute(
             select(ArtifactORM).where(
-                ArtifactORM.assistant == scope,
-                ArtifactORM.name == name,
-                ArtifactORM.is_active.is_(True),
+                self._key(scope, subject, name), ArtifactORM.is_active.is_(True)
             )
         )
         return result.scalar_one_or_none()
 
-    async def get_all_active(self, scope: str) -> list[ArtifactORM]:
-        """Get all active artifacts of the scope, ordered by name."""
+    async def get_all_active(self, scope: str, *, subject: str = "") -> list[ArtifactORM]:
+        """Get all active artifacts of the scope and subject, ordered by name."""
         result = await self._session.execute(
             select(ArtifactORM)
-            .where(ArtifactORM.assistant == scope, ArtifactORM.is_active.is_(True))
+            .where(
+                ArtifactORM.assistant == scope,
+                ArtifactORM.subject == subject,
+                ArtifactORM.is_active.is_(True),
+            )
             .order_by(ArtifactORM.name)
         )
         return list(result.scalars().all())
 
-    async def delete_by_name(self, scope: str, name: str) -> int:
+    async def get_subjects(self, scope: str) -> list[str]:
+        """The subjects with stored versions in the scope, sorted."""
+        result = await self._session.execute(
+            select(ArtifactORM.subject)
+            .where(ArtifactORM.assistant == scope, ArtifactORM.subject != "")
+            .distinct()
+            .order_by(ArtifactORM.subject)
+        )
+        return list(result.scalars().all())
+
+    async def delete_by_name(self, scope: str, name: str, *, subject: str = "") -> int:
         """Delete all versions of an artifact by name. Returns count deleted."""
         result = await self._session.execute(
-            delete(ArtifactORM).where(ArtifactORM.assistant == scope, ArtifactORM.name == name)
+            delete(ArtifactORM).where(self._key(scope, subject, name))
         )
         await self._session.flush()
         return result.rowcount or 0
 
-    async def get_history(self, scope: str, name: str, limit: int = 20) -> list[ArtifactORM]:
+    async def get_history(
+        self, scope: str, name: str, limit: int = 20, *, subject: str = ""
+    ) -> list[ArtifactORM]:
         """Get version history for an artifact, newest first."""
         result = await self._session.execute(
             select(ArtifactORM)
-            .where(ArtifactORM.assistant == scope, ArtifactORM.name == name)
+            .where(self._key(scope, subject, name))
             .order_by(ArtifactORM.version.desc())
             .limit(limit)
         )
         return list(result.scalars().all())
 
-    async def get_version(self, scope: str, name: str, version: int) -> ArtifactORM | None:
+    async def get_version(
+        self, scope: str, name: str, version: int, *, subject: str = ""
+    ) -> ArtifactORM | None:
         """One stored version, or None."""
         result = await self._session.execute(
             select(ArtifactORM).where(
-                ArtifactORM.assistant == scope,
-                ArtifactORM.name == name,
-                ArtifactORM.version == version,
+                self._key(scope, subject, name), ArtifactORM.version == version
             )
         )
         return result.scalar_one_or_none()
@@ -548,7 +580,7 @@ class ArtifactRepository:
     async def get_by_status(
         self, scope: str, status: str, limit: int | None = None, before_id: int | None = None
     ) -> list[ArtifactORM]:
-        """Versions of the scope in ``status``, newest first; ``before_id`` pages back."""
+        """Versions of the scope (every subject) in ``status``, newest first; ``before_id`` pages back."""
         query = (
             select(ArtifactORM)
             .where(ArtifactORM.assistant == scope, ArtifactORM.status == status)
@@ -568,19 +600,19 @@ class ArtifactRepository:
         content: str,
         proposed_by: str,
         *,
+        subject: str = "",
         actor_kind: str = "host",
         rationale: str | None = None,
     ) -> ArtifactORM:
         """Create a pending version inside the caller's locked artifact transaction."""
         max_result = await self._session.execute(
-            select(func.max(ArtifactORM.version)).where(
-                ArtifactORM.assistant == scope, ArtifactORM.name == name
-            )
+            select(func.max(ArtifactORM.version)).where(self._key(scope, subject, name))
         )
         result = await self._session.execute(
             insert(ArtifactORM)
             .values(
                 assistant=scope,
+                subject=subject,
                 name=name,
                 content=content,
                 version=(max_result.scalar_one_or_none() or 0) + 1,
@@ -596,14 +628,20 @@ class ArtifactRepository:
         return result.scalar_one()
 
     async def approve(
-        self, scope: str, name: str, version: int, *, decided_by: str | None = None
+        self,
+        scope: str,
+        name: str,
+        version: int,
+        *,
+        subject: str = "",
+        decided_by: str | None = None,
     ) -> ArtifactORM | None:
         """Activate a version; the previously active one becomes superseded.
 
         ``decided_by`` is recorded when the target was a pending proposal.
         Returns None if the target version doesn't exist.
         """
-        target = await self.get_version(scope, name, version)
+        target = await self.get_version(scope, name, version, subject=subject)
         if target is None:
             return None
         target_id, was_pending = target.id, target.status == "pending"
@@ -612,8 +650,7 @@ class ArtifactRepository:
         await self._session.execute(
             update(ArtifactORM)
             .where(
-                ArtifactORM.assistant == scope,
-                ArtifactORM.name == name,
+                self._key(scope, subject, name),
                 ArtifactORM.is_active.is_(True),
                 ArtifactORM.id != target_id,
             )
@@ -632,14 +669,20 @@ class ArtifactRepository:
         return result.scalar_one()
 
     async def reject(
-        self, scope: str, name: str, version: int, *, decided_by: str, reason: str | None
+        self,
+        scope: str,
+        name: str,
+        version: int,
+        *,
+        subject: str = "",
+        decided_by: str,
+        reason: str | None,
     ) -> ArtifactORM | None:
         """Mark a pending version rejected; None when it is not pending (or absent)."""
         result = await self._session.execute(
             update(ArtifactORM)
             .where(
-                ArtifactORM.assistant == scope,
-                ArtifactORM.name == name,
+                self._key(scope, subject, name),
                 ArtifactORM.version == version,
                 ArtifactORM.status == "pending",
             )
@@ -653,6 +696,24 @@ class ArtifactRepository:
         )
         await self._session.flush()
         return result.scalar_one_or_none()
+
+    async def prune_superseded(self, scope: str, name: str, keep: int, *, subject: str = "") -> int:
+        """Delete superseded versions beyond the newest ``keep``. Returns count deleted."""
+        kept = (
+            select(ArtifactORM.id)
+            .where(self._key(scope, subject, name), ArtifactORM.status == "superseded")
+            .order_by(ArtifactORM.version.desc())
+            .limit(keep)
+        )
+        result = await self._session.execute(
+            delete(ArtifactORM).where(
+                self._key(scope, subject, name),
+                ArtifactORM.status == "superseded",
+                ArtifactORM.id.not_in(kept.scalar_subquery()),
+            )
+        )
+        await self._session.flush()
+        return result.rowcount or 0
 
 
 class OAuthTokenRepository:

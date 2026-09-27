@@ -358,3 +358,51 @@ class TestProposals:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             body = (await c.get("/artifacts/proposals")).json()
         assert body["content"] == "Offer list"
+
+
+class TestSubjects:
+    @pytest.fixture
+    async def tracker_client(self):
+        from assistant_runtime.app.routes.artifacts import subjects_router
+
+        profile = AssistantProfile(
+            name="tracker",
+            artifacts=(
+                ArtifactDefinition(name="instructions", required=True, default="Track"),
+                ArtifactDefinition(name="progress", scope="subject", default="Nothing yet"),
+            ),
+        )
+        service = ArtifactService(ArtifactsConfig(), profile)
+        await service.start()
+        app = FastAPI()
+        app.include_router(router)
+        app.include_router(subjects_router)
+        app.state.artifact_service = service
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c
+
+    async def test_subject_artifacts_need_and_take_a_subject(self, tracker_client):
+        c = tracker_client
+        assert (await c.get("/artifacts/progress")).status_code == 422
+        body = (await c.get("/artifacts/progress", params={"subject": "agent-a"})).json()
+        assert (body["content"], body["source"]) == ("Nothing yet", "default")
+        response = await c.patch(
+            "/artifacts/progress", params={"subject": "agent-a"}, json={"content": "Busy"}
+        )
+        assert response.status_code == 200
+        assert response.json()["subject"] == "agent-a"
+        other = (await c.get("/artifacts/progress", params={"subject": "agent-b"})).json()
+        assert other["content"] == "Nothing yet"
+        assert (await c.get("/artifact-subjects")).json() == {
+            "profile": "tracker",
+            "subjects": ["agent-a"],
+        }
+        assert (
+            await c.get("/artifacts/progress", params={"subject": "bad subject"})
+        ).status_code == 422
+
+    async def test_profile_describes_scope_and_includes(self, tracker_client):
+        body = (await tracker_client.get("/artifacts/profile")).json()
+        assert [a["scope"] for a in body["artifacts"]] == ["profile", "subject"]
+        assert body["include"] == []
+        assert body["collections"] == []

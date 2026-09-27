@@ -46,7 +46,13 @@ The substrate is deliberately the application's own tables. The upstream
 options were compared and deferred; see [the decision](#upstream-decision)
 below.
 
-With `DATABASE__REQUIRED`, each artifact of a registered profile that has
+Artifact versions are keyed by profile, subject (empty for profile-scoped
+artifacts) and name. A session created for a subject stores its `profile`
+and `subject` on the row, decided by the session's first saved message
+(an empty session enforces none), so a restart keeps the binding. `keep_versions` bounds how many superseded
+versions an artifact keeps; the rest are deleted as new ones are written.
+
+With `DATABASE__REQUIRED`, each profile-scoped artifact of a registered profile that has
 no stored version gets its default stored as version 1 at startup (actor
 `seed`), so the text a prompt uses is always a versioned record; later
 changes to the default do not replace it.

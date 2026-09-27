@@ -99,11 +99,48 @@ class TurnPlan:
     trace_metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def apply_binding(
+    request: AssistantRequest,
+    session_context: dict[str, Any] | None,
+    default_profile: str | None = None,
+) -> AssistantRequest:
+    """A session created for a subject keeps its profile and subject.
+
+    In a bound session a request that omits them inherits the binding (host
+    continuations, delivered and steering messages); one that names another
+    profile or subject is rejected. A request that creates a session for a
+    subject has its profile resolved (the default when omitted), so the
+    binding records the profile actually used. Sessions created without a
+    subject select their profile per turn, as before. Call it only after the
+    caller is allowed on the session: the rejection names the binding.
+    """
+    context = session_context or {}
+    # A binding takes effect with the first saved message; an empty session has none yet.
+    bound_subject = context.get("subject") if context.get("message_count", 0) > 0 else None
+    if not bound_subject:
+        if request.subject is not None and request.profile is None and default_profile:
+            return request.model_copy(update={"profile": default_profile})
+        return request
+    bound_profile = session_context.get("profile") if session_context else None
+    if request.subject is not None and request.subject != bound_subject:
+        raise SessionError(
+            f"Session '{request.session_id}' is about subject '{bound_subject}', "
+            f"not '{request.subject}'"
+        )
+    if request.profile is not None and request.profile != bound_profile:
+        raise SessionError(
+            f"Session '{request.session_id}' uses profile '{bound_profile}', "
+            f"not '{request.profile}'"
+        )
+    return request.model_copy(update={"subject": bound_subject, "profile": bound_profile})
+
+
 class TurnPlanner:
     """Turn requests into ``TurnPlan``s against the session store."""
 
-    def __init__(self, sessions: SessionStore) -> None:
+    def __init__(self, sessions: SessionStore, *, default_profile: str | None = None) -> None:
         self._sessions = sessions
+        self._default_profile = default_profile
 
     async def plan(
         self, request: AssistantRequest, principal: Principal = LOCAL_PRINCIPAL
@@ -114,6 +151,11 @@ class TurnPlanner:
         that exists (``AccessDeniedError`` otherwise).
         """
         try:
+            existing = await self._sessions.get_context_if_exists_async(request.session_id)
+            if existing is not None:
+                # Access first: a binding mismatch must not tell a stranger the binding.
+                self._authorize(existing, principal, request.session_id)
+            request = apply_binding(request, existing, self._default_profile)
             if request.is_steering:
                 plan = await self._plan_steering(request, principal)
             elif request.is_continuation:

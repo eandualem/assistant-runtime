@@ -270,6 +270,7 @@ def build_system_prompt(
     mcp_summary: list[dict[str, Any]] | None = None,
     artifacts: dict[str, str],
     profile: AssistantProfile | None = None,
+    artifact_extras: list[tuple[str, str]] | None = None,
 ) -> PromptResult:
     """Compose system prompt from module fragments.
 
@@ -285,6 +286,9 @@ def build_system_prompt(
         artifacts: Artifact name→text map, normally ``ArtifactService.active_texts()``.
         profile: The assistant profile naming and ordering the artifacts;
             the neutral built-in when omitted.
+        artifact_extras: Named fragments that follow the profile's artifacts
+            (included profiles' artifacts, the list of kept documents),
+            normally ``ArtifactService.prompt_extras()``.
 
     Returns:
         PromptResult with composed content and fragment metadata.
@@ -305,6 +309,7 @@ def build_system_prompt(
         content = (artifacts.get(artifact.name) or "").strip()
         if content:
             named_fragments.append((artifact.name, content))
+    named_fragments.extend((name, text) for name, text in artifact_extras or () if text.strip())
 
     mcp_frag = mcp_connections_fragment(mcp_summary)
     if mcp_frag:

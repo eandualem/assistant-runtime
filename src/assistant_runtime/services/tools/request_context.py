@@ -30,6 +30,7 @@ _current_assistant_session_id: ContextVar[str | None] = ContextVar(
     default=None,
 )
 _current_profile_name: ContextVar[str | None] = ContextVar("_current_profile_name", default=None)
+_current_subject: ContextVar[str | None] = ContextVar("_current_subject", default=None)
 _current_screenshot: ContextVar[str | None] = ContextVar("_current_screenshot", default=None)
 _current_principal: ContextVar[Principal | None] = ContextVar("_current_principal", default=None)
 _current_host_context: ContextVar[dict[str, Any] | None] = ContextVar(
@@ -49,23 +50,31 @@ def assistant_request_context(
     principal: Principal | None = None,
     host_context: dict[str, Any] | None = None,
     profile_name: str | None = None,
+    subject: str | None = None,
 ) -> Iterator[None]:
-    """Bind session, profile, screenshot, principal and host context for tool handlers."""
+    """Bind session, profile, subject, screenshot, principal and host context for tools."""
     session_token = _current_assistant_session_id.set(session_id)
     screenshot_token = _current_screenshot.set(screenshot)
     principal_token = _current_principal.set(principal)
     host_token = _current_host_context.set(host_context)
     profile_token = _current_profile_name.set(profile_name)
+    subject_token = _current_subject.set(subject)
     telegram_token = _current_telegram_chat_binding.set(_TelegramChatBinding())
     try:
         yield
     finally:
         _current_telegram_chat_binding.reset(telegram_token)
+        _current_subject.reset(subject_token)
         _current_profile_name.reset(profile_token)
         _current_host_context.reset(host_token)
         _current_principal.reset(principal_token)
         _current_screenshot.reset(screenshot_token)
         _current_assistant_session_id.reset(session_token)
+
+
+def get_current_subject() -> str | None:
+    """The subject this turn is about (see ``AssistantRequest.subject``), or None."""
+    return _current_subject.get()
 
 
 def get_current_profile_name() -> str | None:

@@ -271,6 +271,7 @@ stale `expected_version` `409`, a missing version `404`.
 | `GET /api/artifacts/profile` | the profile: artifacts, roles, policies, live versions |
 | `GET /api/artifacts/{name}` | the active version, or the default text (`source: "default"`) |
 | `GET /api/artifacts/{name}/history` | all versions, newest first |
+| `GET /api/artifact-subjects?profile=` | the subjects a profile keeps subject-scoped versions for |
 | `GET /api/artifact-proposals?profile=&status=&limit=&before_id=` | `{proposals, next_before}`: versions in `status` (`pending` by default) as proposal records, newest first, `limit` per page (100 by default, at most 500); without `profile`, every registered profile merged; pass `next_before` as `before_id` for older ones (null on the last page) |
 | `GET /api/artifacts/{name}/versions/{version}` | one version as a proposal record |
 | `POST /api/artifacts/{name}/propose` `{"content", "expected_version"?, "rationale"?}` | new pending version (`201`), attributed to the calling principal |
@@ -280,6 +281,12 @@ stale `expected_version` `409`, a missing version `404`.
 | `POST /api/artifacts/{name}/rollback/{version}` | reactivate an older version |
 | `POST /api/artifacts/{name}/actions` `{"action": "propose"\|"update"\|"approve"\|"reject"\|"rollback", ...}` | the five above behind one endpoint |
 | `DELETE /api/artifacts/{name}` | delete every version; the default applies again |
+
+Every artifact route also takes `?subject=`, needed (`422` otherwise) for
+the profile's subject-scoped artifacts and ignored by the others; versions
+and records carry the `subject`. `GET /api/artifacts/profile` reports each
+artifact's `scope` and `keep_versions`, the profile's `include`, and its
+`collections` with the documents they hold.
 
 Every version has a `status`: a proposal is `pending` until it is approved
 (`active`) or `rejected`; an active version that another replaces becomes
@@ -356,3 +363,10 @@ turns; unprofiled queued steering inherits its consuming turn. Unknown names rej
 creation with 422 before allocation, and artifact queries with 404. Invalid
 name syntax returns 422 for HTTP request validation. Artifact routes select
 the same scope through `?profile=<name>`. See [deployments](deployments.md).
+
+Top-level `subject` (letters, digits, `.`, `_`, `-`; up to 128) names whom
+the turn is about and selects the profile's subject-scoped artifacts. The
+first message of a session that names a subject binds the session to that
+profile (the default when omitted) and subject: later requests, steering
+and delivered messages may omit both and inherit them, and one naming
+another profile or subject is a session error.

@@ -206,7 +206,10 @@ execution, history, serialization, or the upstream dependency; see
 - **A session is a tree of messages.** Each message has a `parent_id`; the
   session tracks the active leaf and the path to it is the model history.
   A message without `parent_id` is the root when the session is empty and
-  continues from the active leaf otherwise.
+  continues from the active leaf otherwise. A session created with a
+  `subject` is bound to that profile and subject (row columns, decided by
+  the first saved message; an empty session enforces none); the planner fills them into later requests and rejects
+  others. Sessions without a subject keep per-turn profile selection.
   `message_type` is `standard` or `steering`: steering is queued while a
   stream is live and promoted into the conversation otherwise. A host tool
   call ends the turn with `final_response.pending_tool_call`; the
@@ -283,7 +286,9 @@ execution, history, serialization, or the upstream dependency; see
   `session.closed` confirms final usage; absent finalization stays explicit.
   Docs: `docs/voice.md`.
 - **The system prompt is assembled from the profile's artifacts**, in the
-  profile's order, then MCP connections, the current time, the host context
+  profile's order (subject-scoped ones for the turn's `subject`), then the
+  included profiles' artifacts and the list of the profile's collection
+  documents, then MCP connections, the current time, the host context
   and working memory. Stable fragments come first so provider prompt
   caching works; dynamic fragments go last. The profile comes from
   `AssistantDefinition.profile`, else `ASSISTANT__PROFILE` (a built-in name

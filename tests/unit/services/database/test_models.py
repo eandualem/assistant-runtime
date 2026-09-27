@@ -18,6 +18,8 @@ class TestSessionORM:
             "pending_action",
             "telegram_chat_id",
             "owner_id",
+            "profile",
+            "subject",
             "telegram_bound_at",
             "created_at",
             "updated_at",

@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 
 from assistant_runtime.app.routes.agui import router as agui_router
-from assistant_runtime.app.routes.artifacts import proposals_router
+from assistant_runtime.app.routes.artifacts import proposals_router, subjects_router
 from assistant_runtime.app.routes.artifacts import router as artifacts_router
 from assistant_runtime.app.routes.chat import router as chat_router
 from assistant_runtime.app.routes.debug import router as debug_router
@@ -22,6 +22,7 @@ router = APIRouter()
 router.include_router(agui_router)
 router.include_router(artifacts_router)
 router.include_router(proposals_router)
+router.include_router(subjects_router)
 router.include_router(chat_router)
 router.include_router(debug_router)
 router.include_router(decisions_router)

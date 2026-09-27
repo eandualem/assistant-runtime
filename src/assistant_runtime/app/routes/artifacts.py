@@ -21,6 +21,7 @@ from assistant_runtime.services.artifacts.exceptions import (
     ArtifactConflictError,
     ArtifactError,
     ArtifactPermissionError,
+    ArtifactSubjectRequiredError,
     ArtifactVersionNotFoundError,
     UnknownArtifactError,
     UnknownProfileError,
@@ -30,6 +31,7 @@ from assistant_runtime.services.artifacts.models import Actor, MutationResult
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 proposals_router = APIRouter(prefix="/artifact-proposals", tags=["artifacts"])
+subjects_router = APIRouter(prefix="/artifact-subjects", tags=["artifacts"])
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +71,7 @@ _STATUS = {
     ArtifactPermissionError: 403,
     ArtifactConflictError: 409,
     ArtifactVersionNotFoundError: 404,
+    ArtifactSubjectRequiredError: 422,
 }
 
 
@@ -80,9 +83,14 @@ def _scoped_artifacts(
     request: Request,
     principal: PrincipalDep,
     profile: str | None = Query(None, description="Registered assistant profile name"),
+    subject: str | None = Query(
+        None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        description="The subject, for the profile's subject-scoped artifacts",
+    ),
 ) -> ArtifactService:
     try:
-        return get_artifact_service(request).for_profile(profile)
+        return get_artifact_service(request).for_profile(profile).for_subject(subject)
     except ArtifactError as exc:
         raise _http_error(exc) from exc
 
@@ -190,22 +198,40 @@ async def get_profile(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> 
     profile = artifacts.profile
     return {
         "name": profile.name,
+        "subject": artifacts.subject,
         "available_profiles": list(artifacts.available_profiles),
         "durable": artifacts.durable,
+        "include": list(profile.include),
         "artifacts": [
             {
                 "name": a.name,
                 "role": a.role,
                 "required": a.required,
-                "policy": {
-                    "assistant_edit": a.policy.assistant_edit,
-                    "assistant_activate": a.policy.assistant_activate,
-                    "host_edit": a.policy.host_edit,
-                },
+                "scope": a.scope,
+                "keep_versions": a.keep_versions,
+                "policy": _policy(a.policy),
                 "live_version": active.get(a.name),
             }
             for a in profile.artifacts
         ],
+        "collections": [
+            {
+                "prefix": c.prefix,
+                "role": c.role,
+                "keep_versions": c.keep_versions,
+                "policy": _policy(c.policy),
+                "documents": sorted(name for name in active if c.matches(name)),
+            }
+            for c in profile.collections
+        ],
+    }
+
+
+def _policy(policy: Any) -> dict[str, Any]:
+    return {
+        "assistant_edit": policy.assistant_edit,
+        "assistant_activate": policy.assistant_activate,
+        "host_edit": policy.host_edit,
     }
 
 
@@ -420,3 +446,20 @@ async def list_proposals(
     page = records[:limit]
     more = len(records) > limit
     return {"proposals": page, "next_before": page[-1]["id"] if more and page else None}
+
+
+@subjects_router.get("")
+async def list_subjects(
+    request: Request,
+    principal: PrincipalDep,
+    profile: str | None = Query(None, description="Registered assistant profile name"),
+) -> dict:
+    """The subjects a profile keeps versions for (outside ``/artifacts``, like the proposals)."""
+    try:
+        artifacts = get_artifact_service(request).for_profile(profile)
+        return {"profile": artifacts.profile.name, "subjects": await artifacts.subjects()}
+    except ArtifactError as e:
+        raise _http_error(e) from e
+    except Exception as e:
+        logger.error("Failed to list subjects", error=str(e))
+        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e

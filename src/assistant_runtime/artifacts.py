@@ -21,7 +21,10 @@ from typing import Any, Literal
 
 EditPolicy = Literal["none", "propose", "autonomous"]
 _EDIT_POLICIES: tuple[str, ...] = ("none", "propose", "autonomous")
+ArtifactScope = Literal["profile", "subject"]
+_SCOPES: tuple[str, ...] = ("profile", "subject")
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,30}_$")
 PROFILES_DIR = Path(__file__).with_name("profiles")
 BUILTIN_PROFILE_NAMES: tuple[str, ...] = ("neutral", "technical_operator")
 
@@ -61,6 +64,12 @@ class ArtifactDefinition:
     default: str = ""
     """Text used until a version is activated; may be empty for optional artifacts."""
     policy: ArtifactPolicy = field(default_factory=ArtifactPolicy)
+    scope: ArtifactScope = "profile"
+    """``profile``: one text for every turn of the profile. ``subject``: one text
+    per subject (for example, per agent an assistant keeps track of), chosen
+    by the request's ``subject``; without a subject it is left out."""
+    keep_versions: int | None = None
+    """Superseded versions kept per artifact and subject; ``None`` keeps all."""
 
     def __post_init__(self) -> None:
         if not _NAME_PATTERN.match(self.name):
@@ -69,6 +78,51 @@ class ArtifactDefinition:
             )
         if self.required and not self.default.strip():
             raise ValueError(f"Required artifact {self.name!r} needs a non-empty default")
+        if self.scope not in _SCOPES:
+            raise ValueError(f"Artifact {self.name!r} scope must be profile or subject")
+        if self.required and self.scope == "subject":
+            raise ValueError(f"Subject-scoped artifact {self.name!r} cannot be required")
+        _check_keep_versions(self.name, self.keep_versions)
+
+
+@dataclass(frozen=True)
+class ArtifactCollection:
+    """Documents the assistant may create itself, named ``<prefix><anything>``.
+
+    A collection's documents are versioned artifacts with the collection's
+    role and policy; the prompt lists their names instead of including
+    their text, and the assistant reads one with the artifact tool.
+    """
+
+    prefix: str
+    role: str = ""
+    policy: ArtifactPolicy = field(default_factory=ArtifactPolicy)
+    keep_versions: int | None = None
+
+    def __post_init__(self) -> None:
+        if not _PREFIX_PATTERN.match(self.prefix):
+            raise ValueError(
+                "Collection prefix must be lowercase letters, digits and underscores, "
+                f"ending in '_': {self.prefix!r}"
+            )
+        _check_keep_versions(self.prefix, self.keep_versions)
+
+    def matches(self, name: str) -> bool:
+        return (
+            name.startswith(self.prefix)
+            and len(name) > len(self.prefix)
+            and bool(_NAME_PATTERN.match(name))
+        )
+
+    def definition(self, name: str) -> ArtifactDefinition:
+        return ArtifactDefinition(
+            name=name, role=self.role, policy=self.policy, keep_versions=self.keep_versions
+        )
+
+
+def _check_keep_versions(owner: str, value: int | None) -> None:
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+        raise ValueError(f"{owner!r} keep_versions must be a positive integer or None")
 
 
 @dataclass(frozen=True)
@@ -83,6 +137,11 @@ class AssistantProfile:
 
     name: str = "default"
     artifacts: tuple[ArtifactDefinition, ...] = ()
+    include: tuple[str, ...] = ()
+    """Other registered profiles whose active artifacts follow this profile's
+    own in the prompt (their profile-scoped artifacts only), for text several
+    profiles share."""
+    collections: tuple[ArtifactCollection, ...] = ()
 
     def __post_init__(self) -> None:
         if not _NAME_PATTERN.match(self.name):
@@ -90,11 +149,24 @@ class AssistantProfile:
                 f"Profile name must be lowercase letters, digits and underscores: {self.name!r}"
             )
         object.__setattr__(self, "artifacts", tuple(self.artifacts))
+        object.__setattr__(self, "include", tuple(self.include))
+        object.__setattr__(self, "collections", tuple(self.collections))
         seen: set[str] = set()
         for artifact in self.artifacts:
             if artifact.name in seen:
                 raise ValueError(f"Duplicate artifact name in profile: {artifact.name!r}")
             seen.add(artifact.name)
+        for included in self.include:
+            if not _NAME_PATTERN.match(included) or included == self.name:
+                raise ValueError(f"Profile {self.name!r} cannot include {included!r}")
+        prefixes = [collection.prefix for collection in self.collections]
+        for prefix in prefixes:
+            if any(other != prefix and other.startswith(prefix) for other in prefixes):
+                raise ValueError(f"Collection prefix {prefix!r} overlaps another")
+            if any(name.startswith(prefix) for name in seen):
+                raise ValueError(f"Collection prefix {prefix!r} matches a declared artifact")
+        if len(set(prefixes)) != len(prefixes):
+            raise ValueError("Duplicate collection prefix in profile")
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -110,10 +182,17 @@ class AssistantProfile:
         return {artifact.name: artifact.default for artifact in self.artifacts}
 
     def get(self, name: str) -> ArtifactDefinition | None:
+        """The declared artifact, else a collection document of that name."""
         for artifact in self.artifacts:
             if artifact.name == name:
                 return artifact
+        for collection in self.collections:
+            if collection.matches(name):
+                return collection.definition(name)
         return None
+
+    def collection_of(self, name: str) -> ArtifactCollection | None:
+        return next((c for c in self.collections if c.matches(name)), None)
 
     def sort_key(self, name: str) -> tuple[int, str]:
         """Prompt order first, then unknown names alphabetically."""
@@ -213,6 +292,13 @@ def load_profile_file(path: str | Path) -> AssistantProfile:
         assistant_edit = "propose"         # none | propose | autonomous
         assistant_activate = false
         host_edit = true
+
+    An artifact may also set ``scope = "subject"`` (one text per request
+    ``subject``) and ``keep_versions``. A profile may ``include = ["owner"]``
+    (other registered profiles' artifacts follow its own in the prompt) and
+    declare ``[[collections]]`` with a ``prefix`` (for example ``"doc_"``),
+    ``role``, ``policy`` and ``keep_versions``: documents the assistant
+    creates itself.
     """
     path = Path(path)
     try:
@@ -257,9 +343,37 @@ def profile_from_mapping(data: dict[str, Any], *, base_dir: Path | None = None) 
                 required=bool(item.get("required", False)),
                 default=str(default).strip(),
                 policy=ArtifactPolicy(**policy_data),
+                scope=item.get("scope", "profile"),
+                keep_versions=item.get("keep_versions"),
             )
         )
-    return AssistantProfile(name=str(data.get("name", "default")), artifacts=tuple(artifacts))
+    collections_data = data.get("collections", [])
+    if not isinstance(collections_data, list):
+        raise ValueError("Profile 'collections' must be an array of tables")
+    collections: list[ArtifactCollection] = []
+    for item in collections_data:
+        if not isinstance(item, dict) or "prefix" not in item:
+            raise ValueError("Each collection needs a 'prefix'")
+        policy_data = item.get("policy", {})
+        if not isinstance(policy_data, dict):
+            raise ValueError(f"Collection {item['prefix']!r} policy must be a table")
+        collections.append(
+            ArtifactCollection(
+                prefix=str(item["prefix"]),
+                role=str(item.get("role", "")),
+                policy=ArtifactPolicy(**policy_data),
+                keep_versions=item.get("keep_versions"),
+            )
+        )
+    include = data.get("include", [])
+    if not isinstance(include, list) or not all(isinstance(n, str) for n in include):
+        raise ValueError("Profile 'include' must be an array of profile names")
+    return AssistantProfile(
+        name=str(data.get("name", "default")),
+        artifacts=tuple(artifacts),
+        include=tuple(include),
+        collections=tuple(collections),
+    )
 
 
 def resolve_profile(

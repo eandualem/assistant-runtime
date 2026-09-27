@@ -7,12 +7,17 @@ Every mutation goes through this class, which applies the profile's
 change what the assistant may do to it. With a reachable database the
 versions are durable; otherwise they live in memory for the process and
 every result says so (``durable=False``).
+
+A profile view (``for_profile``) reads and writes the profile's
+artifacts; a subject view (``for_subject``) also reaches the artifacts the
+profile keeps per subject, for that subject.
 """
 
 from __future__ import annotations
 
 import difflib
 import time
+from collections import OrderedDict
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -29,6 +34,7 @@ from assistant_runtime.services.artifacts.exceptions import (
     ArtifactConflictError,
     ArtifactError,
     ArtifactPermissionError,
+    ArtifactSubjectRequiredError,
     ArtifactVersionNotFoundError,
     UnknownArtifactError,
     UnknownProfileError,
@@ -41,6 +47,8 @@ if TYPE_CHECKING:
 
 Action = Literal["propose", "update", "activate", "reject", "delete"]
 SEED = "seed"
+# Subject views kept per profile; the least recently used is dropped beyond this.
+_SUBJECT_VIEWS = 128
 
 
 class ArtifactService:
@@ -54,6 +62,7 @@ class ArtifactService:
         *,
         profiles: Sequence[AssistantProfile] = (),
         events: EventHub | None = None,
+        _as_view: bool = False,
     ) -> None:
         self._config = config
         self._profile = profile
@@ -62,17 +71,36 @@ class ArtifactService:
         self._store: ArtifactStore | None = None
         self._cache: dict[str, str] | None = None
         self._cached_at = 0.0
-        self._cache_generation = 0
+        self._cached_generation = -1
+        self._generation = 0
+        """Owner only: bumped by every write, so no view serves text from before it."""
         self._started = False
         self._owner = self
+        self._base = self
+        self._subject = ""
+        self._subject_views: OrderedDict[str, ArtifactService] = OrderedDict()
         self._views: dict[str, ArtifactService] = {profile.name: self}
         for additional in profiles:
             if additional.name in self._views:
                 raise ValueError(f"Duplicate assistant profile name: {additional.name!r}")
-            view = ArtifactService(config, additional, database_service)
-            view._owner = self
-            view._views = self._views
-            self._views[additional.name] = view
+            self._views[additional.name] = self._view(additional)
+        if _as_view:
+            return  # the owner checks the includes of every registered profile
+        for view in self._views.values():
+            for included in view._profile.include:
+                if included not in self._views:
+                    raise ValueError(
+                        f"Profile {view._profile.name!r} includes {included!r}, "
+                        "which is not registered"
+                    )
+
+    def _view(self, profile: AssistantProfile, subject: str = "") -> ArtifactService:
+        view = ArtifactService(self._config, profile, self._database_service, _as_view=True)
+        view._owner = self._owner
+        view._views = self._owner._views
+        view._subject = subject
+        view._base = view if not subject else self._owner._views[profile.name]
+        return view
 
     @property
     def available_profiles(self) -> tuple[str, ...]:
@@ -91,6 +119,24 @@ class ArtifactService:
                 f"Available profiles: {', '.join(self.available_profiles)}."
             ) from None
 
+    def for_subject(self, subject: str | None) -> ArtifactService:
+        """This profile's view for ``subject``; no subject is the profile view itself."""
+        base = self._base
+        if not subject:
+            return base
+        view = base._subject_views.get(subject)
+        if view is None:
+            view = base._subject_views[subject] = self._view(base._profile, subject)
+            while len(base._subject_views) > _SUBJECT_VIEWS:
+                base._subject_views.popitem(last=False)  # a view holds only a text cache
+        else:
+            base._subject_views.move_to_end(subject)
+        return view
+
+    @property
+    def subject(self) -> str | None:
+        return self._subject or None
+
     async def start(self) -> None:
         """Choose the store: Postgres when reachable, else process memory."""
         if self is not self._owner:
@@ -105,8 +151,7 @@ class ArtifactService:
             self._store = InMemoryArtifactStore()
         if self._store.durable and getattr(database, "required", False) is True:
             await self._seed_defaults()
-        for view in self._views.values():
-            view.invalidate()
+        self.invalidate()
         self._started = True
         logger.info(
             "Artifact service started",
@@ -120,13 +165,15 @@ class ArtifactService:
 
         With ``DATABASE__REQUIRED`` the active text is then always a
         versioned record; the definition's default is only its seed.
+        Subject-scoped artifacts are seeded by nobody: their subjects are
+        not known in advance.
         """
         assert self._store is not None
         for view in self._views.values():
             scope = view._profile.name
             for artifact in view._profile.artifacts:
                 content = (artifact.default or "").strip()
-                if not content:
+                if not content or artifact.scope != "profile":
                     continue
                 async with self._store.transaction(scope, artifact.name) as store:
                     if await store.get_history(scope, artifact.name, 1):
@@ -140,8 +187,7 @@ class ArtifactService:
             await self._owner.stop()
             return
         self._store = None
-        for view in self._views.values():
-            view.invalidate()
+        self.invalidate()
         self._started = False
         logger.info("Artifact service stopped")
 
@@ -165,20 +211,40 @@ class ArtifactService:
     # --- Reads ---
 
     async def active_texts(self) -> dict[str, str]:
-        """Text per artifact for the prompt: the active version, else the default.
+        """Text per declared artifact for the prompt: the active version, else the default.
 
-        Cached for ``cache_ttl_seconds``; a mutation through this service
-        invalidates the cache, so it affects the next prompt built.
+        Subject-scoped artifacts take this view's subject; a profile view
+        leaves them empty. Cached for ``cache_ttl_seconds``; any write
+        through the service invalidates every view, so it affects the next
+        prompt built.
         """
         store = self._require_store()
+        owner = self._owner
         now = time.monotonic()
-        if self._cache is not None and now - self._cached_at < self._config.cache_ttl_seconds:
+        if (
+            self._cache is not None
+            and self._cached_generation == owner._generation
+            and now - self._cached_at < self._config.cache_ttl_seconds
+        ):
             return dict(self._cache)
-        generation = self._cache_generation
-        texts = self._profile.defaults
+        generation = owner._generation
+        scope = self._profile.name
+        texts = {
+            a.name: a.default if a.scope == "profile" or self._subject else ""
+            for a in self._profile.artifacts
+        }
         try:
-            for row in await store.get_all_active(self._profile.name):
-                if row.name in texts:
+            rows = await store.get_all_active(scope)
+            if self._subject:
+                rows += await store.get_all_active(scope, subject=self._subject)
+            for row in rows:
+                definition = self._profile.get(row.name)
+                # A row counts only in its own scope: profile rows carry no subject.
+                if (
+                    definition is not None
+                    and row.name in texts
+                    and (definition.scope == "subject") == bool(row.subject)
+                ):
                     texts[row.name] = row.content
         except Exception as e:
             # With DATABASE__REQUIRED the stored versions are the only
@@ -187,54 +253,109 @@ class ArtifactService:
                 raise ArtifactError(f"Failed to load artifacts: {e}") from e
             logger.warning("Failed to load artifacts, using defaults", error=str(e))
             return texts
-        if generation == self._cache_generation:
+        if generation == owner._generation:
             self._cache = dict(texts)
+            self._cached_generation = generation
             self._cached_at = now
         return texts
 
+    async def prompt_extras(self) -> list[tuple[str, str]]:
+        """Fragments that follow the profile's own artifacts in the prompt.
+
+        The included profiles' active profile-scoped artifacts, named
+        ``<profile>.<artifact>``, then the names of the documents in the
+        profile's collections (their text is read with the artifact tool).
+        """
+        fragments: list[tuple[str, str]] = []
+        for name in self._profile.include:
+            included = self._owner._views[name]
+            texts = await included.active_texts()
+            for artifact in included._profile.artifacts:
+                text = (texts.get(artifact.name) or "").strip()
+                if text and artifact.scope == "profile":
+                    fragments.append((f"{name}.{artifact.name}", text))
+        if self._profile.collections:
+            try:
+                rows = await self._require_store().get_all_active(self._profile.name)
+            except Exception as e:
+                # The listing is optional prompt text, like the artifacts' own fallback.
+                if getattr(self._database_service, "required", False):
+                    raise ArtifactError(f"Failed to list documents: {e}") from e
+                logger.warning("Failed to list documents, leaving them out", error=str(e))
+                rows = []
+            names = sorted(r.name for r in rows if self._profile.collection_of(r.name))
+            if names:
+                fragments.append(
+                    (
+                        "documents",
+                        "Documents you keep (read one with manage_artifacts view): "
+                        + ", ".join(names)
+                        + ".",
+                    )
+                )
+        return fragments
+
     def invalidate(self) -> None:
-        """Forget cached texts so the next prompt reads the store."""
-        self._cache = None
-        self._cache_generation += 1
+        """Forget cached texts in every view so the next prompt reads the store."""
+        self._owner._generation += 1
 
     async def list_active(self) -> list[ArtifactVersion]:
-        """Active versions of the profile's artifacts, in prompt order."""
-        rows = await self._require_store().get_all_active(self._profile.name)
-        known = [row for row in rows if self._profile.get(row.name) is not None]
-        return sorted(known, key=lambda row: self._profile.sort_key(row.name))
+        """Active versions of the profile's artifacts (and this subject's), in prompt order."""
+        store = self._require_store()
+        scope = self._profile.name
+        rows = [
+            row
+            for row in await store.get_all_active(scope)
+            if (d := self._profile.get(row.name)) is not None and d.scope == "profile"
+        ]
+        if self._subject:
+            rows += [
+                row
+                for row in await store.get_all_active(scope, subject=self._subject)
+                if (d := self._profile.get(row.name)) is not None and d.scope == "subject"
+            ]
+        return sorted(rows, key=lambda row: self._profile.sort_key(row.name))
 
     async def get_active(self, name: str) -> ArtifactVersion | None:
-        self._definition(name)
-        return await self._require_store().get_active(self._profile.name, name)
+        subject = self._subject_for(self._definition(name))
+        return await self._require_store().get_active(self._profile.name, name, subject=subject)
 
     async def history(self, name: str, limit: int | None = None) -> list[ArtifactVersion]:
-        self._definition(name)
+        subject = self._subject_for(self._definition(name))
         return await self._require_store().get_history(
-            self._profile.name, name, limit or self._config.history_limit
+            self._profile.name, name, limit or self._config.history_limit, subject=subject
         )
+
+    async def subjects(self) -> list[str]:
+        """The subjects this profile keeps versions for."""
+        return await self._require_store().get_subjects(self._profile.name)
 
     async def proposals(
         self, status: str = "pending", limit: int | None = None, before_id: int | None = None
     ) -> list[dict[str, Any]]:
         """The profile's versions in ``status`` (pending by default) as proposal records.
 
-        Newest first (by ``id``); ``limit`` bounds the page and ``before_id``
-        continues from the last ``id`` of the previous one.
+        Every subject's; newest first (by ``id``); ``limit`` bounds the page and
+        ``before_id`` continues from the last ``id`` of the previous one.
         """
         store = self._require_store()
         rows = await store.get_by_status(self._profile.name, status, limit, before_id)
-        known = [row for row in rows if self._profile.get(row.name) is not None]
-        active = {row.name: row for row in await store.get_all_active(self._profile.name)}
-        return [self._record(row, active.get(row.name)) for row in known]
+        records = []
+        for row in rows:
+            if self._profile.get(row.name) is None:
+                continue
+            active = await store.get_active(self._profile.name, row.name, subject=row.subject)
+            records.append(self._record(row, active))
+        return records
 
     async def version_record(self, name: str, version: int) -> dict[str, Any]:
         """One version as a proposal record: its content against the active text, with a diff."""
-        self._definition(name)
+        subject = self._subject_for(self._definition(name))
         store = self._require_store()
-        row = await store.get_version(self._profile.name, name, version)
+        row = await store.get_version(self._profile.name, name, version, subject=subject)
         if row is None:
             raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
-        return self._record(row, await store.get_active(self._profile.name, name))
+        return self._record(row, await store.get_active(self._profile.name, name, subject=subject))
 
     def allowed_actions(self, name: str, actor_kind: Literal["assistant", "host"]) -> list[str]:
         """The mutations ``actor_kind`` may perform on ``name``."""
@@ -279,28 +400,34 @@ class ArtifactService:
     ) -> MutationResult:
         artifact = self._definition(name)
         self._authorize(artifact, actor, "update" if activate else "propose")
+        subject = self._subject_for(artifact)
         content = self._clean_content(name, content)
-        async with self._require_store().transaction(self._profile.name, name) as store:
-            active = await store.get_active(self._profile.name, name)
+        scope = self._profile.name
+        async with self._require_store().transaction(scope, name, subject=subject) as store:
+            active = await store.get_active(scope, name, subject=subject)
             current = active.version if active is not None else 0
             if expected_version is not None and current != expected_version:
                 raise ArtifactConflictError(
-                    f"Artifact '{name}' is at version {current}, not {expected_version}"
+                    f"Artifact '{name}' is at version {current}, not {expected_version}",
+                    current_version=current,
+                    current_content=active.content if active is not None else artifact.default,
                 )
             if active is not None and active.content == content:
                 return self._result(active, activated=True, live=active, unchanged=True)
             row = await store.propose(
-                self._profile.name,
+                scope,
                 name,
                 content,
                 actor.proposed_by,
+                subject=subject,
                 actor_kind=actor.kind,
                 rationale=(rationale or "").strip() or None,
             )
             if activate:
-                row = await store.activate(self._profile.name, name, row.version)
+                row = await store.activate(scope, name, row.version, subject=subject)
                 assert row is not None
                 active = row
+                await self._prune(store, artifact, subject)
         if activate:
             self.invalidate()
         logger.info("Wrote artifact version", name=name, version=row.version, by=actor.kind)
@@ -321,8 +448,10 @@ class ArtifactService:
         """Make ``version`` the active one (approval of a proposal, or rollback)."""
         artifact = self._definition(name)
         self._authorize(artifact, actor, "activate")
-        async with self._require_store().transaction(self._profile.name, name) as store:
-            before = await store.get_version(self._profile.name, name, version)
+        subject = self._subject_for(artifact)
+        scope = self._profile.name
+        async with self._require_store().transaction(scope, name, subject=subject) as store:
+            before = await store.get_version(scope, name, version, subject=subject)
             if before is None:
                 raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
             if before.status == "rejected":
@@ -331,9 +460,10 @@ class ArtifactService:
                     f"Version {version} of '{name}' was rejected; propose it again to reconsider"
                 )
             row = await store.activate(
-                self._profile.name, name, version, decided_by=actor.proposed_by
+                scope, name, version, subject=subject, decided_by=actor.proposed_by
             )
             assert row is not None  # the version exists under the artifact's lock
+            await self._prune(store, artifact, subject)
         self.invalidate()
         logger.info("Activated artifact version", name=name, version=version, by=actor.kind)
         if before.status == "pending":
@@ -346,8 +476,10 @@ class ArtifactService:
         """Decline a pending version; the active version stays as it is."""
         artifact = self._definition(name)
         self._authorize(artifact, actor, "reject")
-        async with self._require_store().transaction(self._profile.name, name) as store:
-            current = await store.get_version(self._profile.name, name, version)
+        subject = self._subject_for(artifact)
+        scope = self._profile.name
+        async with self._require_store().transaction(scope, name, subject=subject) as store:
+            current = await store.get_version(scope, name, version, subject=subject)
             if current is None:
                 raise ArtifactVersionNotFoundError(f"No version {version} of artifact '{name}'")
             if current.status != "pending":
@@ -355,14 +487,15 @@ class ArtifactService:
                     f"Version {version} of '{name}' is {current.status}, not pending"
                 )
             row = await store.reject(
-                self._profile.name,
+                scope,
                 name,
                 version,
+                subject=subject,
                 decided_by=actor.proposed_by,
                 reason=(reason or "").strip() or None,
             )
             assert row is not None  # pending under the artifact's lock
-            active = await store.get_active(self._profile.name, name)
+            active = await store.get_active(scope, name, subject=subject)
         logger.info("Rejected artifact version", name=name, version=version, by=actor.kind)
         await self._publish_decision(row, actor)
         return self._result(row, activated=False, live=active)
@@ -371,18 +504,38 @@ class ArtifactService:
         """Remove every stored version; the default text applies again."""
         artifact = self._definition(name)
         self._authorize(artifact, actor, "delete")
-        async with self._require_store().transaction(self._profile.name, name) as store:
-            count = await store.delete(self._profile.name, name)
+        subject = self._subject_for(artifact)
+        scope = self._profile.name
+        async with self._require_store().transaction(scope, name, subject=subject) as store:
+            count = await store.delete(scope, name, subject=subject)
         self.invalidate()
         logger.info("Deleted artifact versions", name=name, count=count, by=actor.kind)
         return count
 
     # --- Internals ---
 
+    def _subject_for(self, artifact: ArtifactDefinition) -> str:
+        """The stored subject of ``artifact`` in this view: empty unless it is kept per subject."""
+        if artifact.scope != "subject":
+            return ""
+        if not self._subject:
+            raise ArtifactSubjectRequiredError(
+                f"Artifact '{artifact.name}' is kept per subject; name the subject"
+            )
+        return self._subject
+
+    async def _prune(
+        self, store: ArtifactStore, artifact: ArtifactDefinition, subject: str
+    ) -> None:
+        if artifact.keep_versions is not None:
+            await store.prune_superseded(
+                self._profile.name, artifact.name, artifact.keep_versions, subject=subject
+            )
+
     def _event_ids(self, row: ArtifactVersion) -> dict[str, Any]:
         return {
             "profile": self._profile.name,
-            "subject": None,
+            "subject": row.subject or None,
             "name": row.name,
             "version": row.version,
         }

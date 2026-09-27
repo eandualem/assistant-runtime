@@ -253,8 +253,8 @@ class TestVersions:
         service = await _service()
         original = service._store.get_active
 
-        async def read_active(scope, name):
-            active = await original(scope, name)
+        async def read_active(scope, name, **kwargs):
+            active = await original(scope, name, **kwargs)
             await asyncio.sleep(0)  # A store read can yield before the following write.
             return active
 

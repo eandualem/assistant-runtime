@@ -138,7 +138,8 @@ class SessionStore:
     ) -> tuple[dict[str, Any], MessageRecord]:
         """Persist a user-side message send and update the active cached path.
 
-        ``owner_id`` is recorded when this message creates the session. A
+        ``owner_id`` is recorded when this message creates the session, and
+        so is the request's profile and subject when it names a subject. A
         message without ``parent_id`` is the root when the session is empty
         and continues from the active leaf otherwise; an explicit
         ``parent_id`` branches from that message.
@@ -177,6 +178,15 @@ class SessionStore:
         assert ctx is not None
         if request.id in ctx["message_index"]:
             raise ValueError(f"Message '{request.id}' already exists")
+        # The first saved message decides the binding (see the planner): an
+        # earlier first message whose write failed may have left one on the row,
+        # so it is rewritten (or cleared) whenever either side names a subject.
+        first = ctx["message_count"] == 0
+        bind = first and (request.subject is not None or ctx.get("subject") is not None)
+        subject = request.subject if first else ctx.get("subject")
+        profile = (
+            (request.profile if subject is not None else None) if first else ctx.get("profile")
+        )
 
         record: MessageRecord = {
             "id": request.id,
@@ -191,11 +201,20 @@ class SessionStore:
         }
         if self._db is not None:
             await self._db.ensure_session(
-                session_id, ctx.get("title"), new_owner or ctx.get("owner_id")
+                session_id,
+                ctx.get("title"),
+                new_owner or ctx.get("owner_id"),
+                profile=profile,
+                subject=subject,
             )
+            if bind:
+                # The row may already exist (a released reservation, a failed first write).
+                await self._db.set_binding(session_id, profile, subject)
             await self._db.create_message(record)
         if new_owner is not None:
             ctx["owner_id"] = new_owner
+        if bind:
+            ctx["profile"], ctx["subject"] = profile, subject
 
         _add_message(ctx, record)
         _refresh_cached_path_for_new_leaf(ctx, record)
@@ -672,6 +691,8 @@ def _empty_context() -> dict[str, Any]:
         "working_memory": None,
         "title": None,
         "owner_id": None,
+        "profile": None,
+        "subject": None,
         "telegram_chat_id": None,
         "telegram_bound_at": None,
         "last_host_context": None,
@@ -698,6 +719,8 @@ def _context_from_loaded(loaded: LoadedSession) -> dict[str, Any]:
     ctx["working_memory"] = loaded.working_memory
     ctx["title"] = loaded.title
     ctx["owner_id"] = loaded.owner_id
+    ctx["profile"] = loaded.profile
+    ctx["subject"] = loaded.subject
     ctx["telegram_chat_id"] = loaded.telegram_chat_id
     ctx["telegram_bound_at"] = loaded.telegram_bound_at
     for record in loaded.messages:

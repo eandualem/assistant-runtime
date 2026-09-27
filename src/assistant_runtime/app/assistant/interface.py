@@ -163,6 +163,11 @@ class AssistantService:
             duration_ms=(time.monotonic() - started_at) * 1000,
         )
 
+    @property
+    def default_profile_name(self) -> str:
+        """The profile a request that names none uses."""
+        return self._artifacts.profile.name
+
     def validate_profile(self, name: str | None) -> None:
         """Reject selectors that were not registered by the runtime operator."""
         if name is not None:
@@ -181,7 +186,7 @@ class AssistantService:
             self._artifacts.for_profile(request.profile)
             if request.profile is not None
             else self._artifacts
-        )
+        ).for_subject(request.subject)
         with create_span("agent-setup"):
             host_context = (
                 request.host_context
@@ -221,6 +226,7 @@ class AssistantService:
                 asyncio.sleep(0, result=None) if host_only else self._tools.get_mcp_summary()
             )
             artifacts_task = asyncio.create_task(artifacts_service.active_texts())
+            extras_task = asyncio.create_task(artifacts_service.prompt_extras())
 
             # 2. Config resolution can run while prompt inputs load.
             effective = resolve_effective_config(
@@ -234,7 +240,9 @@ class AssistantService:
             )
 
             # 3. MCP + artifacts + system prompt
-            mcp_summary, artifacts = await asyncio.gather(mcp_summary_task, artifacts_task)
+            mcp_summary, artifacts, artifact_extras = await asyncio.gather(
+                mcp_summary_task, artifacts_task, extras_task
+            )
 
             prompt_result = build_system_prompt(
                 available_tools=available_tools,
@@ -243,6 +251,7 @@ class AssistantService:
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
                 profile=artifacts_service.profile,
+                artifact_extras=artifact_extras,
             )
 
             # 4. Build agent — use union output type when host tools are registered
