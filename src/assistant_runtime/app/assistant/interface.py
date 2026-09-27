@@ -181,7 +181,7 @@ class AssistantService:
             self._artifacts.for_profile(request.profile)
             if request.profile is not None
             else self._artifacts
-        )
+        ).for_subject(request.subject)
         with create_span("agent-setup"):
             host_context = (
                 request.host_context
@@ -221,6 +221,7 @@ class AssistantService:
                 asyncio.sleep(0, result=None) if host_only else self._tools.get_mcp_summary()
             )
             artifacts_task = asyncio.create_task(artifacts_service.active_texts())
+            extras_task = asyncio.create_task(artifacts_service.prompt_extras())
 
             # 2. Config resolution can run while prompt inputs load.
             effective = resolve_effective_config(
@@ -234,7 +235,9 @@ class AssistantService:
             )
 
             # 3. MCP + artifacts + system prompt
-            mcp_summary, artifacts = await asyncio.gather(mcp_summary_task, artifacts_task)
+            mcp_summary, artifacts, artifact_extras = await asyncio.gather(
+                mcp_summary_task, artifacts_task, extras_task
+            )
 
             prompt_result = build_system_prompt(
                 available_tools=available_tools,
@@ -243,6 +246,7 @@ class AssistantService:
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
                 profile=artifacts_service.profile,
+                artifact_extras=artifact_extras,
             )
 
             # 4. Build agent — use union output type when host tools are registered

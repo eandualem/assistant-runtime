@@ -99,6 +99,33 @@ class TurnPlan:
     trace_metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def _apply_binding(
+    request: AssistantRequest, session_context: dict[str, Any] | None
+) -> AssistantRequest:
+    """A session created for a subject keeps its profile and subject.
+
+    A request that omits them inherits the binding (host continuations,
+    delivered messages); one that names another profile or subject is
+    rejected. Sessions created without a subject select their profile per
+    turn, as before.
+    """
+    bound_subject = (session_context or {}).get("subject")
+    if not bound_subject:
+        return request
+    bound_profile = session_context.get("profile") if session_context else None
+    if request.subject is not None and request.subject != bound_subject:
+        raise SessionError(
+            f"Session '{request.session_id}' is about subject '{bound_subject}', "
+            f"not '{request.subject}'"
+        )
+    if request.profile is not None and request.profile != bound_profile:
+        raise SessionError(
+            f"Session '{request.session_id}' uses profile '{bound_profile or 'default'}', "
+            f"not '{request.profile}'"
+        )
+    return request.model_copy(update={"subject": bound_subject, "profile": bound_profile})
+
+
 class TurnPlanner:
     """Turn requests into ``TurnPlan``s against the session store."""
 
@@ -114,6 +141,8 @@ class TurnPlanner:
         that exists (``AccessDeniedError`` otherwise).
         """
         try:
+            existing = await self._sessions.get_context_if_exists_async(request.session_id)
+            request = _apply_binding(request, existing)
             if request.is_steering:
                 plan = await self._plan_steering(request, principal)
             elif request.is_continuation:

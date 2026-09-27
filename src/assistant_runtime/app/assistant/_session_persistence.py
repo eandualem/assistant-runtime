@@ -56,6 +56,9 @@ class LoadedSession:
     steering: list[SteeringRecord]
     pending_action: dict[str, Any] | None = None
     """The host-tool call awaiting its continuation, as stored on the row."""
+    profile: str | None = None
+    subject: str | None = None
+    """The binding of a session created for a subject; None otherwise."""
 
 
 class SessionPersistence:
@@ -78,7 +81,13 @@ class SessionPersistence:
         return datetime.now(UTC) + timedelta(hours=self._session_ttl_hours)
 
     async def ensure_session(
-        self, session_id: str, title: str | None, owner_id: str | None = None
+        self,
+        session_id: str,
+        title: str | None,
+        owner_id: str | None = None,
+        *,
+        profile: str | None = None,
+        subject: str | None = None,
     ) -> None:
         """Create the session row unless it exists."""
         async with self._db.session_context() as db_session:
@@ -89,6 +98,8 @@ class SessionPersistence:
                     title=title,
                     expires_at=self._expires_at(),
                     owner_id=owner_id,
+                    profile=profile,
+                    subject=subject,
                 )
 
     async def set_owner(self, session_id: str, owner_id: str | None) -> None:
@@ -166,6 +177,8 @@ class SessionPersistence:
                     expires_at=self._expires_at(),
                     owner_id=ctx.get("owner_id"),
                     pending_action=pending_action_from_context(ctx),
+                    profile=ctx.get("profile"),
+                    subject=ctx.get("subject"),
                 )
 
     async def session_for_telegram_chat(self, chat_id: str) -> str | None:
@@ -226,6 +239,8 @@ class SessionPersistence:
                     telegram_chat_id=row.telegram_chat_id,
                     telegram_bound_at=row.telegram_bound_at,
                     pending_action=row.pending_action,
+                    profile=row.profile,
+                    subject=row.subject,
                     messages=[
                         {
                             "id": m.id,

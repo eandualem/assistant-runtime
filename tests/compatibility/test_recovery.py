@@ -33,12 +33,14 @@ class FakePersistence:
     ops: list[tuple[str, Any]] = field(default_factory=list)
     """Every write, in order, for assertions about crash windows."""
 
-    async def ensure_session(self, session_id, title, owner_id=None):
+    async def ensure_session(self, session_id, title, owner_id=None, *, profile=None, subject=None):
         self.sessions.setdefault(
             session_id,
             {
                 "title": title,
                 "owner_id": owner_id,
+                "profile": profile,
+                "subject": subject,
                 "turn_number": 0,
                 "working_memory": None,
                 "pending_action": None,

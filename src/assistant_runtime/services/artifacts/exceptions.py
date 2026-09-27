@@ -28,9 +28,25 @@ class ArtifactPermissionError(ArtifactError):
 
 
 class ArtifactConflictError(ArtifactError):
-    """The caller's expected version is no longer the active one."""
+    """The caller's expected version is no longer the active one.
+
+    For a stale write, ``current_version`` and ``current_content`` carry the
+    active text, so the writer can merge its change into it.
+    """
 
     error_code = "artifact_version_conflict"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        current_version: int | None = None,
+        current_content: str | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(message, **kwargs)
+        self.current_version = current_version
+        self.current_content = current_content
 
 
 class ArtifactVersionNotFoundError(ArtifactError):
@@ -43,3 +59,9 @@ class UnknownProfileError(ArtifactError):
     """No assistant profile with this name was registered at startup."""
 
     error_code = "unknown_profile"
+
+
+class ArtifactSubjectRequiredError(ArtifactError):
+    """The artifact is kept per subject, and the call named none."""
+
+    error_code = "artifact_subject_required"

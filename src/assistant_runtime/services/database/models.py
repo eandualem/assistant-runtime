@@ -31,11 +31,15 @@ class SessionORM(Base):
     __table_args__ = (
         Index("ix_sessions_telegram_chat_id_bound_at", "telegram_chat_id", "telegram_bound_at"),
         Index("ix_sessions_owner_id", "owner_id"),
+        Index("ix_sessions_profile_subject", "profile", "subject"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     owner_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     """The principal that created the session; NULL for rows that predate ownership."""
+    profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    """Set together when the session was created for a subject; NULL otherwise."""
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     turn_number: Mapped[int] = mapped_column(Integer, default=0)
     working_memory: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -213,12 +217,23 @@ class ArtifactORM(Base):
     __tablename__ = "artifacts"
     __table_args__ = (
         UniqueConstraint(
-            "assistant", "name", "version", name="uq_artifacts_assistant_name_version"
+            "assistant",
+            "subject",
+            "name",
+            "version",
+            name="uq_artifacts_assistant_subject_name_version",
         ),
-        Index("ix_artifacts_assistant_name_is_active", "assistant", "name", "is_active"),
+        Index(
+            "ix_artifacts_assistant_subject_name_is_active",
+            "assistant",
+            "subject",
+            "name",
+            "is_active",
+        ),
         Index(
             "uq_artifacts_one_active",
             "assistant",
+            "subject",
             "name",
             unique=True,
             postgresql_where=text("is_active"),
@@ -237,6 +252,7 @@ class ArtifactORM(Base):
     assistant: Mapped[str] = mapped_column(
         String(64), nullable=False, server_default=text("'technical_operator'")
     )
+    subject: Mapped[str] = mapped_column(String(128), nullable=False, server_default=text("''"))
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))

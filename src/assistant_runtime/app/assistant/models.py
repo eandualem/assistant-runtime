@@ -162,6 +162,10 @@ class AssistantRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=64)
     profile: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
     """A startup-registered profile name; omitted means the runtime default."""
+    subject: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    """Whom the turn is about (for example, an agent the assistant keeps track of):
+    selects the profile's subject-scoped artifacts. A session created with a
+    subject keeps its profile and subject for every later turn."""
     parent_id: str | None = Field(default=None, max_length=64)
     message_type: Literal["standard", "steering"] = Field(default="standard")
     content: str

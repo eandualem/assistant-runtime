@@ -383,7 +383,9 @@ class TestOwnership:
             AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="alice"
         )
         assert store.get_context("sess-1")["owner_id"] == "alice"
-        db.ensure_session.assert_awaited_once_with("sess-1", None, "alice")
+        db.ensure_session.assert_awaited_once_with(
+            "sess-1", None, "alice", profile=None, subject=None
+        )
 
     async def test_empty_cached_context_is_hydrated_before_ownership_is_decided(self):
         store = SessionStore()
@@ -410,7 +412,9 @@ class TestOwnership:
             AssistantRequest(id="user-1", session_id="sess-1", content="Hi"), owner_id="bob"
         )
         assert store.get_context("sess-1")["owner_id"] == "alice"
-        db.ensure_session.assert_awaited_once_with("sess-1", None, "alice")
+        db.ensure_session.assert_awaited_once_with(
+            "sess-1", None, "alice", profile=None, subject=None
+        )
 
     async def test_existing_owner_is_kept_by_later_messages(self):
         store = SessionStore()

@@ -53,10 +53,13 @@ class ArtifactVersion:
     decided_by: str | None = None
     decided_at: datetime | None = None
     decision_reason: str | None = None
+    subject: str = ""
+    """Empty for a profile-scoped artifact; the subject for a subject-scoped one."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "subject": self.subject or None,
             "name": self.name,
             "content": self.content,
             "version": self.version,

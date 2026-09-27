@@ -141,7 +141,8 @@ listed get every tool.
 One runtime can register additional built-ins or TOML paths through
 `ASSISTANT__PROFILES`. Requests select a registered name with top-level
 `profile`; omitted names keep the default below. The selection is per request,
-including continuations, and does not bind the session. A queued steering
+including continuations, and does not bind the session unless the session
+was created for a subject (see below). A queued steering
 record retains its explicit selector and waits for a matching turn. Unprofiled
 queued steering inherits the consuming turn; promoted unprofiled steering
 starts with the startup default. Artifact HTTP routes
@@ -186,6 +187,33 @@ report `durable`. Stored versions are scoped by the profile's `name`, so
 two assistants never share artifacts; the built-ins are `neutral` and
 `technical_operator`, and versions stored before profiles existed belong
 to `technical_operator`.
+
+### Subjects, shared text and documents
+
+Some text belongs to *whom a turn is about* rather than to the profile: for
+example, what an assistant knows about each agent it keeps track of. An
+artifact with `scope = "subject"` keeps one version history per subject,
+selected by the request's top-level `subject` (`?subject=` on the artifact
+routes; the tool follows the turn). Without a subject such an artifact is
+left out of the prompt, and writing it is `422`. A session created with a
+subject keeps its profile and subject: later turns, host continuations and
+delivered messages inherit them, and a request naming another is rejected.
+Sessions created without a subject select their profile per turn, as
+before. `GET /api/artifact-subjects?profile=` lists the subjects a profile
+keeps text for.
+
+A profile can `include` other registered profiles: their active
+profile-scoped artifacts follow its own in the prompt (named
+`<profile>.<artifact>`), for text several profiles share, such as what the
+people they serve prefer. A profile can also declare **collections**: a
+name `prefix` (for example `doc_`) under which the assistant may create
+documents itself, with the collection's role and policy. The prompt lists
+the documents by name; the assistant reads one with the tool.
+
+`keep_versions` on an artifact or collection bounds its history: after
+each write, superseded versions beyond that number are deleted (active,
+pending and rejected versions never are). A stale write through the tool
+returns the current version and text, so the change can be merged.
 
 After the artifacts come the connected MCP servers, the current time, the
 host context and the session's **working memory**: a small structured

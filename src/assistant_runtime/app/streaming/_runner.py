@@ -633,6 +633,7 @@ class TurnRunner:
                         session_id,
                         screenshot=plan.screenshot,
                         profile_name=plan.request.profile,
+                        subject=plan.request.subject,
                         principal=plan.principal,
                         host_context=plan.session_context.get("last_host_context"),
                     ),
