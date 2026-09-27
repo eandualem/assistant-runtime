@@ -19,7 +19,9 @@ class TaskStore(Protocol):
 
     async def create(self, record: TaskRecord) -> TaskRecord: ...
 
-    async def update(self, task_id: str, **values: Any) -> TaskRecord | None: ...
+    async def update(
+        self, task_id: str, *, only_from: tuple[str, ...] | None = None, **values: Any
+    ) -> TaskRecord | None: ...
 
     async def get(self, task_id: str) -> TaskRecord | None: ...
 
@@ -48,9 +50,11 @@ class InMemoryTaskStore:
         self._tasks[record.id] = record
         return record
 
-    async def update(self, task_id: str, **values: Any) -> TaskRecord | None:
+    async def update(
+        self, task_id: str, *, only_from: tuple[str, ...] | None = None, **values: Any
+    ) -> TaskRecord | None:
         record = self._tasks.get(task_id)
-        if record is None:
+        if record is None or (only_from is not None and record.status not in only_from):
             return None
         record = self._tasks[task_id] = replace(record, **values)
         return record
@@ -102,9 +106,11 @@ class DatabaseTaskStore:
         async with self._database.session_context() as session:
             return self._record(await self._repository(session).create(**values))
 
-    async def update(self, task_id: str, **values: Any) -> TaskRecord | None:
+    async def update(
+        self, task_id: str, *, only_from: tuple[str, ...] | None = None, **values: Any
+    ) -> TaskRecord | None:
         async with self._database.session_context() as session:
-            row = await self._repository(session).update(task_id, **values)
+            row = await self._repository(session).update(task_id, only_from=only_from, **values)
             return self._record(row) if row is not None else None
 
     async def get(self, task_id: str) -> TaskRecord | None:

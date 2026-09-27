@@ -312,10 +312,14 @@ class TaskRepository:
         await self._session.flush()
         return result.scalar_one()
 
-    async def update(self, task_id: str, **fields: Any) -> TaskORM | None:
-        result = await self._session.execute(
-            update(TaskORM).where(TaskORM.id == task_id).values(**fields).returning(TaskORM)
-        )
+    async def update(
+        self, task_id: str, *, only_from: tuple[str, ...] | None = None, **fields: Any
+    ) -> TaskORM | None:
+        """Change the task; with ``only_from``, only while its status is one of them."""
+        statement = update(TaskORM).where(TaskORM.id == task_id)
+        if only_from is not None:
+            statement = statement.where(TaskORM.status.in_(only_from))
+        result = await self._session.execute(statement.values(**fields).returning(TaskORM))
         await self._session.flush()
         return result.scalar_one_or_none()
 

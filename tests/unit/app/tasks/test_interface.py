@@ -215,6 +215,24 @@ class TestControl:
         await service.stop()
         assert seen[0]["status"] == "interrupted"
 
+    async def test_a_task_ended_elsewhere_keeps_that_end(self):
+        """Another process that recovered the task first recorded its end; nothing flips back."""
+        service, streaming, seen = await _service(max_concurrent=1)
+        running = await service.start_task("first", principal=ALICE)
+        waiting = await service.start_task("second", principal=ALICE)
+        await _settle()
+        for record in (running, waiting):
+            await service._store.update(record.id, status="interrupted", error="recovered")
+        streaming.gate("first").set()
+        streaming.gate("second").set()
+        await _settle()
+        assert [(await service.get(r.id, ALICE)).status for r in (running, waiting)] == [
+            "interrupted",
+            "interrupted",
+        ]
+        assert seen == []  # the end was published where it was recorded, not again here
+        assert streaming.started == ["first"]  # the waiting task never ran
+
     async def test_a_restart_marks_unfinished_tasks_interrupted(self):
         left = TaskRecord(
             id="t1", session_id="task-t1", task="x", status="interrupted", created_by="a"

@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from assistant_runtime.services.tools.interface import ToolService
 
 _INTERRUPTED = "The runtime stopped while the task was queued or running"
+# A task's end is recorded once: later terminal updates find it finished and change nothing.
+_UNFINISHED = ("queued", "running")
 
 
 class TaskService:
@@ -204,7 +206,11 @@ class TaskService:
         final: TaskRecord | None = record
         try:
             async with self._subject_turn(record.profile, record.subject), self._slots:
-                await store.update(record.id, status="running", started_at=_now())
+                started = await store.update(
+                    record.id, only_from=("queued",), status="running", started_at=_now()
+                )
+                if started is None:
+                    return  # it ended before it could start; its end was recorded then
                 request = AssistantRequest(
                     id=str(uuid.uuid4()),
                     session_id=record.session_id,
@@ -222,6 +228,7 @@ class TaskService:
                 )
             final = await store.update(
                 record.id,
+                only_from=_UNFINISHED,
                 status="done",
                 result=(result.content or "")[: self._config.result_max_chars],
                 usage=result.usage,
@@ -231,6 +238,7 @@ class TaskService:
             requested = record.id in self._cancel_requested
             final = await store.update(
                 record.id,
+                only_from=_UNFINISHED,
                 status="cancelled" if requested else "interrupted",
                 error=None if requested else _INTERRUPTED,
                 finished_at=_now(),
@@ -238,6 +246,7 @@ class TaskService:
         except TimeoutError:
             final = await store.update(
                 record.id,
+                only_from=_UNFINISHED,
                 status="failed",
                 error=f"Timed out after {self._config.timeout_seconds} s",
                 finished_at=_now(),
@@ -245,7 +254,11 @@ class TaskService:
         except Exception as e:
             logger.warning("Task failed", task_id=record.id, error=str(e))
             final = await store.update(
-                record.id, status="failed", error=str(e) or type(e).__name__, finished_at=_now()
+                record.id,
+                only_from=_UNFINISHED,
+                status="failed",
+                error=str(e) or type(e).__name__,
+                finished_at=_now(),
             )
         finally:
             self._running.pop(record.id, None)
@@ -264,6 +277,7 @@ class TaskService:
         self._cancel_requested.discard(task_id)
         final = await self._require_store().update(
             task_id,
+            only_from=_UNFINISHED,
             status=status,
             error=None if status == "cancelled" else _INTERRUPTED,
             finished_at=_now(),
