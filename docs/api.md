@@ -347,6 +347,29 @@ default `neutral` profile defines `instructions` and `scratchpad`.
 | `PATCH /api/inbox/{id}/surfaced` | mark a note as surfaced (Postgres) |
 | `GET /api/assistant/sessions` | sessions in the shape agent-backbone expects |
 
+## Background tasks
+
+A task is a bounded piece of work run as a turn in its own session
+(`task-<id>`), outside any conversation turn: the caller keeps serving
+while it runs. Tasks about the same `profile` and `subject` run one at a
+time, in order; at most `TASKS__MAX_CONCURRENT` run at once. They need
+`TASKS__ENABLED=true`; the model gets `start_task`, `list_tasks`,
+`get_task` and `cancel_task`, with the calling session as the parent.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/tasks` `{"task", "profile"?, "subject"?, "context"?, "parent_session_id"?}` | queue a task (`202`); `503` when disabled, `429` when too many wait |
+| `GET /api/tasks?parent_session_id=&status=&limit=` | the caller's tasks newest first (every task for an administrator) |
+| `GET /api/tasks/{id}` | one task: `status` (`queued`, `running`, `done`, `failed`, `cancelled`, `interrupted`), `result`, `error`, `usage`, times |
+| `POST /api/tasks/{id}/cancel` | stop a queued or running task |
+
+When a task ends, `task_finished` is published on `app.state.events` with
+`task_id`, `status`, `session_id`, `parent_session_id`, `profile`,
+`subject`, `result` and `error`. Nothing is steered into the parent
+session: the host decides when and how a result is reviewed. A restart
+marks unfinished tasks `interrupted` (and publishes that); nothing is
+replayed.
+
 ## Media and debugging
 
 | Route | Purpose |
