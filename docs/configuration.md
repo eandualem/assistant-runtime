@@ -231,8 +231,9 @@ use one owning runtime process or sticky routing for a call's full lifecycle.
 
 ### Tasks (`TASKS__*`)
 
-`enabled` (`false`): offer the task tools and accept `POST /api/tasks`;
-each task runs model turns. `max_concurrent` (`4`): tasks running at once,
+`enabled` (`false`): offer the task and agent tools and accept
+`POST /api/tasks` and `/api/agents`; each task or agent message runs model
+turns. `max_concurrent` (`4`): tasks running at once,
 the rest wait in order. `max_waiting` (`100`): queued and running tasks
 beyond which a start is refused. `timeout_seconds` (`900`): a task's own
 time limit. `result_max_chars` (`20000`): the stored result is cut to this.

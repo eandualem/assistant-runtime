@@ -10,13 +10,15 @@ import pytest
 
 from assistant_runtime.app.tasks.config import TasksConfig
 from assistant_runtime.app.tasks.exceptions import (
+    AgentConflictError,
+    AgentNotFoundError,
     TaskError,
     TaskLimitError,
     TaskNotFoundError,
     TasksDisabledError,
 )
 from assistant_runtime.app.tasks.interface import TaskService
-from assistant_runtime.app.tasks.models import TaskRecord
+from assistant_runtime.app.tasks.models import AgentMessageRecord, TaskRecord
 from assistant_runtime.base.events import EventHub
 from assistant_runtime.principal import Principal
 from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
@@ -32,6 +34,7 @@ class FakeStreaming:
     def __init__(self) -> None:
         self.gates: dict[str, asyncio.Event] = {}
         self.started: list[str] = []
+        self.sessions: list[str] = []
         self.running = 0
         self.peak = 0
         self.fail: dict[str, Exception] = {}
@@ -46,6 +49,7 @@ class FakeStreaming:
 
     async def run_message(self, request, *, principal=None):
         self.started.append(request.content)
+        self.sessions.append(request.session_id)
         self.running += 1
         self.peak = max(self.peak, self.running)
         try:
@@ -245,6 +249,9 @@ class TestControl:
                 assert status == "interrupted"
                 return [left]
 
+            async def mark_unfinished_messages(self, status, error):
+                return []
+
         hub, seen = EventHub(), []
         hub.subscribe(seen.append)
         service = TaskService(
@@ -304,7 +311,15 @@ class TestTools:
             )
         )
         register_task_tools(tools, service)
-        assert set(handlers) == {"start_task", "list_tasks", "get_task", "cancel_task"}
+        assert set(handlers) == {
+            "start_task",
+            "list_tasks",
+            "get_task",
+            "cancel_task",
+            "message_agent",
+            "list_agents",
+            "get_agent_message",
+        }
         with assistant_request_context("chat-1", principal=ALICE):
             started = await handlers["start_task"](task="Look", subject="agent-a")
             listed = await handlers["list_tasks"]()
@@ -321,4 +336,178 @@ class TestTools:
             "done",
             "done: Look",
             "chat-1",
+        )
+
+
+class TestAgents:
+    async def test_messages_run_in_the_agents_one_session_in_order(self):
+        service, streaming, seen = await _service()
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        first = await service.message_agent(
+            "m1", agent_id=agent.id, parent_session_id="main-1", principal=ALICE
+        )
+        await service.message_agent("m2", agent_id=agent.id, principal=ALICE)
+        await _settle()
+        assert streaming.started == ["m1"]
+        streaming.gate("m1").set()
+        await _settle()
+        assert streaming.started == ["m1", "m2"]
+        assert streaming.sessions == [agent.session_id, agent.session_id]
+        done = await service.get_message(first.id, ALICE)
+        assert (done.status, done.result, done.session_id) == (
+            "done",
+            "done: m1",
+            agent.session_id,
+        )
+        assert seen[0]["type"] == "agent_message_finished"
+        assert (seen[0]["message_id"], seen[0]["agent_id"], seen[0]["parent_session_id"]) == (
+            first.id,
+            agent.id,
+            "main-1",
+        )
+
+    async def test_one_active_agent_per_identity_and_per_session(self):
+        service, _, _ = await _service()
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        with pytest.raises(AgentConflictError):
+            await service.start_agent(subject="agent-a", principal=BOB)
+        with pytest.raises(AgentConflictError):
+            await service.start_agent(subject="agent-b", session_id=agent.session_id)
+        await service.stop_agent(agent.id, ALICE)
+        again = await service.start_agent(subject="agent-a", principal=ALICE)
+        assert again.id != agent.id
+
+    async def test_a_move_applies_to_messages_not_yet_started(self):
+        service, streaming, _ = await _service()
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        await service.message_agent("m1", agent_id=agent.id, principal=ALICE)
+        await service.message_agent("m2", agent_id=agent.id, principal=ALICE)
+        await _settle()
+        moved = await service.move_agent(agent.id, principal=ALICE)
+        assert moved.session_id != agent.session_id
+        streaming.gate("m1").set()
+        streaming.gate("m2").set()
+        await _settle()
+        assert streaming.sessions == [agent.session_id, moved.session_id]
+        named = await service.move_agent(agent.id, session_id="fresh-1", principal=ALICE)
+        assert named.session_id == "fresh-1"
+
+    async def test_stopping_cancels_its_messages_and_refuses_new_ones(self):
+        service, streaming, seen = await _service()
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        running = await service.message_agent("m1", agent_id=agent.id, principal=ALICE)
+        queued = await service.message_agent("m2", agent_id=agent.id, principal=ALICE)
+        await _settle()
+        stopped = await service.stop_agent(agent.id, ALICE)
+        assert stopped.status == "stopped"
+        assert [(await service.get_message(m.id, ALICE)).status for m in (running, queued)] == [
+            "cancelled",
+            "cancelled",
+        ]
+        assert {e["status"] for e in seen} == {"cancelled"}
+        assert streaming.started == ["m1"]
+        with pytest.raises(AgentConflictError):
+            await service.message_agent("m3", agent_id=agent.id, principal=ALICE)
+        with pytest.raises(AgentConflictError):
+            await service.move_agent(agent.id, principal=ALICE)
+
+    async def test_messages_and_tasks_share_the_concurrency_limit(self):
+        service, streaming, _ = await _service(max_concurrent=1)
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        await service.start_task("task", principal=ALICE)
+        await service.message_agent("message", agent_id=agent.id, principal=ALICE)
+        await _settle()
+        assert streaming.started == ["task"]
+        streaming.gate("task").set()
+        await _settle()
+        assert streaming.started == ["task", "message"]
+
+    async def test_agents_are_found_by_profile_and_subject(self):
+        hub = EventHub()
+        service = TaskService(
+            TasksConfig(enabled=True), FakeStreaming(), events=hub, default_profile="neutral"
+        )
+        await service.start()
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        assert agent.profile == "neutral"
+        record = await service.message_agent("hi", subject="agent-a", principal=ALICE)
+        assert record.agent_id == agent.id
+        with pytest.raises(AgentNotFoundError):
+            await service.message_agent("hi", subject="agent-b", principal=ALICE)
+        with pytest.raises(AgentNotFoundError):
+            await service.message_agent("hi", subject="agent-a", principal=BOB)
+        with pytest.raises(TaskError, match="content"):
+            await service.message_agent("  ", agent_id=agent.id, principal=ALICE)
+
+    async def test_callers_see_their_own_agents_and_an_administrator_all(self):
+        service, _, _ = await _service()
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        with pytest.raises(AgentNotFoundError):
+            await service.get_agent(agent.id, BOB)
+        assert await service.list_agents(BOB) == []
+        assert [a.id for a in await service.list_agents(ADMIN)] == [agent.id]
+
+    async def test_disabled_agents_are_refused(self):
+        service = TaskService(TasksConfig(), FakeStreaming())
+        await service.start()
+        with pytest.raises(TasksDisabledError):
+            await service.start_agent(subject="agent-a")
+
+    async def test_a_restart_marks_unfinished_messages_interrupted(self):
+        left = AgentMessageRecord(
+            id="m1", agent_id="a1", content="x", status="interrupted", created_by="a"
+        )
+
+        class Store:
+            durable = True
+
+            async def mark_unfinished(self, status, error):
+                return []
+
+            async def mark_unfinished_messages(self, status, error):
+                assert status == "interrupted"
+                return [left]
+
+        hub, seen = EventHub(), []
+        hub.subscribe(seen.append)
+        service = TaskService(
+            TasksConfig(enabled=True),
+            FakeStreaming(),
+            database_service=SimpleNamespace(healthy=True),
+            events=hub,
+        )
+        with patch("assistant_runtime.app.tasks.interface.DatabaseTaskStore", return_value=Store()):
+            await service.start()
+        assert [(e["type"], e["message_id"], e["status"]) for e in seen] == [
+            ("agent_message_finished", "m1", "interrupted")
+        ]
+
+    async def test_the_tools_message_an_agent_for_the_calling_session(self):
+        from assistant_runtime.app.tasks._tools import register_task_tools
+        from assistant_runtime.services.tools.request_context import assistant_request_context
+
+        service, streaming, _ = await _service()
+        handlers = {}
+        tools = SimpleNamespace(
+            register_backend_tool=lambda definition, handler: handlers.__setitem__(
+                definition.name, handler
+            )
+        )
+        register_task_tools(tools, service)
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        with assistant_request_context("main-1", principal=ALICE):
+            listed = await handlers["list_agents"]()
+            sent = await handlers["message_agent"](message="Status?", subject="agent-a")
+            missing = await handlers["message_agent"](message="Status?", subject="agent-z")
+        assert listed["agents"] == [{"agent_id": agent.id, "profile": None, "subject": "agent-a"}]
+        assert (sent["success"], sent["agent_id"], sent["status"]) == (True, agent.id, "queued")
+        assert (missing["success"], missing["error_code"]) == (False, "agent_not_found")
+        streaming.gate("Status?").set()
+        await _settle()
+        with assistant_request_context("main-1", principal=ALICE):
+            record = await handlers["get_agent_message"](message_id=sent["message_id"])
+        assert (record["status"], record["result"], record["parent_session_id"]) == (
+            "done",
+            "done: Status?",
+            "main-1",
         )
