@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -164,7 +164,10 @@ async def get_session_messages(
 
 @router.post("/sessions/{session_id}/messages", status_code=201)
 async def append_host_message(
-    session_id: str, body: HostMessageRequest, streaming: StreamingServiceDep, admin: AdminDep
+    session_id: Annotated[str, Path(max_length=64)],  # a card may start the session
+    body: HostMessageRequest,
+    streaming: StreamingServiceDep,
+    admin: AdminDep,
 ) -> dict:
     """Add a card the host made outside any turn to the conversation, as a ``host`` message.
 

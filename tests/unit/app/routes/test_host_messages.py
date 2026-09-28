@@ -51,7 +51,8 @@ async def test_busy_unknown_profile_and_malformed_requests_are_refused():
             "/sessions/s1/messages", json={"segments": [{"kind": "text", "text": "hi"}]}
         )
         none = await c.post("/sessions/s1/messages", json={"content": "x", "segments": []})
+        too_long = await c.post(f"/sessions/{'s' * 65}/messages", json={"segments": [CARD]})
     async with AsyncClient(transport=ASGITransport(app=_app(unknown)), base_url="http://t") as c:
         body = {"segments": [CARD], "profile": "nope"}
         assert (await c.post("/sessions/s1/messages", json=body)).status_code == 404
-    assert (text_only.status_code, none.status_code) == (422, 422)
+    assert (text_only.status_code, none.status_code, too_long.status_code) == (422, 422, 422)
