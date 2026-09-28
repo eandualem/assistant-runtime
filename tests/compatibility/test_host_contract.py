@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic_ai.messages import BinaryContent, ToolReturnPart, UserPromptPart
 
@@ -97,14 +98,19 @@ async def test_host_context_goes_with_its_message_and_is_replayed(runtime, scrip
     assert not any("showing" in (m[-1].instructions or "") for m in script.requests)
 
 
-async def test_promoted_steering_sends_its_host_context_with_it(runtime, script):
+@pytest.mark.parametrize("joined", [False, True], ids=["sent", "joined"])
+async def test_promoted_steering_sends_the_current_host_context_first(runtime, script, joined):
     script.steps = [["First."], ["Adjusted."]]
     assert_terminal([e async for e in runtime.streaming.stream_message(request())])
+    blue = {"version": 1, "view": {"name": "blue"}}
+    if joined:
+        # What assistant_join_session stores; the steering itself carries no context.
+        runtime.sessions.get_context("compat")["last_host_context"] = blue
     steering = request(
         id="steering-1",
         message_type="steering",
         content="Use the blue item",
-        host_context={"view": {"name": "blue"}},
+        host_context=None if joined else blue,
     )
     assert_terminal([e async for e in runtime.streaming.stream_message(steering)])
     prompts = [
@@ -167,6 +173,43 @@ async def test_request_declared_action_is_called_and_continued(runtime, script):
     assert isinstance(result_request.parts[0], ToolReturnPart)
     assert isinstance(result_request.parts[-1], UserPromptPart)
     assert "The host is showing: order." in result_request.parts[-1].content
+
+
+async def test_continuations_send_the_host_context_when_it_changed(runtime, script):
+    host_context = {
+        "view": {"name": "orders"},
+        "actions": [{"name": "open_order", "description": "Open an order in the host."}],
+    }
+    script.steps = [
+        [calls(("open_order", "{}", "host-1"))],
+        [calls(("open_order", "{}", "host-2"))],
+        [calls(("open_order", "{}", "host-3"))],
+        ["Done."],
+    ]
+    turn = [request(content="Open them", host_context=host_context)]
+    changed = {**host_context, "view": {"name": "order-2"}}
+    for index, context in enumerate([None, changed, None], start=1):
+        turn.append(
+            request(
+                id=f"cont-{index}",
+                content="",
+                tool_call_id=f"host-{index}",
+                tool_result={"opened": index},
+                host_context=context,
+            )
+        )
+    for item in turn:
+        assert_terminal([e async for e in runtime.streaming.stream_message(item)])
+
+    def context_after_result(messages):
+        return [p.content for p in messages[-1].parts if isinstance(p, UserPromptPart)]
+
+    changed_block = "The host is showing: order-2."
+    # Unchanged: the user message already carries it.
+    assert context_after_result(script.requests[1]) == []
+    assert changed_block in context_after_result(script.requests[2])[0]
+    # Not kept on the assistant row, so the next continuation sends it again.
+    assert changed_block in context_after_result(script.requests[3])[0]
 
 
 async def test_invalid_host_context_is_rejected_at_the_edge(isolated_services):

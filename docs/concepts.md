@@ -136,8 +136,10 @@ The model reads the context at the start of the user message it came with,
 as a `<host_context>` block, never in the system prompt. The message keeps
 that block, so later turns replay the conversation exactly as the model saw
 it and the provider's cache of the earlier conversation stays valid. A host
-continuation or promoted steering that carries a context delivers it right
-after the tool result or the steering.
+continuation or promoted steering sends the session's current context (its
+own, or the last one received) only when it differs from the latest one in
+the conversation: right after the tool result, or just before the steering
+text.
 
 The view name also selects tools: `TOOLS__PAGE_SCOPES` maps a view name to
 the backend tools allowed while the host shows it. Views that are not

@@ -9,9 +9,11 @@ arrived with, after the conversation.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from loguru import logger
+from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 
 from assistant_runtime.app.assistant.models import PromptResult
 from assistant_runtime.artifacts import AssistantProfile, neutral_profile
@@ -249,10 +251,28 @@ def _render_extensions(extensions: dict[str, Any]) -> str:
 # --- Public API ---
 
 
+_HOST_CONTEXT_OPEN = "<host_context>\n"
+
+
 def host_context_prompt(host_context: dict[str, Any] | None) -> str:
     """The host context as the text block its user message carries; empty without one."""
     text = _host_context_fragment(host_context)
-    return f"<host_context>\n{text}\n</host_context>" if text else ""
+    return f"{_HOST_CONTEXT_OPEN}{text}\n</host_context>" if text else ""
+
+
+def latest_host_context_prompt(messages: Sequence[ModelMessage]) -> str:
+    """The most recent ``host_context_prompt`` block in ``messages``; empty when none."""
+    for message in reversed(messages):
+        if not isinstance(message, ModelRequest):
+            continue
+        for part in reversed(message.parts):
+            if not isinstance(part, UserPromptPart):
+                continue
+            items = [part.content] if isinstance(part.content, str) else part.content
+            for item in reversed(items):
+                if isinstance(item, str) and item.startswith(_HOST_CONTEXT_OPEN):
+                    return item
+    return ""
 
 
 def build_system_prompt(

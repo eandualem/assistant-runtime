@@ -19,9 +19,10 @@ it for later messages that carry none.
 The model receives the rendered context as a `<host_context>` block at the
 start of the user message, not in the system prompt, and the message keeps
 it: later turns replay it unchanged, so the conversation before the latest
-message stays in the provider's cache. A continuation that carries a
-context delivers it right after the tool result; so does promoted steering,
-after the steering text.
+message stays in the provider's cache. A continuation or promoted
+steering sends the current context (its own, or the last one received)
+only when it differs from the latest one in the conversation: right after
+the tool result, or just before the steering text.
 
 ```json
 {

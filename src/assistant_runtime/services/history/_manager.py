@@ -187,6 +187,11 @@ class HistoryManager:
                         content = part.content
                         if isinstance(content, str):
                             total_chars += len(content)
+                        else:
+                            # A host context block and attachments make a list; count its text.
+                            total_chars += sum(
+                                len(item) for item in content if isinstance(item, str)
+                            )
                     elif isinstance(part, ToolReturnPart):
                         content = part.content
                         if isinstance(content, str):
