@@ -50,9 +50,10 @@ use streaming `fetch`, a client that supports headers, or an authenticated
 server-side proxy. `GET /api/media/{id}`
 stays anonymous so `<img src>` works; its ids are random and expire.
 
-`GET /health` answers everyone, but the per-component detail (providers,
-models, MCP servers, the database host) is only in the response of an
-authenticated caller; an anonymous probe gets the `healthy` flags.
+`GET /health` and `GET /health/ready` answer everyone. The per-component
+detail (providers, models, MCP servers, the database host) is only in the
+response of an authenticated caller; an anonymous probe gets the `status`
+and the per-component flags.
 
 ## The host callback
 

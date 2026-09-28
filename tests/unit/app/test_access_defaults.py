@@ -172,12 +172,17 @@ class TestHealthDetail:
     def test_public_projection_keeps_only_flags(self):
         result = {
             "healthy": False,
-            "components": {"a": {"healthy": True, "secret": 1}, "b": {"healthy": False}},
+            "status": "unhealthy",
+            "components": {
+                "a": {"healthy": True, "ready": False, "secret": 1},
+                "b": {"healthy": False},
+            },
         }
         assert public_health(result) == {
             "healthy": False,
+            "status": "unhealthy",
             "runtime": "assistant-runtime",
-            "components": {"a": {"healthy": True}, "b": {"healthy": False}},
+            "components": {"a": {"healthy": True, "ready": False}, "b": {"healthy": False}},
         }
 
 

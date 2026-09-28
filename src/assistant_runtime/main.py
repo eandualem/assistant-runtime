@@ -232,13 +232,12 @@ def create_app(
     # Routes
     app.include_router(router, prefix="/api")
 
-    @app.get("/health")
-    async def health(request: Request) -> JSONResponse:
-        """Liveness for anyone; component detail for an authenticated caller.
+    async def health_report(request: Request) -> dict:
+        """The health report, with component detail for an authenticated caller.
 
         The full report names providers, models, MCP servers and the database
         host, so an anonymous caller (a probe, a page on another site in
-        ``header``/``host`` mode) gets only the per-component ``healthy`` flags.
+        ``header``/``host`` mode) gets only the status and per-component flags.
         In ``trusted_local`` every caller is authenticated.
         """
         lifecycle: LifecycleManager = app.state.lifecycle
@@ -246,7 +245,20 @@ def create_app(
         result["runtime"] = RUNTIME_MARKER
         if not await _authenticated(request):
             result = public_health(result)
+        return result
+
+    @app.get("/health")
+    async def health(request: Request) -> JSONResponse:
+        """Liveness: 503 only when the runtime cannot answer a turn (``unhealthy``)."""
+        result = await health_report(request)
         status_code = 200 if result.get("healthy") else 503
+        return JSONResponse(content=result, status_code=status_code)
+
+    @app.get("/health/ready")
+    async def ready(request: Request) -> JSONResponse:
+        """Readiness: the same report, 503 unless ``status`` is ``ok``."""
+        result = await health_report(request)
+        status_code = 200 if result.get("status") == "ok" else 503
         return JSONResponse(content=result, status_code=status_code)
 
     return app
@@ -264,12 +276,16 @@ async def _authenticated(request: Request) -> bool:
 
 
 def public_health(result: dict) -> dict:
-    """The anonymous form of a health report: flags only, no configuration."""
+    """The anonymous form of a health report: status and flags only, no configuration."""
     return {
         "healthy": result.get("healthy", False),
+        "status": result.get("status"),
         "runtime": RUNTIME_MARKER,
         "components": {
-            name: {"healthy": bool(component.get("healthy", False))}
+            name: {
+                "healthy": bool(component.get("healthy", False)),
+                **({"ready": bool(component["ready"])} if "ready" in component else {}),
+            }
             for name, component in (result.get("components") or {}).items()
             if isinstance(component, dict)
         },

@@ -74,6 +74,7 @@ async def test_health_aggregation():
 
     result = await lm.health()
     assert result["healthy"] is True
+    assert result["status"] == "ok"
     assert len(result["components"]) == 2
 
 
@@ -95,7 +96,29 @@ async def test_health_reports_unhealthy_component():
 
     result = await lm.health()
     assert result["healthy"] is False
+    assert result["status"] == "unhealthy"
     assert result["components"]["bad"]["healthy"] is False
+
+
+async def test_health_is_degraded_while_a_healthy_component_is_not_ready():
+    lm = LifecycleManager()
+
+    class NotReadyComponent:
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+        async def health_check(self) -> dict:
+            return {"healthy": True, "ready": False}
+
+    await lm.register("ok", FakeComponent("ok"))
+    await lm.register("waiting", NotReadyComponent())
+    await lm.start_all()
+
+    result = await lm.health()
+    assert (result["healthy"], result["status"]) == (True, "degraded")
 
 
 async def test_rollback_on_start_failure():
@@ -126,4 +149,4 @@ async def test_duplicate_registration_raises():
 async def test_health_with_no_components():
     lm = LifecycleManager()
     result = await lm.health()
-    assert result == {"healthy": True, "components": {}}
+    assert result == {"healthy": True, "status": "ok", "components": {}}

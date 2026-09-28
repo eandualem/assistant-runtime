@@ -24,19 +24,33 @@ cards, and the event, action and host-state routes.
 
 ## Health
 
-`GET /health`: `{"healthy": bool, "runtime": "assistant-runtime",
-"components": {name: {...}}}`, status 200 or 503. An anonymous caller
-gets each component's `healthy` flag only; an authenticated caller gets
-the full component detail. Every caller is authenticated in `trusted_local`
-unless `ACCESS__LOCAL_TOKEN` is set, in which case the token is required. `runtime` is
-the marker `serve` looks for before replacing a previous instance on its
-port. The rule is whether the runtime can answer a turn: with no
-provider key configured it reports 503, because it cannot. Optional
-dependencies do not make it unhealthy — Postgres being unreachable is
-reported as `database_service: {"healthy": true, "reachable": false}`, and
-an unconfigured integration reports `"status": "disabled"`. A service that
-failed to start is unhealthy. The database probe only reports: whether
-sessions live in memory was decided at startup.
+`GET /health` is liveness: `{"healthy": bool, "status": "ok" | "degraded" |
+"unhealthy", "runtime": "assistant-runtime", "components": {name: {...}}}`.
+It answers 503 only when `status` is `unhealthy`, meaning the runtime
+cannot answer a turn: no provider key is configured, or a service failed
+to start. `degraded` answers 200. The process is running and recovers by
+itself, but something it started with is unavailable. Today that is only a
+database chosen at startup that no longer answers:
+`database_service: {"healthy": true, "reachable": false, "ready": false}`.
+Optional dependencies never make the runtime unhealthy. An unconfigured
+integration reports `"status": "disabled"`. A database that was
+unreachable at startup reports `ready: true`, because that process keeps
+its state in memory whatever the server does later. The database probe
+only reports; whether sessions live in memory was decided at startup.
+
+`GET /health/ready` is readiness. It returns the same body, with 200 only
+when `status` is `ok` and 503 otherwise. Point a liveness probe (restart
+on failure) at `/health`, and a readiness probe (hold traffic) at
+`/health/ready`. During a database outage, a restart cannot help: with
+`DATABASE__REQUIRED` the runtime would fail to start, and without it the
+runtime would start in memory mode without the data it was using.
+
+An anonymous caller gets `healthy`, `status`, and each component's
+`healthy` flag, plus `ready` where the component reports one. An
+authenticated caller gets the full component detail. Every caller is
+authenticated in `trusted_local`, unless `ACCESS__LOCAL_TOKEN` is set; then
+the token is required. `runtime` is the marker `serve` looks for before
+replacing a previous instance on its port.
 
 A route that uses Postgres answers `503` with `{"error": "Database not
 reachable", "type": "DatabaseError"}` when the database was lost after

@@ -42,16 +42,25 @@ class LifecycleManager:
         self._started.clear()
 
     async def health(self) -> dict:
-        """Aggregate health from all components."""
+        """Aggregate health from all components.
+
+        ``status`` is ``unhealthy`` when a component is not healthy,
+        ``degraded`` when all are healthy but one reports ``ready: false``,
+        and ``ok`` otherwise.
+        """
         results = {}
         overall_healthy = True
+        ready = True
         for name, component in self._components.items():
             try:
                 check = await component.health_check()
                 results[name] = check
                 if not check.get("healthy", False):
                     overall_healthy = False
+                if not check.get("ready", True):
+                    ready = False
             except Exception as e:
                 results[name] = {"healthy": False, "error": str(e)}
                 overall_healthy = False
-        return {"healthy": overall_healthy, "components": results}
+        status = "unhealthy" if not overall_healthy else "ok" if ready else "degraded"
+        return {"healthy": overall_healthy, "status": status, "components": results}

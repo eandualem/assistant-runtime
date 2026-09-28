@@ -32,9 +32,12 @@ database that answers at startup but cannot load the runtime settings fails
 startup, since the next settings change would otherwise overwrite the
 stored ones. A deployment that must not lose state sets
 `DATABASE__REQUIRED=true`: startup then fails with
-`DatabaseUnavailableError` when Postgres is unreachable, nothing falls back
-to process memory, and `/health` reports a database lost later as
-unhealthy. With `DATABASE__MIGRATE_ON_START` as well, the runtime creates
+`DatabaseUnavailableError` when Postgres is unreachable, and nothing falls
+back to process memory. A host that chooses a database should set it, so
+that a restart during an outage fails instead of starting in memory mode.
+It affects startup only: a database lost later leaves `/health` at 200
+(`status: degraded`) and `/health/ready` at 503, whether it is set or not
+(see [health](api.md#health)). With `DATABASE__MIGRATE_ON_START` as well, the runtime creates
 its database when the server is reachable but the database does not exist,
 then migrates it; a host needs only a running PostgreSQL server.
 
