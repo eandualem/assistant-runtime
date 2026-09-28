@@ -289,6 +289,12 @@ class SessionStore:
         a user message.
         """
         ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is not None and ctx["message_count"] == 0 and self._db is not None:
+            # An empty cached context may shadow a persisted session (as for a user message).
+            loaded = await self._load_session_singleflight(session_id)
+            if loaded is not None:
+                self._sessions[session_id] = loaded
+                ctx = loaded
         if ctx is None:
             raise LookupError("Session not found")
         if message_id in ctx["message_index"]:

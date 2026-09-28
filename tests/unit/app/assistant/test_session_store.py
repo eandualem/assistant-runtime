@@ -416,6 +416,38 @@ class TestOwnership:
             "sess-1", None, "alice", profile=None, subject=None
         )
 
+    async def test_empty_cached_context_is_hydrated_before_a_host_message_is_parented(self):
+        store = SessionStore()
+        store.get_context("sess-1")  # a warm-up cached an empty context...
+        stored = {
+            "id": "user-1",
+            "session_id": "sess-1",
+            "parent_id": None,
+            "role": "user",
+            "message_type": "standard",
+            "content": "Hi",
+            "segments": [],
+            "usage": None,
+        }
+        db = AsyncMock()
+        db.load = AsyncMock(  # ...but the conversation is already stored
+            return_value=LoadedSession(
+                owner_id="alice",
+                turn_number=1,
+                working_memory=None,
+                title=None,
+                telegram_chat_id=None,
+                telegram_bound_at=None,
+                messages=[stored],
+                steering=[],
+            )
+        )
+        store._db = db
+        card = await store.register_host_message(
+            "sess-1", message_id="card-1", content="A card.", segments=[]
+        )
+        assert card["parent_id"] == "user-1"
+
     async def test_existing_owner_is_kept_by_later_messages(self):
         store = SessionStore()
         first = AssistantRequest(id="user-1", session_id="sess-1", content="Hi")
