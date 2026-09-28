@@ -46,7 +46,6 @@ from assistant_runtime.app.assistant import (
     assistant_record_to_flat_messages,
     find_tool_entry,
     host_context_prompt,
-    latest_host_context_prompt,
     path_records_to_model_history,
 )
 from assistant_runtime.app.assistant.exceptions import SessionError
@@ -190,12 +189,7 @@ class TurnPlanner:
             # message is written: a crash in between must not leave a restored
             # pending action next to the message that superseded it.
             await clear_stale_pending_call(self._sessions, session_id, existing)
-        # A message without a host context is sent with the session's last one.
-        host_context_text = host_context_prompt(
-            request.host_context
-            if request.host_context is not None
-            else (existing or {}).get("last_host_context")
-        )
+        host_context_text = _current_host_context(request, existing or {}) or ""
         session_context, _user_record = await self._sessions.register_user_message(
             request, owner_id=principal.id, host_context_text=host_context_text
         )
@@ -340,7 +334,6 @@ class TurnPlanner:
         else:
             deferred_result = tool_result
             accepted_content = tool_result
-        history = [*self._sessions.get_history(session_id, exclude_leaf=True), *flat_assistant]
         return TurnPlan(
             kind="continuation",
             request=request,
@@ -350,15 +343,18 @@ class TurnPlanner:
             assistant_parent_id=None,
             prior_assistant_messages=path_records_to_model_history([assistant_record]),
             prior_usage=assistant_record.get("usage"),
-            history=history,
+            history=[
+                *self._sessions.get_history(session_id, exclude_leaf=True),
+                *flat_assistant,
+            ],
             deferred_tool_results=(
                 None
                 if next_pending
                 else DeferredToolResults(calls={request.tool_call_id: deferred_result})
             ),
             receipt_only=request.output_mode == "host_tools",
-            # A changed context follows the result in the same model request.
-            user_prompt=_changed_host_context(request, session_context, history),
+            # The current context follows the result in the same model request.
+            user_prompt=_current_host_context(request, session_context),
             next_pending=next_pending,
             pending_batch=batch,
             accepted_tool_result=ModelRequest(
@@ -408,7 +404,6 @@ class TurnPlanner:
         extends_assistant = active_leaf.get("role") == "assistant"
         assistant_message_id = active_leaf_id if extends_assistant else str(uuid.uuid4())
         session_context["current_assistant_message_id"] = assistant_message_id
-        history = self._sessions.get_history(session_id)
         return TurnPlan(
             kind="steering",
             request=request,
@@ -419,9 +414,9 @@ class TurnPlanner:
             prior_assistant_messages=(
                 path_records_to_model_history([active_leaf]) if extends_assistant else []
             ),
-            # A changed context comes just before the steering.
-            user_prompt=_changed_host_context(request, session_context, history),
-            history=history,
+            # The current context comes just before the steering.
+            user_prompt=_current_host_context(request, session_context),
+            history=self._sessions.get_history(session_id),
             turn_number=session_context.get("turn_number", 0),
             input_message=request.content,
             trace_metadata={"steering": True},
@@ -453,23 +448,17 @@ def _recorded_call(session_context: dict[str, Any], tool_call_id: str) -> dict[s
     return None
 
 
-def _changed_host_context(
-    request: AssistantRequest, session_context: dict[str, Any], history: list[ModelMessage]
-) -> str | None:
-    """The block for a turn without a user message: the session's current host context.
+def _current_host_context(request: AssistantRequest, session_context: dict[str, Any]) -> str | None:
+    """The session's current host context as the block a turn sends; None without one.
 
-    That is the request's own context, else the last one the session
-    received, and only when it differs from the latest block ``history``
-    already carries (a continuation's or steering's block is not stored
-    on the assistant row, so a later run sends it again).
+    That is the request's own context, else the last one the session received.
     """
     current = (
         request.host_context
         if request.host_context is not None
         else session_context.get("last_host_context")
     )
-    block = host_context_prompt(current)
-    return block if block and block != latest_host_context_prompt(history) else None
+    return host_context_prompt(current) or None
 
 
 def _failure_message(tool_result: Any) -> str:

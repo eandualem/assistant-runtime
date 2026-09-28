@@ -204,9 +204,8 @@ execution, history, serialization, or the upstream dependency; see
   of the message it came with (or of the next message that carries none),
   and is kept on that user row as a `host_context` segment so later turns
   replay it unchanged. A continuation or promoted steering sends the
-  session's current context (its own, else the last one received) only
-  when it differs from the latest block in the history it sends: after the
-  tool result, or just before the steering. Reference
+  session's current context (its own, else the last one received) after
+  the tool result, or just before the steering. Reference
   attachments become native Pydantic AI content on the user prompt;
   screenshots stay behind `look_at_screen`.
   Tools the host executes are configuration (`TOOLS__HOST_TOOLS`) or

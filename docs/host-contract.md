@@ -21,8 +21,7 @@ start of the user message, not in the system prompt, and the message keeps
 it: later turns replay it unchanged, so the conversation before the latest
 message stays in the provider's cache. A continuation or promoted
 steering sends the current context (its own, or the last one received)
-only when it differs from the latest one in the conversation: right after
-the tool result, or just before the steering text.
+right after the tool result, or just before the steering text.
 
 ```json
 {

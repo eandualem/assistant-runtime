@@ -3,14 +3,12 @@
 from functools import partial
 
 import pytest
-from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from assistant_runtime.app.assistant._prompt_builder import (
     _host_context_fragment,
     _render_state,
     _working_memory_fragment,
     host_context_prompt,
-    latest_host_context_prompt,
     mcp_connections_fragment,
 )
 from assistant_runtime.app.assistant._prompt_builder import (
@@ -373,18 +371,6 @@ class TestHostContextPrompt:
     def test_empty_without_a_context(self):
         assert host_context_prompt(None) == ""
         assert host_context_prompt({}) == ""
-
-    def test_the_latest_block_in_a_history(self):
-        board = host_context_prompt({"view": {"name": "board"}})
-        listing = host_context_prompt({"view": {"name": "list"}})
-        history = [
-            ModelRequest(parts=[UserPromptPart(content=[board, "First"])]),
-            ModelRequest(parts=[UserPromptPart(content=listing)]),
-            ModelRequest(parts=[UserPromptPart(content="Plain text")]),
-        ]
-        assert latest_host_context_prompt(history) == listing
-        assert latest_host_context_prompt(history[:1]) == board
-        assert latest_host_context_prompt([]) == ""
 
 
 class TestRenderState:

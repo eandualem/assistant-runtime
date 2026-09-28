@@ -175,7 +175,7 @@ async def test_request_declared_action_is_called_and_continued(runtime, script):
     assert "The host is showing: order." in result_request.parts[-1].content
 
 
-async def test_continuations_send_the_host_context_when_it_changed(runtime, script):
+async def test_continuations_send_the_current_host_context(runtime, script):
     host_context = {
         "view": {"name": "orders"},
         "actions": [{"name": "open_order", "description": "Open an order in the host."}],
@@ -204,12 +204,10 @@ async def test_continuations_send_the_host_context_when_it_changed(runtime, scri
     def context_after_result(messages):
         return [p.content for p in messages[-1].parts if isinstance(p, UserPromptPart)]
 
-    changed_block = "The host is showing: order-2."
-    # Unchanged: the user message already carries it.
-    assert context_after_result(script.requests[1]) == []
-    assert changed_block in context_after_result(script.requests[2])[0]
-    # Not kept on the assistant row, so the next continuation sends it again.
-    assert changed_block in context_after_result(script.requests[3])[0]
+    # Each continuation sends the current context: its own, else the last one received.
+    assert "The host is showing: orders." in context_after_result(script.requests[1])[0]
+    assert "The host is showing: order-2." in context_after_result(script.requests[2])[0]
+    assert "The host is showing: order-2." in context_after_result(script.requests[3])[0]
 
 
 async def test_invalid_host_context_is_rejected_at_the_edge(isolated_services):
