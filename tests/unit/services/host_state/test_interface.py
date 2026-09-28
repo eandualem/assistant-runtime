@@ -81,3 +81,6 @@ async def test_names_and_sizes_are_bounded():
         await state.put("ns", "a/b", 1, by="local")
     with pytest.raises(HostStateError, match="at most 1024"):
         await state.put("ns", "big", "x" * 2000, by="local")
+    for value in ({"limit": float("nan")}, [float("inf")], {1, 2}):
+        with pytest.raises(HostStateError, match="not JSON"):
+            await state.put("ns", "odd", value, by="local")

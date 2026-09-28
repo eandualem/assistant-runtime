@@ -94,7 +94,10 @@ class HostStateService:
     ) -> HostStateEntry:
         """Store ``value``; with ``expected_version``, only over that version (0: none yet)."""
         _check(namespace, key)
-        size = len(json.dumps(value, separators=(",", ":")).encode())
+        try:
+            size = len(json.dumps(value, separators=(",", ":"), allow_nan=False).encode())
+        except (TypeError, ValueError) as e:
+            raise HostStateError(f"The value is not JSON: {e}") from e
         if size > self._config.max_value_bytes:
             raise HostStateError(
                 f"The value is {size} bytes; at most {self._config.max_value_bytes} are kept"
