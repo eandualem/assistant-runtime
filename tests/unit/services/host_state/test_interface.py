@@ -79,6 +79,11 @@ async def test_names_and_sizes_are_bounded():
         await state.put("Bad Namespace", "k", 1, by="local")
     with pytest.raises(HostStateError, match="key"):
         await state.put("ns", "a/b", 1, by="local")
+    # `$` alone would allow a trailing newline (``PUT /api/host-state/a%0A/key``).
+    with pytest.raises(HostStateError, match="namespace"):
+        await state.put("ns\n", "k", 1, by="local")
+    with pytest.raises(HostStateError, match="key"):
+        await state.put("ns", "k\n", 1, by="local")
     with pytest.raises(HostStateError, match="at most 1024"):
         await state.put("ns", "big", "x" * 2000, by="local")
     for value in ({"limit": float("nan")}, [float("inf")], {1, 2}):

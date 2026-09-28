@@ -217,7 +217,7 @@ class ActionService:
             raise ActionError("A confirmation kind is message or steer")
         if source not in ("button", "typed", "voice"):
             raise ActionError("A confirmation source is button, typed or voice")
-        if not _SHA256.match(text_sha256):
+        if not _SHA256.fullmatch(text_sha256):
             raise ActionError("text_sha256 must be 64 lowercase hexadecimal characters")
         if confirmed_at.tzinfo is None:
             raise ActionError("confirmed_at needs a UTC offset")
