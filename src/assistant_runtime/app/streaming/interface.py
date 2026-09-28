@@ -336,26 +336,43 @@ class StreamingService:
         segments: list[dict[str, Any]],
         message_id: str | None = None,
         principal: Principal | None = None,
+        profile: str | None = None,
+        subject: str | None = None,
     ) -> dict[str, Any]:
         """Add a message the host wrote (a card made outside any turn) at the active leaf.
 
         Only while the session is idle: a running turn, a pending host action
         or a voice call would otherwise find its conversation moved under it.
         The model sees ``content`` in later turns; ``segments`` are for display.
+        A missing session is started, owned by the caller; ``profile`` and
+        ``subject`` bind a session the card starts as a first message would,
+        and must match a bound session's.
         """
+        self.validate_profile(profile)
         async with self._admission_lock(session_id):
             self.check_session_available(session_id)
             session_context = await self._sessions.get_context_if_exists_async(session_id)
-            if session_context is None:
-                raise LookupError(f"Session '{session_id}' does not exist")
-            await self._authorize(session_id, principal)
+            if session_context is not None:
+                await self._authorize(session_id, principal)
+            context = session_context or {}
             if (
                 session_id in self._active_turns
-                or session_context.get("pending_tool_call_id")
-                or session_context.get("current_assistant_message_id") is not None
-                or session_context.get("pending_assistant_message_id") is not None
+                or context.get("pending_tool_call_id")
+                or context.get("current_assistant_message_id") is not None
+                or context.get("pending_assistant_message_id") is not None
             ):
                 raise SessionError("A turn or a host action is in progress in this session")
+            bound_subject = context.get("subject") if context.get("message_count", 0) > 0 else None
+            if bound_subject and (
+                (subject is not None and subject != bound_subject)
+                or (profile is not None and profile != context.get("profile"))
+            ):
+                raise SessionError(
+                    f"Session '{session_id}' is bound to profile '{context.get('profile')}' "
+                    f"and subject '{bound_subject}'"
+                )
+            if subject is not None and profile is None:
+                profile = self._default_profile()
             # Hold the session's turn slot while writing: a turn arriving now waits for it.
             hold = TurnControl(accepting_cancel=False)
             self._active_turns[session_id] = hold
@@ -365,6 +382,9 @@ class StreamingService:
                     message_id=message_id or str(uuid.uuid4()),
                     content=content,
                     segments=segments,
+                    owner_id=(principal or LOCAL_PRINCIPAL).id,
+                    profile=profile,
+                    subject=subject,
                 )
             finally:
                 if self._active_turns.get(session_id) is hold:

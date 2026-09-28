@@ -22,6 +22,7 @@ from assistant_runtime.app.assistant.deps import AssistantServiceDep
 from assistant_runtime.app.streaming.deps import StreamingServiceDep
 from assistant_runtime.app.voice.deps import OptionalVoiceServiceDep
 from assistant_runtime.principal import Principal
+from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 
 if TYPE_CHECKING:
     from assistant_runtime.services.database.interface import DatabaseService
@@ -69,6 +70,9 @@ class HostMessageRequest(BaseModel):
     content: str = Field(default="", max_length=20_000)
     """What the model reads of this message in later turns; empty for none."""
     segments: list[ComponentSegment] = Field(min_length=1, max_length=16)
+    profile: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    subject: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    """With ``profile``, bind a session this card starts, as a first message's would."""
 
     @model_validator(mode="after")
     def bounded(self):
@@ -164,7 +168,9 @@ async def append_host_message(
 ) -> dict:
     """Add a card the host made outside any turn to the conversation, as a ``host`` message.
 
-    ``409`` while a turn, a pending host action or a voice call has the session.
+    A missing session is started, owned by the caller. ``409`` while a turn, a
+    pending host action or a voice call has the session, or when ``profile`` or
+    ``subject`` differ from its binding; ``404`` for an unknown profile.
     """
     try:
         record = await streaming.append_host_message(
@@ -173,8 +179,10 @@ async def append_host_message(
             segments=[segment.model_dump() for segment in body.segments],
             message_id=body.id,
             principal=admin,
+            profile=body.profile,
+            subject=body.subject,
         )
-    except LookupError as e:
+    except UnknownProfileError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except (SessionError, ValueError) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
