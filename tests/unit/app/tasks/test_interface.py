@@ -35,6 +35,7 @@ class FakeStreaming:
         self.gates: dict[str, asyncio.Event] = {}
         self.started: list[str] = []
         self.sessions: list[str] = []
+        self.pins: dict[str, int] = {}
         self.running = 0
         self.peak = 0
         self.fail: dict[str, Exception] = {}
@@ -43,6 +44,12 @@ class FakeStreaming:
     def validate_profile(self, name):
         if name == "nope":
             raise UnknownProfileError("Unknown assistant profile 'nope'")
+
+    def pin_session(self, session_id):
+        self.pins[session_id] = self.pins.get(session_id, 0) + 1
+
+    def unpin_session(self, session_id):
+        self.pins[session_id] = self.pins.get(session_id, 0) - 1
 
     def gate(self, content: str) -> asyncio.Event:
         return self.gates.setdefault(content, asyncio.Event())
@@ -252,6 +259,9 @@ class TestControl:
             async def mark_unfinished_messages(self, status, error):
                 return []
 
+            async def list_agents(self, **filters):
+                return []
+
         hub, seen = EventHub(), []
         hub.subscribe(seen.append)
         service = TaskService(
@@ -376,6 +386,41 @@ class TestAgents:
         await service.stop_agent(agent.id, ALICE)
         again = await service.start_agent(subject="agent-a", principal=ALICE)
         assert again.id != agent.id
+        await service.start_agent(principal=ALICE)  # no profile and no subject is one identity too
+        with pytest.raises(AgentConflictError):
+            await service.start_agent(principal=ALICE)
+
+    async def test_an_agents_session_stays_cached_until_it_moves_or_stops(self):
+        service, streaming, _ = await _service()
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        assert streaming.pins == {agent.session_id: 1}
+        moved = await service.move_agent(agent.id, principal=ALICE)
+        assert streaming.pins == {agent.session_id: 0, moved.session_id: 1}
+        await service.stop_agent(agent.id, ALICE)
+        assert streaming.pins == {agent.session_id: 0, moved.session_id: 0}
+
+    async def test_a_move_waits_for_a_message_that_is_starting(self):
+        """A message that read the agent's session starts there before a move returns."""
+        service, _, _ = await _service()
+        agent = await service.start_agent(subject="agent-a", principal=ALICE)
+        store = service._store
+        update_message, release = store.update_message, asyncio.Event()
+
+        async def slow_update_message(message_id, **values):
+            if values.get("status") == "running":
+                await release.wait()
+            return await update_message(message_id, **values)
+
+        store.update_message = slow_update_message
+        record = await service.message_agent("m1", agent_id=agent.id, principal=ALICE)
+        await _settle()
+        move = asyncio.create_task(service.move_agent(agent.id, principal=ALICE))
+        await _settle()
+        assert not move.done()
+        release.set()
+        await move
+        started = await service.get_message(record.id, ALICE)
+        assert (started.status, started.session_id) == ("running", agent.session_id)
 
     async def test_a_move_applies_to_messages_not_yet_started(self):
         service, streaming, _ = await _service()
@@ -467,6 +512,9 @@ class TestAgents:
             async def mark_unfinished_messages(self, status, error):
                 assert status == "interrupted"
                 return [left]
+
+            async def list_agents(self, **filters):
+                return []
 
         hub, seen = EventHub(), []
         hub.subscribe(seen.append)

@@ -168,6 +168,17 @@ class StreamingService:
         turn = self._active_turns.get(session_id)
         return turn.cancel() if turn is not None else False
 
+    def pin_session(self, session_id: str) -> None:
+        """Keep a session cached for a long-lived owner, such as a persistent agent.
+
+        Without a database the cache is the conversation, so an evicted
+        session would start over. Reference counted: pair with ``unpin_session``.
+        """
+        self._sessions.pin(session_id)
+
+    def unpin_session(self, session_id: str) -> None:
+        self._sessions.unpin(session_id)
+
     def check_session_available(self, session_id: str, session_lease: str | None = None) -> None:
         """An active voice transport owns this session until it releases its lease."""
         if session_id in self._session_mutations:

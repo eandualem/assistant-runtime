@@ -109,6 +109,8 @@ class TaskService:
                 await self._publish(record)
             for message in await self._store.mark_unfinished_messages("interrupted", _INTERRUPTED):
                 await self._publish_message(message)
+            for agent in await self._store.list_agents(created_by=None, status="active"):
+                self._streaming.pin_session(agent.session_id)
         else:
             self._store = InMemoryTaskStore()
         if self._config.enabled and self._tool_service is not None:
@@ -249,11 +251,13 @@ class TaskService:
             subject=subject,
         )
         async with self._agent_admission:
-            await self._check_free(record.profile, record.subject, record.session_id)
+            await self._check_free(record.session_id, identity=(record.profile, record.subject))
             try:
                 record = await store.create_agent(record)
             except AgentTakenError as e:
                 raise AgentConflictError(f"The agent's identity or session is taken: {e}") from e
+            # Its conversation stays cached until it moves or stops.
+            self._streaming.pin_session(record.session_id)
         logger.info("Agent started", agent_id=agent_id, profile=record.profile, subject=subject)
         return record
 
@@ -270,11 +274,13 @@ class TaskService:
             session_id = session_id or f"agent-{agent_id}-{uuid.uuid4().hex[:8]}"
             if session_id == agent.session_id:
                 return agent
-            await self._check_free(None, None, session_id)
+            await self._check_free(session_id)
             try:
                 moved = await store.update_agent(agent_id, session_id=session_id)
             except AgentTakenError as e:
                 raise AgentConflictError(f"Session '{session_id}' is taken: {e}") from e
+            self._streaming.pin_session(session_id)
+            self._streaming.unpin_session(agent.session_id)
         logger.info("Agent moved", agent_id=agent_id, session_id=session_id)
         return moved or agent
 
@@ -288,6 +294,7 @@ class TaskService:
             stopped = await store.update_agent(agent_id, status="stopped", stopped_at=_now())
         for job_id in [i for i, job in self._running.items() if job.agent_id == agent_id]:
             await self._cancel_job(job_id)
+        self._streaming.unpin_session(agent.session_id)
         logger.info("Agent stopped", agent_id=agent_id)
         return stopped or agent
 
@@ -417,19 +424,21 @@ class TaskService:
         store = self._require_store()
 
         async def start() -> AssistantRequest | None:
-            agent = await store.get_agent(record.agent_id)
-            if agent is None or agent.status != "active":
-                # Stopped elsewhere while this waited: end it as the stop would have.
-                self._cancel_requested.add(record.id)
-                raise asyncio.CancelledError
-            # The agent's session now, so a move applies to every message not yet started.
-            started = await store.update_message(
-                record.id,
-                only_from=("queued",),
-                status="running",
-                session_id=agent.session_id,
-                started_at=_now(),
-            )
+            # Under admission, so a move is wholly before this start or wholly after it.
+            async with self._agent_admission:
+                agent = await store.get_agent(record.agent_id)
+                if agent is None or agent.status != "active":
+                    # Stopped elsewhere while this waited: end it as the stop would have.
+                    self._cancel_requested.add(record.id)
+                    raise asyncio.CancelledError
+                # The agent's session now, so a move applies to every message not yet started.
+                started = await store.update_message(
+                    record.id,
+                    only_from=("queued",),
+                    status="running",
+                    session_id=agent.session_id,
+                    started_at=_now(),
+                )
             if started is None:
                 return None  # it ended before it could start; its end was recorded then
             return AssistantRequest(
@@ -620,14 +629,15 @@ class TaskService:
             names = "profile, subject or session" if session_id else "profile or subject"
             raise TaskError(f"Invalid {names}: {e.errors()[0]['msg']}") from e
 
-    async def _check_free(self, profile: str | None, subject: str | None, session_id: str) -> None:
-        """Refuse an identity (when ``profile`` or ``subject`` is given) or a session in use.
+    async def _check_free(
+        self, session_id: str, *, identity: tuple[str | None, str | None] | None = None
+    ) -> None:
+        """Refuse a session, or an identity (profile, subject) when given, already in use.
 
         Call it holding ``_agent_admission``.
         """
-        check_identity = profile is not None or subject is not None
         for agent in await self._require_store().list_agents(created_by=None, status="active"):
-            if check_identity and (agent.profile, agent.subject) == (profile, subject):
+            if identity is not None and (agent.profile, agent.subject) == identity:
                 raise AgentConflictError(
                     f"Agent '{agent.id}' is already active for this profile and subject"
                 )

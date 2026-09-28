@@ -91,3 +91,39 @@ async def test_messages_to_a_persistent_agent_continue_one_conversation(runtime,
         assert [m["role"] for m in path] == ["user", "assistant", "user", "assistant"]
     finally:
         await tasks.stop()
+
+
+async def test_an_agents_conversation_survives_session_cache_eviction(runtime, script):
+    """Without a database the session cache is the conversation; an agent's stays cached."""
+    seen: list[list[str]] = []
+
+    async def stream(messages, info):
+        seen.append(
+            [
+                str(part.content)
+                for message in messages
+                for part in getattr(message, "parts", [])
+                if isinstance(part, UserPromptPart)
+            ]
+        )
+        yield "Noted."
+
+    script.stream = stream
+    hub, finished = EventHub(), []
+    hub.subscribe(finished.append)
+    tasks = TaskService(TasksConfig(enabled=True), runtime.streaming, events=hub)
+    await tasks.start()
+    try:
+        agent = await tasks.start_agent(subject="agent-a")
+        for number, text in enumerate(("First question", "Second question"), start=1):
+            if number == 2:
+                for other in range(300):  # enough other sessions to force eviction
+                    runtime.sessions.get_context(f"other-{other}")
+            await tasks.message_agent(text, agent_id=agent.id)
+            for _ in range(200):
+                if len(finished) == number:
+                    break
+                await asyncio.sleep(0.01)
+        assert seen[1] == ["First question", "Second question"]
+    finally:
+        await tasks.stop()
