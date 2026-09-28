@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.database.exceptions import (
@@ -482,6 +483,14 @@ class TestDatabaseServiceSessionContext:
             async with service.session_context():
                 pass
         assert raised.value.__cause__ is refused
+
+        # No pooled connection frees up in time.
+        exhausted = PoolTimeoutError("QueuePool limit reached")
+        session.connection.side_effect = exhausted
+        with pytest.raises(DatabaseError, match="not reachable") as raised:
+            async with service.session_context():
+                pass
+        assert raised.value.__cause__ is exhausted
         session.connection.side_effect = None
 
         # The connection in use is dropped.

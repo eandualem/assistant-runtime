@@ -294,7 +294,10 @@ class TestRuntimeSettingsDB:
         assert rs._updated_at is None
 
     @pytest.mark.asyncio
-    async def test_load_from_db_handles_exception_gracefully(self):
+    async def test_a_failed_load_fails_startup(self):
+        """Defaults would let the next change overwrite the stored overlay."""
+        from assistant_runtime.services.database.exceptions import DatabaseUnavailableError
+
         mock_db = MagicMock()
         mock_db._healthy = True
 
@@ -306,8 +309,8 @@ class TestRuntimeSettingsDB:
         mock_db.session_context = failing_session_context
 
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
-        await rs.load_from_db()  # Should not raise
-        assert rs.overrides == {}
+        with pytest.raises(DatabaseUnavailableError, match="connection lost"):
+            await rs.load_from_db()
 
     @pytest.mark.asyncio
     async def test_load_from_db_raises_when_the_database_is_required(self):

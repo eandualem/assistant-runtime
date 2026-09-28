@@ -116,7 +116,7 @@ class RuntimeSettings:
             return persisted
 
     async def load_from_db(self) -> None:
-        """Load persisted overrides on startup; silently skipped without a database.
+        """Load persisted overrides on startup; skipped without a database, fatal on failure.
 
         Follows the database service's startup result, as every store does,
         so settings never come from a database the rest of the runtime left.
@@ -144,11 +144,9 @@ class RuntimeSettings:
                     self._updated_at = row.updated_at
             logger.info("Loaded persisted settings from DB", overrides=sorted(self._overrides))
         except Exception as e:
-            if self._required:
-                raise DatabaseUnavailableError(f"Runtime settings could not be loaded: {e}") from e
-            logger.warning(
-                "Failed to load settings from DB — proceeding with defaults", error=str(e)
-            )
+            # Defaults standing in for the stored overlay would be written over
+            # it by the next change, so startup fails instead.
+            raise DatabaseUnavailableError(f"Runtime settings could not be loaded: {e}") from e
 
     @property
     def _required(self) -> bool:

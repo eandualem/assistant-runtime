@@ -28,13 +28,15 @@ expiry deletes the session with its messages, steering and pending action.
 ## Requiring Postgres
 
 The table's right-hand column is a fallback, chosen once at startup. A
-deployment that must not lose state sets `DATABASE__REQUIRED=true`: startup
-then fails with `DatabaseUnavailableError` when Postgres is unreachable,
-nothing falls back to process memory, and `/health` reports a database
-lost later as unhealthy. With
-`DATABASE__MIGRATE_ON_START` as well, the runtime creates its database when
-the server is reachable but the database does not exist, then migrates it;
-a host needs only a running PostgreSQL server.
+database that answers at startup but cannot load the runtime settings fails
+startup, since the next settings change would otherwise overwrite the
+stored ones. A deployment that must not lose state sets
+`DATABASE__REQUIRED=true`: startup then fails with
+`DatabaseUnavailableError` when Postgres is unreachable, nothing falls back
+to process memory, and `/health` reports a database lost later as
+unhealthy. With `DATABASE__MIGRATE_ON_START` as well, the runtime creates
+its database when the server is reachable but the database does not exist,
+then migrates it; a host needs only a running PostgreSQL server.
 
 A database lost after startup is not a fallback, with or without
 `DATABASE__REQUIRED`. Each call tries it again, so the runtime recovers as
