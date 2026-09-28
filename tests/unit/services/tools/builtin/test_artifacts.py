@@ -19,7 +19,11 @@ PROFILE = AssistantProfile(
     name="shop",
     artifacts=(
         ArtifactDefinition(
-            name="instructions", role="purpose", required=True, default="Help shoppers"
+            name="instructions",
+            role="purpose",
+            required=True,
+            default="Help shoppers",
+            policy=ArtifactPolicy(assistant_edit="propose"),
         ),
         ArtifactDefinition(
             name="persona",

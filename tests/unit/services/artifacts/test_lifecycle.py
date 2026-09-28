@@ -26,7 +26,13 @@ ASSISTANT = Actor("assistant", session_id="s-1")
 PROFILE = AssistantProfile(
     name="shop",
     artifacts=(
-        ArtifactDefinition(name="instructions", role="purpose", required=True, default="Help"),
+        ArtifactDefinition(
+            name="instructions",
+            role="purpose",
+            required=True,
+            default="Help",
+            policy=ArtifactPolicy(assistant_edit="propose"),
+        ),
         ArtifactDefinition(name="scratchpad", policy=ArtifactPolicy(assistant_edit="autonomous")),
     ),
 )
@@ -35,7 +41,11 @@ PROFILE = AssistantProfile(
 def _seeded(default: str) -> AssistantProfile:
     """The same profile with another default for its instructions."""
     instructions = ArtifactDefinition(
-        name="instructions", role="purpose", required=True, default=default
+        name="instructions",
+        role="purpose",
+        required=True,
+        default=default,
+        policy=ArtifactPolicy(assistant_edit="propose"),
     )
     return AssistantProfile(name="shop", artifacts=(instructions, PROFILE.artifacts[1]))
 
@@ -243,6 +253,19 @@ class TestSeeding:
             service = await self._start(store, profile=_seeded("Help more"))
             assert [r.version for r in await service.history("instructions")] == [2, 1]
             assert (await service.active_texts())["instructions"] == "Help"
+
+    async def test_an_emptied_default_removes_seeds_but_not_a_host_version(self):
+        instructions = ArtifactDefinition(name="instructions", role="purpose")
+        emptied = AssistantProfile(name="shop", artifacts=(instructions, PROFILE.artifacts[1]))
+        seeded, edited = _DurableMemory(), _DurableMemory()
+        await self._start(seeded)
+        service = await self._start(seeded, profile=emptied)
+        assert await service.history("instructions") == []
+        assert not (await service.active_texts()).get("instructions")
+        service = await self._start(edited)
+        await service.update("instructions", "Edited", actor=HOST)
+        service = await self._start(edited, profile=emptied)
+        assert (await service.active_texts())["instructions"] == "Edited"
 
     async def test_a_rollback_keeps_the_seed_the_host_chose(self):
         store = _DurableMemory()

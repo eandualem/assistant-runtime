@@ -143,7 +143,10 @@ async def runtime(monkeypatch, script, host_schema, history_config):
             await service.start()
             started.append(service)
         yield SimpleNamespace(
-            streaming=streaming, tools=tools, sessions=assistant.get_session_store()
+            streaming=streaming,
+            tools=tools,
+            sessions=assistant.get_session_store(),
+            artifacts=artifacts,
         )
     finally:
         for service in reversed(started):

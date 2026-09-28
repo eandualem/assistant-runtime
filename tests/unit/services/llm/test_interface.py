@@ -89,10 +89,19 @@ class TestLlmServiceLifecycle:
         assert "anthropic" in health["providers"]
         assert health["primary_model"] == "anthropic:claude-opus-5"
 
-    async def test_primary_model_falls_back_to_a_configured_provider(self, service, monkeypatch):
+    async def test_configured_model_is_kept_without_fallback(self, service, monkeypatch):
         for var in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        await service.start()
+        assert service.effective_primary_model() == "anthropic:claude-opus-5"
+        assert service.effective_summarization_model() == "anthropic:claude-haiku-4-5"
+
+    async def test_primary_model_falls_back_to_a_configured_provider(self, monkeypatch):
+        for var in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        service = LlmService(config=LLMConfig(provider_fallback=True))
         await service.start()
         assert service.effective_primary_model() == "openai:gpt-5.6-terra"
         assert service.resolve_model() == "openai:gpt-5.6-terra"

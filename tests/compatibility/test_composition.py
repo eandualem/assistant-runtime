@@ -328,3 +328,23 @@ async def test_two_definitions_run_their_own_profiles_and_evolve_artifacts(
     assert "Customer prefers blue" not in prompts[3]
     for text in prompts:
         assert "operator" not in text.lower()
+
+
+async def test_application_model_settings_reach_the_model(isolated_services, monkeypatch):
+    seen = []
+
+    async def respond(messages, info):
+        seen.append(info.model_settings)
+        yield "Done"
+
+    model = FunctionModel(stream_function=respond)
+    monkeypatch.setattr(LlmService, "_resolve_agent_model", lambda self, name: model)
+    assistant = isolated_services.assistant.model_copy(
+        update={"model_settings": {"max_tokens": 1234, "anthropic_cache": False}}
+    )
+    settings = isolated_services.model_copy(update={"assistant": assistant})
+    async with create_runtime(settings=settings) as runtime:
+        await runtime.run_message(AssistantRequest(id="m", session_id="s", content="Hi"))
+    assert seen[-1]["max_tokens"] == 1234
+    assert seen[-1]["anthropic_cache"] is False
+    assert "temperature" not in seen[-1]

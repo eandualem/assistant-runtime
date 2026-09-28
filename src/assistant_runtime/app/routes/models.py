@@ -60,7 +60,7 @@ def _effective_defaults(request: Request) -> dict[str, Any]:
     """The model each task uses right now: runtime overrides over the frozen settings.
 
     The primary and summarization models come from the LLM service when it is
-    up, so the provider-aware fallback is reflected.
+    up, so the provider fallback, when enabled, is reflected.
     """
     state = request.app.state
     settings = getattr(state, "settings", None)

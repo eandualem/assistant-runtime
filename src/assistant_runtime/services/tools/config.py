@@ -22,8 +22,11 @@ class ToolConfig(BaseModel):
     builtin_tools: frozenset[
         Literal["time", "screen", "artifacts", "subagent", "media", "video"]
     ] = Field(
-        default=frozenset({"time", "screen", "artifacts", "subagent", "media", "video"}),
-        description="Built-in tool groups to register; an empty set disables all built-ins.",
+        default=frozenset(),
+        description=(
+            "Built-in tool groups the application enables; none by default. An enabled "
+            "group is registered only when it can work (media and video need a provider key)."
+        ),
     )
     provider_capabilities: frozenset[str] | None = Field(
         default=None,

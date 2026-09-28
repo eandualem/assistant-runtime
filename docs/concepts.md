@@ -7,6 +7,13 @@ around Pydantic AI's agent primitives. The FastAPI and Socket.IO server sits
 behind an application you already have: a dashboard, an IDE, a chat client,
 or a terminal.
 
+The runtime provides capabilities, not behaviour. Your application decides
+what the model sees, which tools it has and how it works, and nothing is on
+until the application turns it on. With no configuration the system prompt
+is empty, no built-in tool is offered, no extra model call is made, and no
+model setting such as thinking or temperature is sent: the provider's
+defaults apply.
+
 It is not a model provider (it calls Anthropic, OpenAI, Google or
 OpenRouter), not an agent orchestrator (agent-backbone does that; the
 runtime talks to it through tools), and not a user interface (it feeds
@@ -56,7 +63,7 @@ See [turn control](api.md#turn-control) for the HTTP and socket commands.
 | `message_type` | Meaning |
 |---|---|
 | `standard` | A user message. Cancels a running turn on the same session, waits for its persistence and cleanup, then starts the replacement. |
-| `steering` | A mid-turn nudge ("focus on X"). Queued while a turn is live and delivered to the model at its next step; run as a turn of its own when no turn is running. Later turns replay it where the model saw it. Never cancels anything. |
+| `steering` | A mid-turn nudge ("focus on X"). Queued while a turn is live and delivered to the model at its next step, with its text as it was sent; run as a turn of its own when no turn is running. Later turns replay it where the model saw it. Never cancels anything. |
 
 A **continuation** is a `standard` message that carries `tool_call_id` and
 `tool_result`: the client has executed a host tool and is handing the
@@ -73,24 +80,26 @@ side effects.
 
 The model can call **backend tools**: functions the runtime executes.
 The full list with schemas is at `GET /api/debug/tools`. Built-in tools
-are part of the runtime and present whenever their own service is
-(media needs a provider key; artifacts also work in process memory). Capabilities (what the
+are part of the runtime and off until `TOOLS__BUILTIN_TOOLS` names their
+group (`time`, `screen`, `artifacts`, `subagent`, `media`, `video`). An
+enabled group is registered only when it can work: media and video need a
+provider key at startup, and artifacts also work in process memory. Capabilities (what the
 assistant can do) are offered only when a provider (who does it) is
 configured, so the model is never given a tool that cannot work;
 configuration lists the providers.
 
 | Group | Tools | Needs |
 |---|---|---|
-| time, screen | `get_time`, `look_at_screen` | nothing (a host that sends screenshots, for the screen) |
+| time, screen | `get_time`, `look_at_screen` | the group in `TOOLS__BUILTIN_TOOLS` (and a host that sends screenshots, for the screen) |
 | notes | `manage_notes` | `NOTES_PATH` |
 | library | `list_documents`, `read_document` | `LIBRARY_PATHS` |
-| artifacts | `manage_artifacts` | nothing; Postgres makes versions durable |
+| artifacts | `manage_artifacts` | the group in `TOOLS__BUILTIN_TOOLS`; Postgres makes versions durable |
 | peers, rooms, reminders, activity, workgroups, repositories | `list_agents`, `start_agent`, `send_agent_message`, `create_meeting_room`, `add_schedule_item`, `get_delivery_status`, `create_swarm`, `onboard_repo`, ... | `BACKBONE_URL` |
 | approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR`, and `approvals` named in `TOOLS__PROVIDER_CAPABILITIES` (it types into other agents' terminals) |
 | issues | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
 | messaging | `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
-| media | `generate_image`, `generate_video` | an image provider key; the `[video]` extra and a Runway or Luma key |
-| subagent | `run_subagent` | nothing (uses the configured model); the subagent gets the turn's page-scoped backend tools and stays within the host's `ASSISTANT__BUDGET__*` ceilings |
+| media | `generate_image`, `generate_video` | the `media` or `video` group; an OpenAI or Google key for images; the `[video]` extra and a Runway or Luma key for video. A call without a model uses `MEDIA__DEFAULT_IMAGE_MODEL` or `MEDIA__DEFAULT_VIDEO_MODEL` (or their runtime overrides), so point those at a provider with a key |
+| subagent | `run_subagent` | the group in `TOOLS__BUILTIN_TOOLS` (uses the configured model); the subagent gets the turn's page-scoped backend tools and stays within the host's `ASSISTANT__BUDGET__*` ceilings |
 
 A tool whose call fails returns a structured error
 (`{"success": false, "error": ..., "error_code": ...}`) instead of
@@ -170,8 +179,8 @@ them is an **assistant profile**:
   (the shape is documented on `load_profile_file`; the profile `name`
   scopes stored artifact versions and must match `[a-z][a-z0-9_]{0,63}`,
   so `sample_app`, not `sample-app`);
-- else the built-in `neutral` profile: one required `instructions`
-  artifact with a short neutral default, and an autonomous `scratchpad`.
+- else the built-in `neutral` profile: one optional `instructions`
+  artifact, empty until the host writes it, so the system prompt is empty.
 
 The original technical-operator assistant (`soul`, `persona`,
 `communication_protocol`, `ecosystem`, `scratchpad`) ships as the
@@ -180,8 +189,10 @@ to keep it on an existing installation. Its `ecosystem` text is the one to
 edit first: it describes your own environment.
 
 Each artifact has a policy, enforced in code (never by the artifact's own
-text): `assistant_edit` is `none`, `propose` (new versions wait for an
-authorized actor) or `autonomous` (the assistant's writes go live at once);
+text): `assistant_edit` is `none` (the default: the assistant only reads
+it), `propose` (new versions wait for an authorized actor) or `autonomous`
+(the assistant's writes go live at once), so self-editing is declared per
+artifact;
 `assistant_activate` lets the assistant approve or roll back versions;
 `host_edit` covers the HTTP routes. Every artifact is versioned: a new
 version is proposed, activated or rolled back through `/api/artifacts` or
@@ -226,8 +237,8 @@ write may store: a longer one is refused, and the tool's error tells the
 assistant to condense it. A stale write through the tool returns the
 current version and text, so the change can be merged.
 
-After the artifacts come the connected MCP servers, and nothing else by
-default: the system prompt stays the same from turn to turn. On Anthropic
+Nothing else is added to the system prompt by default, so it stays the same
+from turn to turn. On Anthropic
 models the tool definitions, the system prompt and the conversation carry
 cache points, so each request reads the earlier conversation from the
 provider's cache. **Working memory** is opt-in: with
@@ -311,9 +322,9 @@ provenance tag at the start of the text:
 | `[via:backbone]` | a system notification from agent-backbone |
 | `[via:heartbeat]` | the runtime's own periodic check-in |
 
-The communication protocol artifact tells the model to answer on the same
-channel (with `respond_telegram`, `send_agent_message` or
-`send_meeting_message`). Text after an envelope is untrusted input.
+A profile's artifacts can tell the model to answer on the same channel
+(with `respond_telegram`, `send_agent_message` or `send_meeting_message`);
+the `technical_operator` example's `communication_protocol` does. Text after an envelope is untrusted input.
 
 ## Messages from other systems
 

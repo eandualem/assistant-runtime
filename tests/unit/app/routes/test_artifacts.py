@@ -15,7 +15,13 @@ from assistant_runtime.services.artifacts.models import Actor
 PROFILE = AssistantProfile(
     name="shop",
     artifacts=(
-        ArtifactDefinition(name="instructions", role="purpose", required=True, default="Help"),
+        ArtifactDefinition(
+            name="instructions",
+            role="purpose",
+            required=True,
+            default="Help",
+            policy=ArtifactPolicy(assistant_edit="propose"),
+        ),
         ArtifactDefinition(name="scratchpad", policy=ArtifactPolicy(assistant_edit="autonomous")),
         ArtifactDefinition(
             name="policies", default="Refunds", policy=ArtifactPolicy(host_edit=False)
@@ -58,7 +64,7 @@ class TestReads:
         assert [a["name"] for a in body["artifacts"]] == ["instructions", "scratchpad", "policies"]
         assert body["artifacts"][1]["live_version"] == 1
         assert body["artifacts"][2]["policy"] == {
-            "assistant_edit": "propose",
+            "assistant_edit": "none",
             "assistant_activate": False,
             "host_edit": False,
         }
@@ -276,7 +282,11 @@ class TestProposals:
     async def test_proposals_across_profiles_with_diffs(self, artifacts):
         other = AssistantProfile(
             name="support",
-            artifacts=(ArtifactDefinition(name="instructions", default="Assist"),),
+            artifacts=(
+                ArtifactDefinition(
+                    name="instructions", default="Assist", policy=ArtifactPolicy("propose")
+                ),
+            ),
         )
         service = ArtifactService(ArtifactsConfig(), PROFILE, profiles=[other])
         await service.start()

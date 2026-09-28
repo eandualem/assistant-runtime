@@ -70,15 +70,12 @@ class TestSchema:
 
 
 class TestBuiltinProfiles:
-    def test_neutral_is_minimal_and_carries_no_operator_worldview(self):
+    def test_neutral_adds_nothing_to_the_prompt(self):
         profile = neutral_profile()
-        assert profile.names == ("instructions", "scratchpad")
-        assert profile.required_names == ("instructions",)
-        assert profile.get("scratchpad").policy.assistant_edit == "autonomous"
-        assert profile.get("instructions").policy.assistant_edit == "propose"
-        text = profile.defaults["instructions"].lower()
-        for word in ("operator", "agent", "tmux", "backbone", "telegram"):
-            assert word not in text
+        assert profile.names == ("instructions",)
+        assert profile.required_names == ()
+        assert profile.defaults == {"instructions": ""}
+        assert profile.get("instructions").policy.assistant_edit == "none"
 
     def test_technical_operator_keeps_the_original_artifacts(self):
         profile = technical_operator_profile()

@@ -87,8 +87,7 @@ Use the voice control endpoints during a call.
 
    Optional `instructions_profile` instead takes the persona from a registered
    profile: its active artifacts in order, then its included profiles' artifacts,
-   the same text a turn of that profile starts from (without MCP connections, the
-   time, host context or memory). It cannot be combined with `instructions`. The
+   the same text a turn of that profile starts from (without working memory). It cannot be combined with `instructions`. The
    runtime's facts sentence and mode guard follow as usual. The call's snapshot
    records `instructions: {profile, artifact_versions, content}` with the exact
    text the voice received, so a host can show which versions a call used. An

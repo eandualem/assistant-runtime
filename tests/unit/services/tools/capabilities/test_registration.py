@@ -45,7 +45,7 @@ class TestRegisterCapabilities:
 
 class TestToolServiceProviders:
     async def test_unconfigured_capabilities_are_not_offered(self):
-        service = ToolService(config=ToolConfig())
+        service = ToolService(config=ToolConfig(builtin_tools=frozenset({"time"})))
         await service.start()
         names = set(service.get_available_tools().tool_names)
         assert "get_time" in names

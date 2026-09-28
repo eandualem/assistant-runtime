@@ -50,7 +50,7 @@ below.
 
 Every assistant message stores the record of the system prompt it was
 produced with in `messages.prompt`; the stable part of a prompt (the
-artifacts, included profiles, documents, MCP connections) is stored once
+artifacts, included profiles, documents) is stored once
 in `prompt_snapshots` under its SHA-256, since it repeats across turns.
 Without Postgres the record stays on the in-memory message and the process
 keeps the most recent snapshots.

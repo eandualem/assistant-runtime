@@ -36,7 +36,6 @@ from assistant_runtime.host_context import Attachment
 MessageRecord = dict[str, Any]
 SteeringRecord = dict[str, Any]
 
-_STEERING_PREFIX = "Additional user steering while you were working:\n"
 _TOOL_OUTPUT_ADAPTER = TypeAdapter(Any, config=ConfigDict(ser_json_bytes="base64"))
 
 
@@ -325,14 +324,14 @@ def build_assistant_message_content(
 
 
 def build_steering_request(steering_records: list[SteeringRecord]) -> ModelRequest:
-    """Build a model request that frames steering distinctly from user messages.
+    """Build a model request with each steering message's text as it was sent.
 
     A steering message's reference attachments follow its text as native
     content. The request's metadata (never sent to the model) names the records.
     """
     parts = []
     for steering in steering_records:
-        text = f"{_STEERING_PREFIX}{steering.get('content', '')}"
+        text = steering.get("content", "")
         attachments = [
             attachment_content(Attachment.model_validate(item))
             for item in steering.get("attachments") or []

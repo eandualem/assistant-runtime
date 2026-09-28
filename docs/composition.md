@@ -249,8 +249,8 @@ environment and `.env` provide settings as before. Runtime and per-request
 tunable overrides still apply above this startup configuration.
 
 - `tools.builtin_tools`: enabled groups from `time`, `screen`, `artifacts`,
-  `subagent`, `media`, `video`. All are selected by default; an empty set
-  selects none. Existing service requirements still apply.
+  `subagent`, `media`, `video`. None is enabled by default. An enabled group
+  is registered only when it can work (media and video need a provider key).
 - `tools.provider_capabilities`: enabled business capabilities from
   configured providers. `None` keeps every configured capability; an empty
   set selects none. Names are validated at startup. A selection never

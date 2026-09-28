@@ -1,9 +1,9 @@
 """Internal prompt builder — composes system prompt from module fragments.
 
-The system prompt is the profile's artifacts and the connected MCP servers,
-plus working memory when the session enables it. The host context is not
-part of it: ``host_context_prompt`` renders it for the user message it
-arrived with, after the conversation.
+The system prompt is the profile's artifacts, plus working memory when the
+session enables it. The host context is not part of it:
+``host_context_prompt`` renders it for the user message it arrived with,
+after the conversation.
 """
 
 from __future__ import annotations
@@ -25,27 +25,6 @@ from assistant_runtime.services.history.models import WorkingMemory
 from assistant_runtime.services.tools.models import ToolSet
 
 # --- Fragment builders ---
-
-
-def mcp_connections_fragment(mcp_summary: list[dict[str, Any]] | None) -> str:
-    """Compact summary of connected MCP integrations with tool names."""
-    if not mcp_summary:
-        return ""
-    lines = ["**Connected Integrations:**"]
-    for server in mcp_summary:
-        name = server.get("name", "unknown")
-        tools = server.get("tools", [])
-        tool_count = server.get("tool_count", len(tools))
-        if tools:
-            example_names = sorted(tools)[:3]
-            line = f"- **{name}** ({tool_count} tools): {', '.join(example_names)}"
-            if tool_count > 3:
-                line += f", +{tool_count - 3} more"
-            lines.append(line)
-        else:
-            lines.append(f"- **{name}**")
-    lines.append("\n*Use tool names exactly as shown. MCP tools are called directly by name.*")
-    return "\n".join(lines)
 
 
 def _working_memory_fragment(session_context: dict[str, Any]) -> str:
@@ -172,7 +151,7 @@ def _render_attachments(attachments: list[Attachment]) -> str:
     lines = []
     for attachment in attachments:
         if attachment.purpose == "screenshot":
-            lines.append("- a screenshot of the current screen (call look_at_screen to see it)")
+            lines.append("- a screenshot of the current screen (not attached to the message)")
             continue
         label = attachment.name or attachment.kind
         if attachment.description:
@@ -260,22 +239,19 @@ def build_system_prompt(
     available_tools: ToolSet,
     session_context: dict[str, Any],
     working_memory: bool = False,
-    mcp_summary: list[dict[str, Any]] | None = None,
     artifacts: dict[str, str],
     profile: AssistantProfile | None = None,
     artifact_extras: list[tuple[str, str]] | None = None,
 ) -> PromptResult:
     """Compose system prompt from module fragments.
 
-    Order: the profile's artifacts in their declared order, then the
-    connected MCP servers, then working memory (dynamic, last) when
-    ``working_memory`` is set.
+    Order: the profile's artifacts in their declared order, then working
+    memory (dynamic, last) when ``working_memory`` is set.
 
     Args:
         available_tools: Tools available for this request.
         session_context: Session context dict (may contain working memory).
         working_memory: Whether the session's working memory is rendered.
-        mcp_summary: MCP server connection summary for prompt context.
         artifacts: Artifact name→text map, normally ``ArtifactService.active_texts()``.
         profile: The assistant profile naming and ordering the artifacts;
             the neutral built-in when omitted.
@@ -303,10 +279,6 @@ def build_system_prompt(
         if content:
             named_fragments.append((artifact.name, content))
     named_fragments.extend((name, text) for name, text in artifact_extras or () if text.strip())
-
-    mcp_frag = mcp_connections_fragment(mcp_summary)
-    if mcp_frag:
-        named_fragments.append(("mcp_connections", mcp_frag))
 
     # Dynamic fragments (change per request); everything before them is stable.
     stable_count = len(named_fragments)

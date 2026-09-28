@@ -74,7 +74,6 @@ class AgentSetupContext:
     usage_limits: Any  # pydantic_ai.usage.UsageLimits
     output_type: Any  # str
     effective_config: Any  # EffectiveConfig
-    mcp_summary: list[dict[str, Any]] | None
     deps: Any = None
     profile_name: str | None = None
     prompt_record: dict[str, Any] | None = None
@@ -142,7 +141,7 @@ def strip_screenshot_from_tool_result(tool_result: Any) -> Any:
     """
     if isinstance(tool_result, str):
         if tool_result.startswith("data:image/"):
-            return "[screenshot captured — use look_at_screen to inspect]"
+            return "[screenshot captured]"
         return tool_result
     if isinstance(tool_result, list):
         return [strip_screenshot_from_tool_result(item) for item in tool_result]

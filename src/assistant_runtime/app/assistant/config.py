@@ -1,6 +1,6 @@
 """Configuration for the assistant module."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,16 +32,27 @@ class AssistantConfig(BaseModel):
         description="Model override for assistant conversations. None = use LLM primary_model.",
     )
     thinking_budget: int | None = Field(
-        default=10000,
+        default=None,
         ge=1,
         le=100000,
-        description="Thinking token budget for extended thinking. None = disabled.",
+        description=(
+            "Thinking token budget, mapped to the provider's thinking settings. None sends "
+            "no thinking setting, so the provider's default applies."
+        ),
     )
-    temperature: float = Field(
-        default=1.0,
+    temperature: float | None = Field(
+        default=None,
         ge=0.0,
         le=2.0,
-        description="LLM temperature for response generation.",
+        description="Sampling temperature. None sends none, so the provider's default applies.",
+    )
+    model_settings: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Native Pydantic AI ModelSettings for conversation turns (env: JSON), such as "
+            "max_tokens, thinking or a provider's own keys. Merged over the runtime's defaults "
+            "and under the tunables; keys are passed to Pydantic AI unchanged."
+        ),
     )
     max_turns: int = Field(
         default=10,

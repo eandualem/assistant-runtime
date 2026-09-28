@@ -107,7 +107,6 @@ def _agent_context(agent: Any) -> AgentSetupContext:
         usage_limits=UsageLimits(request_limit=10),
         output_type=str,
         effective_config=effective_config,
-        mcp_summary=None,
     )
 
 
@@ -486,7 +485,7 @@ class TestStreamingService:
         run.enqueue.assert_called_once()
         queued_request = run.enqueue.call_args.args[0]
         assert len(queued_request.parts) == 2
-        assert "Additional user steering" in queued_request.parts[0].content
+        assert queued_request.parts[0].content == "Focus on Planner only"
         assert run.enqueue.call_args.kwargs == {"priority": "asap"}
         assert sessions.get_context("sess-1")["pending_steering_ids"] == [
             "steering-1",

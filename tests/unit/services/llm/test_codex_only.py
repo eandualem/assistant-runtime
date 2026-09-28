@@ -77,7 +77,7 @@ async def test_health_and_defaults_do_not_fallback_to_configured_api_provider(mo
     monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
     for name in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "CEREBRAS_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    service = LlmService(LLMConfig(codex_only=True))
+    service = LlmService(LLMConfig(codex_only=True, provider_fallback=True))
     await service.start()
     try:
         health = await service.health_check()
@@ -96,7 +96,9 @@ async def test_other_providers_stay_routable_under_the_subscription_guard(monkey
     monkeypatch.setenv("CEREBRAS_API_KEY", "cerebras-key")
     for name in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    service = LlmService(LLMConfig(codex_only=True, primary_model="openai:gpt-5.6-sol"))
+    service = LlmService(
+        LLMConfig(codex_only=True, provider_fallback=True, primary_model="openai:gpt-5.6-sol")
+    )
     await service.start()
     try:
         assert (await service.health_check())["providers"] == ["cerebras"]

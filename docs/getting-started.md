@@ -48,11 +48,11 @@ A missing optional service may produce a warning without preventing chat.
 `doctor` currently reports the missing API key even when you plan to use
 [subscription authentication](subscription.md); check that path separately.
 
-Any one provider key is enough. The default chat model is
-`anthropic:claude-opus-5`; with only another supported provider's key,
-the runtime uses that provider's default instead. See
-[provider defaults](configuration.md#providers-and-models). Set
-`LLM__PRIMARY_MODEL=provider:name` to choose.
+The default chat model is `anthropic:claude-opus-5`, which needs
+`ANTHROPIC_API_KEY`. With another provider's key, set
+`LLM__PRIMARY_MODEL=provider:name`, or set `LLM__PROVIDER_FALLBACK=true` to
+use that provider's default model. See
+[providers and models](configuration.md#providers-and-models).
 
 ## 3. Talk to it
 

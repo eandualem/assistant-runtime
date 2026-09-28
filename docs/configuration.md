@@ -35,18 +35,20 @@ At least one provider must be usable.
 | `LLM__PROVIDERS_JSON` | Alternative: `[{"provider":"anthropic","api_key":"..."}]` (provider and key only; other fields are rejected) |
 | `LLM__PRIMARY_MODEL` | Chat model, default `anthropic:claude-opus-5` |
 | `LLM__SUMMARIZATION_MODEL` | History summaries and lightweight tasks, default `anthropic:claude-haiku-4-5` |
+| `LLM__PROVIDER_FALLBACK` | `false`; when `true`, a model whose provider has no credentials is replaced by a configured provider's default (see below) |
 | `OAUTH__ENCRYPTION_KEY` | Fernet key; enables the ChatGPT/Codex OAuth path and the encrypted provider-key store (`PUT /api/providers/{provider}/api-key`) |
 | `LLM__CODEX_MODELS` | JSON list of OpenAI model names to route through the ChatGPT/Codex subscription when connected; empty routes every `openai:` model |
 | `LLM__CODEX_ONLY` | `false`; when `true`, the subscription guard: every `openai:` model must go through the ChatGPT/Codex subscription (a disconnected subscription is an error, never an `OPENAI_API_KEY` fallback), and an `OPENAI_API_KEY` does not make openai available. Other providers with a configured key stay routable; `ASSISTANT__REQUEST_MODELS` limits what a request may pick. Startup-only; voice and media have separate credentials |
 | `LLM__CODEX_SERVICE_TIER` | Unset by default (omit the wire field); `fast` maps to Codex wire `service_tier: "priority"`, `default` requests standard processing. The startup fallback for the `codex_service_tier` tunable, which a request or the runtime overlay can set per turn (see `ASSISTANT__REQUEST_SERVICE_TIER`). Applies to Codex-authenticated `openai:` calls only, including auxiliaries; fast consumes more subscription credits |
 
-If the primary or summarization model's provider has no credentials but
-another provider does, that provider's default is used instead and a
-warning is logged: `openai:gpt-5.6-terra` / `openai:gpt-5.6-luna`,
-`google:gemini-3.1-pro-preview` / `google:gemini-3.8-flash`,
-`openrouter:x-ai/grok-4.1-fast`, or
-`cerebras:gpt-oss-120b` / `cerebras:qwen-3.8-27b`. Set `LLM__PRIMARY_MODEL` to choose
-explicitly. The summarization model is used for history compaction unless
+The configured models are used as they are: a model whose provider has no
+credentials fails its turn, and `doctor` and `chat` report the missing key.
+With `LLM__PROVIDER_FALLBACK=true`, if the primary or summarization model's
+provider has no credentials but another provider does, that provider's
+default is used instead and a warning is logged: `openai:gpt-5.6-terra` /
+`openai:gpt-5.6-luna`, `google:gemini-3.1-pro-preview` /
+`google:gemini-3.8-flash`, `openrouter:x-ai/grok-4.1-fast`, or
+`cerebras:gpt-oss-120b` / `cerebras:qwen-3.8-27b`. The summarization model is used for history compaction unless
 `HISTORY__SUMMARIZATION_MODEL` or the runtime `summarization_model`
 override is set. Working-memory extraction uses
 `HISTORY__WORKING_MEMORY_MODEL` or the runtime `working_memory_model`
@@ -55,10 +57,18 @@ override when set, and otherwise the summarization model.
 Model ids are `provider:name`, lowercase. Providers: `anthropic`,
 `openai`, `google` (Gemini through the Google AI API), `google-cloud`
 (Vertex), `openrouter`, `cerebras`. `GET /api/models` lists the catalog with each
-provider's status. Provider-specific settings are derived from the model:
-current Claude models get adaptive thinking with an effort level mapped
-from `thinking_budget`; older ones get a fixed budget; models that reject
-sampling parameters are not sent a temperature.
+provider's status.
+
+The model settings of a turn come in three layers, the later one winning:
+the runtime's defaults for the provider (an output limit of 8192 tokens,
+Anthropic cache points, OpenRouter's `data_collection: deny`, OpenAI
+response chaining), then `ASSISTANT__MODEL_SETTINGS`, then the tunables.
+A tunable that is not set sends nothing, so the provider's default applies.
+A `thinking_budget` becomes the provider's own setting: an effort level on
+current Claude models and OpenAI reasoning models, `budget_tokens` on older
+Claude models (added to `max_tokens`), a thinking budget on Google and
+OpenRouter. A `temperature` is left out where the model rejects it (Claude
+with thinking, models without sampling settings).
 
 ### Access (`ACCESS__*`)
 
@@ -76,8 +86,9 @@ sampling parameters are not sent a temperature.
 | Setting | Default | Meaning |
 |---|---|---|
 | `default_model` | unset (uses `LLM__PRIMARY_MODEL`) | model override |
-| `thinking_budget` | `10000` | thinking tokens; unset disables thinking |
-| `temperature` | `1.0` | sampling temperature where the model accepts one |
+| `thinking_budget` | unset | thinking tokens, mapped to the provider's thinking setting; unset sends none, so the provider's default applies |
+| `temperature` | unset | sampling temperature where the model accepts one; unset sends none |
+| `model_settings` | `{}` | native Pydantic AI `ModelSettings` for conversation turns, as JSON, passed on unchanged: for example `{"max_tokens": 32000, "thinking": "high"}` for the output limit and reasoning effort, or a provider's own keys such as `anthropic_cache`. An output limit set here is kept as it is, so on Claude models that take `budget_tokens` it must exceed the thinking budget; without one, the default limit leaves room for it. The subscription route leaves out what its backend does not accept ([subscription](subscription.md)) |
 | `subagent_model` | unset (the primary model) | model for `run_subagent`; the `subagent_model` tunable's startup default |
 | `subagent_thinking_budget` | unset | thinking budget for `run_subagent`; the tunable's startup default |
 | `codex_service_tier` | unset (uses `LLM__CODEX_SERVICE_TIER`) | the turn's Codex service tier; the tunable's startup default |
@@ -91,7 +102,8 @@ sampling parameters are not sent a temperature.
 
 `max_turns`, `thinking_budget` and `subagent_thinking_budget` are ceilings:
 the runtime overlay (`PATCH /api/settings`, administration) may change
-them, a request's `config` can only lower them.
+them, a request's `config` can only lower them. While a budget is unset, a
+request cannot turn it on.
 
 ### Per-turn budget (`ASSISTANT__BUDGET__*`)
 
@@ -137,7 +149,6 @@ The default assistant profile is `AssistantDefinition.profile` when set, then
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `debounce_seconds` | `0.05` | text delta coalescing |
 | `max_events_per_stream` | `10000` | safety limit |
 | `stream_timeout_seconds` | `300` | one turn |
 | `emit_debug_events` | `false` | `assistant:debug` events with the system prompt, history and tool selection; enable only for trusted clients: the events carry the system prompt and history of the caller's own sessions |
@@ -150,7 +161,7 @@ The default assistant profile is `AssistantDefinition.profile` when set, then
 |---|---|---|
 | `max_tools_per_request` | `64` | warn above this many tools in one request |
 | `tool_timeout_seconds` | `30` | seconds a backend tool may run per attempt; a `ToolDefinition.timeout` overrides it; the model gets a `TOOL_TIMEOUT` error. Only tools declared `idempotent` are retried once on a timeout or connection error |
-| `builtin_tools` | `["time", "screen", "artifacts", "subagent", "media", "video"]` | selected built-in groups; `[]` disables all, existing service requirements still apply |
+| `builtin_tools` | `[]` | built-in groups to enable from `time`, `screen`, `artifacts`, `subagent`, `media`, `video`; an enabled group is registered only when it can work (`media` needs an OpenAI or Google key, `video` a Runway or Luma key; point the default media models at a provider with a key) |
 | `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup. `approvals` is privileged (it types into other agents' terminals) and is registered only when named here |
 | `host_tools` | `{}` | tools the host executes: `{"name": {"description": "...", "parameters": <JSON schema>}}`; names must match `^[A-Za-z0-9_-]{1,64}$` |
 | `host_tools_path` | unset | a JSON file with the same shape, merged over `host_tools` |

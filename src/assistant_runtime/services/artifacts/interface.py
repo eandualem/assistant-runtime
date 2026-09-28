@@ -168,22 +168,32 @@ class ArtifactService:
         With ``DATABASE__REQUIRED`` the active text is then always a
         versioned record; the definition's default is only its seed. A
         changed default is stored and activated as a new seed only while
-        every stored version is a seed; any host or assistant version stops
-        that for good. Subject-scoped artifacts are seeded by nobody: their
-        subjects are not known in advance.
+        every stored version is a seed, and an emptied default removes those
+        seeds; any host or assistant version stops both for good.
+        Subject-scoped artifacts are seeded by nobody: their subjects are not
+        known in advance.
         """
         assert self._store is not None
         for view in self._views.values():
             scope = view._profile.name
             for artifact in view._profile.artifacts:
                 content = (artifact.default or "").strip()
-                if not content or artifact.scope != "profile":
+                if artifact.scope != "profile":
                     continue
                 async with self._store.transaction(scope, artifact.name) as store:
                     newest = await store.get_history(scope, artifact.name, 1)
                     if newest and not await _seed_replaceable(
                         store, scope, artifact.name, newest[0], content
                     ):
+                        continue
+                    if not content:
+                        if newest:
+                            await store.delete(scope, artifact.name)
+                            logger.info(
+                                "Removed seeded artifact: its default is empty",
+                                profile=scope,
+                                name=artifact.name,
+                            )
                         continue
                     row = await store.propose(scope, artifact.name, content, SEED, actor_kind=SEED)
                     await store.activate(scope, artifact.name, row.version)

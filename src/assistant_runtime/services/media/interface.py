@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from loguru import logger
 
+from assistant_runtime.model_catalog import MEDIA_PROVIDER_ENV_VARS, PROVIDER_ENV_VARS
 from assistant_runtime.services.media._cache import ImageCache
 from assistant_runtime.services.media._job_tracker import JobTracker
 from assistant_runtime.services.media._providers import generate_google, generate_openai
@@ -112,6 +114,18 @@ class MediaService:
     def set_runtime_settings(self, runtime_settings: object | None) -> None:
         """Attach live runtime settings after service construction."""
         self._runtime_settings = runtime_settings
+
+    def can_generate_images(self) -> bool:
+        """Whether an image provider has a key (OpenAI or Google).
+
+        A call may name its model, and the default can change at runtime, so
+        any provider with a key can serve the tool.
+        """
+        return any(_has_key(PROVIDER_ENV_VARS[p]) for p in _PROVIDER_GENERATORS)
+
+    def can_generate_videos(self) -> bool:
+        """Whether a video provider has a key (Runway or Luma)."""
+        return any(_has_key(MEDIA_PROVIDER_ENV_VARS[p]) for p in _VIDEO_PROVIDERS)
 
     async def generate_image(
         self,
@@ -353,3 +367,7 @@ def _video_provider(provider: str) -> tuple[Any, Any]:
         raise ProviderError(f"No video handler for provider '{provider}'")
     # Resolved at call time so the module attributes can be replaced (tests, hosts).
     return globals()[names[0]], globals()[names[1]]
+
+
+def _has_key(variable: str) -> bool:
+    return bool(os.environ.get(variable, "").strip())

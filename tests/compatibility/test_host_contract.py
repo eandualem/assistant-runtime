@@ -62,7 +62,7 @@ async def test_host_context_attachments_reach_the_turn(runtime, script):
     prompt = next(p for m in script.requests[0] for p in m.parts if isinstance(p, UserPromptPart))
     assert isinstance(prompt.content, list)
     assert prompt.content[0].startswith("<host_context>")
-    assert "call look_at_screen to see it" in prompt.content[0]
+    assert "current screen (not attached to the message)" in prompt.content[0]
     assert "photo (attached to the message)" in prompt.content[0]
     assert prompt.content[1] == "Look"
     assert isinstance(prompt.content[2], BinaryContent)

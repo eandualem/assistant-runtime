@@ -72,7 +72,7 @@ class TestBuildModelSettings:
     def test_anthropic_defaults(self):
         settings = build_model_settings(model_id="anthropic:claude-sonnet-4-6")
         assert isinstance(settings, dict)
-        assert settings["temperature"] == 0.1
+        assert "temperature" not in settings
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
         assert settings["anthropic_cache_instructions"] is True
         assert settings["anthropic_cache_tool_definitions"] is True
@@ -90,7 +90,7 @@ class TestBuildModelSettings:
             model_id="anthropic:claude-sonnet-4-6", thinking_budget=10_000
         )
         assert isinstance(settings, dict)
-        assert settings["temperature"] == 1.0  # forced for thinking on models that allow sampling
+        assert "temperature" not in settings  # extended thinking takes the default
         # Adaptive thinking is paced by effort; the budget must not inflate max_tokens.
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
         assert settings["anthropic_thinking"] == {"type": "adaptive"}
@@ -143,19 +143,73 @@ class TestBuildModelSettings:
         assert isinstance(settings, dict)
         assert settings["temperature"] == 0.5
 
-    def test_anthropic_thinking_ignores_temperature_override(self):
+    def test_anthropic_thinking_leaves_out_temperature(self):
         settings = build_model_settings(
             model_id="anthropic:claude-sonnet-4-6",
             thinking_budget=5000,
             temperature=0.5,
         )
         assert isinstance(settings, dict)
-        assert settings["temperature"] == 1.0  # thinking forces 1.0
+        assert "temperature" not in settings
 
     def test_anthropic_max_tokens_override(self):
         settings = build_model_settings(model_id="anthropic:claude-sonnet-4-6", max_tokens=4000)
         assert isinstance(settings, dict)
         assert settings["max_tokens"] == 4000
+
+    def test_application_settings_sit_between_defaults_and_tunables(self):
+        settings = build_model_settings(
+            model_id="anthropic:claude-sonnet-4-6",
+            temperature=0.3,
+            base={"max_tokens": 16_000, "anthropic_cache": False, "temperature": 0.9},
+        )
+        assert settings["max_tokens"] == 16_000
+        assert settings["anthropic_cache"] is False
+        assert settings["temperature"] == 0.3
+
+    def test_thinking_from_any_layer_leaves_out_temperature(self):
+        tunable_thinking = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5",
+            thinking_budget=4000,
+            base={"temperature": 0.3},
+        )
+        assert "temperature" not in tunable_thinking
+        for thinking in ({"thinking": "high"}, {"anthropic_thinking": {"type": "adaptive"}}):
+            settings = build_model_settings(
+                model_id="anthropic:claude-sonnet-4-6", temperature=0.3, base=thinking
+            )
+            assert "temperature" not in settings, thinking
+        disabled = build_model_settings(
+            model_id="anthropic:claude-sonnet-4-6", temperature=0.3, base={"thinking": False}
+        )
+        assert disabled["temperature"] == 0.3
+
+    def test_default_limit_keeps_room_for_application_thinking(self):
+        native = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5",
+            base={"anthropic_thinking": {"type": "enabled", "budget_tokens": 10_000}},
+        )
+        assert native["max_tokens"] == 10_000 + _RESPONSE_MAX_TOKENS
+        unified = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5", base={"thinking": "high"}
+        )
+        assert unified["max_tokens"] == 16_384 + _RESPONSE_MAX_TOKENS
+        adaptive = build_model_settings(
+            model_id="anthropic:claude-sonnet-4-6", base={"thinking": "high"}
+        )
+        assert adaptive["max_tokens"] == _RESPONSE_MAX_TOKENS
+        explicit = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5", base={"thinking": "high", "max_tokens": 20_000}
+        )
+        assert explicit["max_tokens"] == 20_000  # the application's own limit is kept
+
+    def test_budget_headroom_uses_the_application_output_limit(self):
+        settings = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5",
+            thinking_budget=10_000,
+            base={"max_tokens": 2_000},
+        )
+        assert settings["max_tokens"] == 12_000
 
     def test_anthropic_has_timeout(self):
         settings = build_model_settings(model_id="anthropic:claude-sonnet-4-6")
@@ -171,7 +225,7 @@ class TestBuildModelSettings:
     def test_openrouter_defaults(self):
         settings = build_model_settings(model_id="openrouter:anthropic/claude-3")
         assert isinstance(settings, dict)
-        assert settings["temperature"] == 0.1
+        assert "temperature" not in settings
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
         assert settings["openrouter_provider"] == {
             "data_collection": "deny",
@@ -183,14 +237,14 @@ class TestBuildModelSettings:
             model_id="openrouter:anthropic/claude-3", thinking_budget=10_000
         )
         assert isinstance(settings, dict)
-        assert settings["openrouter_reasoning"] == {"effort": "high"}
-        # OpenRouter doesn't force temperature 1.0 for thinking
-        assert settings["temperature"] == 0.1
+        assert settings["openrouter_reasoning"] == {"max_tokens": 10_000}
+        assert settings["max_tokens"] == 10_000 + _RESPONSE_MAX_TOKENS
+        assert "temperature" not in settings
 
     def test_generic_provider_returns_dict(self):
         settings = build_model_settings(model_id="openai:gpt-4o")
         assert isinstance(settings, dict)
-        assert settings["temperature"] == 0.1
+        assert "temperature" not in settings
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
         # Generic dict should NOT have provider-specific keys
         assert "anthropic_cache_instructions" not in settings
@@ -205,7 +259,7 @@ class TestBuildModelSettings:
     def test_openai_gpt5_defaults_without_reasoning(self):
         settings = build_model_settings(model_id="openai:gpt-5.4")
         assert isinstance(settings, dict)
-        assert settings["temperature"] == 0.1
+        assert "temperature" not in settings
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
         assert settings["openai_previous_response_id"] == "auto"
         assert settings["openai_send_reasoning_ids"] is False
@@ -254,7 +308,7 @@ class TestBuildModelSettingsGoogle:
     def test_google_gla_defaults(self):
         settings = build_model_settings(model_id="google:gemini-3-flash-preview")
         assert isinstance(settings, dict)
-        assert settings["temperature"] == 0.1
+        assert "temperature" not in settings
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
 
     def test_google_gla_no_thinking_omits_config(self):
@@ -300,7 +354,7 @@ class TestBuildModelSettingsGoogle:
     def test_google_vertex_detected(self):
         settings = build_model_settings(model_id="google-vertex:gemini-3-flash")
         assert isinstance(settings, dict)
-        assert settings["temperature"] == 0.1
+        assert "temperature" not in settings
 
     def test_google_gla_prefix_with_thinking(self):
         """google: prefix should hit the Google branch with thinking config."""
