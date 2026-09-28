@@ -99,6 +99,10 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
   model or Codex service tier), set with `POST /api/agents` and changed with
   `PATCH /api/agents/{id}`. With Postgres, apply migration `0037` with
   `assistant-runtime migrate`. (#224)
+- `GET /api/models` offers `openai:gpt-6-sol` and `openai:gpt-6-luna`, and the
+  whole GPT-6 family gets the OpenAI reasoning settings (reasoning effort from
+  the thinking budget, a reasoning summary, response chaining) and sends no
+  temperature. (#232)
 
 ### Changed
 
@@ -199,6 +203,10 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - With Postgres, a steering id already used in another session is refused
   with the duplicate error, instead of sending the Socket.IO client the
   database error with its SQL statement. (#229)
+- Name checks refuse a value with a trailing newline: host-state namespaces and
+  keys, artifact, collection and profile names, local session names, note
+  filenames, confirmation hashes and help page names. Before, `$` let
+  `PUT /api/host-state/a%0A/key` store the namespace `"a\n"`. (#230)
 
 ### Upgrading from 0.3.0
 
