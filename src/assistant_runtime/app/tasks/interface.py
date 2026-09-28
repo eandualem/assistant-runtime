@@ -15,9 +15,10 @@ session until it is stopped. Each message sent to it (by the model's
 ``message_agent`` tool or by the host) runs as the next turn in that
 session, one at a time, in order, within the same ``max_concurrent``; its
 end is published as ``agent_message_finished`` with the sender's session.
-The host moves an agent to a fresh session when its conversation should
-start over. A restart keeps the agents and marks unfinished messages
-``interrupted``.
+Each message's turn sends the agent's ``config`` as a request's config, read
+when it starts, as its session is. The host moves an agent to a fresh
+session when its conversation should start over. A restart keeps the agents
+and marks unfinished messages ``interrupted``.
 """
 
 from __future__ import annotations
@@ -32,7 +33,9 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from loguru import logger
 from pydantic import ValidationError
 
+from assistant_runtime.app.assistant.config import AssistantConfig, TunableOverrides
 from assistant_runtime.app.assistant.models import AssistantRequest
+from assistant_runtime.app.settings import outside_request_allowance
 from assistant_runtime.app.tasks._store import (
     AgentTakenError,
     DatabaseTaskStore,
@@ -83,8 +86,11 @@ class TaskService:
         events: EventHub | None = None,
         tool_service: ToolService | None = None,
         default_profile: str | None = None,
+        assistant_config: AssistantConfig | None = None,
     ) -> None:
         self._config = config
+        # Its request allowances decide which agent configs are accepted.
+        self._assistant_config = assistant_config or AssistantConfig()
         self._tool_service = tool_service
         self._default_profile = default_profile
         self._reserved = 0
@@ -229,16 +235,20 @@ class TaskService:
         profile: str | None = None,
         subject: str | None = None,
         session_id: str | None = None,
+        config: TunableOverrides | None = None,
         principal: Principal | None = None,
     ) -> AgentRecord:
         """Start a persistent agent for (profile, subject); it keeps one session until stopped.
 
         ``session_id`` names the session it continues (a new one is created
-        by its first message); by default it gets ``agent-<id>``.
+        by its first message); by default it gets ``agent-<id>``. ``config``
+        is what its turns send as a request's config.
         """
         self._require_enabled()
         store = self._require_store()
         self._check_names(profile, subject, session_id)
+        if config is not None:
+            self._check_config(config)
         principal = principal or LOCAL_PRINCIPAL
         agent_id = str(uuid.uuid4())
         record = AgentRecord(
@@ -249,6 +259,7 @@ class TaskService:
             # The default resolved now, as for tasks: omitting it and naming it are one agent.
             profile=profile or self._default_profile,
             subject=subject,
+            config=config.model_dump(exclude_none=True) if config is not None else {},
         )
         async with self._agent_admission:
             await self._check_free(record.session_id, identity=(record.profile, record.subject))
@@ -283,6 +294,27 @@ class TaskService:
             self._streaming.unpin_session(agent.session_id)
         logger.info("Agent moved", agent_id=agent_id, session_id=session_id)
         return moved or agent
+
+    async def configure_agent(
+        self, agent_id: str, config: TunableOverrides, *, principal: Principal | None = None
+    ) -> AgentRecord:
+        """Change the agent's config as ``PATCH /api/settings`` changes the runtime's.
+
+        A field ``config`` leaves unset is unchanged and ``None`` clears one;
+        messages that start from now on run with the result.
+        """
+        store = self._require_store()
+        self._check_config(config)
+        async with self._agent_admission:
+            agent = await self.get_agent(agent_id, principal)
+            if agent.status != "active":
+                raise AgentConflictError(f"Agent '{agent_id}' is stopped")
+            merged = {**agent.config, **config.model_dump(exclude_unset=True)}
+            configured = await store.update_agent(
+                agent_id, config={k: v for k, v in merged.items() if v is not None}
+            )
+        logger.info("Agent configured", agent_id=agent_id)
+        return configured or agent
 
     async def stop_agent(self, agent_id: str, principal: Principal | None = None) -> AgentRecord:
         """Stop the agent; its queued and running messages end ``cancelled``."""
@@ -447,6 +479,8 @@ class TaskService:
                 content=record.content,
                 profile=agent.profile,
                 subject=agent.subject,
+                # Always an object: a missing config would reuse the session's last one.
+                config=TunableOverrides(**agent.config),
             )
 
         await self._execute(
@@ -628,6 +662,19 @@ class TaskService:
         except ValidationError as e:
             names = "profile, subject or session" if session_id else "profile or subject"
             raise TaskError(f"Invalid {names}: {e.errors()[0]['msg']}") from e
+
+    def _check_config(self, config: TunableOverrides) -> None:
+        """Refuse a value a turn would ignore; the allowances are fixed at startup."""
+        refused = [
+            f"{field}={value!r}"
+            for field, value in config.model_dump(exclude_none=True).items()
+            if outside_request_allowance(self._assistant_config, field, value)
+        ]
+        if refused:
+            raise TaskError(
+                "Not allowed in a request's config (ASSISTANT__REQUEST_MODELS, "
+                f"ASSISTANT__REQUEST_SERVICE_TIER): {', '.join(refused)}"
+            )
 
     async def _check_free(
         self, session_id: str, *, identity: tuple[str | None, str | None] | None = None

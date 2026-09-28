@@ -93,7 +93,7 @@ covers every task in the database, so run tasks in one process per
 database; a task's end is recorded once, and a later terminal update
 changes nothing. Without Postgres, tasks live in process memory and are
 lost on restart. Persistent agents are rows in `agents` (their current
-session and status) and their messages rows in `agent_messages`; a restart
+session, status and config) and their messages rows in `agent_messages`; a restart
 keeps the agents and marks every unfinished message in the database
 `interrupted` in the same way, so the one-process rule covers agents too.
 

@@ -319,8 +319,10 @@ execution, history, serialization, or the upstream dependency; see
   `message_agent`, or `POST /api/agents/{id}/messages`) runs as its next turn
   in that session, one at a time, within the same `TASKS__MAX_CONCURRENT`,
   and never starts a task; `agent_message_finished` carries the sender's
-  `parent_session_id`. A restart keeps agents and marks unfinished messages
-  `interrupted`. Docs: `docs/api.md`.
+  `parent_session_id`. The turn sends the agent's `config` (request tier),
+  read when it starts, always as an object so a session's last request
+  config is never reused. A restart keeps agents and marks unfinished
+  messages `interrupted`. Docs: `docs/api.md`.
 - **Decisions are a capability of the application, not of the model.**
   `services/decisions` sends program state plus typed questions (`choice`,
   `score`, `noul`) to a `DecisionProvider` (TypeSafe's System One endpoint in

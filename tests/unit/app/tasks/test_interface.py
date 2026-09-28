@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from assistant_runtime.app.assistant.config import AssistantConfig, TunableOverrides
 from assistant_runtime.app.tasks.config import TasksConfig
 from assistant_runtime.app.tasks.exceptions import (
     AgentConflictError,
@@ -35,6 +36,7 @@ class FakeStreaming:
         self.gates: dict[str, asyncio.Event] = {}
         self.started: list[str] = []
         self.sessions: list[str] = []
+        self.configs: list[dict] = []
         self.pins: dict[str, int] = {}
         self.running = 0
         self.peak = 0
@@ -57,6 +59,9 @@ class FakeStreaming:
     async def run_message(self, request, *, principal=None):
         self.started.append(request.content)
         self.sessions.append(request.session_id)
+        self.configs.append(
+            request.config.model_dump(exclude_none=True) if request.config else None
+        )
         self.running += 1
         self.peak = max(self.peak, self.running)
         try:
@@ -436,6 +441,73 @@ class TestAgents:
         assert streaming.sessions == [agent.session_id, moved.session_id]
         named = await service.move_agent(agent.id, session_id="fresh-1", principal=ALICE)
         assert named.session_id == "fresh-1"
+
+    async def test_a_config_change_applies_to_messages_not_yet_started(self):
+        service, streaming, _ = await _service()
+        agent = await service.start_agent(
+            subject="agent-a",
+            config=TunableOverrides(default_model="openai:gpt-5.1", codex_service_tier="fast"),
+            principal=ALICE,
+        )
+        assert agent.to_dict()["config"] == {
+            "default_model": "openai:gpt-5.1",
+            "codex_service_tier": "fast",
+        }
+        await service.message_agent("m1", agent_id=agent.id, principal=ALICE)
+        await service.message_agent("m2", agent_id=agent.id, principal=ALICE)
+        await _settle()
+        # Left out is unchanged, None clears, a value sets.
+        configured = await service.configure_agent(
+            agent.id,
+            TunableOverrides.model_validate({"default_model": None, "temperature": 0.2}),
+            principal=ALICE,
+        )
+        assert configured.config == {"codex_service_tier": "fast", "temperature": 0.2}
+        streaming.gate("m1").set()
+        streaming.gate("m2").set()
+        await _settle()
+        assert streaming.configs == [
+            {"default_model": "openai:gpt-5.1", "codex_service_tier": "fast"},
+            {"codex_service_tier": "fast", "temperature": 0.2},
+        ]
+        # An agent without a config still sends one, so no earlier config is reused.
+        cleared = await service.configure_agent(
+            agent.id,
+            TunableOverrides.model_validate({"codex_service_tier": None, "temperature": None}),
+            principal=ALICE,
+        )
+        assert cleared.config == {}
+        await service.message_agent("m3", agent_id=agent.id, principal=ALICE)
+        streaming.gate("m3").set()
+        await _settle()
+        assert streaming.configs[-1] == {}
+
+    async def test_a_config_a_turn_would_ignore_is_refused(self):
+        service = TaskService(
+            TasksConfig(enabled=True),
+            FakeStreaming(),
+            assistant_config=AssistantConfig(
+                request_models=["openai:gpt-5.1"], request_service_tier=False
+            ),
+        )
+        await service.start()
+        with pytest.raises(TaskError, match="default_model"):
+            await service.start_agent(
+                subject="agent-a", config=TunableOverrides(default_model="openai:other")
+            )
+        with pytest.raises(TaskError, match="codex_service_tier"):
+            await service.start_agent(
+                subject="agent-a", config=TunableOverrides(codex_service_tier="fast")
+            )
+        agent = await service.start_agent(
+            subject="agent-a", config=TunableOverrides(subagent_model="openai:gpt-5.1")
+        )
+        with pytest.raises(TaskError, match="subagent_model"):
+            await service.configure_agent(agent.id, TunableOverrides(subagent_model="openai:other"))
+        assert (await service.get_agent(agent.id)).config == {"subagent_model": "openai:gpt-5.1"}
+        await service.stop_agent(agent.id)
+        with pytest.raises(AgentConflictError):
+            await service.configure_agent(agent.id, TunableOverrides(temperature=0.2))
 
     async def test_stopping_cancels_its_messages_and_refuses_new_ones(self):
         service, streaming, seen = await _service()

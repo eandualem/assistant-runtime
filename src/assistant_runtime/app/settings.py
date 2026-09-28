@@ -208,6 +208,17 @@ MODEL_FIELDS: frozenset[str] = frozenset(
 )
 
 
+def outside_request_allowance(frozen_config: AssistantConfig, field: str, value: Any) -> bool:
+    """Whether the host lets no request pick this value, so a turn keeps the host's own.
+
+    Both allowances are fixed at startup: ``request_models`` for every
+    ``*_model`` tunable (when set) and ``request_service_tier``.
+    """
+    if field in MODEL_FIELDS:
+        return bool(frozen_config.request_models) and value not in frozen_config.request_models
+    return field == "codex_service_tier" and not frozen_config.request_service_tier
+
+
 def resolve_effective_config(
     frozen_config: AssistantConfig,
     runtime_settings: RuntimeSettings | None = None,
@@ -220,7 +231,6 @@ def resolve_effective_config(
     """
     request_values = per_request.model_dump(exclude_none=True) if per_request else {}
     runtime_values = runtime_settings.overrides if runtime_settings else {}
-    allowed_models = frozenset(frozen_config.request_models)
     refused: dict[str, Any] = {}
 
     def _trusted(field: str) -> Any:
@@ -232,10 +242,7 @@ def resolve_effective_config(
         if field in request_values:
             requested = request_values[field]
             ceiling = _trusted(field)
-            if field in MODEL_FIELDS and allowed_models and requested not in allowed_models:
-                refused[field] = requested
-                return ceiling
-            if field == "codex_service_tier" and not frozen_config.request_service_tier:
+            if outside_request_allowance(frozen_config, field, requested):
                 refused[field] = requested
                 return ceiling
             if field in CEILING_FIELDS:
