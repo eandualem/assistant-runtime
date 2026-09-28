@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -70,7 +70,8 @@ class AgentRecord:
     The host starts it for a profile and an optional subject (one active
     agent per pair), moves it to a fresh session when its conversation
     should start over, and stops it. ``session_id`` is where the next
-    message runs.
+    message runs; ``config`` holds the tunables its turns send as a
+    request's ``config`` (only those set).
     """
 
     id: str
@@ -79,6 +80,7 @@ class AgentRecord:
     created_by: str
     profile: str | None = None
     subject: str | None = None
+    config: dict[str, Any] = field(default_factory=dict)
     created_at: datetime | None = None
     stopped_at: datetime | None = None
 
@@ -88,6 +90,7 @@ class AgentRecord:
             "session_id": self.session_id,
             "profile": self.profile,
             "subject": self.subject,
+            "config": dict(self.config),
             "status": self.status,
             "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,

@@ -12,6 +12,7 @@ from assistant_runtime.app.routes.agents import router
 from assistant_runtime.app.tasks.exceptions import (
     AgentConflictError,
     AgentNotFoundError,
+    TaskError,
     TasksDisabledError,
 )
 from assistant_runtime.app.tasks.models import AgentMessageRecord, AgentRecord
@@ -75,6 +76,34 @@ async def test_start_move_stop_and_message_an_agent():
     assert (sent.status_code, sent.json()["status"]) == (202, "queued")
 
 
+async def test_an_agents_config_is_set_at_start_and_patched():
+    async def start_agent(**kwargs):
+        assert kwargs["config"].model_dump(exclude_none=True) == {"default_model": "openai:m"}
+        return AGENT
+
+    async def configure_agent(agent_id, config, **kwargs):
+        # Only what the body names reaches the service; null clears, the rest stay.
+        assert (agent_id, config.model_dump(exclude_unset=True)) == (
+            "a1",
+            {"default_model": None, "codex_service_tier": "fast"},
+        )
+        return AGENT
+
+    app = _app(start_agent=start_agent, configure_agent=configure_agent)
+    started = await _call(app, "POST", "/agents", json={"config": {"default_model": "openai:m"}})
+    assert (started.status_code, started.json()["config"]) == (201, {})
+    patched = await _call(
+        app,
+        "PATCH",
+        "/agents/a1",
+        json={"config": {"default_model": None, "codex_service_tier": "fast"}},
+    )
+    assert patched.status_code == 200
+    # A tunable outside ``config``, or an unknown one, is refused rather than ignored.
+    for body in ({"default_model": "openai:m"}, {"config": {"model": "openai:m"}}):
+        assert (await _call(app, "PATCH", "/agents/a1", json=body)).status_code == 422
+
+
 async def test_administration_requires_the_admin_role():
     app = _app()
     app.dependency_overrides[get_principal] = lambda: Principal(id="bob")
@@ -85,6 +114,7 @@ async def test_administration_requires_the_admin_role():
         ("/agents/a1/messages", {"content": "x"}),
     ):
         assert (await _call(app, "POST", path, json=body)).status_code == 403
+    assert (await _call(app, "PATCH", "/agents/a1", json={})).status_code == 403
 
 
 async def test_errors_map_to_statuses():
@@ -97,8 +127,14 @@ async def test_errors_map_to_statuses():
     async def missing(*a, **k):
         raise AgentNotFoundError("no")
 
+    async def refused(*a, **k):
+        raise TaskError("Not allowed in a request's config")
+
     assert (await _call(_app(start_agent=disabled), "POST", "/agents", json={})).status_code == 503
     assert (await _call(_app(start_agent=taken), "POST", "/agents", json={})).status_code == 409
+    assert (
+        await _call(_app(configure_agent=refused), "PATCH", "/agents/a1", json={})
+    ).status_code == 422
     assert (await _call(_app(get_agent=missing), "GET", "/agents/a9")).status_code == 404
     assert (
         await _call(_app(message_agent=taken), "POST", "/agents/a1/messages", json={"content": "x"})

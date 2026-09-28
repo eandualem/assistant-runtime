@@ -23,6 +23,7 @@ async def register_tasks(
         default_profile=getattr(
             getattr(app_state, "assistant_service", None), "default_profile_name", None
         ),
+        assistant_config=settings.assistant,
     )
     app_state.task_service = service
     await lifecycle.register("task_service", service)

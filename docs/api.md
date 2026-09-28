@@ -404,14 +404,25 @@ the agent's session when its turn starts, so a move applies to messages
 still waiting. The same `TASKS__ENABLED` switch turns agents on; the model
 gets `message_agent` (by profile and subject), `list_agents` and
 `get_agent_message`, with the calling session as the sender. Starting,
-moving, stopping and messaging an agent over HTTP requires the `admin`
-role.
+configuring, moving, stopping and messaging an agent over HTTP requires the
+`admin` role.
+
+An agent's `config` takes the same fields as a request's `config` (the
+request tier: budgets can only be lowered). Each message's turn reads it
+when the turn starts, as it reads the agent's session, so a change applies
+to messages still waiting. `POST` and `PATCH` answer `422` for a value a turn
+would ignore: a `*_model` outside `ASSISTANT__REQUEST_MODELS` when that
+list is set, or `codex_service_tier` while `ASSISTANT__REQUEST_SERVICE_TIER`
+is off. A host shows an agent's effective values from its `config`, then
+`GET /api/settings` for the fields it leaves unset; a message's
+`usage.service_tiers` says which tier was served.
 
 | Route | Purpose |
 |---|---|
-| `POST /api/agents` `{"profile"?, "subject"?, "session_id"?}` | start an agent (`201`); its session is `agent-<id>` unless named; `409` when an active agent has that profile and subject or that session, `503` when disabled |
+| `POST /api/agents` `{"profile"?, "subject"?, "session_id"?, "config"?}` | start an agent (`201`); its session is `agent-<id>` unless named; `409` when an active agent has that profile and subject or that session, `422` for a refused `config`, `503` when disabled |
 | `GET /api/agents?status=` | the caller's agents newest first (every agent for an administrator); `status` is `active` or `stopped` |
-| `GET /api/agents/{id}` | one agent: `session_id`, `profile`, `subject`, `status`, times |
+| `GET /api/agents/{id}` | one agent: `session_id`, `profile`, `subject`, `config` (the fields set), `status`, times |
+| `PATCH /api/agents/{id}` `{"config"}` | change its config as `PATCH /api/settings` does: omitted fields are unchanged, `null` clears one; `409` when stopped, `422` for a refused value |
 | `POST /api/agents/{id}/session` `{"session_id"?}` | move the agent to a fresh session (a new id unless one is given); `409` when stopped or the session is taken |
 | `POST /api/agents/{id}/stop` | stop the agent; its queued and running messages end `cancelled` |
 | `POST /api/agents/{id}/messages` `{"content", "parent_session_id"?}` | queue a message (`202`); `409` when the agent is stopped, `429` when too many wait |

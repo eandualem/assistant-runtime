@@ -341,6 +341,8 @@ class AgentORM(Base):
     session_id: Mapped[str] = mapped_column(String(64), nullable=False)
     profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
     subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The tunables its turns send as a request's config, validated by TunableOverrides.
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_by: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -4,9 +4,11 @@ import asyncio
 
 from pydantic_ai.messages import UserPromptPart
 
+from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.app.tasks.config import TasksConfig
 from assistant_runtime.app.tasks.interface import TaskService
 from assistant_runtime.base.events import EventHub
+from assistant_runtime.services.llm.config import LLMConfig
 
 from .test_execution import assert_terminal, request
 
@@ -125,5 +127,47 @@ async def test_an_agents_conversation_survives_session_cache_eviction(runtime, s
                     break
                 await asyncio.sleep(0.01)
         assert seen[1] == ["First question", "Second question"]
+    finally:
+        await tasks.stop()
+
+
+async def test_each_message_runs_with_the_agents_config_when_it_starts(
+    runtime, script, monkeypatch
+):
+    """Clearing the config takes effect although the session remembers its last request config."""
+
+    async def stream(messages, info):
+        yield "Done."
+
+    script.stream = stream
+    models: list[str] = []
+    run_message = runtime.streaming.run_message
+
+    async def recording(request, **kwargs):
+        result = await run_message(request, **kwargs)
+        models.append(result.model)
+        return result
+
+    monkeypatch.setattr(runtime.streaming, "run_message", recording)
+    hub, finished = EventHub(), []
+    hub.subscribe(finished.append)
+    tasks = TaskService(TasksConfig(enabled=True), runtime.streaming, events=hub)
+    await tasks.start()
+    try:
+        agent = await tasks.start_agent(
+            subject="agent-a", config=TunableOverrides(default_model="openai:gpt-5.1")
+        )
+        for number, text in enumerate(("First question", "Second question"), start=1):
+            if number == 2:
+                await tasks.configure_agent(
+                    agent.id, TunableOverrides.model_validate({"default_model": None})
+                )
+            await tasks.message_agent(text, agent_id=agent.id)
+            for _ in range(200):
+                if len(finished) == number:
+                    break
+                await asyncio.sleep(0.01)
+        assert [e["status"] for e in finished] == ["done", "done"]
+        assert models == ["openai:gpt-5.1", LLMConfig().primary_model]
     finally:
         await tasks.stop()

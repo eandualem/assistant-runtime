@@ -1,17 +1,18 @@
-"""Persistent agent endpoints — start, move, stop and message agents, and read their records.
+"""Persistent agent endpoints — start, configure, move, stop and message agents, and read them.
 
 A persistent agent keeps one continuing session; each message runs as its
-next turn (see ``app/tasks``). Starting, moving, stopping and messaging
-agents is administration; callers read their own records, and an
+next turn (see ``app/tasks``). Starting, configuring, moving, stopping and
+messaging agents is administration; callers read their own records, and an
 administrator reads all.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_runtime.app.access.deps import AdminDep, PrincipalDep
+from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.app.tasks.deps import TaskServiceDep
 from assistant_runtime.app.tasks.exceptions import (
     AgentConflictError,
@@ -37,6 +38,13 @@ class StartAgentRequest(BaseModel):
     profile: str | None = None
     subject: str | None = None
     session_id: str | None = Field(default=None, max_length=64)
+    config: TunableOverrides | None = None
+
+
+class ConfigureAgentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    config: TunableOverrides = Field(default_factory=TunableOverrides)
 
 
 class MoveAgentRequest(BaseModel):
@@ -57,7 +65,11 @@ async def start_agent(body: StartAgentRequest, tasks: TaskServiceDep, admin: Adm
     """Start a persistent agent for a profile and subject; one active agent per pair."""
     try:
         record = await tasks.start_agent(
-            profile=body.profile, subject=body.subject, session_id=body.session_id, principal=admin
+            profile=body.profile,
+            subject=body.subject,
+            session_id=body.session_id,
+            config=body.config,
+            principal=admin,
         )
     except (TaskError, UnknownProfileError) as e:
         raise _http_error(e) from e
@@ -78,6 +90,17 @@ async def list_agents(
 async def get_agent(agent_id: str, tasks: TaskServiceDep, principal: PrincipalDep) -> dict:
     try:
         return (await tasks.get_agent(agent_id, principal)).to_dict()
+    except TaskError as e:
+        raise _http_error(e) from e
+
+
+@router.patch("/{agent_id}")
+async def configure_agent(
+    agent_id: str, body: ConfigureAgentRequest, tasks: TaskServiceDep, admin: AdminDep
+) -> dict:
+    """Change the agent's config: omitted fields are unchanged; null clears one."""
+    try:
+        return (await tasks.configure_agent(agent_id, body.config, principal=admin)).to_dict()
     except TaskError as e:
         raise _http_error(e) from e
 
