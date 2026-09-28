@@ -40,6 +40,9 @@ _DB_RETRYABLE_EXCEPTIONS = (
 )
 
 
+_UNIQUE_VIOLATION = "23505"
+"""Postgres SQLSTATE for a unique violation."""
+
 # ``ASSISTANT__SESSION_TTL_HOURS=0``: a far-future expiry keeps the existing
 # ``expires_at > now()`` reads and cleanup unchanged.
 NEVER_EXPIRES = datetime(9999, 1, 1, tzinfo=UTC)
@@ -178,16 +181,28 @@ class SessionPersistence:
                 await repo.update(message_id, segments=segments, model_messages=model_messages)
 
     async def create_steering(self, record: SteeringRecord) -> None:
-        async with self._db.session_context() as db_session:
-            await SteeringRepository(db_session).create(
-                steering_id=record["id"],
-                session_id=record["session_id"],
-                profile=record.get("profile"),
-                content=record["content"],
-                status=record["status"],
-                delivered_at=record["delivered_at"],
-                attachments=record.get("attachments"),
-            )
+        """Insert a steering row; an id already used in any session is a duplicate.
+
+        As for messages, the store checks ids only within its session. The
+        primary key is the table's only unique constraint, so a unique
+        violation is that conflict, whatever the constraint is named (it
+        keeps the name the table was created with, ``pk_guidance``).
+        """
+        try:
+            async with self._db.session_context() as db_session:
+                await SteeringRepository(db_session).create(
+                    steering_id=record["id"],
+                    session_id=record["session_id"],
+                    profile=record.get("profile"),
+                    content=record["content"],
+                    status=record["status"],
+                    delivered_at=record["delivered_at"],
+                    attachments=record.get("attachments"),
+                )
+        except IntegrityError as e:
+            if getattr(e.orig, "sqlstate", None) == _UNIQUE_VIOLATION:
+                raise ValueError(f"Steering '{record['id']}' already exists") from e
+            raise
 
     async def mark_steering(
         self, steering_ids: list[str], *, status: str, delivered_at: datetime

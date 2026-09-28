@@ -191,3 +191,27 @@ async def test_a_message_id_used_in_another_session_is_a_duplicate():
     second_root = _conflict("uq_messages_single_root_per_session")
     with pytest.raises(IntegrityError):
         await SessionPersistence(FailingInsertDatabase(second_root), 24).create_message(record)
+
+
+async def test_a_steering_id_used_in_another_session_is_a_duplicate():
+    record = {
+        "id": "s-1",
+        "session_id": "sess-2",
+        "content": "note",
+        "status": "pending",
+        "delivered_at": None,
+    }
+
+    def violation(sqlstate: str) -> IntegrityError:
+        adapted = Exception("adapted")
+        adapted.sqlstate = sqlstate
+        return IntegrityError("INSERT INTO steering", {}, adapted)
+
+    taken = SessionPersistence(FailingInsertDatabase(violation("23505")), 24)
+    with pytest.raises(ValueError, match="Steering 's-1' already exists"):
+        await taken.create_steering(record)
+
+    # A missing session (a foreign-key violation) is not a duplicate id.
+    orphan = SessionPersistence(FailingInsertDatabase(violation("23503")), 24)
+    with pytest.raises(IntegrityError):
+        await orphan.create_steering(record)
