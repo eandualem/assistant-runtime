@@ -281,12 +281,16 @@ class SessionStore:
         message_id: str,
         content: str,
         segments: list[dict[str, Any]],
+        owner_id: str | None = None,
+        profile: str | None = None,
+        subject: str | None = None,
     ) -> MessageRecord:
         """Append a message the host wrote, at the active leaf, without a model turn.
 
-        It continues from the active leaf (or starts an empty session) and
-        becomes the new leaf; a reply that follows it parents it as it would
-        a user message.
+        It continues from the active leaf and becomes the new leaf; a reply
+        that follows it parents it as it would a user message. A missing or
+        empty session is started by it, owned by ``owner_id`` and bound to
+        ``profile`` and ``subject`` exactly as a first user message would be.
         """
         ctx = await self.get_context_if_exists_async(session_id)
         if ctx is not None and ctx["message_count"] == 0 and self._db is not None:
@@ -295,13 +299,23 @@ class SessionStore:
             if loaded is not None:
                 self._sessions[session_id] = loaded
                 ctx = loaded
+        new_owner: str | None = None
         if ctx is None:
-            raise LookupError("Session not found")
+            ctx = self.get_context(session_id)
+            new_owner = owner_id
+        elif ctx["message_count"] == 0 and ctx.get("owner_id") is None:
+            new_owner = owner_id
         if message_id in ctx["message_index"]:
             raise ValueError(f"Message '{message_id}' already exists")
         parent_id = None
         if ctx["message_count"] > 0:
             parent_id = ctx.get("active_leaf_id") or _latest_leaf_id(ctx)
+        # The binding rule of register_user_message: the first saved message decides it.
+        first = ctx["message_count"] == 0
+        bind = first and (subject is not None or ctx.get("subject") is not None)
+        if not first:
+            subject = ctx.get("subject")
+        profile = (profile if subject is not None else None) if first else ctx.get("profile")
         record: MessageRecord = {
             "id": message_id,
             "session_id": session_id,
@@ -314,8 +328,20 @@ class SessionStore:
             "created_at": datetime.now(UTC),
         }
         if self._db is not None:
-            await self._db.ensure_session(session_id, ctx.get("title"), ctx.get("owner_id"))
+            await self._db.ensure_session(
+                session_id,
+                ctx.get("title"),
+                new_owner or ctx.get("owner_id"),
+                profile=profile,
+                subject=subject,
+            )
+            if bind:
+                await self._db.set_binding(session_id, profile, subject)
             await self._db.create_message(record)
+        if new_owner is not None:
+            ctx["owner_id"] = new_owner
+        if bind:
+            ctx["profile"], ctx["subject"] = profile, subject
         _add_message(ctx, record)
         _refresh_cached_path_for_new_leaf(ctx, record)
         await self.save_session_state_async(session_id)

@@ -80,9 +80,6 @@ async def test_a_card_waits_for_an_idle_session(runtime, script):
 
     script.steps = [["First reply."]]
     assert_terminal([e async for e in runtime.streaming.stream_message(request("u1", "Hi"))])
-    with pytest.raises(LookupError):
-        await runtime.streaming.append_host_message("missing", content="x", segments=[CARD])
-
     context = await runtime.sessions.get_context_if_exists_async("compat")
     context["pending_tool_call_id"] = "call-1"
     with pytest.raises(SessionError, match="in progress"):
@@ -94,6 +91,41 @@ async def test_a_card_waits_for_an_idle_session(runtime, script):
         await runtime.streaming.append_host_message("compat", content="x", segments=[CARD])
     runtime.streaming.release_session("compat", "voice-lease")
     await runtime.streaming.append_host_message("compat", content="x", segments=[CARD])
+
+
+async def test_a_card_starts_a_missing_session_and_binds_it_as_a_first_message_would(
+    runtime, script
+):
+    from assistant_runtime.app.assistant.exceptions import SessionError
+    from assistant_runtime.principal import Principal
+
+    script.steps = [["Noted."]]
+    owner = Principal(id="alice", roles=frozenset())
+    card = await runtime.streaming.append_host_message(
+        "fresh", content="Spoken first.", segments=[CARD], principal=owner, subject="agent-a"
+    )
+    context = await runtime.sessions.get_context_if_exists_async("fresh")
+    assert (card["parent_id"], context["owner_id"]) == (None, "alice")
+    assert (context["profile"], context["subject"]) == ("neutral", "agent-a")
+
+    with pytest.raises(SessionError, match="bound"):
+        await runtime.streaming.append_host_message(
+            "fresh", content="x", segments=[CARD], principal=owner, subject="agent-b"
+        )
+    typed = AssistantRequest.model_validate(
+        {"id": "u1", "session_id": "fresh", "parent_id": None, "content": "Hi"}
+    )
+    assert_terminal([e async for e in runtime.streaming.stream_message(typed, principal=owner)])
+    path = await runtime.sessions.get_message_path("fresh")
+    assert [(m["role"], m["parent_id"]) for m in path][:2] == [("host", None), ("user", card["id"])]
+    assert "Spoken first." in repr(script.requests[-1])
+
+    # Without a subject the started session stays unbound: turns pick their profile.
+    await runtime.streaming.append_host_message(
+        "plain", content="", segments=[CARD], principal=owner
+    )
+    plain = await runtime.sessions.get_context_if_exists_async("plain")
+    assert (plain["owner_id"], plain.get("profile"), plain.get("subject")) == ("alice", None, None)
 
 
 async def test_a_turn_arriving_during_the_append_waits_and_continues_after_the_card(

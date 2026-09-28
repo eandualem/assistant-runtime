@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.routes.sessions import router
+from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 
 CARD = {"kind": "component", "type": "proposal", "data": {"version": 3}}
 
@@ -41,15 +42,17 @@ async def test_a_card_is_appended_and_shown_as_a_host_message():
     assert append.await_args.kwargs["segments"] == [CARD]
 
 
-async def test_busy_missing_and_malformed_requests_are_refused():
+async def test_busy_unknown_profile_and_malformed_requests_are_refused():
     busy = AsyncMock(side_effect=SessionError("A turn or a host action is in progress"))
-    missing = AsyncMock(side_effect=LookupError("Session 's1' does not exist"))
+    unknown = AsyncMock(side_effect=UnknownProfileError("No profile 'nope'"))
     async with AsyncClient(transport=ASGITransport(app=_app(busy)), base_url="http://t") as c:
         assert (await c.post("/sessions/s1/messages", json={"segments": [CARD]})).status_code == 409
         text_only = await c.post(
             "/sessions/s1/messages", json={"segments": [{"kind": "text", "text": "hi"}]}
         )
         none = await c.post("/sessions/s1/messages", json={"content": "x", "segments": []})
-    async with AsyncClient(transport=ASGITransport(app=_app(missing)), base_url="http://t") as c:
-        assert (await c.post("/sessions/s1/messages", json={"segments": [CARD]})).status_code == 404
-    assert (text_only.status_code, none.status_code) == (422, 422)
+        too_long = await c.post(f"/sessions/{'s' * 65}/messages", json={"segments": [CARD]})
+    async with AsyncClient(transport=ASGITransport(app=_app(unknown)), base_url="http://t") as c:
+        body = {"segments": [CARD], "profile": "nope"}
+        assert (await c.post("/sessions/s1/messages", json=body)).status_code == 404
+    assert (text_only.status_code, none.status_code, too_long.status_code) == (422, 422, 422)

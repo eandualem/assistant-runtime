@@ -210,7 +210,8 @@ execution, history, serialization, or the upstream dependency; see
   A message without `parent_id` is the root when the session is empty and
   continues from the active leaf otherwise. A role is `user`, `assistant`
   or `host`: a card the host appends outside any turn, only while the
-  session is idle, at the active leaf (`SessionStore.register_host_message`);
+  session is idle, at the active leaf (`SessionStore.register_host_message`),
+  starting a missing session for the caller and binding it as a first message would;
   the model reads its `content` as request-side text and never its component
   segments, and an assistant reply parents a `user` or `host` message. A session created with a
   `subject` is bound to that profile and subject (row columns, decided by
