@@ -95,10 +95,9 @@ async def test_concurrent_idle_steering_does_not_run_an_already_consumed_request
             [
                 part.content
                 for message in messages
+                if (message.metadata or {}).get("steering_ids")
                 for part in message.parts
-                if isinstance(part, UserPromptPart)
-                and isinstance(part.content, str)
-                and "Additional user steering" in part.content
+                if isinstance(part, UserPromptPart) and isinstance(part.content, str)
             ]
         )
         yield "Applied both" if model_requests[-1] else "Initial response"
@@ -129,7 +128,7 @@ async def test_concurrent_idle_steering_does_not_run_an_already_consumed_request
         assert "already delivered by another turn" in errors[0]["message"]
         assert model_requests == [
             [],
-            [f"Additional user steering while you were working:\nChange {i}" for i in range(2)],
+            [f"Change {i}" for i in range(2)],
         ]
         context = runtime._assistant_service.get_session_store().get_context("compat")
         assert context["pending_steering_ids"] == []

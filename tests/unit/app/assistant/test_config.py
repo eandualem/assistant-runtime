@@ -10,8 +10,9 @@ class TestAssistantConfigDefaults:
     def test_defaults(self):
         config = AssistantConfig()
         assert config.default_model is None
-        assert config.thinking_budget == 10000
-        assert config.temperature == 1.0
+        assert config.thinking_budget is None
+        assert config.temperature is None
+        assert config.model_settings == {}
         assert config.max_turns == 10
         assert config.enable_working_memory is False
         assert config.session_ttl_hours == 24

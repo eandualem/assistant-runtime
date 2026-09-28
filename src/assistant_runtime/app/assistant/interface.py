@@ -138,24 +138,15 @@ class AssistantService:
                 error=str(e),
             )
 
-        warm_results = await asyncio.gather(
-            self._tools.get_mcp_summary(),
-            self._artifacts.active_texts(),
-            return_exceptions=True,
-        )
-
-        for label, result in zip(
-            ("mcp_summary", "active_artifacts"),
-            warm_results,
-            strict=False,
-        ):
-            if isinstance(result, Exception):
-                logger.warning(
-                    "Session warmup step failed",
-                    session_id=session_id,
-                    step=label,
-                    error=str(result),
-                )
+        try:
+            await self._artifacts.active_texts()
+        except Exception as e:
+            logger.warning(
+                "Session warmup step failed",
+                session_id=session_id,
+                step="active_artifacts",
+                error=str(e),
+            )
 
         logger.debug(
             "Session warmup completed",
@@ -184,13 +175,10 @@ class AssistantService:
         artifacts = (
             self._artifacts.for_profile(profile) if profile is not None else self._artifacts
         ).for_subject(subject)
-        (texts, extras, versions), mcp_summary = await asyncio.gather(
-            artifacts.prompt_inputs(), self._tools.get_mcp_summary()
-        )
+        texts, extras, versions = await artifacts.prompt_inputs()
         prompt = build_system_prompt(
             available_tools=self._tools.get_available_tools(None),
             session_context={},
-            mcp_summary=mcp_summary,
             artifacts=texts,
             profile=artifacts.profile,
             artifact_extras=extras,
@@ -206,9 +194,8 @@ class AssistantService:
     async def profile_prompt(self, profile: str) -> tuple[str, dict[str, int | None]]:
         """A profile's own text (its artifacts and includes) and the versions it came from.
 
-        The stable part of a turn's system prompt without MCP connections or
-        dynamic fragments, for a caller that is not a turn, such as a voice
-        persona.
+        The stable part of a turn's system prompt, without dynamic fragments,
+        for a caller that is not a turn, such as a voice persona.
         """
         artifacts = self._artifacts.for_profile(profile)
         texts, extras, versions = await artifacts.prompt_inputs()
@@ -281,9 +268,6 @@ class AssistantService:
                     if inspect.isawaitable(deps):
                         deps = await deps
 
-            mcp_summary_task = asyncio.create_task(
-                asyncio.sleep(0, result=None) if host_only else self._tools.get_mcp_summary()
-            )
             inputs_task = asyncio.create_task(artifacts_service.prompt_inputs())
 
             # 2. Config resolution can run while prompt inputs load.
@@ -297,16 +281,13 @@ class AssistantService:
                 request_limit=effective.max_turns,
             )
 
-            # 3. MCP + artifacts + system prompt
-            mcp_summary, (artifacts, artifact_extras, artifact_versions) = await asyncio.gather(
-                mcp_summary_task, inputs_task
-            )
+            # 3. Artifacts + system prompt
+            artifacts, artifact_extras, artifact_versions = await inputs_task
 
             prompt_result = build_system_prompt(
                 available_tools=available_tools,
                 session_context=session_context,
                 working_memory=effective.enable_working_memory,
-                mcp_summary=mcp_summary,
                 artifacts=artifacts,
                 profile=artifacts_service.profile,
                 artifact_extras=artifact_extras,
@@ -340,6 +321,7 @@ class AssistantService:
                 thinking_budget=effective.thinking_budget,
                 temperature=effective.temperature,
                 codex_service_tier=effective.codex_service_tier,
+                model_settings=self._config.model_settings,
                 **native_options,
             )
 
@@ -352,7 +334,6 @@ class AssistantService:
             usage_limits=usage_limits,
             output_type=output_type,
             effective_config=effective,
-            mcp_summary=mcp_summary,
             deps=deps,
             profile_name=artifacts_service.profile.name,
             prompt_record=record,

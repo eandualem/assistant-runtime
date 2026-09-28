@@ -8,6 +8,7 @@ Not part of the public module API — imported only by interface.py.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -19,10 +20,8 @@ from pydantic_ai.profiles.anthropic import anthropic_model_profile
 
 from assistant_runtime.services.llm.exceptions import ProviderConfigError
 
-# Internal constants for computed LLM parameters
+# The output limit when the application sets no max_tokens (Anthropic requires one).
 _RESPONSE_MAX_TOKENS = 8_192
-_DEFAULT_TEMPERATURE = 0.1
-_THINKING_TEMPERATURE = 1.0
 
 
 def _map_openai_reasoning_effort(*, model_id: str, thinking_budget: int) -> str:
@@ -105,17 +104,23 @@ def build_model_settings(
     thinking_budget: int | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    base: Mapping[str, Any] | None = None,
 ) -> AnthropicModelSettings | GoogleModelSettings | OpenRouterModelSettings | dict[str, Any]:
     """Build provider-specific model settings for a Pydantic AI Agent.
 
-    Determines the correct settings type based on the model ID prefix and configures
-    temperature, max_tokens, thinking, caching, and provider-specific options.
+    Three layers, the later one winning: the runtime's defaults for the
+    provider (output limit, caching, transport options), the application's
+    ``base`` (native Pydantic AI ``ModelSettings``), then the tunables. A
+    tunable is sent only when set; nothing is substituted for it.
 
     Args:
         model_id: Full model identifier (e.g., "anthropic:claude-sonnet-4-6").
-        thinking_budget: Optional thinking token budget. None = disabled.
-        temperature: Optional temperature override. Ignored when thinking is enabled.
-        max_tokens: Optional max_tokens override for the response portion.
+        thinking_budget: Optional thinking token budget. None sends no thinking setting,
+            so the provider's default applies.
+        temperature: Optional temperature. None sends none. Left out where the model
+            rejects it (Anthropic with thinking, models without sampling settings).
+        max_tokens: Optional max_tokens for the response portion; overrides ``base``.
+        base: The application's model settings, passed to Pydantic AI unchanged.
     """
     is_openrouter = model_id.startswith("openrouter:")
     is_anthropic = "anthropic" in model_id and not is_openrouter
@@ -123,16 +128,11 @@ def build_model_settings(
     is_astra = model_id == "openai:gpt-6-astra" or model_id.startswith("openai:gpt-6-astra-")
     is_openai_reasoning = model_id.startswith("openai:gpt-5") or is_astra
 
-    # Compute effective temperature and max_tokens
-    base_max_tokens = max_tokens if max_tokens is not None else _RESPONSE_MAX_TOKENS
-    if thinking_budget:
-        effective_max_tokens = thinking_budget + base_max_tokens
-        # Temperature 1.0 is required by Anthropic extended thinking;
-        # for non-Anthropic models, use the default temperature
-        effective_temperature = _THINKING_TEMPERATURE if is_anthropic else _DEFAULT_TEMPERATURE
-    else:
-        effective_temperature = temperature if temperature is not None else _DEFAULT_TEMPERATURE
-        effective_max_tokens = base_max_tokens
+    base = dict(base or {})
+    # The response portion; a thinking budget that shares the output limit is added to it.
+    response_tokens = (
+        max_tokens if max_tokens is not None else base.get("max_tokens", _RESPONSE_MAX_TOKENS)
+    )
 
     if is_anthropic:
         model_name = model_id.split(":", 1)[1]
@@ -141,11 +141,7 @@ def build_model_settings(
         no_sampling = bool(profile.get("anthropic_disallows_sampling_settings", False))
         supports_xhigh = bool(profile.get("anthropic_supports_xhigh_effort", False))
 
-        # Adaptive models pace thinking via effort, so the numeric budget must not
-        # inflate the hard output limit; only legacy budget_tokens needs the headroom.
-        anthropic_max_tokens = base_max_tokens if adaptive else effective_max_tokens
         anthropic_kwargs: dict[str, Any] = {
-            "max_tokens": anthropic_max_tokens,
             "anthropic_cache_instructions": True,
             "anthropic_cache_tool_definitions": True,
             # A cache point on the conversation, moved forward as it grows.
@@ -153,10 +149,13 @@ def build_model_settings(
             # Explicit timeout bypasses SDK client-side heuristic that rejects
             # non-streaming requests when max_tokens exceeds ~21k.
             "timeout": httpx.Timeout(1200.0, connect=5.0),
+            **base,
+            "max_tokens": response_tokens,
         }
-        # Opus 4.7+, Sonnet 5 and the Fable/Mythos family reject temperature/top_p/top_k.
-        if not no_sampling:
-            anthropic_kwargs["temperature"] = effective_temperature
+        # Opus 4.7+, Sonnet 5 and the Fable/Mythos family reject temperature/top_p/top_k,
+        # and extended thinking requires the default temperature.
+        if temperature is not None and not no_sampling and not thinking_budget:
+            anthropic_kwargs["temperature"] = temperature
 
         # Only include thinking when enabled — passing None triggers a 400 error.
         if thinking_budget:
@@ -167,10 +166,12 @@ def build_model_settings(
                     thinking_budget=thinking_budget, supports_xhigh=supports_xhigh
                 )
             else:
+                # budget_tokens counts against max_tokens, so the response keeps its share.
                 anthropic_kwargs["anthropic_thinking"] = {
                     "type": "enabled",
                     "budget_tokens": thinking_budget,
                 }
+                anthropic_kwargs["max_tokens"] = thinking_budget + response_tokens
 
         settings: (
             AnthropicModelSettings | GoogleModelSettings | OpenRouterModelSettings | dict[str, Any]
@@ -188,20 +189,23 @@ def build_model_settings(
             thinking_budget=thinking_budget,
             effort=anthropic_kwargs.get("anthropic_effort"),
             temperature=anthropic_kwargs.get("temperature"),
-            max_tokens=anthropic_max_tokens,
+            max_tokens=anthropic_kwargs["max_tokens"],
         )
 
     elif is_openrouter:
         openrouter_kwargs: dict[str, Any] = {
-            "temperature": effective_temperature,
-            "max_tokens": effective_max_tokens,
             "openrouter_provider": {
                 "data_collection": "deny",
                 "require_parameters": True,
             },
+            **base,
+            "max_tokens": response_tokens,
         }
+        if temperature is not None:
+            openrouter_kwargs["temperature"] = temperature
         if thinking_budget:
-            openrouter_kwargs["openrouter_reasoning"] = {"effort": "high"}
+            openrouter_kwargs["openrouter_reasoning"] = {"max_tokens": thinking_budget}
+            openrouter_kwargs["max_tokens"] = thinking_budget + response_tokens
 
         settings = OpenRouterModelSettings(**openrouter_kwargs)
 
@@ -209,15 +213,14 @@ def build_model_settings(
             "LLM model settings built",
             provider="openrouter",
             reasoning="enabled" if thinking_budget else "disabled",
-            temperature=effective_temperature,
-            max_tokens=effective_max_tokens,
+            temperature=openrouter_kwargs.get("temperature"),
+            max_tokens=openrouter_kwargs["max_tokens"],
         )
 
     elif is_google:
-        google_kwargs: dict[str, Any] = {
-            "temperature": effective_temperature,
-            "max_tokens": base_max_tokens,
-        }
+        google_kwargs: dict[str, Any] = {**base, "max_tokens": response_tokens}
+        if temperature is not None:
+            google_kwargs["temperature"] = temperature
         if thinking_budget:
             google_kwargs["google_thinking_config"] = {
                 "include_thoughts": True,
@@ -231,23 +234,23 @@ def build_model_settings(
             provider="google",
             thinking="enabled" if thinking_budget else "disabled",
             thinking_budget=thinking_budget,
-            temperature=effective_temperature,
-            max_tokens=base_max_tokens,
+            temperature=google_kwargs.get("temperature"),
+            max_tokens=response_tokens,
         )
 
     elif is_openai_reasoning:
         openai_kwargs: dict[str, Any] = {
-            "temperature": effective_temperature,
-            "max_tokens": base_max_tokens,
             # Let OpenAI resume from the most recent response state so tool
             # continuations don't resend the entire prior conversation.
             "openai_previous_response_id": "auto",
             # We compact and sanitize stored history, so replaying provider item
             # IDs can break OpenAI continuation requests.
             "openai_send_reasoning_ids": False,
+            **base,
+            "max_tokens": response_tokens,
         }
-        if is_astra:
-            openai_kwargs.pop("temperature", None)
+        if temperature is not None and not is_astra:
+            openai_kwargs["temperature"] = temperature
         if thinking_budget:
             openai_kwargs["openai_reasoning_effort"] = _map_openai_reasoning_effort(
                 model_id=model_id,
@@ -263,7 +266,7 @@ def build_model_settings(
             reasoning="enabled" if thinking_budget else "disabled",
             thinking_budget=thinking_budget,
             reasoning_effort=openai_kwargs.get("openai_reasoning_effort"),
-            max_tokens=base_max_tokens,
+            max_tokens=response_tokens,
         )
 
     else:
@@ -273,10 +276,8 @@ def build_model_settings(
                 model=model_id,
                 thinking_budget=thinking_budget,
             )
-        # Generic providers don't support thinking — use base max_tokens
-        settings = {
-            "temperature": effective_temperature,
-            "max_tokens": base_max_tokens,
-        }
+        settings = {**base, "max_tokens": response_tokens}
+        if temperature is not None:
+            settings["temperature"] = temperature
 
     return settings

@@ -9,10 +9,12 @@ from assistant_runtime.services.tools.exceptions import ToolError
 from assistant_runtime.services.tools.interface import ToolService
 from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
+BUILTINS = frozenset({"time", "screen", "artifacts", "subagent"})
+
 
 @pytest.fixture
 def config():
-    return ToolConfig()
+    return ToolConfig(builtin_tools=BUILTINS)
 
 
 @pytest.fixture
@@ -44,7 +46,28 @@ class TestLifecycle:
         assert "backend_tools" in health
         assert isinstance(health["backend_tools"], int)
 
-    async def test_start_registers_default_tools(self, service):
+    async def test_no_builtin_is_registered_by_default(self):
+        service = ToolService(config=ToolConfig(), llm_service=MagicMock())
+        await service.start()
+        assert service._registry.get_tool_names() == []
+
+    async def test_media_groups_need_a_provider_key(self, monkeypatch):
+        from assistant_runtime.services.media.config import MediaConfig
+        from assistant_runtime.services.media.interface import MediaService
+
+        for var in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "RUNWAYML_API_SECRET", "LUMAAI_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        config = ToolConfig(builtin_tools=frozenset({"media", "video"}))
+        without = ToolService(config=config, media_service=MediaService(MediaConfig()))
+        await without.start()
+        assert without._registry.get_tool_names() == []
+
+        monkeypatch.setenv("GOOGLE_API_KEY", "test")
+        with_image_key = ToolService(config=config, media_service=MediaService(MediaConfig()))
+        await with_image_key.start()
+        assert with_image_key._registry.get_tool_names() == ["generate_image"]
+
+    async def test_start_registers_the_enabled_builtins(self, service):
         await service.start()
         tool_names = service._registry.get_tool_names()
         # Built in
@@ -134,14 +157,22 @@ class TestHostContextToolScoping:
         assert result.total_count == service._registry.backend_tool_count()
 
     async def test_configured_scope_limits_backend_tools(self):
-        svc = ToolService(config=ToolConfig(page_scopes={"tasks": ["look_at_screen", "get_time"]}))
+        svc = ToolService(
+            config=ToolConfig(
+                builtin_tools=BUILTINS, page_scopes={"tasks": ["look_at_screen", "get_time"]}
+            )
+        )
         await svc.start()
         result = svc.get_available_tools(host_context={"page": {"name": "tasks"}})
         assert {t.name for t in result.backend_tools} == {"look_at_screen", "get_time"}
         assert result.filtered_out_count == svc._registry.backend_tool_count() - 2
 
     async def test_scope_names_not_registered_are_ignored(self):
-        svc = ToolService(config=ToolConfig(page_scopes={"x": ["no_such_tool", "get_time"]}))
+        svc = ToolService(
+            config=ToolConfig(
+                builtin_tools=BUILTINS, page_scopes={"x": ["no_such_tool", "get_time"]}
+            )
+        )
         await svc.start()
         result = svc.get_available_tools(host_context={"page": {"name": "x"}})
         assert [t.name for t in result.backend_tools] == ["get_time"]
@@ -170,7 +201,7 @@ class TestHostContextToolScoping:
             service.warm_host_context({"page": {"name": "tasks"}})
 
     async def test_tool_count_warning(self):
-        low_max_config = ToolConfig(max_tools_per_request=2)
+        low_max_config = ToolConfig(builtin_tools=BUILTINS, max_tools_per_request=2)
         svc = ToolService(config=low_max_config)
         await svc.start()
         result = svc.get_available_tools(host_context={"page": {"name": "meetings"}})
@@ -183,7 +214,7 @@ class TestSubagentIntegration:
     async def test_run_subagent_registered_with_llm_service(self):
         """When llm_service is provided, run_subagent tool is registered."""
         mock_llm = MagicMock()
-        svc = ToolService(config=ToolConfig(), llm_service=mock_llm)
+        svc = ToolService(config=ToolConfig(builtin_tools=BUILTINS), llm_service=mock_llm)
         await svc.start()
 
         tool_names = svc._registry.get_tool_names()
@@ -191,7 +222,7 @@ class TestSubagentIntegration:
 
     async def test_run_subagent_not_registered_without_llm_service(self):
         """Without llm_service, run_subagent is NOT registered."""
-        svc = ToolService(config=ToolConfig())
+        svc = ToolService(config=ToolConfig(builtin_tools=BUILTINS))
         await svc.start()
 
         tool_names = svc._registry.get_tool_names()
@@ -199,12 +230,12 @@ class TestSubagentIntegration:
 
     async def test_tool_count_with_llm_service(self):
         """With llm_service, total tool count increases by 1."""
-        svc_without = ToolService(config=ToolConfig())
+        svc_without = ToolService(config=ToolConfig(builtin_tools=BUILTINS))
         await svc_without.start()
         count_without = svc_without.get_available_tools().total_count
 
         mock_llm = MagicMock()
-        svc_with = ToolService(config=ToolConfig(), llm_service=mock_llm)
+        svc_with = ToolService(config=ToolConfig(builtin_tools=BUILTINS), llm_service=mock_llm)
         await svc_with.start()
         count_with = svc_with.get_available_tools().total_count
 
@@ -214,7 +245,7 @@ class TestSubagentIntegration:
         """Settings attached after start are read by the subagent tool on each call."""
         from unittest.mock import AsyncMock, patch
 
-        svc = ToolService(config=ToolConfig(), llm_service=MagicMock())
+        svc = ToolService(config=ToolConfig(builtin_tools=BUILTINS), llm_service=MagicMock())
         await svc.start()
         runtime = MagicMock()
         runtime.get = MagicMock(
@@ -257,7 +288,8 @@ class TestSubagentScopeAndBudget:
         from assistant_runtime.services.tools.request_context import assistant_request_context
 
         service = ToolService(
-            config=ToolConfig(page_scopes={"tasks": ["get_time"]}), llm_service=MagicMock()
+            config=ToolConfig(builtin_tools=BUILTINS, page_scopes={"tasks": ["get_time"]}),
+            llm_service=MagicMock(),
         )
         await service.start()
         everything = service._registry.build_subagent_toolset(None)

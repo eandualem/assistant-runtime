@@ -43,13 +43,12 @@ def request(ident, *, profile=None, steering=False, **fields):
 
 
 def steering_text(messages):
+    """Every user prompt the model saw; steering arrives as it was sent."""
     return "\n".join(
         part.content
         for message in messages
         for part in message.parts
-        if isinstance(part, UserPromptPart)
-        and isinstance(part.content, str)
-        and "Additional user steering" in part.content
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
     )
 
 

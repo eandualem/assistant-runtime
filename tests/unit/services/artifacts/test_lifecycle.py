@@ -26,7 +26,13 @@ ASSISTANT = Actor("assistant", session_id="s-1")
 PROFILE = AssistantProfile(
     name="shop",
     artifacts=(
-        ArtifactDefinition(name="instructions", role="purpose", required=True, default="Help"),
+        ArtifactDefinition(
+            name="instructions",
+            role="purpose",
+            required=True,
+            default="Help",
+            policy=ArtifactPolicy(assistant_edit="propose"),
+        ),
         ArtifactDefinition(name="scratchpad", policy=ArtifactPolicy(assistant_edit="autonomous")),
     ),
 )
@@ -35,7 +41,11 @@ PROFILE = AssistantProfile(
 def _seeded(default: str) -> AssistantProfile:
     """The same profile with another default for its instructions."""
     instructions = ArtifactDefinition(
-        name="instructions", role="purpose", required=True, default=default
+        name="instructions",
+        role="purpose",
+        required=True,
+        default=default,
+        policy=ArtifactPolicy(assistant_edit="propose"),
     )
     return AssistantProfile(name="shop", artifacts=(instructions, PROFILE.artifacts[1]))
 

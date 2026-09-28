@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from loguru import logger
+
 from assistant_runtime.services.tools.builtin._video import register_video_tools
 from assistant_runtime.services.tools.builtin.artifacts import register_artifact_tools
 from assistant_runtime.services.tools.builtin.media import register_media_tools
@@ -32,16 +34,16 @@ def register_builtin_tools(
     runtime_settings: Callable[[], Any | None],
     subagent_usage_limits: Any | None = None,
     subagent_defaults: dict[str, Any] | None = None,
-    enabled: frozenset[str] | None = None,
+    enabled: frozenset[str],
 ) -> None:
-    """Register the built-in tools; the optional ones only when their service exists."""
-    if enabled is None or "time" in enabled:
+    """Register the enabled groups that can work; none unless the application enables them."""
+    if "time" in enabled:
         register_time_tools(registry)
-    if enabled is None or "screen" in enabled:
+    if "screen" in enabled:
         register_screen_tools(registry)
-    if enabled is None or "artifacts" in enabled:
+    if "artifacts" in enabled:
         register_artifact_tools(registry, artifact_service)
-    if llm_service is not None and (enabled is None or "subagent" in enabled):
+    if llm_service is not None and "subagent" in enabled:
         register_subagent_tools(
             registry,
             llm_service,
@@ -50,11 +52,18 @@ def register_builtin_tools(
             usage_limits=subagent_usage_limits,
             defaults=subagent_defaults,
         )
-    if media_service is not None:
-        if enabled is None or "media" in enabled:
-            register_media_tools(registry, media_service)
-        if enabled is None or "video" in enabled:
-            register_video_tools(registry, media_service)
+    has_media = media_service is not None
+    for group, register, can_work in (
+        ("media", register_media_tools, has_media and media_service.can_generate_images()),
+        ("video", register_video_tools, has_media and media_service.can_generate_videos()),
+    ):
+        if group not in enabled:
+            continue
+        if can_work:
+            register(registry, media_service)
+        else:
+            # Never offer the model a tool that cannot work.
+            logger.warning("Built-in tool group skipped: no provider key", group=group)
 
 
 __all__ = ["register_builtin_tools"]

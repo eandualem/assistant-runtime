@@ -6,7 +6,6 @@ names exported here; the ``_``-prefixed files behind them are private.
 
 from assistant_runtime.app.assistant._prompt_builder import (
     host_context_prompt,
-    mcp_connections_fragment,
 )
 from assistant_runtime.app.assistant._serialization import (
     MessageRecord,
@@ -60,7 +59,6 @@ __all__ = [
     "dump_model_messages",
     "find_tool_entry",
     "host_context_prompt",
-    "mcp_connections_fragment",
     "merge_display_messages",
     "path_records_to_model_history",
     "resolve_tool_entry",

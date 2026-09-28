@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from assistant_runtime.app.access.deps import require_admin
-from assistant_runtime.app.assistant import mcp_connections_fragment
 
 router = APIRouter(prefix="/debug", tags=["debug"], dependencies=[Depends(require_admin)])
 
@@ -29,9 +28,6 @@ async def debug_tools(request: Request) -> dict[str, Any]:
     # Same code path as chat flow: get_mcp_summary()
     mcp_summary = await tool_service.get_mcp_summary()
 
-    # Same code path as chat flow: mcp_connections_fragment()
-    mcp_prompt_fragment = mcp_connections_fragment(mcp_summary)
-
     # Build MCP section
     mcp_section: dict[str, Any] = {"connected": 0, "servers": []}
     if mcp_summary:
@@ -50,5 +46,4 @@ async def debug_tools(request: Request) -> dict[str, Any]:
         "backend_tools": [t.name for t in available.backend_tools],
         "mcp": mcp_section,
         "toolsets_count": len(toolsets),
-        "mcp_prompt_fragment": mcp_prompt_fragment or None,
     }

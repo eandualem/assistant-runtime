@@ -104,7 +104,11 @@ class TestSubjects:
         hub.subscribe(seen.append)
         profile = AssistantProfile(
             name="tracker",
-            artifacts=(ArtifactDefinition(name="plan", scope="subject", default="None"),),
+            artifacts=(
+                ArtifactDefinition(
+                    name="plan", scope="subject", default="None", policy=ArtifactPolicy("propose")
+                ),
+            ),
         )
         service = ArtifactService(ArtifactsConfig(), profile, events=hub)
         await service.start()

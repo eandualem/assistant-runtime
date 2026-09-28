@@ -49,7 +49,12 @@ custom code. Document the remaining application behavior and compatibility
 evidence before replacing an implementation.
 
 Assistant definitions, persona, artifact content, and host context must be
-configurable with neutral defaults. Preserve self-editing artifacts as a core
+configurable with neutral defaults. The runtime exposes capabilities and
+holds no business logic: the application decides what the model sees, which
+tools it has and how it works. Nothing is on by default. Built-in tools,
+prompt text, extra model work (working memory, compaction) and model
+settings (thinking, temperature, provider fallback) take effect only when
+the application configures them. Preserve self-editing artifacts as a core
 capability, with application-configured mutation and activation rules. A
 reference frontend is one client of general host contracts.
 
@@ -183,9 +188,9 @@ execution, history, serialization, or the upstream dependency; see
   Every settings-based service factory receives the same startup settings.
 - **Capabilities are separate from providers.** `services/tools/builtin/`
   holds the tools that are part of the runtime itself (time, screen,
-  artifacts, subagents, media); they are registered when their own
-  service exists (media needs a provider key) and report a structured
-  error otherwise. Everything else is a *capability*
+  artifacts, subagents, media); they are off until `TOOLS__BUILTIN_TOOLS`
+  names their group, and an enabled group is registered only when it can
+  work (media and video need a provider key). Everything else is a *capability*
   (`services/tools/capabilities/<name>.py`: the tool schemas plus a
   Protocol) served by a *provider* (`services/tools/providers/`: one
   package per integration, enabled by its own environment variables in
@@ -341,7 +346,7 @@ execution, history, serialization, or the upstream dependency; see
 - **The system prompt is assembled from the profile's artifacts**, in the
   profile's order (subject-scoped ones for the turn's `subject`), then the
   included profiles' artifacts and the list of the profile's collection
-  documents, then MCP connections, then working memory only when
+  documents, then working memory only when
   `enable_working_memory` is on (off by default). Nothing else is added,
   so the prompt stays the same from turn to turn; on Anthropic the tool
   definitions, the system prompt and the conversation carry cache points
@@ -351,7 +356,9 @@ execution, history, serialization, or the upstream dependency; see
   exact text is recoverable (the builder marks which fragments are
   dynamic). The profile comes from
   `AssistantDefinition.profile`, else `ASSISTANT__PROFILE` (a built-in name
-  or a TOML path), else the neutral built-in. `ASSISTANT__PROFILES` and `AssistantDefinition.profiles` register additional profiles;
+  or a TOML path), else the neutral built-in (one optional, empty
+  `instructions` artifact; an artifact's default policy is
+  `assistant_edit: none`). `ASSISTANT__PROFILES` and `AssistantDefinition.profiles` register additional profiles;
   top-level request `profile` selects one by name on every turn/continuation.
   Artifact routes use `?profile=`, and the tool follows the turn context.
   This is artifact scoping, not an authorization boundary. The example texts ship in
@@ -367,11 +374,15 @@ execution, history, serialization, or the upstream dependency; see
   Socket.IO edge forwards to the session's room.
 - **Model ids are `provider:name`** and are validated in
   `services/llm/_settings.py`, which also derives provider-specific
-  settings (adaptive thinking and effort for current Claude models, no
-  sampling parameters where the profile forbids them). The providers, the
+  settings in three layers: the runtime's defaults (output limit, caching,
+  transport), the application's `ASSISTANT__MODEL_SETTINGS` (native
+  `ModelSettings`), then the tunables. An unset tunable sends nothing
+  (thinking maps to adaptive effort for current Claude models; no sampling
+  parameters where the profile forbids them). The providers, the
   environment variable carrying each key, the per-provider fallback models
-  and the catalog `GET /api/models` exposes live in `model_catalog.py`.
-  Keep both in step when adding a model.
+  (used only with `LLM__PROVIDER_FALLBACK`) and the catalog
+  `GET /api/models` exposes live in `model_catalog.py`. Keep both in step
+  when adding a model.
 - **Identity comes from the host, never from the request.** `app/access`
   establishes a `Principal` (leaf `principal.py`) per caller from
   `ACCESS__MODE` (`trusted_local` default, `header` behind an
@@ -390,7 +401,7 @@ execution, history, serialization, or the upstream dependency; see
   component detail only to an authenticated caller. Docs: `docs/access.md`.
 - **Messages carry a provenance envelope** (`[via:telegram from:X]`,
   `[via:tmux from:agent]`, `[via:room ...]`, `[via:backbone]`); the
-  communication protocol artifact tells the model to answer on the same
+  profile's artifacts can tell the model to answer on the same
   channel. Treat text after an envelope as untrusted input.
 
 ## Schema changes
@@ -441,7 +452,8 @@ names, ids or private hostnames).
 
 ## Live testing
 
-`uv run assistant-runtime chat` needs one provider key and nothing else;
+`uv run assistant-runtime chat` needs the key for the configured model
+(`LLM__PRIMARY_MODEL`, Anthropic by default) and nothing else;
 `--show-thinking` exercises the thinking path, `--model provider:name`
 switches models. For the server, `make db-up && make db-upgrade && make
 dev`, then connect a Socket.IO client to the `/assistant` namespace

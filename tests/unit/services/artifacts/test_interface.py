@@ -32,7 +32,12 @@ def _profile(name: str = "default") -> AssistantProfile:
     return AssistantProfile(
         name=name,
         artifacts=(
-            ArtifactDefinition(name="instructions", required=True, default="Default help"),
+            ArtifactDefinition(
+                name="instructions",
+                required=True,
+                default="Default help",
+                policy=ArtifactPolicy(assistant_edit="propose"),
+            ),
             ArtifactDefinition(
                 name="persona",
                 default="Warm",

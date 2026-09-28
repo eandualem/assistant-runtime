@@ -24,6 +24,8 @@ An assistant backend for the application you already have: it holds the conversa
 
 One runtime can serve several applications, each with its own registered profile and host actions.
 
+The runtime provides capabilities, not behaviour. Your application decides what the model sees, which tools it has and how it works. Built-in tools, system prompt text, working memory, history compaction and model settings such as thinking are off or empty until you configure them.
+
 ## See it in an application
 
 ### Design Studio

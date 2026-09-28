@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from loguru import logger
 
+from assistant_runtime.model_catalog import MEDIA_PROVIDER_ENV_VARS, PROVIDER_ENV_VARS
 from assistant_runtime.services.media._cache import ImageCache
 from assistant_runtime.services.media._job_tracker import JobTracker
 from assistant_runtime.services.media._providers import generate_google, generate_openai
@@ -112,6 +114,14 @@ class MediaService:
     def set_runtime_settings(self, runtime_settings: object | None) -> None:
         """Attach live runtime settings after service construction."""
         self._runtime_settings = runtime_settings
+
+    def can_generate_images(self) -> bool:
+        """Whether an image provider's key is set (OpenAI or Google)."""
+        return any(os.environ.get(PROVIDER_ENV_VARS[p], "").strip() for p in _PROVIDER_GENERATORS)
+
+    def can_generate_videos(self) -> bool:
+        """Whether a video provider's key is set (Runway or Luma)."""
+        return any(os.environ.get(MEDIA_PROVIDER_ENV_VARS[p], "").strip() for p in _VIDEO_PROVIDERS)
 
     async def generate_image(
         self,

@@ -64,15 +64,6 @@ class TestDebugToolsEndpoint:
         assert memory["tool_count"] == 2
         assert "create_entities" in memory["tools"]
 
-    async def test_returns_mcp_prompt_fragment(self):
-        mcp = [{"name": "memory", "tools": ["tool_a"], "tool_count": 1}]
-        svc = _make_tool_service(mcp_summary=mcp)
-        app = _make_app(svc)
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/api/debug/tools")
-        data = resp.json()
-        assert "**memory**" in data["mcp_prompt_fragment"]
-
     async def test_no_mcp_returns_empty_section(self):
         svc = _make_tool_service()
         app = _make_app(svc)
@@ -81,7 +72,6 @@ class TestDebugToolsEndpoint:
         data = resp.json()
         assert data["mcp"]["connected"] == 0
         assert data["mcp"]["servers"] == []
-        assert data["mcp_prompt_fragment"] is None
 
     async def test_toolsets_count(self):
         svc = _make_tool_service()

@@ -48,7 +48,7 @@ class TestStripScreenshotFromToolResult:
             }
         )
         assert result["success"] is True
-        assert "look_at_screen" in result["screenshot"]
+        assert result["screenshot"] == "[screenshot captured]"
         assert "data:image/" not in result["screenshot"]
 
     def test_strips_nested_screenshot(self):
@@ -59,18 +59,18 @@ class TestStripScreenshotFromToolResult:
             }
         )
         assert result["success"] is True
-        assert "look_at_screen" in result["data"]["screenshot"]
+        assert result["data"]["screenshot"] == "[screenshot captured]"
 
     def test_strips_screenshots_inside_lists(self):
         result = strip_screenshot_from_tool_result(
             {"steps": [{"screenshot": VALID_DATA_URI}, {"status": "ok"}]}
         )
-        assert "look_at_screen" in result["steps"][0]["screenshot"]
+        assert result["steps"][0]["screenshot"] == "[screenshot captured]"
         assert result["steps"][1] == {"status": "ok"}
 
     def test_strips_data_uris_under_any_key(self):
         result = strip_screenshot_from_tool_result({"result": VALID_DATA_URI, "ok": True})
-        assert "look_at_screen" in result["result"]
+        assert result["result"] == "[screenshot captured]"
         assert result["ok"] is True
 
     def test_preserves_non_screenshot_keys(self):
@@ -93,7 +93,7 @@ class TestStripScreenshotFromToolResult:
 
     def test_non_dict_passthrough(self):
         assert strip_screenshot_from_tool_result("hello") == "hello"
-        assert "look_at_screen" in strip_screenshot_from_tool_result(VALID_DATA_URI)
+        assert strip_screenshot_from_tool_result(VALID_DATA_URI) == "[screenshot captured]"
         assert strip_screenshot_from_tool_result(42) == 42
         assert strip_screenshot_from_tool_result(None) is None
 

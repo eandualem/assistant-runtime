@@ -26,8 +26,7 @@ async def look_at_screen() -> BinaryContent | dict[str, str]:
             "error": (
                 "No screenshot available for this request. "
                 "The host must attach the screenshot as a data URI (an attachment "
-                "with purpose 'screenshot', or the legacy images[] field). "
-                "After UI navigation, the next message must include a fresh capture."
+                "with purpose 'screenshot', or the legacy images[] field)."
             ),
             "error_code": "NO_SCREENSHOT",
         }
@@ -47,11 +46,8 @@ def register_screen_tools(registry: ToolRegistry) -> None:
         ToolDefinition(
             name="look_at_screen",
             description=(
-                "Look at the user's current screen. Returns the latest screenshot "
-                "the host attached. Use this after navigation or UI actions to visually "
-                "confirm the result — layout, data displayed, error states, etc. "
-                "Host actions (navigate, ui_send_event) include a post-action "
-                "screenshot automatically. Call this tool to inspect it."
+                "Look at the user's current screen: returns the latest screenshot "
+                "the host attached to this request or to a host action's result."
             ),
             parameters_schema={"type": "object", "properties": {}},
             category=ToolCategory.BACKEND,

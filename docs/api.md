@@ -349,7 +349,8 @@ it travels with the user message (see [the host contract](host-contract.md)).
 Artifact names come from the active profile; `GET /api/artifacts/profile`
 lists them. The built-in `technical_operator` profile defines `soul`,
 `persona`, `communication_protocol`, `ecosystem` and `scratchpad`; the
-default `neutral` profile defines `instructions` and `scratchpad`.
+default `neutral` profile defines one optional `instructions` artifact,
+empty until the host writes it.
 
 ## Messages from other systems
 

@@ -33,10 +33,10 @@ BUILTIN_PROFILE_NAMES: tuple[str, ...] = ("neutral", "technical_operator")
 class ArtifactPolicy:
     """What each actor may do to an artifact. Enforced in code, never by prompt text."""
 
-    assistant_edit: EditPolicy = "propose"
-    """``none``: read only; ``propose``: new versions stay inactive until an
-    authorized actor activates them; ``autonomous``: the assistant's writes
-    activate immediately."""
+    assistant_edit: EditPolicy = "none"
+    """``none`` (the default): read only; ``propose``: new versions stay inactive
+    until an authorized actor activates them; ``autonomous``: the assistant's
+    writes activate immediately."""
     assistant_activate: bool = False
     """Whether the assistant may activate or roll back versions itself."""
     host_edit: bool = True
@@ -220,24 +220,13 @@ class AssistantProfile:
 
 
 def neutral_profile() -> AssistantProfile:
-    """The default: one required instructions artifact and an autonomous scratchpad."""
+    """The default: one optional, empty ``instructions`` artifact the host may write."""
     return AssistantProfile(
         name="neutral",
         artifacts=(
             ArtifactDefinition(
                 name="instructions",
                 role="what the assistant is for and how it should behave",
-                required=True,
-                default=(
-                    "You are the assistant of this application. Answer clearly and "
-                    "concisely, use the available tools when they help, and say so "
-                    "when you are not sure."
-                ),
-            ),
-            ArtifactDefinition(
-                name="scratchpad",
-                role="short-lived operational memory the assistant keeps for itself",
-                policy=ArtifactPolicy(assistant_edit="autonomous"),
             ),
         ),
     )
@@ -262,6 +251,7 @@ def technical_operator_profile() -> AssistantProfile:
                     role=role,
                     required=True,
                     default=(directory / f"{name}.md").read_text(encoding="utf-8").strip(),
+                    policy=ArtifactPolicy(assistant_edit="propose"),
                 )
                 for name, role in roles.items()
             ),
@@ -300,7 +290,7 @@ def load_profile_file(path: str | Path) -> AssistantProfile:
         default_file = "instructions.md"   # relative to this file, or `default = "..."`
 
         [artifacts.policy]
-        assistant_edit = "propose"         # none | propose | autonomous
+        assistant_edit = "propose"         # none (the default) | propose | autonomous
         assistant_activate = false
         host_edit = true
 

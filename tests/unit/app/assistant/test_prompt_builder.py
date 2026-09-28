@@ -9,7 +9,6 @@ from assistant_runtime.app.assistant._prompt_builder import (
     _render_state,
     _working_memory_fragment,
     host_context_prompt,
-    mcp_connections_fragment,
 )
 from assistant_runtime.app.assistant._prompt_builder import (
     build_system_prompt as _build_system_prompt,
@@ -35,15 +34,14 @@ build_system_prompt = partial(_build_system_prompt, profile=technical_operator_p
 
 
 class TestProfiles:
-    def test_default_profile_is_neutral(self):
+    def test_default_profile_adds_nothing(self):
         result = _build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
             artifacts=neutral_profile().defaults,
         )
-        names = [f["name"] for f in result.fragments]
-        assert names == ["instructions"]
-        assert "soul" not in names
+        assert result.content == ""
+        assert result.fragments == []
 
     def test_profile_order_is_the_prompt_order(self):
         profile = AssistantProfile(
@@ -116,59 +114,6 @@ class TestWorkingMemoryFragment:
         wm = WorkingMemory(active_goal="Fix the bug")
         frag = _working_memory_fragment({"working_memory": wm})
         assert "Fix the bug" in frag
-
-
-class TestMcpConnectionsFragment:
-    def test_none_returns_empty(self):
-        assert mcp_connections_fragment(None) == ""
-
-    def test_empty_list_returns_empty(self):
-        assert mcp_connections_fragment([]) == ""
-
-    def test_simple_server_no_tools(self):
-        frag = mcp_connections_fragment([{"name": "memory"}])
-        assert "**memory**" in frag
-
-    def test_server_with_tools_shows_names_and_count(self):
-        summary = [
-            {
-                "name": "memory",
-                "tools": ["create_entities", "add_observations", "search_nodes"],
-                "tool_count": 3,
-            }
-        ]
-        frag = mcp_connections_fragment(summary)
-        assert "**memory** (3 tools)" in frag
-        assert "add_observations" in frag
-        assert "create_entities" in frag
-        assert "search_nodes" in frag
-
-    def test_more_than_3_tools_shows_overflow(self):
-        summary = [
-            {
-                "name": "memory",
-                "tools": ["tool_a", "tool_b", "tool_c", "tool_d", "tool_e"],
-                "tool_count": 5,
-            }
-        ]
-        frag = mcp_connections_fragment(summary)
-        assert "(5 tools)" in frag
-        assert "+2 more" in frag
-
-    def test_multiple_servers(self):
-        summary = [
-            {"name": "memory", "tools": ["create_entities"], "tool_count": 1},
-            {"name": "brave-search", "tools": ["brave_web_search"], "tool_count": 1},
-        ]
-        frag = mcp_connections_fragment(summary)
-        assert "**memory**" in frag
-        assert "**brave-search**" in frag
-        assert "brave_web_search" in frag
-
-    def test_includes_calling_guidance(self):
-        summary = [{"name": "memory", "tools": ["tool_a"], "tool_count": 1}]
-        frag = mcp_connections_fragment(summary)
-        assert "MCP tools are called directly by name" in frag
 
 
 class TestHostContextFragment:
@@ -336,7 +281,7 @@ class TestHostContextFragment:
             "extensions": {"tenant": "acme"},
         }
         frag = _host_context_fragment(ctx)
-        assert "- a screenshot of the current screen (call look_at_screen to see it)" in frag
+        assert "- a screenshot of the current screen (not attached to the message)" in frag
         assert "- notes.txt — meeting (attached to the message)" in frag
         assert "Captured at 2000-01-01T00:00:00+00:00." in frag
         assert "ago" not in frag

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -395,11 +395,11 @@ class LlmService:
         return validate_model_id(model or self.effective_summarization_model())
 
     def effective_primary_model(self) -> str:
-        """The configured primary model, or a configured provider's default.
+        """The configured primary model, or with ``provider_fallback`` a configured provider's default.
 
-        With only an OpenAI key set, the default ``anthropic:claude-opus-5``
-        cannot be used; the first configured provider's default is used
-        instead (and logged) so a one-key setup works out of the box.
+        With fallback on and only an OpenAI key set, the default
+        ``anthropic:claude-opus-5`` cannot be used; the first configured
+        provider's default is used instead (and logged).
         """
         return self._effective_model(self._config.primary_model, PROVIDER_DEFAULT_MODELS)
 
@@ -411,6 +411,8 @@ class LlmService:
 
     def _effective_model(self, configured: str, defaults: dict[str, str]) -> str:
         provider = configured.split(":", 1)[0]
+        if not self._config.provider_fallback:
+            return configured
         if self._config.codex_only and (provider == "openai" or _openai_alias(configured)):
             # Never turn a missing subscription into an API-provider fallback.
             return configured
@@ -514,6 +516,7 @@ class LlmService:
                 "openai_reasoning_effort",
                 "openai_reasoning_summary",
                 "openai_send_reasoning_ids",
+                "thinking",
                 "openai_truncation",
                 "openai_user",
             ):
@@ -590,6 +593,7 @@ class LlmService:
         tools: Sequence[Tool[Any] | ToolFuncEither[Any, ...]] = (),
         capabilities: Sequence[AgentCapability[Any]] = (),
         codex_service_tier: str | None = None,
+        model_settings: Mapping[str, Any] | None = None,
     ) -> Agent:
         """Create a configured Pydantic AI Agent.
 
@@ -606,6 +610,8 @@ class LlmService:
             output_type: Expected output type(s).
             thinking_budget: Optional thinking token budget for extended thinking.
             temperature: Optional temperature override.
+            model_settings: The application's native model settings, merged over the
+                runtime's defaults and under the tunables.
 
         Returns:
             Configured Pydantic AI Agent instance.
@@ -616,6 +622,7 @@ class LlmService:
             model_id=resolved_model,
             thinking_budget=thinking_budget,
             temperature=temperature,
+            base=model_settings,
         )
         settings = self._apply_model_transport_defaults(
             resolved_model, settings, service_tier=codex_service_tier

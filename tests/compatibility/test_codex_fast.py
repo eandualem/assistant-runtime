@@ -253,7 +253,11 @@ async def test_http_host_continuations_retain_tiers(codex, isolated_services, mo
     codex.tool = True
     codex.model = model
     configured = codex.service("fast")
-    settings = isolated_services.model_copy(update={"llm": configured._config})
+    # The host allows thinking; the request lowers the budget to a low effort.
+    assistant = isolated_services.assistant.model_copy(update={"thinking_budget": 10_000})
+    settings = isolated_services.model_copy(
+        update={"llm": configured._config, "assistant": assistant}
+    )
     app = create_app(settings=settings)
     async with app.router.lifespan_context(app):
         app.state.llm_service.set_oauth_service(configured._oauth_service)

@@ -123,7 +123,7 @@ class ToolService:
         self._runtime_settings = runtime_settings
 
     async def get_mcp_summary(self) -> list[dict[str, Any]] | None:
-        """Return MCP server summary for prompt builder, or None if no MCP service."""
+        """Return the MCP server summary for diagnostics, or None if no MCP service."""
         if self._mcp_service is None:
             return None
         try:

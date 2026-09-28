@@ -268,7 +268,7 @@ def test_merge_display_messages_inserts_steering_by_delivery_time() -> None:
     assert [message["id"] for message in merged] == ["user-1", "assistant-1", "steering-1"]
 
 
-def test_build_steering_request_frames_each_steering_item() -> None:
+def test_build_steering_request_sends_each_steering_item_as_written() -> None:
     request = build_steering_request(
         [
             {
@@ -290,8 +290,8 @@ def test_build_steering_request_frames_each_steering_item() -> None:
 
     assert len(request.parts) == 2
     assert all(isinstance(part, UserPromptPart) for part in request.parts)
-    assert "Additional user steering" in request.parts[0].content
-    assert request.parts[1].content.endswith("Skip Builder")
+    assert request.parts[0].content == "Focus on Planner"
+    assert request.parts[1].content == "Skip Builder"
 
 
 def test_build_assistant_message_content_collects_segments_and_usage() -> None:

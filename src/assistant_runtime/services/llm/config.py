@@ -36,6 +36,14 @@ class LLMConfig(BaseModel):
         default="anthropic:claude-haiku-4-5",
         description="Model for history summarization and lightweight tasks",
     )
+    provider_fallback: bool = Field(
+        default=False,
+        description=(
+            "When the primary or summarization model's provider has no credentials, use the "
+            "first configured provider's default model instead (logged). Off: the configured "
+            "model is used as it is, and a turn without its key fails."
+        ),
+    )
     providers_json: str | None = Field(
         default=None,
         description="JSON string with provider configurations (alternative to individual env vars)",

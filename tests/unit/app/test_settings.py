@@ -580,8 +580,8 @@ class TestResolveEffectiveConfig:
         frozen = AssistantConfig()
         effective = resolve_effective_config(frozen)
         assert effective.default_model is None
-        assert effective.thinking_budget == 10000
-        assert effective.temperature == 1.0
+        assert effective.thinking_budget is None
+        assert effective.temperature is None
         assert effective.max_turns == 10
         assert effective.enable_working_memory is False
 
