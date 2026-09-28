@@ -42,7 +42,7 @@ def validate_filename(filename: str) -> str | None:
     """An error message when ``filename`` is not a bare ``*.md`` name, else None."""
     if not filename:
         return "Filename cannot be empty"
-    if not FILENAME_PATTERN.match(filename):
+    if not FILENAME_PATTERN.fullmatch(filename):
         return "Invalid filename — must match pattern: alphanumeric, hyphens, underscores, ending in .md"
     if ".." in filename or "/" in filename:
         return "Invalid filename — path traversal not allowed"
@@ -97,7 +97,7 @@ class MarkdownNotes:
         parts = Path(note_path).parts
         if not parts:
             return "Note path cannot be empty"
-        if not FILENAME_PATTERN.match(parts[-1]):
+        if not FILENAME_PATTERN.fullmatch(parts[-1]):
             return "Invalid filename — must match pattern: alphanumeric, hyphens, underscores, ending in .md"
         if not self._is_inside_root(self.root / note_path):
             return "Invalid note path — resolves outside notes directory"

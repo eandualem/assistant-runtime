@@ -74,6 +74,6 @@ def _validate_session_name(session_name: str) -> str | None:
         return "Session name cannot be empty"
     if len(session_name) > MAX_SESSION_NAME_LENGTH:
         return f"Session name too long (max {MAX_SESSION_NAME_LENGTH} chars)"
-    if not SESSION_NAME_PATTERN.match(session_name):
+    if not SESSION_NAME_PATTERN.fullmatch(session_name):
         return "Session name must be alphanumeric with hyphens, starting with alphanumeric"
     return None

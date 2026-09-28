@@ -74,7 +74,7 @@ class ArtifactDefinition:
     """Longest text a write may store; a longer one is refused. ``None`` sets no bound."""
 
     def __post_init__(self) -> None:
-        if not _NAME_PATTERN.match(self.name):
+        if not _NAME_PATTERN.fullmatch(self.name):
             raise ValueError(
                 f"Artifact name must be lowercase letters, digits and underscores: {self.name!r}"
             )
@@ -106,7 +106,7 @@ class ArtifactCollection:
     max_chars: int | None = None
 
     def __post_init__(self) -> None:
-        if not _PREFIX_PATTERN.match(self.prefix):
+        if not _PREFIX_PATTERN.fullmatch(self.prefix):
             raise ValueError(
                 "Collection prefix must be lowercase letters, digits and underscores, "
                 f"ending in '_': {self.prefix!r}"
@@ -118,7 +118,7 @@ class ArtifactCollection:
         return (
             name.startswith(self.prefix)
             and len(name) > len(self.prefix)
-            and bool(_NAME_PATTERN.match(name))
+            and bool(_NAME_PATTERN.fullmatch(name))
         )
 
     def definition(self, name: str) -> ArtifactDefinition:
@@ -155,7 +155,7 @@ class AssistantProfile:
     collections: tuple[ArtifactCollection, ...] = ()
 
     def __post_init__(self) -> None:
-        if not _NAME_PATTERN.match(self.name):
+        if not _NAME_PATTERN.fullmatch(self.name):
             raise ValueError(
                 f"Profile name must be lowercase letters, digits and underscores: {self.name!r}"
             )
@@ -168,7 +168,7 @@ class AssistantProfile:
                 raise ValueError(f"Duplicate artifact name in profile: {artifact.name!r}")
             seen.add(artifact.name)
         for included in self.include:
-            if not _NAME_PATTERN.match(included) or included == self.name:
+            if not _NAME_PATTERN.fullmatch(included) or included == self.name:
                 raise ValueError(f"Profile {self.name!r} cannot include {included!r}")
         prefixes = [collection.prefix for collection in self.collections]
         for prefix in prefixes:

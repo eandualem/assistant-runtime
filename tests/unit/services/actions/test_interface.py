@@ -123,6 +123,7 @@ class TestConfirmations:
         for bad, message in (
             ({"confirmed_at": datetime(2026, 9, 27, 8, 0)}, "offset"),
             ({"text_sha256": "short"}, "text_sha256"),
+            ({"text_sha256": SHA + "\n"}, "text_sha256"),
             ({"confirmation_id": "not-a-uuid"}, "UUID"),
             ({"source": "email"}, "source"),
         ):

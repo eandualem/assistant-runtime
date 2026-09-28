@@ -133,9 +133,9 @@ class HostStateService:
 
 
 def _check(namespace: str, key: str | None = None) -> None:
-    if not NAMESPACE.match(namespace):
+    if not NAMESPACE.fullmatch(namespace):
         raise HostStateError(
             "A namespace is lowercase letters, digits, '_', '.' or '-', up to 64 characters"
         )
-    if key is not None and not KEY.match(key):
+    if key is not None and not KEY.fullmatch(key):
         raise HostStateError("A key is 1 to 200 letters, digits or _ . : @ -")

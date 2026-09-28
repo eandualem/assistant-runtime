@@ -39,14 +39,14 @@ def list_docs() -> list[dict[str, str]]:
     return [
         {"name": path.stem, "summary": _summary(path)}
         for path in sorted(directory.glob("*.md"))
-        if _NAME_RE.match(path.stem) and path.stem != _INDEX_PAGE
+        if _NAME_RE.fullmatch(path.stem) and path.stem != _INDEX_PAGE
     ]
 
 
 def get_doc(name: str) -> str | None:
     """One page's markdown, or None when the name is unknown."""
     directory = docs_dir()
-    if directory is None or not _NAME_RE.match(name):
+    if directory is None or not _NAME_RE.fullmatch(name):
         return None
     path = directory / f"{name}.md"
     return path.read_text(encoding="utf-8") if path.is_file() else None

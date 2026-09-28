@@ -225,6 +225,7 @@ class TestScopesIncludesAndCollections:
         assert (document.name, document.role, document.keep_versions) == ("doc_travel", "kept", 3)
         assert profile.get("doc_") is None
         assert profile.get("other") is None
+        assert profile.get("doc_travel\n") is None  # `$` alone would allow a trailing newline
         with pytest.raises(ValueError, match="ending in '_'"):
             ArtifactCollection(prefix="doc")
         with pytest.raises(ValueError, match="matches a declared artifact"):
