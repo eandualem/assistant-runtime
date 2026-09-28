@@ -111,6 +111,8 @@ class MessageORM(Base):
     usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     prompt: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     """What the assistant message was produced with (see ``app/assistant/prompt_record``)."""
+    model_messages: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    """The row's part of the conversation as Pydantic AI messages, replayed to the model."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -136,6 +138,8 @@ class SteeringORM(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
+    attachments: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    """Reference attachments sent with the steering message (``host_context.Attachment``)."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

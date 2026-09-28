@@ -17,6 +17,7 @@ from weakref import WeakValueDictionary
 from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
 
 from assistant_runtime.app.assistant._serialization import MessageRecord, SteeringRecord
+from assistant_runtime.app.assistant._stale_tools import RepairedMessage
 from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.services.database.repositories import (
     MessageRepository,
@@ -124,6 +125,7 @@ class SessionPersistence:
                 segments=record["segments"],
                 usage=record["usage"],
                 prompt=record.get("prompt"),
+                model_messages=record.get("model_messages"),
             )
 
     async def update_message(
@@ -134,10 +136,16 @@ class SessionPersistence:
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
         prompt: dict[str, Any] | None = None,
+        model_messages: list[dict[str, Any]] | None = None,
     ) -> None:
         async with self._db.session_context() as db_session:
             await MessageRepository(db_session).update(
-                message_id, content=content, segments=segments, usage=usage, prompt=prompt
+                message_id,
+                content=content,
+                segments=segments,
+                usage=usage,
+                prompt=prompt,
+                model_messages=model_messages,
             )
 
     async def save_prompt_snapshot(self, snapshot_hash: str, content: str) -> None:
@@ -148,12 +156,12 @@ class SessionPersistence:
         async with self._db.session_context() as db_session:
             return await PromptSnapshotRepository(db_session).get(snapshot_hash)
 
-    async def update_segments(self, repaired: list[tuple[str, list[dict[str, Any]]]]) -> None:
-        """Write repaired segments for several messages in one transaction."""
+    async def update_segments(self, repaired: list[RepairedMessage]) -> None:
+        """Write repaired segments and model messages for several messages in one transaction."""
         async with self._db.session_context() as db_session:
             repo = MessageRepository(db_session)
-            for message_id, segments in repaired:
-                await repo.update(message_id, segments=segments)
+            for message_id, segments, model_messages in repaired:
+                await repo.update(message_id, segments=segments, model_messages=model_messages)
 
     async def create_steering(self, record: SteeringRecord) -> None:
         async with self._db.session_context() as db_session:
@@ -164,6 +172,7 @@ class SessionPersistence:
                 content=record["content"],
                 status=record["status"],
                 delivered_at=record["delivered_at"],
+                attachments=record.get("attachments"),
             )
 
     async def mark_steering(
@@ -268,6 +277,7 @@ class SessionPersistence:
                             "segments": m.segments,
                             "usage": m.usage,
                             "prompt": m.prompt,
+                            "model_messages": m.model_messages,
                             "created_at": m.created_at,
                         }
                         for m in messages
@@ -279,6 +289,7 @@ class SessionPersistence:
                             "profile": s.profile,
                             "content": s.content,
                             "status": s.status,
+                            "attachments": s.attachments,
                             "created_at": s.created_at,
                             "delivered_at": s.delivered_at,
                         }

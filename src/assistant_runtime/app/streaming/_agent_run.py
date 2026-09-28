@@ -98,7 +98,7 @@ class TurnPolicy(AbstractCapability):
             if self._consumed_steering and Agent.is_call_tools_node(result):
                 # Native enqueue insertion alone does not prove a model request
                 # completed. Keep records pending if that request is interrupted:
-                # application message segments do not persist steering prompts.
+                # they are sent again, and the saved snapshot leaves them out.
                 await self.sessions.mark_steering_delivered(
                     self.session_id, list(self._consumed_steering)
                 )

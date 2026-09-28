@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic_ai.messages import (
     BinaryContent,
+    ImageUrl,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -283,6 +284,18 @@ class TestFormatTypedToDicts:
         assert len(result) == 1
         assert result[0]["role"] == "user"
         assert "Tool result (get_status): active" in result[0]["content"]
+
+    def test_list_prompt_is_read_as_its_text(self):
+        prompt = [
+            "<host_context>\nOrders\n</host_context>",
+            "hello",
+            ImageUrl(url="https://x/a.png"),
+        ]
+        msgs = [ModelRequest(parts=[UserPromptPart(content=prompt)])]
+        result = HistoryManager._format_typed_to_dicts(msgs)
+        assert result == [
+            {"role": "user", "content": "<host_context>\nOrders\n</host_context>\nhello"}
+        ]
 
     def test_truncation(self):
         long_content = "x" * 2000

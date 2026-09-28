@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
@@ -24,6 +24,7 @@ from assistant_runtime.app.assistant._serialization import (
     MessageRecord,
     SteeringRecord,
     path_records_to_model_history,
+    user_prompt_messages,
 )
 from assistant_runtime.app.assistant._session_persistence import (
     LoadedSession,
@@ -35,6 +36,8 @@ from assistant_runtime.app.assistant._stale_tools import (
 )
 
 if TYPE_CHECKING:
+    from pydantic_ai.messages import UserContent
+
     from assistant_runtime.app.assistant.models import AssistantRequest
     from assistant_runtime.services.database.interface import DatabaseService
 
@@ -144,7 +147,7 @@ class SessionStore:
         request: AssistantRequest,
         *,
         owner_id: str | None = None,
-        host_context_text: str = "",
+        prompt: str | Sequence[UserContent] | None = None,
     ) -> tuple[dict[str, Any], MessageRecord]:
         """Persist a user-side message send and update the active cached path.
 
@@ -152,9 +155,10 @@ class SessionStore:
         so is the request's profile and subject when it names a subject. A
         message without ``parent_id`` is the root when the session is empty
         and continues from the active leaf otherwise; an explicit
-        ``parent_id`` branches from that message. ``host_context_text`` is
-        the host context block the model receives with the message; it is
-        kept as a ``host_context`` segment, so later turns replay it.
+        ``parent_id`` branches from that message. ``prompt`` is exactly what
+        the model receives for the message (its host context block, text and
+        attachments; the content alone when omitted); it is kept as the row's
+        model messages, so later turns replay it.
         """
         if request.is_steering:
             raise ValueError("Steering messages are stored separately from the conversation tree")
@@ -200,6 +204,7 @@ class SessionStore:
             (request.profile if subject is not None else None) if first else ctx.get("profile")
         )
 
+        created_at = datetime.now(UTC)
         record: MessageRecord = {
             "id": request.id,
             "session_id": session_id,
@@ -207,11 +212,12 @@ class SessionStore:
             "role": "user",
             "message_type": request.message_type,
             "content": request.content,
-            "segments": (
-                [{"kind": "host_context", "text": host_context_text}] if host_context_text else None
-            ),
+            "segments": None,
             "usage": None,
-            "created_at": datetime.now(UTC),
+            "model_messages": user_prompt_messages(
+                request.content if prompt is None else prompt, created_at
+            ),
+            "created_at": created_at,
         }
         if self._db is not None:
             await self._db.ensure_session(
@@ -251,6 +257,7 @@ class SessionStore:
         usage: dict[str, Any] | None,
         created_at: datetime | None = None,
         prompt: dict[str, Any] | None = None,
+        model_messages: list[dict[str, Any]] | None = None,
     ) -> MessageRecord:
         """Persist a single assistant message row and update cache state."""
         ctx = await self.get_context_if_exists_async(session_id)
@@ -273,6 +280,7 @@ class SessionStore:
             "segments": segments,
             "usage": usage,
             "prompt": prompt,
+            "model_messages": model_messages,
             "created_at": created_at or datetime.now(UTC),
         }
         if self._db is not None:
@@ -366,6 +374,7 @@ class SessionStore:
         | Callable[[dict[str, Any] | None], dict[str, Any] | None]
         | None = None,
         prompt: dict[str, Any] | None = None,
+        model_messages: list[dict[str, Any]] | None = None,
     ) -> MessageRecord:
         """Commit an update before publishing it to the cache.
 
@@ -387,6 +396,8 @@ class SessionStore:
                 record["usage"] = resolved_usage
             if prompt is not None:
                 record["prompt"] = prompt
+            if model_messages is not None:
+                record["model_messages"] = model_messages
             if self._db is not None:
                 await self._db.update_message(
                     message_id,
@@ -394,6 +405,7 @@ class SessionStore:
                     segments=segments,
                     usage=resolved_usage,
                     prompt=prompt,
+                    model_messages=model_messages,
                 )
             ctx["message_index"][message_id] = record
             ctx["cached_path"] = [
@@ -474,6 +486,11 @@ class SessionStore:
             "content": request.content,
             "profile": request.profile,
             "status": status,
+            "attachments": [
+                attachment.model_dump(mode="json", exclude_none=True)
+                for attachment in request.reference_attachments
+            ]
+            or None,
             "created_at": datetime.now(UTC),
             "delivered_at": delivered_at,
         }
@@ -707,7 +724,7 @@ class SessionStore:
         repaired = repair_stale_tools_in_context(ctx)
         if repaired and self._db is not None:
             await self._db.update_segments(repaired)
-        report["repaired_tools"] = [msg_id for msg_id, _segments in repaired]
+        report["repaired_tools"] = [msg_id for msg_id, _segments, _messages in repaired]
         if repaired and ctx.get("active_leaf_id"):
             ctx["cached_path"] = _resolve_path(ctx, ctx["active_leaf_id"])
 

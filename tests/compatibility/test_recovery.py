@@ -56,7 +56,14 @@ class FakePersistence:
         self.messages[record["id"]] = copy.deepcopy(record)
 
     async def update_message(
-        self, message_id, *, content=None, segments=None, usage=None, prompt=None
+        self,
+        message_id,
+        *,
+        content=None,
+        segments=None,
+        usage=None,
+        prompt=None,
+        model_messages=None,
     ):
         self.ops.append(("update_message", message_id))
         row = self.messages[message_id]
@@ -68,6 +75,8 @@ class FakePersistence:
             row["usage"] = usage
         if prompt is not None:
             row["prompt"] = copy.deepcopy(prompt)
+        if model_messages is not None:
+            row["model_messages"] = copy.deepcopy(model_messages)
 
     async def save_prompt_snapshot(self, snapshot_hash, content):
         self.snapshots[snapshot_hash] = content
@@ -76,8 +85,10 @@ class FakePersistence:
         return self.snapshots.get(snapshot_hash)
 
     async def update_segments(self, repaired):
-        for message_id, segments in repaired:
+        for message_id, segments, model_messages in repaired:
             self.messages[message_id]["segments"] = copy.deepcopy(segments)
+            if model_messages is not None:
+                self.messages[message_id]["model_messages"] = copy.deepcopy(model_messages)
 
     async def create_steering(self, record):
         self.steering[record["id"]] = copy.deepcopy(record)
@@ -348,6 +359,9 @@ async def test_new_message_before_the_continuation_records_the_action_as_superse
         ("create_message", "user-2")
     )
     assert ops.index(("save_state", None)) < ops.index(("create_message", "user-2"))
+    # The model reads the same result in the next request.
+    returns = [p for m in script.requests[-1] for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert [(p.tool_call_id, p.outcome) for p in returns] == [("host-1", "interrupted")]
     events = [e async for e in runtime.streaming.stream_message(continuation())]
     assert_terminal(events, error=True)
     assert any("already recorded (status: superseded)" in e.get("message", "") for e in events)

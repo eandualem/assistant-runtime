@@ -92,9 +92,11 @@ the turn the same way (message-level first, duplicates dropped):
 | `name`, `description`, `media_type` | optional labels |
 
 Legacy `images` (data URIs) and a top-level `screenshot` field become
-screenshot attachments. A malformed attachment is a `422`. Attachments are
-seen in the turn they arrive with; they are not replayed from history in
-later turns, and media is not stored in sessions.
+screenshot attachments. A malformed attachment is a `422`. Reference
+attachments are stored with their message and replayed in later turns as
+the model first saw them, so bound what you send. A continuation's reference
+attachments follow the tool result, and a steering message's follow its
+text. Screenshots are not stored.
 
 ## Actions
 

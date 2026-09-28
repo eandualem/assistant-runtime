@@ -55,6 +55,24 @@ in `prompt_snapshots` under its SHA-256, since it repeats across turns.
 Without Postgres the record stays on the in-memory message and the process
 keeps the most recent snapshots.
 
+Every message also stores what the model was given, as Pydantic AI messages
+(`messages.model_messages`, serialised with `ModelMessagesTypeAdapter`). A
+user message stores its request: the host context block, its text and its
+reference attachments. An assistant message stores everything its turn
+added after that request: responses with their thinking, tool calls and
+results, delivered steering and ingress messages, and a continuation's
+result with its host context. Later turns replay these messages unchanged,
+so each request starts with what the model saw before. Three things are not
+stored:
+
+- instructions, since every run sends its own;
+- binary tool output, stored as `[Binary content omitted]`;
+- a `look_at_screen` image, stored as `[Inspected current screen]`.
+
+Reference attachments are stored with their message, data included, so
+bound what you send. `segments` remain the display form. Messages stored
+before `model_messages` existed are replayed from their text and segments.
+
 Background tasks are rows in `tasks` (what was asked, its session, status,
 result and times). When the runtime starts, a task left `queued` or
 `running` is marked `interrupted`; its work is not replayed. That recovery
@@ -259,12 +277,11 @@ target, see [compatibility](compatibility.md)).
 - **Harness `StepPersistence`: deferred.** It persists harness steps, not
   the graph state of a run, and the runtime does not use the Harness loop
   (see the compaction evaluation in [compatibility](compatibility.md)).
-- **Native message history: already used.** Assistant rows store
-  `new_messages()` as segments and rebuild `ModelMessage`s from them; the
-  native `outcome` values survive the round trip. A user row keeps the host
-  context block it was sent with as a `host_context` segment and is rebuilt
-  with it. Provider-side
-  conversation ids are not used, so history does not depend on a provider.
+- **Native message history: used.** Every message row stores its Pydantic
+  AI messages (`ModelMessagesTypeAdapter`), and later turns replay them
+  unchanged, native `outcome` values and thinking signatures included. The
+  segments are the display form. Provider-side conversation ids are not
+  used, so history does not depend on a provider.
 
 Guarantees, in one place: sessions, messages, steering and the pending host
 action are durable with Postgres; a continuation is accepted after a

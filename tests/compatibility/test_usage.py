@@ -104,7 +104,9 @@ async def test_definition_limits_and_budget_settings_take_the_stricter_value(
     assert limits.cost_limit is None
 
 
-@pytest.mark.parametrize("history_config", [HistoryConfig(**SMALL_BUDGET)], indirect=True)
+@pytest.mark.parametrize(
+    "history_config", [HistoryConfig(compaction_enabled=True, **SMALL_BUDGET)], indirect=True
+)
 async def test_summarisation_usage_is_attributed_to_the_turn(runtime, script, monkeypatch):
     script.steps = [[LONG_TEXT]]
     first = assert_terminal([e async for e in runtime.streaming.stream_message(request())])

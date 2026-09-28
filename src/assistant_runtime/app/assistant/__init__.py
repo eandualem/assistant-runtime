@@ -12,8 +12,10 @@ from assistant_runtime.app.assistant._serialization import (
     MessageRecord,
     SteeringRecord,
     assistant_record_to_flat_messages,
+    attachment_content,
     build_assistant_message_content,
     build_steering_request,
+    dump_model_messages,
     merge_display_messages,
     path_records_to_model_history,
     sanitize_image_tool_returns,
@@ -24,6 +26,7 @@ from assistant_runtime.app.assistant._stale_tools import (
     ActionStatus,
     find_tool_entry,
     resolve_tool_entry,
+    with_resolved_returns,
 )
 from assistant_runtime.app.assistant.config import AssistantConfig
 from assistant_runtime.app.assistant.deps import AssistantServiceDep
@@ -51,8 +54,10 @@ __all__ = [
     "SessionStore",
     "SteeringRecord",
     "assistant_record_to_flat_messages",
+    "attachment_content",
     "build_assistant_message_content",
     "build_steering_request",
+    "dump_model_messages",
     "find_tool_entry",
     "host_context_prompt",
     "mcp_connections_fragment",
@@ -61,4 +66,5 @@ __all__ = [
     "resolve_tool_entry",
     "sanitize_image_tool_returns",
     "tree_messages_to_tree",
+    "with_resolved_returns",
 ]

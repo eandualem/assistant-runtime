@@ -40,11 +40,16 @@ from pydantic_ai.messages import (
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.app.access.exceptions import AccessDeniedError
-from assistant_runtime.app.assistant import ActionStatus, build_assistant_message_content
+from assistant_runtime.app.assistant import (
+    ActionStatus,
+    build_assistant_message_content,
+    dump_model_messages,
+)
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import HoldDecision
 from assistant_runtime.app.assistant.usage import (
@@ -714,6 +719,8 @@ class TurnRunner:
         # new_messages(), not index slicing: pydantic-ai may merge consecutive
         # ModelRequests while cleaning the history, shrinking the list.
         new_messages = result.new_messages()
+        if plan.kind == "message" and not state.assistant_messages:
+            new_messages = _without_user_prompt(new_messages)
         if plan.accepted_tool_result is not None and any(
             isinstance(part, ToolReturnPart) and part.tool_call_id == plan.request.tool_call_id
             for message in new_messages
@@ -749,6 +756,11 @@ class TurnRunner:
                 else m
                 for m in state.assistant_messages
             ]
+        # Steering whose model request did not complete stays queued and is sent
+        # again; the snapshot must not keep a copy of it as well.
+        state.assistant_messages = _without_steering(
+            state.assistant_messages, set(plan.session_context.get("pending_steering_ids") or ())
+        )
         content, segments, timestamp = build_assistant_message_content(
             state.assistant_messages, interrupted_status=state.interrupted_status
         )
@@ -767,6 +779,7 @@ class TurnRunner:
             await self._sessions.save_prompt_snapshot(
                 state.prompt_record["snapshot_hash"], state.prompt_snapshot
             )
+        model_messages = dump_model_messages(state.assistant_messages)
         if plan.assistant_parent_id is not None and not state.persisted:
             await self._sessions.register_assistant_message(
                 plan.session_id,
@@ -777,6 +790,7 @@ class TurnRunner:
                 usage=state.stored_usage,
                 created_at=timestamp,
                 prompt=state.prompt_record,
+                model_messages=model_messages,
             )
         else:
             record = await self._sessions.update_message(
@@ -786,6 +800,7 @@ class TurnRunner:
                 segments=segments,
                 usage=lambda current: _keep_row_auxiliary(state.stored_usage, {"usage": current}),
                 prompt=state.prompt_record,
+                model_messages=model_messages,
             )
             state.stored_usage = record.get("usage")
         state.persisted = True
@@ -1033,6 +1048,33 @@ class _IncompleteRun:
 
     def new_messages(self) -> list[ModelMessage]:
         return [m for m in self._messages if getattr(m, "run_id", None) == self._run_id]
+
+
+def _without_user_prompt(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """A message turn's messages after its user prompt, which the user row keeps.
+
+    Pydantic AI sends the prompt in the run's first request; steering it
+    delivers follows in requests of its own.
+    """
+    if not messages or not isinstance(messages[0], ModelRequest):
+        return messages
+    first = messages[0]
+    rest = [part for part in first.parts if not isinstance(part, UserPromptPart)]
+    return [replace(first, parts=rest), *messages[1:]] if rest else messages[1:]
+
+
+def _without_steering(messages: list[ModelMessage], pending_ids: set[str]) -> list[ModelMessage]:
+    """``messages`` without the steering requests (``build_steering_request``) still pending."""
+    if not pending_ids:
+        return messages
+    return [
+        message
+        for message in messages
+        if not (
+            isinstance(message, ModelRequest)
+            and pending_ids.intersection((message.metadata or {}).get("steering_ids") or ())
+        )
+    ]
 
 
 def _host_tool_names(ctx: AgentSetupContext) -> set[str]:
