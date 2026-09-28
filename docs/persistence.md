@@ -40,7 +40,7 @@ a host needs only a running PostgreSQL server.
 
 A database lost after startup is not a fallback, with or without
 `DATABASE__REQUIRED`: a route that uses it answers `503` with
-`{"error", "type": "DatabaseError"}`.
+`{"error": "Database not reachable", "type": "DatabaseError"}`.
 
 `DatabaseUnavailableError` and `MigrationError` carry a machine-readable
 `cause`, so a host can word them for its own users: `unreachable` (no

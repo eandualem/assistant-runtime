@@ -45,7 +45,7 @@ async def test_a_database_lost_after_startup_is_a_503():
 
     database = DatabaseService(DatabaseConfig())
     session = AsyncMock()
-    session.execute.side_effect = ConnectionRefusedError("Connection refused")
+    session.connection.side_effect = ConnectionRefusedError("Connection refused")
     database._session_factory = MagicMock()
     database._session_factory.return_value.__aenter__ = AsyncMock(return_value=session)
     database._session_factory.return_value.__aexit__ = AsyncMock(return_value=False)

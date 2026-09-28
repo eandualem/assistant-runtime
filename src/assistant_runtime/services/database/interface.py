@@ -173,15 +173,18 @@ class DatabaseService:
         if not self._healthy:
             raise DatabaseError("Database not reachable")
         async with self._session_factory() as session:
+            # A database lost after startup: no connection can be made, or the
+            # one in use is dropped. Connecting first keeps the body's own
+            # errors (an OSError from a file, say) out of this.
+            try:
+                await session.connection()
+            except (OSError, DBAPIError) as e:
+                raise DatabaseError("Database not reachable") from e
             try:
                 yield session
                 await session.commit()
             except Exception as e:
                 await session.rollback()
-                # A database lost after startup: no connection could be made,
-                # or the one in use was dropped.
-                if isinstance(e, OSError) or (
-                    isinstance(e, DBAPIError) and e.connection_invalidated
-                ):
+                if isinstance(e, DBAPIError) and e.connection_invalidated:
                     raise DatabaseError("Database not reachable") from e
                 raise
