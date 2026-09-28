@@ -318,6 +318,73 @@ class TaskORM(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AgentORM(Base):
+    """A persistent agent: one continuing session its messages run in, in order."""
+
+    __tablename__ = "agents"
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'stopped')", name="ck_agents_status_valid"),
+        # One active agent per session; per profile and subject below the class.
+        Index(
+            "uq_agents_active_session",
+            "session_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index(
+    "uq_agents_active_identity",
+    func.coalesce(AgentORM.profile, ""),
+    func.coalesce(AgentORM.subject, ""),
+    unique=True,
+    postgresql_where=text("status = 'active'"),
+)
+
+
+class AgentMessageORM(Base):
+    """A message to a persistent agent, and how the turn that answered it ended."""
+
+    __tablename__ = "agent_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed', 'cancelled', 'interrupted')",
+            name="ck_agent_messages_status_valid",
+        ),
+        Index("ix_agent_messages_agent_id_created_at", "agent_id", "created_at"),
+        Index("ix_agent_messages_parent_session_id", "parent_session_id"),
+        Index("ix_agent_messages_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(36), ForeignKey("agents.id"), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parent_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class EventORM(Base):
     """An event from another system (inbound) or a notice for the owner (outbound)."""
 

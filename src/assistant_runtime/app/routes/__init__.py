@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from assistant_runtime.app.routes.actions import confirmations_router
 from assistant_runtime.app.routes.actions import router as actions_router
+from assistant_runtime.app.routes.agents import router as agents_router
 from assistant_runtime.app.routes.agui import router as agui_router
 from assistant_runtime.app.routes.artifacts import prompt_router, proposals_router, subjects_router
 from assistant_runtime.app.routes.artifacts import router as artifacts_router
@@ -25,6 +26,7 @@ from assistant_runtime.app.routes.voice import router as voice_router
 
 router = APIRouter()
 router.include_router(actions_router)
+router.include_router(agents_router)
 router.include_router(confirmations_router)
 router.include_router(agui_router)
 router.include_router(artifacts_router)

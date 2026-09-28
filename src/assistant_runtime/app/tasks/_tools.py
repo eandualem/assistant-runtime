@@ -1,7 +1,8 @@
-"""The model's task tools: start, list, read and cancel background tasks.
+"""The model's background tools: tasks, and messages to persistent agents.
 
-Registered when ``TASKS__ENABLED`` is on. The session that starts a task is
-its parent; the tools list and read tasks of the caller's own principal.
+Registered when ``TASKS__ENABLED`` is on. The session that starts a task,
+or sends a message, is its parent; the tools list and read records of the
+caller's own principal. Only the host starts, moves and stops agents.
 """
 
 from __future__ import annotations
@@ -81,6 +82,43 @@ def register_task_tools(tools: ToolService, tasks: TaskService) -> None:
             return _failure(e)
         return {**_summary(record), "success": True}
 
+    async def message_agent(message: str, profile: str = "", subject: str = "") -> dict[str, Any]:
+        try:
+            record = await tasks.message_agent(
+                message,
+                profile=profile or None,
+                subject=subject or None,
+                parent_session_id=get_current_assistant_session_id(),
+                principal=get_current_principal(),
+            )
+        except TaskError as e:
+            return _failure(e)
+        return {
+            "message_id": record.id,
+            "agent_id": record.agent_id,
+            "status": record.status,
+            "success": True,
+        }
+
+    async def list_agents() -> dict[str, Any]:
+        try:
+            records = await tasks.list_agents(get_current_principal(), status="active")
+        except TaskError as e:
+            return _failure(e)
+        return {
+            "agents": [
+                {"agent_id": r.id, "profile": r.profile, "subject": r.subject} for r in records
+            ],
+            "success": True,
+        }
+
+    async def get_agent_message(message_id: str) -> dict[str, Any]:
+        try:
+            record = await tasks.get_message(message_id, get_current_principal())
+        except TaskError as e:
+            return _failure(e)
+        return {**record.to_dict(), "success": True}
+
     tools.register_backend_tool(
         ToolDefinition(
             name="start_task",
@@ -147,4 +185,47 @@ def register_task_tools(tools: ToolService, tasks: TaskService) -> None:
             category=ToolCategory.BACKEND,
         ),
         cancel_task,
+    )
+    tools.register_backend_tool(
+        ToolDefinition(
+            name="message_agent",
+            description=(
+                "Send a message to a persistent agent, named by its profile and subject. It "
+                "continues that agent's own conversation, after any messages before it, and "
+                "returns a message id at once; read the reply with get_agent_message."
+            ),
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "The message, stated fully"},
+                    "profile": {"type": "string", "description": "The agent's profile"},
+                    "subject": {"type": "string", "description": "The agent's subject"},
+                },
+                "required": ["message"],
+            },
+            category=ToolCategory.BACKEND,
+        ),
+        message_agent,
+    )
+    tools.register_backend_tool(
+        ToolDefinition(
+            name="list_agents",
+            description="The persistent agents that are active, with their profile and subject.",
+            parameters_schema={"type": "object", "properties": {}},
+            category=ToolCategory.BACKEND,
+        ),
+        list_agents,
+    )
+    tools.register_backend_tool(
+        ToolDefinition(
+            name="get_agent_message",
+            description="One message to a persistent agent, with the agent's reply once it is done.",
+            parameters_schema={
+                "type": "object",
+                "properties": {"message_id": {"type": "string"}},
+                "required": ["message_id"],
+            },
+            category=ToolCategory.BACKEND,
+        ),
+        get_agent_message,
     )

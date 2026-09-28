@@ -384,6 +384,39 @@ a restart marks unfinished tasks `interrupted` (and publishes that);
 nothing is replayed. Without it, tasks live in process memory and are lost
 on restart.
 
+### Persistent agents
+
+A persistent agent keeps one continuing session instead of a fresh one per
+piece of work. The host starts it for a `profile` and `subject` (one active
+agent per pair and per session), moves it to a fresh session when its
+conversation should start over, and stops it. Each message sent to it runs
+as the next turn in that session, one at a time and in order, within the
+same `TASKS__MAX_CONCURRENT` as tasks; no task is started. A message takes
+the agent's session when its turn starts, so a move applies to messages
+still waiting. The same `TASKS__ENABLED` switch turns agents on; the model
+gets `message_agent` (by profile and subject), `list_agents` and
+`get_agent_message`, with the calling session as the sender. Starting,
+moving, stopping and messaging an agent over HTTP requires the `admin`
+role.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/agents` `{"profile"?, "subject"?, "session_id"?}` | start an agent (`201`); its session is `agent-<id>` unless named; `409` when an active agent has that profile and subject or that session, `503` when disabled |
+| `GET /api/agents?status=` | the caller's agents newest first (every agent for an administrator); `status` is `active` or `stopped` |
+| `GET /api/agents/{id}` | one agent: `session_id`, `profile`, `subject`, `status`, times |
+| `POST /api/agents/{id}/session` `{"session_id"?}` | move the agent to a fresh session (a new id unless one is given); `409` when stopped or the session is taken |
+| `POST /api/agents/{id}/stop` | stop the agent; its queued and running messages end `cancelled` |
+| `POST /api/agents/{id}/messages` `{"content", "parent_session_id"?}` | queue a message (`202`); `409` when the agent is stopped, `429` when too many wait |
+| `GET /api/agents/{id}/messages?parent_session_id=&status=&limit=` | the agent's messages newest first |
+| `GET /api/agents/{id}/messages/{message_id}` | one message: `status` (as for tasks), `session_id` it ran in, `result`, `error`, `usage`, times |
+
+When a message's turn ends, `agent_message_finished` is published on
+`app.state.events` with `message_id`, `agent_id`, `status`, `session_id`,
+`parent_session_id`, `result` and `error`. A turn another caller starts in
+the agent's session replaces a running message turn, as in any session. With
+Postgres, agents survive a restart and unfinished messages are marked
+`interrupted` (and published); nothing is replayed.
+
 ## Events
 
 The host's record of what other systems reported (`inbound`) and of the

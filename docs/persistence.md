@@ -15,7 +15,7 @@ tools.
 | Queued inbox messages | rows | process memory; listing and marking surfaced through HTTP still need Postgres |
 | Encrypted provider keys | rows | unavailable |
 | Traces (debug) | rows | not stored |
-| Background tasks | rows in `tasks` | process memory, lost on restart |
+| Background tasks, persistent agents and their messages | rows in `tasks`, `agents`, `agent_messages` | process memory, lost on restart |
 | Events, actions and their confirmations, host state | rows in `events`, `actions`, `action_confirmations`, `host_state` | process memory, lost on restart |
 
 The session store is a write-through cache: every change is written to the
@@ -61,7 +61,10 @@ result and times). When the runtime starts, a task left `queued` or
 covers every task in the database, so run tasks in one process per
 database; a task's end is recorded once, and a later terminal update
 changes nothing. Without Postgres, tasks live in process memory and are
-lost on restart.
+lost on restart. Persistent agents are rows in `agents` (their current
+session and status) and their messages rows in `agent_messages`; a restart
+keeps the agents and marks every unfinished message in the database
+`interrupted` in the same way, so the one-process rule covers agents too.
 
 Host-written records have their own tables: `events` (unique per source and
 event id, numbered in arrival order), `actions` (status history, text

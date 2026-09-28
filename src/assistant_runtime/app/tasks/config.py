@@ -10,7 +10,10 @@ class TasksConfig(BaseModel):
 
     enabled: bool = Field(
         default=False,
-        description="Offer the task tools and accept POST /api/tasks. Each task runs model turns.",
+        description=(
+            "Offer the task and agent tools and accept POST /api/tasks and /api/agents. "
+            "Each task or agent message runs model turns."
+        ),
     )
     max_concurrent: int = Field(
         default=4, ge=1, le=32, description="Tasks running at once; the rest wait in order."

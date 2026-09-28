@@ -125,7 +125,7 @@ execution, history, serialization, or the upstream dependency; see
   and `services/artifacts`; no service imports `app`. `app/assistant` (prompt, sessions, per-request
   agent setup) imports services; `app/streaming` (the turn pipeline) imports
   `app/assistant`; `app/ingress` (messages from other systems delivered
-  into sessions) and `app/tasks` (background turns in their own sessions)
+  into sessions) and `app/tasks` (background turns: tasks and persistent agents)
   import `app/streaming`, and `app/heartbeat` and `app/event_log` (host-written events, steered
   into a session only when targeted) import `app/ingress`; `app/routes` and `app/socketio_server` are the HTTP and
   Socket.IO edges; `main`, `cli` and `config` (which composes every module's config model)
@@ -286,7 +286,15 @@ execution, history, serialization, or the upstream dependency; see
   fails its task. `task_finished` is published on `app.state.events` and is
   not forwarded to Socket.IO; nothing is steered into the parent session.
   With Postgres a restart marks unfinished tasks `interrupted` and replays
-  nothing; without it tasks live in process memory. Docs: `docs/api.md`.
+  nothing; without it tasks live in process memory. A *persistent agent*
+  is the continuing form: the host starts it for a (profile, subject), one
+  active agent per pair and per session, and it keeps one session until the
+  host moves it to a fresh one or stops it. Each message (the model's
+  `message_agent`, or `POST /api/agents/{id}/messages`) runs as its next turn
+  in that session, one at a time, within the same `TASKS__MAX_CONCURRENT`,
+  and never starts a task; `agent_message_finished` carries the sender's
+  `parent_session_id`. A restart keeps agents and marks unfinished messages
+  `interrupted`. Docs: `docs/api.md`.
 - **Decisions are a capability of the application, not of the model.**
   `services/decisions` sends program state plus typed questions (`choice`,
   `score`, `noul`) to a `DecisionProvider` (TypeSafe's System One endpoint in
@@ -358,7 +366,8 @@ execution, history, serialization, or the upstream dependency; see
   is the one rule (owner, admin, or unowned), applied by the turn planner,
   the streaming service and the session routes. Administration (settings
   writes, provider keys, OAuth, ingress, inbox, debug, artifact mutations,
-  session reassignment, host cards, events, actions, host state) requires
+  session reassignment, host cards, events, actions, host state, persistent
+  agents) requires
   the `admin` role. Tools read the principal
   from the request context. Browser origins for HTTP and Socket.IO both
   come from `AccessConfig` (localhost by default); `/health` returns
