@@ -98,7 +98,7 @@ configuration lists the providers.
 | approvals | `list_agent_plans`, `approve_plan`, `reject_plan` | `AGENT_STATE_DIR`, and `approvals` named in `TOOLS__PROVIDER_CAPABILITIES` (it types into other agents' terminals) |
 | issues | `create_issue`, `search_issues`, `get_issue_details`, `comment_on_issue`, `close_issue` | `GITHUB_TOKEN`, `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME` |
 | messaging | `respond_telegram` | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` |
-| media | `generate_image`, `generate_video` | the `media` or `video` group; a key for the provider of `MEDIA__DEFAULT_IMAGE_MODEL` (OpenAI by default) for images; the `[video]` extra and a key for the provider of `MEDIA__DEFAULT_VIDEO_MODEL` (Runway by default) for video |
+| media | `generate_image`, `generate_video` | the `media` or `video` group; an OpenAI or Google key for images; the `[video]` extra and a Runway or Luma key for video. A call without a model uses `MEDIA__DEFAULT_IMAGE_MODEL` or `MEDIA__DEFAULT_VIDEO_MODEL` (or their runtime overrides), so point those at a provider with a key |
 | subagent | `run_subagent` | the group in `TOOLS__BUILTIN_TOOLS` (uses the configured model); the subagent gets the turn's page-scoped backend tools and stays within the host's `ASSISTANT__BUDGET__*` ceilings |
 
 A tool whose call fails returns a structured error

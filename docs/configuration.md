@@ -161,7 +161,7 @@ The default assistant profile is `AssistantDefinition.profile` when set, then
 |---|---|---|
 | `max_tools_per_request` | `64` | warn above this many tools in one request |
 | `tool_timeout_seconds` | `30` | seconds a backend tool may run per attempt; a `ToolDefinition.timeout` overrides it; the model gets a `TOOL_TIMEOUT` error. Only tools declared `idempotent` are retried once on a timeout or connection error |
-| `builtin_tools` | `[]` | built-in groups to enable from `time`, `screen`, `artifacts`, `subagent`, `media`, `video`; an enabled group is registered only when it can work (`media` and `video` need a key for the provider of their default model, `MEDIA__DEFAULT_IMAGE_MODEL` or `MEDIA__DEFAULT_VIDEO_MODEL`) |
+| `builtin_tools` | `[]` | built-in groups to enable from `time`, `screen`, `artifacts`, `subagent`, `media`, `video`; an enabled group is registered only when it can work (`media` needs an OpenAI or Google key, `video` a Runway or Luma key; point the default media models at a provider with a key) |
 | `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup. `approvals` is privileged (it types into other agents' terminals) and is registered only when named here |
 | `host_tools` | `{}` | tools the host executes: `{"name": {"description": "...", "parameters": <JSON schema>}}`; names must match `^[A-Za-z0-9_-]{1,64}$` |
 | `host_tools_path` | unset | a JSON file with the same shape, merged over `host_tools` |

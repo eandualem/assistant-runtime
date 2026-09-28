@@ -62,13 +62,9 @@ class TestLifecycle:
         await without.start()
         assert without._registry.get_tool_names() == []
 
-        # The key must belong to the default model's provider.
+        # Any image provider's key: a call can name the model, and the default can change.
         monkeypatch.setenv("GOOGLE_API_KEY", "test")
-        other_key = ToolService(config=config, media_service=MediaService(MediaConfig()))
-        await other_key.start()
-        assert other_key._registry.get_tool_names() == []
-        google = MediaService(MediaConfig(default_image_model="google:gemini-3-image"))
-        with_image_key = ToolService(config=config, media_service=google)
+        with_image_key = ToolService(config=config, media_service=MediaService(MediaConfig()))
         await with_image_key.start()
         assert with_image_key._registry.get_tool_names() == ["generate_image"]
 

@@ -116,14 +116,16 @@ class MediaService:
         self._runtime_settings = runtime_settings
 
     def can_generate_images(self) -> bool:
-        """Whether the default image model's provider is supported and has a key."""
-        provider = self._config.default_image_model.split(":", 1)[0]
-        return provider in _PROVIDER_GENERATORS and _has_key(PROVIDER_ENV_VARS[provider])
+        """Whether an image provider has a key (OpenAI or Google).
+
+        A call may name its model, and the default can change at runtime, so
+        any provider with a key can serve the tool.
+        """
+        return any(_has_key(PROVIDER_ENV_VARS[p]) for p in _PROVIDER_GENERATORS)
 
     def can_generate_videos(self) -> bool:
-        """Whether the default video model's provider is supported and has a key."""
-        provider = self._config.default_video_model.split(":", 1)[0]
-        return provider in _VIDEO_PROVIDERS and _has_key(MEDIA_PROVIDER_ENV_VARS[provider])
+        """Whether a video provider has a key (Runway or Luma)."""
+        return any(_has_key(MEDIA_PROVIDER_ENV_VARS[p]) for p in _VIDEO_PROVIDERS)
 
     async def generate_image(
         self,
