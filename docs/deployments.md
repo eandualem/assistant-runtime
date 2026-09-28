@@ -80,6 +80,15 @@ Postgres a restart clears process memory; use `make db-up && make db-upgrade`
 (or `assistant-runtime migrate`) when sessions and artifact versions must
 survive restarts.
 
+A supervisor that restarts the runtime or gates traffic to it should probe
+`GET /health` for liveness and `GET /health/ready` for readiness (see
+[health](api.md#health)). A database lost after startup leaves the runtime
+alive (`status: degraded`, 200) but not ready (503). The runtime reconnects
+by itself when Postgres is back, so a restart would not help. A host that
+chooses a database sets `DATABASE__REQUIRED=true`. A runtime restarted
+during an outage then fails to start, instead of running in memory mode
+without the data it was using.
+
 ## Memory-only mode and the session TTL
 
 Without a Postgres reachable at startup the runtime runs entirely in

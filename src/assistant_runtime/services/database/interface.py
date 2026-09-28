@@ -140,18 +140,24 @@ class DatabaseService:
     async def health_check(self) -> dict:
         """Report reachability with a live check.
 
-        Postgres is optional: an unreachable database is reported as
-        ``reachable: false`` but does not make the runtime unhealthy, because
-        every request path works without it — unless ``required`` is set,
-        when it does. A service that never started is a genuine failure.
-        The check only reports: it never changes :attr:`healthy`.
+        An unreachable database never makes the runtime unhealthy, with or
+        without ``required`` (which decides only startup): the process runs,
+        and a database it uses is tried again on every call. It is not
+        ``ready`` while the database chosen at startup does not answer; a
+        process that chose memory is ready either way. A service that never
+        started is a genuine failure. The check only reports: it never
+        changes :attr:`healthy`.
         """
         if not self._started or self._engine is None:
-            return {"healthy": False, "reachable": False}
+            return {"healthy": False, "reachable": False, "ready": False}
         failure = await self._probe()
         reachable = failure is None
-        healthy = reachable or not self._config.required
-        return {"healthy": healthy, "reachable": reachable, "host": self._config.host}
+        return {
+            "healthy": True,
+            "reachable": reachable,
+            "ready": reachable or not self._healthy,
+            "host": self._config.host,
+        }
 
     @property
     def healthy(self) -> bool:

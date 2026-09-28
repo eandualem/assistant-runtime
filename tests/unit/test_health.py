@@ -20,6 +20,7 @@ async def test_health_response_structure(client):
     assert "healthy" in data
     assert "components" in data
     assert data["healthy"] is True
+    assert data["status"] == "ok"
     assert data["components"] == {}
 
 
@@ -70,15 +71,18 @@ async def test_health_is_200_when_the_optional_services_are_unavailable():
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
+            ready = await client.get("/health/ready")
     finally:
         await database.stop()
 
-    assert response.status_code == 200
+    assert (response.status_code, ready.status_code) == (200, 200)
     data = response.json()
-    assert data["healthy"] is True
+    assert (data["healthy"], data["status"]) == (True, "ok")
+    # The process chose memory at startup, so an unreachable server is nothing to wait for.
     assert data["components"]["database_service"] == {
         "healthy": True,
         "reachable": False,
+        "ready": True,
         "host": "localhost",
     }
     assert data["components"]["oauth_service"]["healthy"] is True
@@ -101,3 +105,28 @@ async def test_health_is_503_when_a_service_never_started():
 
     assert response.status_code == 503
     assert response.json()["components"]["database_service"]["healthy"] is False
+
+
+@pytest.mark.parametrize(
+    ("check", "status", "live", "ready"),
+    [
+        ({"healthy": True}, "ok", 200, 200),
+        ({"healthy": True, "reachable": False, "ready": False}, "degraded", 200, 503),
+        ({"healthy": False}, "unhealthy", 503, 503),
+    ],
+)
+async def test_liveness_and_readiness_answer_by_status(check, status, live, ready):
+    """A database lost after startup is degraded: alive for /health, not ready."""
+    app = create_app()
+    lifecycle = LifecycleManager()
+    component = AsyncMock()
+    component.health_check = AsyncMock(return_value=check)
+    await lifecycle.register("database_service", component)
+    app.state.lifecycle = lifecycle
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        health = await client.get("/health")
+        readiness = await client.get("/health/ready")
+
+    assert (health.status_code, readiness.status_code) == (live, ready)
+    assert health.json()["status"] == readiness.json()["status"] == status

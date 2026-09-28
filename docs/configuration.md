@@ -279,8 +279,11 @@ never replaced by memory: calls that need it fail until it is back (see
 [persistence](persistence.md#requiring-postgres)).
 
 - `required` (`false`): fail startup with `DatabaseUnavailableError` when
-  Postgres is unreachable, instead of keeping state in memory, and have
-  `/health` report an unreachable database as unhealthy.
+  Postgres is unreachable, instead of keeping state in memory. Set it when
+  the host chooses a database, so that a restart during an outage fails
+  instead of starting in memory mode. It affects startup only: either way,
+  a database lost later is `degraded` on `/health` (200) and not ready on
+  `/health/ready` (503).
 - `migrate_on_start` (`false`): upgrade the schema to the packaged head
   before the services start; a failed upgrade fails startup with
   `MigrationError`. With `required` too, a reachable server that lacks the

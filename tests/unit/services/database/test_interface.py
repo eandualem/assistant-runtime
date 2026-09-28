@@ -202,7 +202,8 @@ class TestDatabaseServiceRequired:
         migrate.assert_not_awaited()
         assert service.healthy is False
 
-    async def test_required_database_lost_later_is_unhealthy(self):
+    async def test_required_database_lost_later_is_alive_but_not_ready(self):
+        """``required`` decides startup only: a later loss is no reason to restart."""
         service = DatabaseService(config=DatabaseConfig(required=True))
         mock_engine, _ = _make_mock_engine()
         with patch(self._ENGINE, return_value=mock_engine):
@@ -211,8 +212,9 @@ class TestDatabaseServiceRequired:
             side_effect=ConnectionRefusedError("gone")
         )
         assert await service.health_check() == {
-            "healthy": False,
+            "healthy": True,
             "reachable": False,
+            "ready": False,
             "host": "localhost",
         }
 
@@ -381,9 +383,10 @@ class TestDatabaseServiceHealthCheck:
             mock_engine.begin.return_value = mock_fail_cm
 
             health = await service.health_check()
-            # Degraded, not unhealthy: every request path works without Postgres.
+            # Alive but not ready: the process runs, and the database it uses is back later.
             assert health["healthy"] is True
             assert health["reachable"] is False
+            assert health["ready"] is False
             # The probe only reports: calls keep trying the database.
             assert service.healthy is True
 
@@ -395,6 +398,8 @@ class TestDatabaseServiceHealthCheck:
             return_value=mock_engine,
         ):
             await service.start()
+        # A process that chose memory is ready whether or not a server answers.
+        assert (await service.health_check())["ready"] is True
         mock_engine.begin.return_value.__aenter__ = AsyncMock()
 
         assert (await service.health_check())["reachable"] is True
