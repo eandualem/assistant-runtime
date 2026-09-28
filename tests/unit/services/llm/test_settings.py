@@ -275,7 +275,9 @@ class TestBuildModelSettings:
             (40_000, "xhigh"),
         ],
     )
-    @pytest.mark.parametrize("model", ["openai:gpt-5.4", "openai:gpt-6-astra"])
+    @pytest.mark.parametrize(
+        "model", ["openai:gpt-5.4", "openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"]
+    )
     def test_openai_thinking_budget_maps_reasoning_effort(
         self, thinking_budget, expected_effort, model
     ):
@@ -289,6 +291,12 @@ class TestBuildModelSettings:
         assert settings["openai_send_reasoning_ids"] is False
         assert settings["openai_reasoning_effort"] == expected_effort
         assert settings["openai_reasoning_summary"] == "detailed"
+
+    @pytest.mark.parametrize(
+        "model", ["openai:gpt-6-astra", "openai:gpt-6-sol", "openai:gpt-6-luna"]
+    )
+    def test_gpt6_models_omit_temperature(self, model):
+        assert "temperature" not in build_model_settings(model_id=model, temperature=0.5)
 
     def test_openai_gpt5_pro_uses_fixed_high_reasoning_effort(self):
         settings = build_model_settings(

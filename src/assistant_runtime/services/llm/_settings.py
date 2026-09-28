@@ -136,8 +136,8 @@ def build_model_settings(
     is_openrouter = model_id.startswith("openrouter:")
     is_anthropic = "anthropic" in model_id and not is_openrouter
     is_google = model_id.startswith("google:") or model_id.startswith("google-cloud:")
-    is_astra = model_id == "openai:gpt-6-astra" or model_id.startswith("openai:gpt-6-astra-")
-    is_openai_reasoning = model_id.startswith("openai:gpt-5") or is_astra
+    is_gpt6 = model_id.startswith("openai:gpt-6-")
+    is_openai_reasoning = model_id.startswith("openai:gpt-5") or is_gpt6
 
     base = dict(base or {})
     # The response portion; a thinking budget that shares the output limit is added to it.
@@ -272,7 +272,7 @@ def build_model_settings(
             **base,
             "max_tokens": response_tokens,
         }
-        if temperature is not None and not is_astra:
+        if temperature is not None and not is_gpt6:
             openai_kwargs["temperature"] = temperature
         if thinking_budget:
             openai_kwargs["openai_reasoning_effort"] = _map_openai_reasoning_effort(
