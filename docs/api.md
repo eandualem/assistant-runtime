@@ -371,7 +371,7 @@ time, in order; at most `TASKS__MAX_CONCURRENT` run at once. They need
 
 | Route | Purpose |
 |---|---|
-| `POST /api/tasks` `{"task", "profile"?, "subject"?, "context"?, "parent_session_id"?}` | queue a task (`202`); `503` when disabled, `429` when too many wait, `422` for an empty task or an invalid profile or subject name, `404` for an unknown profile |
+| `POST /api/tasks` `{"task", "profile"?, "subject"?, "context"?, "parent_session_id"?}` | queue a task (`202`); `503` when disabled, `429` when too many wait, `422` for an empty task or an invalid subject name, `404` for a profile that isn't registered (whatever its spelling) |
 | `GET /api/tasks?parent_session_id=&status=&limit=` | the caller's tasks newest first (every task for an administrator) |
 | `GET /api/tasks/{id}` | one task: `status` (`queued`, `running`, `done`, `failed`, `cancelled`, `interrupted`), `result`, `error`, `usage`, times |
 | `POST /api/tasks/{id}/cancel` | stop a queued or running task |
