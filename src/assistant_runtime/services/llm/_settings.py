@@ -152,9 +152,8 @@ def build_model_settings(
             **base,
             "max_tokens": response_tokens,
         }
-        # Opus 4.7+, Sonnet 5 and the Fable/Mythos family reject temperature/top_p/top_k,
-        # and extended thinking requires the default temperature.
-        if temperature is not None and not no_sampling and not thinking_budget:
+        # Opus 4.7+, Sonnet 5 and the Fable/Mythos family reject temperature/top_p/top_k.
+        if temperature is not None and not no_sampling:
             anthropic_kwargs["temperature"] = temperature
 
         # Only include thinking when enabled — passing None triggers a 400 error.
@@ -172,6 +171,14 @@ def build_model_settings(
                     "budget_tokens": thinking_budget,
                 }
                 anthropic_kwargs["max_tokens"] = thinking_budget + response_tokens
+
+        # Extended thinking requires the default temperature, whichever layer turned it on.
+        native_thinking = anthropic_kwargs.get("anthropic_thinking") or {}
+        thinking_on = native_thinking.get("type", "disabled") != "disabled" or (
+            anthropic_kwargs.get("thinking") not in (None, False)
+        )
+        if thinking_on:
+            anthropic_kwargs.pop("temperature", None)
 
         settings: (
             AnthropicModelSettings | GoogleModelSettings | OpenRouterModelSettings | dict[str, Any]

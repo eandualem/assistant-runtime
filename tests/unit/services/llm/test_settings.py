@@ -167,6 +167,23 @@ class TestBuildModelSettings:
         assert settings["anthropic_cache"] is False
         assert settings["temperature"] == 0.3
 
+    def test_thinking_from_any_layer_leaves_out_temperature(self):
+        tunable_thinking = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5",
+            thinking_budget=4000,
+            base={"temperature": 0.3},
+        )
+        assert "temperature" not in tunable_thinking
+        for thinking in ({"thinking": "high"}, {"anthropic_thinking": {"type": "adaptive"}}):
+            settings = build_model_settings(
+                model_id="anthropic:claude-sonnet-4-6", temperature=0.3, base=thinking
+            )
+            assert "temperature" not in settings, thinking
+        disabled = build_model_settings(
+            model_id="anthropic:claude-sonnet-4-6", temperature=0.3, base={"thinking": False}
+        )
+        assert disabled["temperature"] == 0.3
+
     def test_budget_headroom_uses_the_application_output_limit(self):
         settings = build_model_settings(
             model_id="anthropic:claude-haiku-4-5",
