@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.database.exceptions import (
@@ -447,3 +448,38 @@ class TestDatabaseServiceSessionContext:
 
         mock_session.rollback.assert_awaited_once()
         mock_session.commit.assert_not_awaited()
+
+    async def test_session_context_reports_a_lost_connection_as_unreachable(self):
+        service = DatabaseService(config=DatabaseConfig())
+        session = AsyncMock()
+        mock_session_factory = MagicMock()
+        mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=session)
+        mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        service._session_factory = mock_session_factory
+        service._started = True
+        service._healthy = True
+
+        # No connection can be made.
+        refused = ConnectionRefusedError("Connection refused")
+        session.connection.side_effect = refused
+        with pytest.raises(DatabaseError, match="not reachable") as raised:
+            async with service.session_context():
+                pass
+        assert raised.value.__cause__ is refused
+        session.connection.side_effect = None
+
+        # The connection in use is dropped.
+        dropped = DBAPIError("SELECT 1", {}, Exception("terminated"), connection_invalidated=True)
+        with pytest.raises(DatabaseError, match="not reachable") as raised:
+            async with service.session_context():
+                raise dropped
+        assert raised.value.__cause__ is dropped
+
+        # The body's own errors keep their type.
+        for error in (
+            OSError("No such file"),
+            IntegrityError("INSERT", {}, Exception("duplicate key")),
+        ):
+            with pytest.raises(type(error)):
+                async with service.session_context():
+                    raise error

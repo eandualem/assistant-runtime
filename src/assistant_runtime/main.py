@@ -32,6 +32,7 @@ from assistant_runtime.config import AppSettings
 from assistant_runtime.logging_config import setup_logging
 from assistant_runtime.services.actions.factory import register_actions
 from assistant_runtime.services.artifacts.factory import register_artifacts
+from assistant_runtime.services.database.exceptions import DatabaseError
 from assistant_runtime.services.database.factory import register_database
 from assistant_runtime.services.decisions.factory import register_decisions
 from assistant_runtime.services.history.factory import register_history
@@ -201,6 +202,14 @@ def create_app(
         # duplicate id, wrong tool call): the client's mistake, not ours.
         return JSONResponse(
             status_code=409,
+            content={"error": str(exc), "type": exc.__class__.__name__},
+        )
+
+    @app.exception_handler(DatabaseError)
+    async def database_error_handler(request, exc: DatabaseError):
+        # Postgres was lost after startup: temporary, so the host may retry.
+        return JSONResponse(
+            status_code=503,
             content={"error": str(exc), "type": exc.__class__.__name__},
         )
 

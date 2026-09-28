@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 from loguru import logger
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -172,9 +173,18 @@ class DatabaseService:
         if not self._healthy:
             raise DatabaseError("Database not reachable")
         async with self._session_factory() as session:
+            # A database lost after startup: no connection can be made, or the
+            # one in use is dropped. Connecting first keeps the body's own
+            # errors (an OSError from a file, say) out of this.
+            try:
+                await session.connection()
+            except (OSError, DBAPIError) as e:
+                raise DatabaseError("Database not reachable") from e
             try:
                 yield session
                 await session.commit()
-            except Exception:
+            except Exception as e:
                 await session.rollback()
+                if isinstance(e, DBAPIError) and e.connection_invalidated:
+                    raise DatabaseError("Database not reachable") from e
                 raise
