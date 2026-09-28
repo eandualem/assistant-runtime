@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql.asyncpg import dialect
+from sqlalchemy.exc import IntegrityError
 
 from assistant_runtime.app.assistant._session_persistence import SessionPersistence
 from assistant_runtime.app.assistant._session_store import SessionStore
@@ -145,3 +146,48 @@ def test_ttl_zero_never_expires():
     assert SessionPersistence(SimpleNamespace(), 0)._expires_at() == NEVER_EXPIRES
     ordinary = SessionPersistence(SimpleNamespace(), 24)._expires_at()
     assert ordinary - datetime.now(UTC) <= timedelta(hours=24)
+
+
+def _conflict(constraint: str) -> IntegrityError:
+    """A unique violation as SQLAlchemy raises it: asyncpg's error is the adapted one's cause."""
+    cause = Exception("duplicate key value violates unique constraint")
+    cause.constraint_name = constraint
+    adapted = Exception("adapted")
+    adapted.__cause__ = cause
+    return IntegrityError("INSERT INTO messages", {}, adapted)
+
+
+class FailingInsertDatabase:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    @asynccontextmanager
+    async def session_context(self):
+        error = self.error
+
+        class Transaction:
+            async def execute(self, statement):
+                raise error
+
+        yield Transaction()
+
+
+async def test_a_message_id_used_in_another_session_is_a_duplicate():
+    record = {
+        "id": "m-1",
+        "session_id": "sess-2",
+        "parent_id": None,
+        "role": "user",
+        "message_type": "standard",
+        "content": "Hi",
+        "segments": None,
+        "usage": None,
+    }
+    taken = SessionPersistence(FailingInsertDatabase(_conflict("pk_messages")), 24)
+    with pytest.raises(ValueError, match="Message 'm-1' already exists"):
+        await taken.create_message(record)
+
+    # Any other constraint is not a duplicate id.
+    second_root = _conflict("uq_messages_single_root_per_session")
+    with pytest.raises(IntegrityError):
+        await SessionPersistence(FailingInsertDatabase(second_root), 24).create_message(record)

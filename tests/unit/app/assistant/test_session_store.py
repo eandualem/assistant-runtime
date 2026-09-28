@@ -387,6 +387,27 @@ class TestOwnership:
             "sess-1", None, "alice", profile=None, subject=None
         )
 
+    @pytest.mark.parametrize("role", ["user", "host"])
+    async def test_an_id_used_in_another_session_is_refused_and_not_cached(self, role):
+        store = SessionStore()
+        db = AsyncMock()
+        db.load = AsyncMock(return_value=None)
+        # What the persistence reports when the primary key is taken by another session.
+        db.create_message = AsyncMock(side_effect=ValueError("Message 'm-1' already exists"))
+        store._db = db
+        if role == "user":
+            request = AssistantRequest(id="m-1", session_id="sess-2", content="Hi")
+            write = store.register_user_message(request, owner_id="alice")
+        else:
+            write = store.register_host_message(
+                "sess-2", message_id="m-1", content="A card.", segments=[], owner_id="alice"
+            )
+        with pytest.raises(ValueError, match="already exists"):
+            await write
+        ctx = store.get_context("sess-2")
+        assert (ctx["message_count"], ctx["active_leaf_id"], ctx["owner_id"]) == (0, None, None)
+        db.save_state.assert_not_awaited()
+
     async def test_empty_cached_context_is_hydrated_before_ownership_is_decided(self):
         store = SessionStore()
         store.get_context("sess-1")  # a warm-up cached an empty context...
