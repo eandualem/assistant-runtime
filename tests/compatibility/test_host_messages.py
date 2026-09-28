@@ -120,6 +120,13 @@ async def test_a_card_starts_a_missing_session_and_binds_it_as_a_first_message_w
     assert [(m["role"], m["parent_id"]) for m in path][:2] == [("host", None), ("user", card["id"])]
     assert "Spoken first." in repr(script.requests[-1])
 
+    # Without a subject the started session stays unbound: turns pick their profile.
+    await runtime.streaming.append_host_message(
+        "plain", content="", segments=[CARD], principal=owner
+    )
+    plain = await runtime.sessions.get_context_if_exists_async("plain")
+    assert (plain["owner_id"], plain.get("profile"), plain.get("subject")) == ("alice", None, None)
+
 
 async def test_a_turn_arriving_during_the_append_waits_and_continues_after_the_card(
     runtime, script
