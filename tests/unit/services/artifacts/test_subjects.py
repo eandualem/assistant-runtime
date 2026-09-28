@@ -178,11 +178,15 @@ class TestRetention:
         from unittest.mock import AsyncMock
 
         from assistant_runtime.services.artifacts.exceptions import ArtifactError
+        from assistant_runtime.services.database.exceptions import DatabaseError
 
         service = await _service()
         lead = service.for_profile("lead")
         service._store.get_all_active = AsyncMock(side_effect=RuntimeError("db gone"))
         with pytest.raises(ArtifactError, match="db gone"):
+            await lead.prompt_extras()
+        service._store.get_all_active = AsyncMock(side_effect=DatabaseError("gone"))
+        with pytest.raises(DatabaseError):
             await lead.prompt_extras()
 
 

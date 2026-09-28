@@ -41,6 +41,7 @@ from assistant_runtime.services.artifacts.exceptions import (
     UnknownProfileError,
 )
 from assistant_runtime.services.artifacts.models import Actor, ArtifactVersion, MutationResult
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 if TYPE_CHECKING:
     from assistant_runtime.base.events import EventHub
@@ -314,6 +315,8 @@ class ArtifactService:
                 ):
                     texts[row.name] = row.content
                     versions[row.name] = row.version
+        except DatabaseError:
+            raise  # a lost database is the retryable 503, not a bad request
         except Exception as e:
             # A prompt from the defaults would silently drop the stored versions.
             raise ArtifactError(f"Failed to load artifacts: {e}") from e
@@ -339,6 +342,8 @@ class ArtifactService:
             return []
         try:
             rows = await self._require_store().get_all_active(self._profile.name)
+        except DatabaseError:
+            raise
         except Exception as e:
             raise ArtifactError(f"Failed to list documents: {e}") from e
         names = sorted(r.name for r in rows if self._profile.collection_of(r.name))

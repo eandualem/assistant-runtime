@@ -23,6 +23,7 @@ from assistant_runtime.services.artifacts.exceptions import (
 )
 from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.artifacts.models import Actor
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 ASSISTANT = Actor("assistant")
 HOST = Actor("host", "operator")
@@ -149,6 +150,13 @@ class TestActiveTexts:
         service = await _service()
         service._store.get_all_active = AsyncMock(side_effect=RuntimeError("down"))
         with pytest.raises(ArtifactError, match="down"):
+            await service.active_texts()
+
+    async def test_a_lost_database_stays_a_database_error(self):
+        """The retryable 503, not an artifact error's 400."""
+        service = await _service()
+        service._store.get_all_active = AsyncMock(side_effect=DatabaseError("gone"))
+        with pytest.raises(DatabaseError):
             await service.active_texts()
 
     async def test_rows_outside_the_profile_are_ignored(self):
