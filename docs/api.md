@@ -19,7 +19,8 @@ unidentified caller gets `401` (a refused connection on Socket.IO); a
 session that belongs to someone else (or an unowned legacy session, for a non-administrator) `403` (`assistant:error` of type
 `forbidden`); administration without the `admin` role `403`.
 Administration covers `PATCH /api/settings`, providers, OAuth, ingress,
-the inbox, debugging, every artifact mutation and session reassignment.
+the inbox, debugging, every artifact mutation, session reassignment, host
+cards, and the event, action and host-state routes.
 
 ## Health
 
@@ -246,7 +247,9 @@ returns `[]`. Four row shapes:
 A `host` message is a card the host showed outside any turn (a proposal
 made in the background, findings, an action a task suggested). Its
 `segments` are components, `{"kind": "component", "type", "data"}` (up to
-16, 64 KiB of JSON in all), for people only: the model never receives them.
+16, 64 KiB of JSON in all; a `type` is a lowercase letter followed by up to
+63 lowercase letters, digits, `_`, `.` or `-`), for people only: the model
+never receives them. `content` holds at most 20,000 characters.
 In later turns the model reads the message's `content`, as request-side
 text, before the next prompt; an empty `content` leaves it out entirely.
 The next reply continues after the host message.
@@ -351,7 +354,7 @@ default `neutral` profile defines `instructions` and `scratchpad`.
 
 | Route | Purpose |
 |---|---|
-| `POST /api/assistant/inject` `{"from", "via", "message", "sessionId"?, "telegramChatId"?}` | deliver a message with a `[via:<via> from:<from>]` envelope into a session; `{"status": "delivered", "session_id", "delivery"}` (`delivery` is `queued` into a live turn or `promoted` to a turn of its own) or `{"status": "queued", "inbox_id"}` when no session exists, or when a voice call holds the named session (the message joins that session's next turn) |
+| `POST /api/assistant/inject` `{"from", "via", "message", "sessionId"?, "telegramChatId"?}` | deliver a message with a `[via:<via> from:<from>]` envelope into a session; `{"status": "delivered", "session_id", "delivery"}` (`delivery` is `queued` into a live turn or `promoted` to a turn of its own) or `{"status": "queued", "inbox_id"}` when no session exists, or `{"status": "queued", "inbox_id", "session_id"}` when a voice call holds the named session (the message joins that session's next turn) |
 | `POST /api/inbox` `{"from", "message", "severity"?, "context"?}` | leave a note (`context.session_id` and `context.via` are honoured); same delivery and response as above |
 | `GET /api/inbox?surfaced=` | list the queued notes (Postgres) |
 | `PATCH /api/inbox/{id}/surfaced` | mark a note as surfaced (Postgres) |
@@ -368,7 +371,7 @@ time, in order; at most `TASKS__MAX_CONCURRENT` run at once. They need
 
 | Route | Purpose |
 |---|---|
-| `POST /api/tasks` `{"task", "profile"?, "subject"?, "context"?, "parent_session_id"?}` | queue a task (`202`); `503` when disabled, `429` when too many wait |
+| `POST /api/tasks` `{"task", "profile"?, "subject"?, "context"?, "parent_session_id"?}` | queue a task (`202`); `503` when disabled, `429` when too many wait, `422` for an empty task or an invalid subject name, `404` for a profile that isn't registered (whatever its spelling) |
 | `GET /api/tasks?parent_session_id=&status=&limit=` | the caller's tasks newest first (every task for an administrator) |
 | `GET /api/tasks/{id}` | one task: `status` (`queued`, `running`, `done`, `failed`, `cancelled`, `interrupted`), `result`, `error`, `usage`, times |
 | `POST /api/tasks/{id}/cancel` | stop a queued or running task |
@@ -376,9 +379,10 @@ time, in order; at most `TASKS__MAX_CONCURRENT` run at once. They need
 When a task ends, `task_finished` is published on `app.state.events` with
 `task_id`, `status`, `session_id`, `parent_session_id`, `profile`,
 `subject`, `result` and `error`. Nothing is steered into the parent
-session: the host decides when and how a result is reviewed. A restart
-marks unfinished tasks `interrupted` (and publishes that); nothing is
-replayed.
+session: the host decides when and how a result is reviewed. With Postgres,
+a restart marks unfinished tasks `interrupted` (and publishes that);
+nothing is replayed. Without it, tasks live in process memory and are lost
+on restart.
 
 ## Events
 
@@ -434,9 +438,10 @@ reads the values.
 | `GET /api/host-state/{namespace}?after=&limit=` | `{namespace, entries, next_after}`: values by key after `after`; `next_after` continues, null on the last page |
 | `GET /api/host-state/{namespace}/{key}` | `{namespace, key, value, version, updated_by, updated_at}` (`404` when absent) |
 | `PUT /api/host-state/{namespace}/{key}` `{"value", "expected_version"?}` | store any JSON value (at most `HOST_STATE__MAX_VALUE_BYTES`) |
-| `DELETE /api/host-state/{namespace}/{key}?expected_version=` | remove it (`204`) |
+| `DELETE /api/host-state/{namespace}/{key}?expected_version=` | remove it (`204`; `404` when nothing is stored and no `expected_version` is named) |
 
-A namespace is lowercase letters, digits, `_`, `.` or `-` (up to 64); a key
+A namespace starts with a lowercase letter, followed by lowercase letters,
+digits, `_`, `.` or `-` (up to 64 in all); a key
 is 1 to 200 letters, digits or `_ . : @ -`.
 
 ## Media and debugging
@@ -479,7 +484,8 @@ Chat requests accept top-level `profile`, a startup-registered name from
 steering message and host-tool continuation; omission selects the startup
 default. Queued steering with an explicit profile is delivered only to matching
 turns; unprofiled queued steering inherits its consuming turn. Unknown names reject chat with HTTP 409 before turn admission, voice
-creation with 422 before allocation, and artifact queries with 404. Invalid
+creation with 422 before allocation, and artifact queries, task creation and
+host cards with 404. Invalid
 name syntax returns 422 for HTTP request validation. Artifact routes select
 the same scope through `?profile=<name>`. See [deployments](deployments.md).
 

@@ -199,7 +199,9 @@ fails startup). `VOICE__CONVERSATION_INSTRUCTIONS` supplies the conversation-onl
 (default: helpful, concise conversation); it is separate from delegated-mode
 `VOICE__INSTRUCTIONS`, whose default asks Live to delegate.
 Call creation may supply bounded `instructions` to replace the mode-specific
-startup prompt for that call, and `profile` for delegated backend work. The
+startup prompt for that call, or `instructions_profile` to build them from a
+registered profile's artifacts (not both), and `profile` for delegated
+backend work. The
 conversation guard and startup enablement, credentials and resource ceilings
 remain enforced. See [conversation-only voice](voice.md#conversation-only-calls).
 
@@ -212,7 +214,8 @@ for live, `cove` for codex, checked against the
 [codex voices](voice.md#codex-subscription-provider)), `api_key_env`
 (`OPENAI_API_KEY`, the name of an environment variable; live only), `instructions`
 (neutral concise speech and backend delegation). Voice instructions are
-separate from the backend assistant's profile and artifacts. For the codex
+separate from the backend assistant's profile and artifacts unless a call
+names `instructions_profile`. For the codex
 provider: `codex_command` (`codex`), `codex_usage_ceiling_percent` (`97`, 1–100)
 and `codex_usage_check_seconds` (`15`, 5–300).
 
@@ -236,8 +239,9 @@ time limit. `result_max_chars` (`20000`): the stored result is cut to this.
 
 ### Events and actions (`EVENT_LOG__*`, `ACTIONS__*`)
 
-`EVENT_LOG__MAX_PAGE` and `ACTIONS__MAX_PAGE` (`500`): the most records one
-listing returns.
+`EVENT_LOG__MAX_PAGE` and `ACTIONS__MAX_PAGE` (`500`, up to `5000`): the
+most records one listing returns. An HTTP listing's `limit` is at most
+`500`, so a higher value applies only to in-process callers.
 
 ### Host state (`HOST_STATE__*`)
 

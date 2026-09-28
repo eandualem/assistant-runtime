@@ -15,6 +15,8 @@ tools.
 | Queued inbox messages | rows | process memory; listing and marking surfaced through HTTP still need Postgres |
 | Encrypted provider keys | rows | unavailable |
 | Traces (debug) | rows | not stored |
+| Background tasks | rows in `tasks` | process memory, lost on restart |
+| Events, actions and their confirmations, host state | rows in `events`, `actions`, `action_confirmations`, `host_state` | process memory, lost on restart |
 
 The session store is a write-through cache: every change is written to the
 row before the in-memory context is updated. The row may be ahead while a
@@ -58,7 +60,8 @@ result and times). When the runtime starts, a task left `queued` or
 `running` is marked `interrupted`; its work is not replayed. That recovery
 covers every task in the database, so run tasks in one process per
 database; a task's end is recorded once, and a later terminal update
-changes nothing.
+changes nothing. Without Postgres, tasks live in process memory and are
+lost on restart.
 
 Host-written records have their own tables: `events` (unique per source and
 event id, numbered in arrival order), `actions` (status history, text
@@ -193,6 +196,9 @@ unanswered calls.
   and a branch from an earlier message is a new user message, which
   supersedes the pending action like any other.
 - Retention is the session TTL; a pending action does not extend it.
+- Migration `0034` allows the `host` role. Its downgrade is refused while
+  host messages exist, since deleting them would delete every message that
+  follows them.
 
 ## Local persistent option
 

@@ -276,6 +276,17 @@ execution, history, serialization, or the upstream dependency; see
   JSON values by namespace and key, written only over the version the host
   expects when it names one. The runtime never acts on any of these, and the
   model is offered no tool for them. Docs: `docs/api.md`.
+- **Background tasks are turns in their own sessions.** `app/tasks` runs a
+  task as a turn in a fresh session (`task-<id>`), outside any conversation
+  turn, only when `TASKS__ENABLED` is set: then the model gets `start_task`,
+  `list_tasks`, `get_task` and `cancel_task` (registered by `app/tasks`, not
+  as a builtin or capability) and `POST /api/tasks` accepts work. Tasks about
+  the same (profile, subject) run one at a time, at most
+  `TASKS__MAX_CONCURRENT` at once; a turn that asks the host for an action
+  fails its task. `task_finished` is published on `app.state.events` and is
+  not forwarded to Socket.IO; nothing is steered into the parent session.
+  With Postgres a restart marks unfinished tasks `interrupted` and replays
+  nothing; without it tasks live in process memory. Docs: `docs/api.md`.
 - **Decisions are a capability of the application, not of the model.**
   `services/decisions` sends program state plus typed questions (`choice`,
   `score`, `noul`) to a `DecisionProvider` (TypeSafe's System One endpoint in
@@ -347,7 +358,8 @@ execution, history, serialization, or the upstream dependency; see
   is the one rule (owner, admin, or unowned), applied by the turn planner,
   the streaming service and the session routes. Administration (settings
   writes, provider keys, OAuth, ingress, inbox, debug, artifact mutations,
-  session reassignment) requires the `admin` role. Tools read the principal
+  session reassignment, host cards, events, actions, host state) requires
+  the `admin` role. Tools read the principal
   from the request context. Browser origins for HTTP and Socket.IO both
   come from `AccessConfig` (localhost by default); `/health` returns
   component detail only to an authenticated caller. Docs: `docs/access.md`.
