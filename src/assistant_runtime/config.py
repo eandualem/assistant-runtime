@@ -15,6 +15,7 @@ from assistant_runtime.services.artifacts.config import ArtifactsConfig
 from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.decisions.config import DecisionsConfig
 from assistant_runtime.services.history.config import HistoryConfig
+from assistant_runtime.services.host_state.config import HostStateConfig
 from assistant_runtime.services.llm.config import LLMConfig
 from assistant_runtime.services.media.config import MediaConfig
 from assistant_runtime.services.oauth.config import OAuthConfig
@@ -38,6 +39,7 @@ class AppSettings(BaseSettings):
     media: MediaConfig = MediaConfig()
     decisions: DecisionsConfig = DecisionsConfig()
     actions: ActionsConfig = ActionsConfig()
+    host_state: HostStateConfig = HostStateConfig()
     oauth: OAuthConfig = OAuthConfig()
     tools: ToolConfig = ToolConfig()
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig.from_env)

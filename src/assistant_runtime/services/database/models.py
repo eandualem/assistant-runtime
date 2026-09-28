@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -419,6 +420,23 @@ class ActionConfirmationORM(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     result: Mapped[dict | list | str | None] = mapped_column(JSONB, nullable=True)
     reconciled: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+
+class HostStateORM(Base):
+    """A small versioned value a host keeps under a namespace and key."""
+
+    __tablename__ = "host_state"
+
+    namespace: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    """A deleted key stays as a tombstone, so its version never repeats."""
+    updated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class OAuthTokenORM(Base):

@@ -110,7 +110,7 @@ execution, history, serialization, or the upstream dependency; see
   `exceptions.py`, and optionally `models.py`. Files starting with `_` are
   private to their module; other modules use the interface class only.
 - **Startup order is registration order** (`main.py:lifespan`): access,
-  database, oauth, llm, history, media, decisions, actions, mcp, artifacts, tools,
+  database, oauth, llm, history, media, decisions, actions, host_state, mcp, artifacts, tools,
   assistant, streaming, voice, ingress, tasks, heartbeat, event_log.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
   on a failed start. `RuntimeSettings` is created after `start_all()` and
@@ -267,7 +267,9 @@ execution, history, serialization, or the upstream dependency; see
   `services/actions` keeps actions (status history, text revisions,
   per-recipient results) and the owner's per-recipient confirmations: what
   was confirmed never changes, signing happens only while `confirmed`, and a
-  confirmation is settled once. The runtime never acts on either, and the
+  confirmation is settled once. `services/host_state` keeps small versioned
+  JSON values by namespace and key, written only over the version the host
+  expects when it names one. The runtime never acts on any of these, and the
   model is offered no tool for them. Docs: `docs/api.md`.
 - **Decisions are a capability of the application, not of the model.**
   `services/decisions` sends program state plus typed questions (`choice`,

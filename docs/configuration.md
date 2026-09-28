@@ -239,6 +239,11 @@ time limit. `result_max_chars` (`20000`): the stored result is cut to this.
 `EVENT_LOG__MAX_PAGE` and `ACTIONS__MAX_PAGE` (`500`): the most records one
 listing returns.
 
+### Host state (`HOST_STATE__*`)
+
+`max_value_bytes` (`262144`): the largest value, measured as compact UTF-8
+JSON. `max_page` (`1000`): the most keys one page of a namespace listing returns.
+
 ### Heartbeat (`HEARTBEAT__*`)
 
 `enabled` (`false`), `interval_seconds` (`300`), `startup_delay_seconds`
