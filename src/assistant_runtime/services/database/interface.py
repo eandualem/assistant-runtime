@@ -143,21 +143,22 @@ class DatabaseService:
         ``reachable: false`` but does not make the runtime unhealthy, because
         every request path works without it — unless ``required`` is set,
         when it does. A service that never started is a genuine failure.
+        The check only reports: it never changes :attr:`healthy`.
         """
         if not self._started or self._engine is None:
             return {"healthy": False, "reachable": False}
-        try:
-            async with self._engine.begin() as conn:
-                await conn.execute(text("SELECT 1"))
-            self._healthy = True
-        except Exception:
-            self._healthy = False
-        healthy = self._healthy or not self._config.required
-        return {"healthy": healthy, "reachable": self._healthy, "host": self._config.host}
+        failure = await self._probe()
+        reachable = failure is None
+        healthy = reachable or not self._config.required
+        return {"healthy": healthy, "reachable": reachable, "host": self._config.host}
 
     @property
     def healthy(self) -> bool:
-        """Whether the database is reachable."""
+        """Whether startup found the database, so this process uses it.
+
+        Fixed at startup: after an outage each call tries the database again
+        (the pool reconnects), and a failed attempt is a :class:`DatabaseError`.
+        """
         return self._healthy
 
     @property

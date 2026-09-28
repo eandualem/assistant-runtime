@@ -174,8 +174,7 @@ class TestRetention:
             await view.update("progress", text, actor=ASSISTANT)
         assert len(await view.history("progress")) == 4
 
-    async def test_a_failing_document_listing_is_left_out_unless_the_database_is_required(self):
-        from types import SimpleNamespace
+    async def test_a_failing_document_listing_raises(self):
         from unittest.mock import AsyncMock
 
         from assistant_runtime.services.artifacts.exceptions import ArtifactError
@@ -183,9 +182,6 @@ class TestRetention:
         service = await _service()
         lead = service.for_profile("lead")
         service._store.get_all_active = AsyncMock(side_effect=RuntimeError("db gone"))
-        assert await lead.prompt_extras() == []
-        service._database_service = SimpleNamespace(required=True)
-        lead._database_service = service._database_service
         with pytest.raises(ArtifactError, match="db gone"):
             await lead.prompt_extras()
 

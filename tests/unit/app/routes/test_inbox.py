@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from assistant_runtime.app.routes.inbox import router
+from assistant_runtime.services.database.exceptions import DatabaseError
 from assistant_runtime.services.database.models import InboxItemORM
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,14 @@ class TestPostInbox:
             "session_id": None,
             "severity": "info",
         }
+
+    @pytest.mark.asyncio
+    async def test_a_lost_database_reaches_the_503_handler(self):
+        app, ingress = self._app_with_ingress(None)
+        ingress.deliver = AsyncMock(side_effect=DatabaseError("Database not reachable"))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            with pytest.raises(DatabaseError):
+                await c.post("/inbox", json={"from": "planner", "message": "Hello"})
 
     @pytest.mark.asyncio
     async def test_context_can_name_the_session_and_channel(self):
@@ -267,3 +276,18 @@ class TestPatchSurfaced:
             response = await c.patch("/inbox/item-1/surfaced")
 
         assert response.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_a_lost_database_reaches_the_503_handler(self):
+        mock_db = _make_mock_db()
+
+        @asynccontextmanager
+        async def lost():
+            raise DatabaseError("Database not reachable")
+            yield  # noqa: F541
+
+        mock_db.session_context = lost
+        app = _make_app(db_service=mock_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            with pytest.raises(DatabaseError):
+                await c.patch("/inbox/item-1/surfaced")

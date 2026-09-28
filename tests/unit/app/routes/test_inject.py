@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from assistant_runtime.app.routes.inject import router
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 
 def _make_app(ingress=None, assistant_service=None) -> FastAPI:
@@ -91,6 +92,13 @@ class TestInjectMessage:
                 "/assistant/inject", json={"from": "a", "via": "x", "message": "m"}
             )
         assert response.status_code == 500
+
+    async def test_a_lost_database_reaches_the_503_handler(self, ingress):
+        ingress.deliver = AsyncMock(side_effect=DatabaseError("Database not reachable"))
+        app = _make_app(ingress=ingress)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            with pytest.raises(DatabaseError):
+                await c.post("/assistant/inject", json={"from": "a", "via": "x", "message": "m"})
 
 
 class TestListSessionsForPeers:

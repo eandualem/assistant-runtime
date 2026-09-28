@@ -315,12 +315,8 @@ class ArtifactService:
                     texts[row.name] = row.content
                     versions[row.name] = row.version
         except Exception as e:
-            # With DATABASE__REQUIRED the stored versions are the only
-            # source; a prompt from defaults would silently drop them.
-            if getattr(self._database_service, "required", False):
-                raise ArtifactError(f"Failed to load artifacts: {e}") from e
-            logger.warning("Failed to load artifacts, using defaults", error=str(e))
-            return texts, dict.fromkeys(texts)
+            # A prompt from the defaults would silently drop the stored versions.
+            raise ArtifactError(f"Failed to load artifacts: {e}") from e
         if generation == owner._generation:
             self._cache = dict(texts)
             self._cached_versions = dict(versions)
@@ -344,11 +340,7 @@ class ArtifactService:
         try:
             rows = await self._require_store().get_all_active(self._profile.name)
         except Exception as e:
-            # The listing is optional prompt text, like the artifacts' own fallback.
-            if getattr(self._database_service, "required", False):
-                raise ArtifactError(f"Failed to list documents: {e}") from e
-            logger.warning("Failed to list documents, leaving them out", error=str(e))
-            return []
+            raise ArtifactError(f"Failed to list documents: {e}") from e
         names = sorted(r.name for r in rows if self._profile.collection_of(r.name))
         if not names:
             return []

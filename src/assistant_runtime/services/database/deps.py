@@ -10,7 +10,8 @@ from assistant_runtime.services.database.interface import DatabaseService
 def get_database_service(request: Request) -> DatabaseService:
     """Access DatabaseService from app.state (created during lifespan).
 
-    Raises 503 when the database module was not registered or Postgres is unreachable.
+    Raises 503 when the database module was not registered or startup found
+    Postgres unreachable; a database lost later answers 503 from the call itself.
     """
     db: DatabaseService | None = getattr(request.app.state, "database_service", None)
     if db is None:

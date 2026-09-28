@@ -272,16 +272,15 @@ default.
 
 `host` (`localhost`), `port` (`5434`), `user`, `password`, `name` (all
 `assistant_runtime`), `pool_size` (`5`), `pool_overflow` (`10`), `echo`
-(`false`). Postgres is optional: when unreachable, sessions and runtime
-settings and artifact versions stay in process memory, and
-database-backed endpoints return 503.
+(`false`). Postgres is optional: when unreachable at startup, sessions and
+runtime settings and artifact versions stay in process memory, and
+database-backed endpoints return 503. A database lost after startup is
+never replaced by memory: calls that need it fail until it is back (see
+[persistence](persistence.md#requiring-postgres)).
 
 - `required` (`false`): fail startup with `DatabaseUnavailableError` when
-  Postgres is unreachable, instead of keeping state in memory. Artifact
-  read errors then fail the turn instead of falling back to the defaults,
-  a runtime-settings change that cannot be saved is refused (`PATCH
-  /api/settings` returns 503), and `/health` reports an unreachable
-  database as unhealthy.
+  Postgres is unreachable, instead of keeping state in memory, and have
+  `/health` report an unreachable database as unhealthy.
 - `migrate_on_start` (`false`): upgrade the schema to the packaged head
   before the services start; a failed upgrade fails startup with
   `MigrationError`. With `required` too, a reachable server that lacks the

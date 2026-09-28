@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from assistant_runtime.app.access.deps import require_admin
 from assistant_runtime.app.ingress.deps import IngressServiceDep
 from assistant_runtime.services.database.deps import get_database_service
+from assistant_runtime.services.database.exceptions import DatabaseError
 from assistant_runtime.services.database.repositories import InboxRepository
 
 router = APIRouter(prefix="/inbox", tags=["inbox"], dependencies=[Depends(require_admin)])
@@ -75,6 +76,8 @@ async def create_inbox_item(body: InboxItemCreate, ingress: IngressServiceDep) -
             session_id=session_id if isinstance(session_id, str) else None,
             severity=body.severity,
         )
+    except DatabaseError:
+        raise  # 503: the note was not stored
     except Exception as e:
         logger.error("Failed to deliver inbox item", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to deliver the note") from e
@@ -117,7 +120,7 @@ async def mark_item_surfaced(item_id: str, request: Request) -> dict:
             if row is None:
                 raise HTTPException(status_code=404, detail="Inbox item not found")
             return _row_to_response(row)
-    except HTTPException:
+    except (HTTPException, DatabaseError):
         raise
     except Exception as e:
         logger.error("Failed to mark item surfaced", item_id=item_id, error=str(e))
