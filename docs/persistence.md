@@ -63,8 +63,8 @@ database; a task's end is recorded once, and a later terminal update
 changes nothing. Without Postgres, tasks live in process memory and are
 lost on restart. Persistent agents are rows in `agents` (their current
 session and status) and their messages rows in `agent_messages`; a restart
-keeps the agents and marks unfinished messages `interrupted` in the same
-way.
+keeps the agents and marks every unfinished message in the database
+`interrupted` in the same way, so the one-process rule covers agents too.
 
 Host-written records have their own tables: `events` (unique per source and
 event id, numbered in arrival order), `actions` (status history, text
