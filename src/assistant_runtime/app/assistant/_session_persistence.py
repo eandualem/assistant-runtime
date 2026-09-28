@@ -14,11 +14,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
-from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
+from sqlalchemy.exc import DisconnectionError, IntegrityError, InterfaceError, OperationalError
 
 from assistant_runtime.app.assistant._serialization import MessageRecord, SteeringRecord
 from assistant_runtime.app.assistant._stale_tools import RepairedMessage
 from assistant_runtime.base.resilience import retry_with_backoff
+from assistant_runtime.services.database.models import MessageORM
 from assistant_runtime.services.database.repositories import (
     MessageRepository,
     PromptSnapshotRepository,
@@ -114,19 +115,32 @@ class SessionPersistence:
             await SessionRepository(db_session).update(session_id, owner_id=owner_id)
 
     async def create_message(self, record: MessageRecord) -> None:
-        async with self._db.session_context() as db_session:
-            await MessageRepository(db_session).create(
-                message_id=record["id"],
-                session_id=record["session_id"],
-                parent_id=record["parent_id"],
-                role=record["role"],
-                message_type=record["message_type"],
-                content=record["content"],
-                segments=record["segments"],
-                usage=record["usage"],
-                prompt=record.get("prompt"),
-                model_messages=record.get("model_messages"),
-            )
+        """Insert a message row; an id already used in any session is a duplicate.
+
+        The store checks ids only within its session, while the primary key
+        spans them all, so the conflict is reported as the store's own
+        duplicate error (a 409), not as a failed write.
+        """
+        try:
+            async with self._db.session_context() as db_session:
+                await MessageRepository(db_session).create(
+                    message_id=record["id"],
+                    session_id=record["session_id"],
+                    parent_id=record["parent_id"],
+                    role=record["role"],
+                    message_type=record["message_type"],
+                    content=record["content"],
+                    segments=record["segments"],
+                    usage=record["usage"],
+                    prompt=record.get("prompt"),
+                    model_messages=record.get("model_messages"),
+                )
+        except IntegrityError as e:
+            # asyncpg's error, which names the constraint, is the cause of the adapted one.
+            constraint = getattr(e.orig.__cause__, "constraint_name", None)
+            if constraint == MessageORM.__table__.primary_key.name:
+                raise ValueError(f"Message '{record['id']}' already exists") from e
+            raise
 
     async def update_message(
         self,
