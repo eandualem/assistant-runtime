@@ -24,13 +24,13 @@ def _prompt(**kwargs) -> PromptResult:
 def test_record_and_snapshot_rebuild_the_exact_text():
     prompt = _prompt(
         session_context={"working_memory": {"active_goal": "Ship"}},
-        host_context={"version": 1, "view": {"name": "board"}},
+        working_memory=True,
     )
     record, snapshot = prompt_record(
         prompt, profile="lead", subject=None, artifact_versions={"instructions": 3}
     )
     assert snapshot == "Help the owner\n\nShort answers"
-    assert [name for name, _ in record["dynamic"]] == ["datetime", "host_context", "working_memory"]
+    assert [name for name, _ in record["dynamic"]] == ["working_memory"]
     assert prompt_text(record, snapshot) == prompt.content
     assert record["artifact_versions"] == {"instructions": 3}
     assert [f["name"] for f in record["fragments"]][:2] == ["instructions", "owner.preferences"]
@@ -51,7 +51,7 @@ def test_the_snapshot_is_the_same_from_turn_to_turn():
         _prompt(session_context={}), profile="p", subject=None, artifact_versions={}
     )
     second, _ = prompt_record(
-        _prompt(session_context={}, host_context={"version": 1, "view": {"name": "other"}}),
+        _prompt(session_context={"working_memory": {"active_goal": "Ship"}}, working_memory=True),
         profile="p",
         subject=None,
         artifact_versions={},

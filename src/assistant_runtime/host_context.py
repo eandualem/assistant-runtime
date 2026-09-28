@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -245,15 +245,6 @@ class HostContext(_Strict):
     def to_dict(self) -> dict[str, Any]:
         """The canonical stored form."""
         return self.model_dump(mode="json", exclude_none=True)
-
-    def age_seconds(self, now: datetime | None = None) -> float | None:
-        """How old the context is, when the host said when it captured it."""
-        if self.captured_at is None:
-            return None
-        captured = self.captured_at
-        if captured.tzinfo is None:
-            captured = captured.replace(tzinfo=UTC)
-        return ((now or datetime.now(UTC)) - captured).total_seconds()
 
 
 def host_context_from_payload(data: Any) -> dict[str, Any] | None:

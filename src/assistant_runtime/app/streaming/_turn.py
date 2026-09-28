@@ -45,6 +45,7 @@ from assistant_runtime.app.access.interface import AccessService
 from assistant_runtime.app.assistant import (
     assistant_record_to_flat_messages,
     find_tool_entry,
+    host_context_prompt,
     path_records_to_model_history,
 )
 from assistant_runtime.app.assistant.exceptions import SessionError
@@ -188,8 +189,14 @@ class TurnPlanner:
             # message is written: a crash in between must not leave a restored
             # pending action next to the message that superseded it.
             await clear_stale_pending_call(self._sessions, session_id, existing)
+        # A message without a host context is sent with the session's last one.
+        host_context_text = host_context_prompt(
+            request.host_context
+            if request.host_context is not None
+            else (existing or {}).get("last_host_context")
+        )
         session_context, _user_record = await self._sessions.register_user_message(
-            request, owner_id=principal.id
+            request, owner_id=principal.id, host_context_text=host_context_text
         )
         # Registration may have hydrated a stored context that this call did not see.
         await clear_stale_pending_call(self._sessions, session_id, session_context)
@@ -202,7 +209,7 @@ class TurnPlanner:
             session_context=session_context,
             assistant_message_id=assistant_message_id,
             assistant_parent_id=request.id,
-            user_prompt=build_user_prompt(request),
+            user_prompt=build_user_prompt(request, host_context_text),
             history=self._sessions.get_history(session_id, exclude_leaf=True),
             screenshot=request.screenshot,
             turn_number=session_context.get("turn_number", 0),
@@ -351,6 +358,8 @@ class TurnPlanner:
                 else DeferredToolResults(calls={request.tool_call_id: deferred_result})
             ),
             receipt_only=request.output_mode == "host_tools",
+            # A context sent with the result follows it in the same model request.
+            user_prompt=host_context_prompt(request.host_context) or None,
             next_pending=next_pending,
             pending_batch=batch,
             accepted_tool_result=ModelRequest(
@@ -410,6 +419,7 @@ class TurnPlanner:
             prior_assistant_messages=(
                 path_records_to_model_history([active_leaf]) if extends_assistant else []
             ),
+            user_prompt=host_context_prompt(request.host_context) or None,
             history=self._sessions.get_history(session_id),
             turn_number=session_context.get("turn_number", 0),
             input_message=request.content,
@@ -451,9 +461,12 @@ def _failure_message(tool_result: Any) -> str:
     return json.dumps(tool_result, default=str)
 
 
-def build_user_prompt(request: AssistantRequest) -> str | list[UserContent]:
+def build_user_prompt(
+    request: AssistantRequest, host_context_text: str = ""
+) -> str | list[UserContent]:
     """The user prompt with reference attachments as native Pydantic AI content.
 
+    ``host_context_text`` (see ``host_context_prompt``) comes first.
     Screenshots are not included: they stay available to ``look_at_screen``.
     """
     parts: list[UserContent] = []
@@ -469,6 +482,7 @@ def build_user_prompt(request: AssistantRequest) -> str | list[UserContent]:
                 if attachment.kind == "image"
                 else DocumentUrl(url=attachment.url)
             )
-    if not parts:
+    head: list[UserContent] = [host_context_text] if host_context_text else []
+    if not parts and not head:
         return request.content
-    return [request.content, *parts] if request.content else parts
+    return [*head, request.content, *parts] if request.content else [*head, *parts]

@@ -32,4 +32,4 @@ async def test_the_record_rebuilds_the_instructions_the_model_received(runtime, 
     assert record["profile"] == "neutral"
     assert record["subject"] is None
     assert record["artifact_versions"] == {"instructions": None, "scratchpad": None}
-    assert [name for name, _ in record["dynamic"]] == ["datetime"]
+    assert record["dynamic"] == []

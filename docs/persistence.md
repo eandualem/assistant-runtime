@@ -261,7 +261,9 @@ target, see [compatibility](compatibility.md)).
   (see the compaction evaluation in [compatibility](compatibility.md)).
 - **Native message history: already used.** Assistant rows store
   `new_messages()` as segments and rebuild `ModelMessage`s from them; the
-  native `outcome` values survive the round trip. Provider-side
+  native `outcome` values survive the round trip. A user row keeps the host
+  context block it was sent with as a `host_context` segment and is rebuilt
+  with it. Provider-side
   conversation ids are not used, so history does not depend on a provider.
 
 Guarantees, in one place: sessions, messages, steering and the pending host

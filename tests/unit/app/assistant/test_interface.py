@@ -147,6 +147,36 @@ class TestWorkingMemory:
 
         assert "working_memory" not in ctx or ctx["working_memory"] is None
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    async def test_stored_memory_is_in_the_prompt_only_while_enabled(
+        self, llm_service, history_service, tool_service, enabled
+    ) -> None:
+        from assistant_runtime.artifacts import neutral_profile
+        from assistant_runtime.services.artifacts.config import ArtifactsConfig
+        from assistant_runtime.services.artifacts.interface import ArtifactService
+
+        artifacts = ArtifactService(ArtifactsConfig(), neutral_profile())
+        await artifacts.start()
+        service = AssistantService(
+            config=AssistantConfig(),
+            llm_service=llm_service,
+            history_service=history_service,
+            tool_service=tool_service,
+            artifact_service=artifacts,
+        )
+        request = AssistantRequest(
+            id="user-1",
+            session_id="sess-1",
+            content="Hello",
+            config={"enable_working_memory": enabled},
+        )
+        context = {"working_memory": {"active_goal": "Ship the release"}}
+
+        await service.prepare_agent_context(request, context)
+
+        prompt = llm_service.build_agent.call_args.kwargs["system_prompt"]
+        assert ("Ship the release" in prompt) is enabled
+
 
 class TestProfilePrompt:
     async def test_a_profile_prompt_is_its_artifacts_and_includes_with_versions(

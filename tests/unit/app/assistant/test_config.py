@@ -13,7 +13,7 @@ class TestAssistantConfigDefaults:
         assert config.thinking_budget == 10000
         assert config.temperature == 1.0
         assert config.max_turns == 10
-        assert config.enable_working_memory is True
+        assert config.enable_working_memory is False
         assert config.session_ttl_hours == 24
 
     def test_custom_values(self):
@@ -22,14 +22,14 @@ class TestAssistantConfigDefaults:
             thinking_budget=5000,
             temperature=0.5,
             max_turns=20,
-            enable_working_memory=False,
+            enable_working_memory=True,
             session_ttl_hours=48,
         )
         assert config.default_model == "anthropic:claude-sonnet-4-6"
         assert config.thinking_budget == 5000
         assert config.temperature == 0.5
         assert config.max_turns == 20
-        assert config.enable_working_memory is False
+        assert config.enable_working_memory is True
         assert config.session_ttl_hours == 48
 
 

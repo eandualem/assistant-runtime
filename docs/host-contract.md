@@ -16,6 +16,13 @@ with `assistant_join_session`. Keys may be camelCase or snake_case. The
 runtime stores the validated, snake_case form on the session and reuses
 it for later messages that carry none.
 
+The model receives the rendered context as a `<host_context>` block at the
+start of the user message, not in the system prompt, and the message keeps
+it: later turns replay it unchanged, so the conversation before the latest
+message stays in the provider's cache. A continuation that carries a
+context delivers it right after the tool result; so does promoted steering,
+after the steering text.
+
 ```json
 {
   "version": 1,
@@ -51,7 +58,7 @@ it for later messages that carry none.
 | `actions` | Actions the host performs when the model calls them, for this turn. Each becomes a host tool: `name` (tool-name rules), `description`, `parameters` (a JSON schema of type object). See below. |
 | `attachments` | Content the host attaches to the context; the same shape as message attachments below. |
 | `background` | Summaries of what is off screen, `{"name": {"state": "...", "summary": {...}}}`; rendered as one line. |
-| `captured_at` | When the host captured the context. The prompt says how old it is; contexts older than an hour are described as stale. Nothing is rejected for age. |
+| `captured_at` | When the host captured the context, shown to the model as given. The runtime adds no age wording and rejects nothing for age. |
 | `extensions` | Host-specific data the runtime does not interpret; shown to the model as JSON. The extension point. |
 
 Unknown fields anywhere are rejected (`422` on HTTP, `assistant:error` of

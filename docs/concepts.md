@@ -132,6 +132,13 @@ rejected at the edge. The last context a session received is reused for
 later messages that carry none. The full shape, the attachment model and
 the action protocol are in [the host contract](host-contract.md).
 
+The model reads the context at the start of the user message it came with,
+as a `<host_context>` block, never in the system prompt. The message keeps
+that block, so later turns replay the conversation exactly as the model saw
+it and the provider's cache of the earlier conversation stays valid. A host
+continuation or promoted steering that carries a context delivers it right
+after the tool result or the steering.
+
 The view name also selects tools: `TOOLS__PAGE_SCOPES` maps a view name to
 the backend tools allowed while the host shows it. Views that are not
 listed get every tool.
@@ -218,10 +225,15 @@ write may store: a longer one is refused, and the tool's error tells the
 assistant to condense it. A stale write through the tool returns the
 current version and text, so the change can be merged.
 
-After the artifacts come the connected MCP servers, the current time, the
-host context and the session's **working memory**: a small structured
-summary (goal, progress, next steps, key decisions) the runtime extracts
-after each turn when `enable_working_memory` is on.
+After the artifacts come the connected MCP servers, and nothing else by
+default: the system prompt stays the same from turn to turn. On Anthropic
+models the tool definitions, the system prompt and the conversation carry
+cache points, so each request reads the earlier conversation from the
+provider's cache. **Working memory** is opt-in: with
+`enable_working_memory` on, the runtime extracts a small structured summary
+(goal, progress, next steps, key decisions) after each turn with an extra
+model call and adds it at the end of the system prompt, where it changes
+from turn to turn.
 
 ## History
 
@@ -272,8 +284,8 @@ to three model requests and four tool executions.
 usage exceeds that threshold; it is not a provider-side generation cap, so
 usage can exceed it before the runtime detects the breach. The history budget
 is also an estimate, not a hard cap on the complete prompt. Summarisation and
-working-memory calls are accounted for separately under `auxiliary`; disable
-the latter with `enable_working_memory=false`.
+working-memory calls are accounted for separately under `auxiliary`; the
+latter run only with `enable_working_memory=true`.
 
 ## Envelopes
 

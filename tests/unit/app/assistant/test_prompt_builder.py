@@ -5,10 +5,10 @@ from functools import partial
 import pytest
 
 from assistant_runtime.app.assistant._prompt_builder import (
-    _datetime_fragment,
     _host_context_fragment,
     _render_state,
     _working_memory_fragment,
+    host_context_prompt,
     mcp_connections_fragment,
 )
 from assistant_runtime.app.assistant._prompt_builder import (
@@ -42,7 +42,7 @@ class TestProfiles:
             artifacts=neutral_profile().defaults,
         )
         names = [f["name"] for f in result.fragments]
-        assert names == ["instructions", "datetime"]
+        assert names == ["instructions"]
         assert "soul" not in names
 
     def test_profile_order_is_the_prompt_order(self):
@@ -60,7 +60,7 @@ class TestProfiles:
             artifacts={"notes": "n", "tone": "Be kind", "policies": "Refund within 30 days"},
             profile=profile,
         )
-        assert [f["name"] for f in result.fragments] == ["policies", "tone", "notes", "datetime"]
+        assert [f["name"] for f in result.fragments] == ["policies", "tone", "notes"]
         assert result.content.startswith("Refund within 30 days\n\nBe kind\n\nn")
 
     def test_artifact_extras_follow_the_profile_artifacts(self):
@@ -74,11 +74,7 @@ class TestProfiles:
             profile=profile,
             artifact_extras=[("owner.preferences", "Short"), ("documents", " ")],
         )
-        assert [f["name"] for f in result.fragments] == [
-            "instructions",
-            "owner.preferences",
-            "datetime",
-        ]
+        assert [f["name"] for f in result.fragments] == ["instructions", "owner.preferences"]
 
     def test_optional_artifact_without_text_is_omitted(self):
         profile = AssistantProfile(
@@ -93,7 +89,7 @@ class TestProfiles:
             artifacts={"instructions": "Help", "notes": "  "},
             profile=profile,
         )
-        assert [f["name"] for f in result.fragments] == ["instructions", "datetime"]
+        assert [f["name"] for f in result.fragments] == ["instructions"]
 
     def test_missing_required_artifact_of_a_custom_profile_raises(self):
         profile = AssistantProfile(
@@ -103,16 +99,6 @@ class TestProfiles:
             _build_system_prompt(
                 available_tools=ToolSet(), session_context={}, artifacts={}, profile=profile
             )
-
-
-class TestDatetimeFragment:
-    def test_contains_utc(self):
-        frag = _datetime_fragment()
-        assert "UTC" in frag
-
-    def test_contains_current_time(self):
-        frag = _datetime_fragment()
-        assert "Current time:" in frag
 
 
 class TestWorkingMemoryFragment:
@@ -339,7 +325,7 @@ class TestHostContextFragment:
         ctx = {"view": {"name": "home"}, "navigation": [{"name": "Agents"}]}
         assert "- Agents" in _host_context_fragment(ctx)
 
-    def test_attachments_and_freshness_and_extensions(self):
+    def test_attachments_extensions_and_the_capture_time(self):
         ctx = {
             "view": {"name": "home"},
             "attachments": [
@@ -352,7 +338,8 @@ class TestHostContextFragment:
         frag = _host_context_fragment(ctx)
         assert "- a screenshot of the current screen (call look_at_screen to see it)" in frag
         assert "- notes.txt — meeting (attached to the message)" in frag
-        assert "treat it as stale" in frag
+        assert "Captured at 2000-01-01T00:00:00+00:00." in frag
+        assert "ago" not in frag
         assert 'Host data:\n```json\n{\n  "tenant": "acme"\n}\n```' in frag
 
     def test_section_order(self):
@@ -374,6 +361,16 @@ class TestHostContextFragment:
             frag.index("Background:"),
         ]
         assert order == sorted(order)
+
+
+class TestHostContextPrompt:
+    def test_the_rendered_context_in_a_tagged_block(self):
+        text = host_context_prompt({"view": {"name": "settings"}})
+        assert text == "<host_context>\nThe host is showing: settings.\n</host_context>"
+
+    def test_empty_without_a_context(self):
+        assert host_context_prompt(None) == ""
+        assert host_context_prompt({}) == ""
 
 
 class TestRenderState:
@@ -422,13 +419,13 @@ class TestBuildSystemPrompt:
         )
         assert "envelope tags" in result.content
 
-    def test_contains_datetime(self):
+    def test_no_current_time(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
-        assert "Current time:" in result.content
+        assert "Current time" not in result.content
 
     def test_tools_not_in_prompt_text(self):
         """Tools are registered natively with the agent, not duplicated in the system prompt."""
@@ -451,42 +448,23 @@ class TestBuildSystemPrompt:
         fragment_names = [f["name"] for f in result.fragments]
         assert "tools" not in fragment_names
 
-    def test_includes_host_context(self):
+    def test_includes_working_memory_when_enabled(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
-            session_context={},
-            host_context={
-                "page": {
-                    "name": "agents",
-                    "data": {"sessions": [{"name": "planner", "state": "idle"}]},
-                },
-            },
+            session_context={"working_memory": WorkingMemory(active_goal="Deploy v2")},
+            working_memory=True,
             artifacts=REQUIRED_ARTIFACTS,
         )
-        assert "showing: agents" in result.content
+        assert "Deploy v2" in result.content
 
-    def test_includes_host_context_state(self):
-        result = build_system_prompt(
-            available_tools=ToolSet(),
-            session_context={},
-            host_context={
-                "page": {
-                    "name": "agents",
-                    "state": {"list": {"current": "loaded", "events": ["REFRESH"]}},
-                },
-            },
-            artifacts=REQUIRED_ARTIFACTS,
-        )
-        assert "Page state:" in result.content
-        assert "REFRESH" in result.content
-
-    def test_includes_working_memory(self):
+    def test_stored_working_memory_is_not_rendered_when_disabled(self):
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={"working_memory": WorkingMemory(active_goal="Deploy v2")},
             artifacts=REQUIRED_ARTIFACTS,
         )
-        assert "Deploy v2" in result.content
+        assert "Deploy v2" not in result.content
+        assert "working_memory" not in [f["name"] for f in result.fragments]
 
     def test_fragments_separated(self):
         result = build_system_prompt(
@@ -523,20 +501,13 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ts,
             session_context={"working_memory": WorkingMemory(active_goal="Deploy v2")},
-            host_context={
-                "page": {
-                    "name": "agents",
-                    "data": {"sessions": [{"name": "planner", "state": "idle"}]},
-                },
-            },
+            working_memory=True,
             artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
         assert "soul" in fragment_names
         assert "persona" in fragment_names
         assert "ecosystem" in fragment_names
-        assert "datetime" in fragment_names
-        assert "host_context" in fragment_names
         assert "working_memory" in fragment_names
         assert "tools" not in fragment_names
         # Each fragment has name and char_count
@@ -551,6 +522,7 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(
             available_tools=ToolSet(),
             session_context={"working_memory": WorkingMemory(active_goal="Ship v3")},
+            working_memory=True,
             artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
@@ -565,12 +537,12 @@ class TestBuildSystemPrompt:
             artifacts=REQUIRED_ARTIFACTS,
         )
         fragment_names = [f["name"] for f in result.fragments]
-        # Minimum: soul + persona + communication_protocol + ecosystem + datetime (always present)
+        # Minimum: soul + persona + communication_protocol + ecosystem
         assert "soul" in fragment_names
         assert "persona" in fragment_names
         assert "communication_protocol" in fragment_names
         assert "ecosystem" in fragment_names
-        assert "datetime" in fragment_names
+        assert "datetime" not in fragment_names
         # No tools, host_context, etc. when not provided
         assert "tools" not in fragment_names
         assert "host_context" not in fragment_names

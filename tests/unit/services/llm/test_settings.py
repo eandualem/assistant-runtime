@@ -76,6 +76,7 @@ class TestBuildModelSettings:
         assert settings["max_tokens"] == _RESPONSE_MAX_TOKENS
         assert settings["anthropic_cache_instructions"] is True
         assert settings["anthropic_cache_tool_definitions"] is True
+        assert settings["anthropic_cache"] is True
 
     def test_anthropic_no_thinking_omits_thinking_param(self):
         settings = build_model_settings(model_id="anthropic:claude-sonnet-4-6")

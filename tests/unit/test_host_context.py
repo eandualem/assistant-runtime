@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -185,14 +185,6 @@ class TestValidation:
     def test_action_parameters_must_be_an_object_schema(self):
         with pytest.raises(ValidationError, match="type object"):
             HostAction(name="a", description="x", parameters={"type": "array"})
-
-    def test_freshness(self):
-        now = datetime(2026, 9, 5, 10, 5, tzinfo=UTC)
-        context = HostContext(captured_at=now - timedelta(minutes=5))
-        assert context.age_seconds(now) == 300
-        assert HostContext().age_seconds(now) is None
-        naive = HostContext(captured_at=datetime(2026, 9, 5, 10, 4))
-        assert naive.age_seconds(now) == 60
 
 
 class TestAttachments:

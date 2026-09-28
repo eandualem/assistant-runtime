@@ -140,7 +140,11 @@ class SessionStore:
         return ctx
 
     async def register_user_message(
-        self, request: AssistantRequest, *, owner_id: str | None = None
+        self,
+        request: AssistantRequest,
+        *,
+        owner_id: str | None = None,
+        host_context_text: str = "",
     ) -> tuple[dict[str, Any], MessageRecord]:
         """Persist a user-side message send and update the active cached path.
 
@@ -148,7 +152,9 @@ class SessionStore:
         so is the request's profile and subject when it names a subject. A
         message without ``parent_id`` is the root when the session is empty
         and continues from the active leaf otherwise; an explicit
-        ``parent_id`` branches from that message.
+        ``parent_id`` branches from that message. ``host_context_text`` is
+        the host context block the model receives with the message; it is
+        kept as a ``host_context`` segment, so later turns replay it.
         """
         if request.is_steering:
             raise ValueError("Steering messages are stored separately from the conversation tree")
@@ -201,7 +207,9 @@ class SessionStore:
             "role": "user",
             "message_type": request.message_type,
             "content": request.content,
-            "segments": None,
+            "segments": (
+                [{"kind": "host_context", "text": host_context_text}] if host_context_text else None
+            ),
             "usage": None,
             "created_at": datetime.now(UTC),
         }
