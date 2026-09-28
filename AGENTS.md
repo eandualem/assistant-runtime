@@ -202,18 +202,23 @@ execution, history, serialization, or the upstream dependency; see
   in its canonical form. It never enters the system prompt: rendered as a
   `<host_context>` block (`host_context_prompt`), it opens the user prompt
   of the message it came with (or of the next message that carries none),
-  and is kept on that user row as a `host_context` segment so later turns
-  replay it unchanged. A continuation or promoted steering sends the
-  session's current context (its own, else the last one received) after
-  the tool result, or just before the steering. Reference
-  attachments become native Pydantic AI content on the user prompt;
-  screenshots stay behind `look_at_screen`.
+  and is kept in that user row's model messages so later turns replay it
+  unchanged. A continuation or promoted steering sends the session's
+  current context (its own, else the last one received) after the tool
+  result, or just before the steering. Reference attachments become native
+  Pydantic AI content on the user prompt (after a continuation's result, or
+  a steering message's text); screenshots stay behind `look_at_screen`.
   Tools the host executes are configuration (`TOOLS__HOST_TOOLS`) or
   request-declared `host_context.actions`; page-scoped tool lists and
   invalidation domains are configuration (`TOOLS__PAGE_SCOPES`,
   `TOOLS__INVALIDATIONS`), all empty by default.
 - **A session is a tree of messages.** Each message has a `parent_id`; the
   session tracks the active leaf and the path to it is the model history.
+  Each row stores its part of the conversation as Pydantic AI messages
+  (`model_messages`, `dump_model_messages`), which later turns replay
+  unchanged; assistant `segments` are the display form and the tool-call
+  index, written from the same messages, and every tool result recorded on
+  them outside a run is added to the messages too (`with_resolved_returns`).
   A message without `parent_id` is the root when the session is empty and
   continues from the active leaf otherwise. A role is `user`, `assistant`
   or `host`: a card the host appends outside any turn, only while the
@@ -249,8 +254,10 @@ execution, history, serialization, or the upstream dependency; see
   without cancelling. Iterator closure/cancellation and shutdown cancel and
   drain the producer; Socket.IO disconnects leave it running. External
   `CancelledError` keeps propagating. Steering remains pending until a
-  successful model response consumes it, so interrupted delivery can retry.
-  A steering record persists its optional profile selector; explicit selectors
+  successful model response consumes it, so interrupted delivery can retry;
+  the turn's saved messages leave such steering out (its request carries the
+  record ids in `metadata`). A steering record persists its optional profile
+  selector and reference attachments; explicit selectors
   are consumed only by matching profiles, while unprofiled legacy/ingress
   steering inherits the consuming turn.
 - **Streaming events are dicts with a `type`.** They are built only by

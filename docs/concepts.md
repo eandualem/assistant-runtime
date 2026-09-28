@@ -56,7 +56,7 @@ See [turn control](api.md#turn-control) for the HTTP and socket commands.
 | `message_type` | Meaning |
 |---|---|
 | `standard` | A user message. Cancels a running turn on the same session, waits for its persistence and cleanup, then starts the replacement. |
-| `steering` | A mid-turn nudge ("focus on X"). Queued while a turn is live and delivered to the model at its next step; promoted into a normal message when no turn is running. Never cancels anything. |
+| `steering` | A mid-turn nudge ("focus on X"). Queued while a turn is live and delivered to the model at its next step; run as a turn of its own when no turn is running. Later turns replay it where the model saw it. Never cancels anything. |
 
 A **continuation** is a `standard` message that carries `tool_call_id` and
 `tool_result`: the client has executed a host tool and is handing the
@@ -238,7 +238,13 @@ from turn to turn.
 
 ## History
 
-Long conversations are compacted before they reach the model. The history
+Each turn replays the conversation as the model saw it: every message
+stores its Pydantic AI messages (see [persistence](persistence.md)), so a
+request starts with the previous requests unchanged and a provider's prefix
+cache stays valid.
+
+Compaction is off by default. With `HISTORY__COMPACTION_ENABLED=true`, long
+conversations are compacted before they reach the model. The history
 policy is a native `ProcessHistory` capability that Pydantic AI runs before
 every model request of a turn. Within `HISTORY__TOKEN_BUDGET` (estimated)
 tokens the history is sent unchanged. Over budget, older tool results
@@ -256,9 +262,13 @@ The conversation tree is never modified: only the model input is, the
 turn's own messages are always passed through verbatim, and compaction does
 not write working memory (that is the separate per-turn extraction).
 Dangling tool calls and orphaned tool results are repaired by Pydantic AI
-itself. Set `HISTORY__COMPACTION_ENABLED=false` to replace the policy with
-one supplied through `AssistantDefinition.capabilities`, for example a
-Harness compaction strategy.
+itself. An application that manages context itself leaves compaction off
+and supplies its own policy through `AssistantDefinition.capabilities`, for
+example a Harness compaction strategy.
+
+One exception to verbatim replay belongs to the `screen` tools: a
+`look_at_screen` image is replaced by `[Inspected current screen]` after
+the model request that saw it.
 
 ## Usage and budgets
 

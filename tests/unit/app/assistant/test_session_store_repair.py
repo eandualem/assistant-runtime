@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
 
+from assistant_runtime.app.assistant._serialization import (
+    dump_model_messages,
+    load_model_messages,
+)
 from assistant_runtime.app.assistant._session_persistence import (
     LoadedSession,
     pending_action_from_context,
@@ -19,6 +24,7 @@ from assistant_runtime.app.assistant._stale_tools import (
     find_tool_entry,
     repair_stale_tool_segments,
     repair_stale_tools_in_context,
+    with_resolved_returns,
 )
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.main import create_app
@@ -185,6 +191,38 @@ class TestRepairStaleToolSegments:
         assert ids == [""]
 
 
+def test_resolved_calls_get_their_result_in_the_model_messages() -> None:
+    stored = dump_model_messages(
+        [
+            ModelResponse(
+                parts=[ToolCallPart("lookup", "{}", "l-1"), ToolCallPart("nav", "{}", "n-1")]
+            ),
+            ModelRequest(parts=[ToolReturnPart("lookup", "found", "l-1")]),
+        ]
+    )
+    segments, _ = repair_stale_tool_segments(
+        [
+            {
+                "kind": "tool_group",
+                "tools": [
+                    {"id": "l-1", "name": "lookup", "output": "found"},
+                    {"id": "n-1", "name": "nav"},
+                ],
+            }
+        ]
+    )
+
+    messages = load_model_messages(with_resolved_returns(stored, segments))
+
+    (added,) = messages[2].parts
+    assert (added.tool_call_id, added.content, added.outcome) == (
+        "n-1",
+        STALE_HOST_TOOL_OUTPUT,
+        "interrupted",
+    )
+    assert with_resolved_returns(None, segments) is None
+
+
 # ---------------------------------------------------------------------------
 # repair_stale_tools_in_context
 # ---------------------------------------------------------------------------
@@ -211,9 +249,10 @@ class TestRepairStaleToolsInContext:
         repaired = repair_stale_tools_in_context(ctx)
 
         assert len(repaired) == 1
-        msg_id, segments = repaired[0]
+        msg_id, segments, model_messages = repaired[0]
         assert msg_id == "assistant-1"
         assert segments[0]["tools"][0]["output"] == STALE_HOST_TOOL_OUTPUT
+        assert model_messages is None
         # In-place mutation on ctx
         assert (
             ctx["message_index"]["assistant-1"]["segments"][0]["tools"][0]["output"]

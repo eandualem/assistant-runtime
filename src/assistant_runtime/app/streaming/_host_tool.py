@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from pydantic_ai import DeferredToolRequests
 
-from assistant_runtime.app.assistant import resolve_tool_entry
+from assistant_runtime.app.assistant import resolve_tool_entry, with_resolved_returns
 
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant import SessionStore
@@ -78,7 +78,10 @@ async def _mark_superseded(
     tool_call_ids: set[str],
     status="superseded",
 ) -> None:
-    """Persist synthetic outputs for the abandoned calls on their assistant message."""
+    """Persist synthetic outputs for the abandoned calls on their assistant message.
+
+    Its model messages get the same results, so the next turn replays them.
+    """
     record = session_context["message_index"].get(assistant_message_id)
     if record is None:
         logger.warning(
@@ -99,7 +102,12 @@ async def _mark_superseded(
             pending_call_ids=sorted(tool_call_ids),
         )
         return
-    await sessions.update_message(session_id, assistant_message_id, segments=segments)
+    await sessions.update_message(
+        session_id,
+        assistant_message_id,
+        segments=segments,
+        model_messages=with_resolved_returns(record.get("model_messages"), segments),
+    )
 
 
 def superseded_segments(

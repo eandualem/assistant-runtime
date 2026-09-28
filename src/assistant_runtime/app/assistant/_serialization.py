@@ -1,14 +1,25 @@
-"""Conversation tree serialization helpers."""
+"""Conversation tree serialization helpers.
+
+A message row keeps its part of the conversation as Pydantic AI messages
+(``model_messages``), which later turns replay unchanged, and, for assistant
+rows, ``segments``: the display form and the index of tool calls. Rows stored
+before ``model_messages`` existed are replayed from their content and segments.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ConfigDict, TypeAdapter
 from pydantic_ai.messages import (
     BinaryContent,
+    DocumentUrl,
+    ImageUrl,
     ModelMessage,
+    ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -19,6 +30,8 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.usage import RequestUsage
+
+from assistant_runtime.host_context import Attachment
 
 MessageRecord = dict[str, Any]
 SteeringRecord = dict[str, Any]
@@ -55,12 +68,70 @@ def canonicalize_assistant_segments(segments: list[dict[str, Any]] | None) -> li
     return normalized
 
 
+def dump_model_messages(messages: Sequence[ModelMessage]) -> list[dict[str, Any]]:
+    """The stored form of ``messages``: Pydantic AI's serialisation, as JSON values.
+
+    Instructions are left out, since every run sends its own. Media in tool
+    output is redacted as in the segments (``normalize_tool_output_for_storage``).
+    """
+    stored: list[ModelMessage] = []
+    for message in messages:
+        if isinstance(message, ModelRequest):
+            message = replace(
+                message,
+                instructions=None,
+                parts=[
+                    replace(
+                        part,
+                        content=normalize_tool_output_for_storage(part.tool_name, part.content),
+                    )
+                    if isinstance(part, ToolReturnPart)
+                    else part
+                    for part in message.parts
+                ],
+            )
+        stored.append(message)
+    return ModelMessagesTypeAdapter.dump_python(stored, mode="json")
+
+
+def load_model_messages(stored: list[dict[str, Any]]) -> list[ModelMessage]:
+    """Messages from their stored form (see ``dump_model_messages``)."""
+    return ModelMessagesTypeAdapter.validate_python(stored)
+
+
+def user_prompt_messages(
+    prompt: str | Sequence[UserContent], timestamp: datetime
+) -> list[dict[str, Any]]:
+    """The stored form of a user row: the request its prompt was sent in."""
+    return dump_model_messages(
+        [ModelRequest(parts=[UserPromptPart(content=prompt, timestamp=timestamp)])]
+    )
+
+
+def attachment_content(attachment: Attachment) -> UserContent:
+    """A reference attachment as native Pydantic AI user content."""
+    if attachment.text is not None:
+        return f"[{attachment.name or 'attachment'}]\n{attachment.text}"
+    if attachment.data_uri is not None:
+        return BinaryContent.from_data_uri(attachment.data_uri)
+    assert attachment.url is not None
+    if attachment.kind == "image":
+        return ImageUrl(url=attachment.url)
+    return DocumentUrl(url=attachment.url)
+
+
 def path_records_to_model_history(messages: list[MessageRecord]) -> list[ModelMessage]:
-    """Expand tree message rows into the linear ModelMessage history seen by the LLM."""
+    """Expand tree message rows into the linear ModelMessage history seen by the LLM.
+
+    A row with ``model_messages`` contributes exactly those messages.
+    """
     history: list[ModelMessage] = []
     for message in messages:
         role = message.get("role")
-        if role == "user":
+        stored = message.get("model_messages")
+        if stored is not None:
+            history.extend(load_model_messages(stored))
+        elif role == "user":
             history.append(_user_record_to_request(message, with_host_context=True))
         elif role == "assistant":
             history.extend(_assistant_record_to_messages(message))
@@ -254,17 +325,29 @@ def build_assistant_message_content(
 
 
 def build_steering_request(steering_records: list[SteeringRecord]) -> ModelRequest:
-    """Build a model request that frames steering distinctly from user messages."""
-    parts = [
-        UserPromptPart(
-            content=f"{_STEERING_PREFIX}{steering.get('content', '')}",
-            timestamp=_coerce_datetime(steering.get("delivered_at"))
-            or _coerce_datetime(steering.get("created_at"))
-            or datetime.now(UTC),
+    """Build a model request that frames steering distinctly from user messages.
+
+    A steering message's reference attachments follow its text as native
+    content. The request's metadata (never sent to the model) names the records.
+    """
+    parts = []
+    for steering in steering_records:
+        text = f"{_STEERING_PREFIX}{steering.get('content', '')}"
+        attachments = [
+            attachment_content(Attachment.model_validate(item))
+            for item in steering.get("attachments") or []
+        ]
+        parts.append(
+            UserPromptPart(
+                content=[text, *attachments] if attachments else text,
+                timestamp=_coerce_datetime(steering.get("delivered_at"))
+                or _coerce_datetime(steering.get("created_at"))
+                or datetime.now(UTC),
+            )
         )
-        for steering in steering_records
-    ]
-    return ModelRequest(parts=parts)
+    return ModelRequest(
+        parts=parts, metadata={"steering_ids": [steering["id"] for steering in steering_records]}
+    )
 
 
 def normalize_tool_output_for_storage(tool_name: str, content: Any) -> Any:
@@ -300,16 +383,13 @@ def _omit_tool_output_media(tool_name: str, content: Any) -> Any:
 
 
 def sanitize_image_tool_returns(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Strip binary screen-inspection payloads from a ModelMessage history."""
+    """Replace ``look_at_screen`` results with a placeholder once the model has seen them."""
     for message in messages:
         if not isinstance(message, ModelRequest):
             continue
         for part in message.parts:
             if isinstance(part, ToolReturnPart) and part.tool_name == "look_at_screen":
                 part.content = "[Inspected current screen]"
-        message.parts = [
-            part for part in message.parts if not _is_synthetic_binary_user_prompt(part)
-        ]
     return messages
 
 
@@ -501,14 +581,6 @@ def _append_content_segment(segments: list[dict[str, Any]], kind: str, text: str
         segments[-1]["text"] += text
         return
     segments.append({"kind": kind, "text": text})
-
-
-def _is_synthetic_binary_user_prompt(part: Any) -> bool:
-    return (
-        isinstance(part, UserPromptPart)
-        and isinstance(part.content, list)
-        and any(isinstance(item, BinaryContent) for item in part.content)
-    )
 
 
 def _with_segment_metadata(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:

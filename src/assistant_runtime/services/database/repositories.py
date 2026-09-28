@@ -230,6 +230,7 @@ class MessageRepository:
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
         prompt: dict[str, Any] | None = None,
+        model_messages: list[dict[str, Any]] | None = None,
     ) -> MessageORM:
         result = await self._session.execute(
             insert(MessageORM)
@@ -243,6 +244,7 @@ class MessageRepository:
                 segments=segments,
                 usage=usage,
                 prompt=prompt,
+                model_messages=model_messages,
             )
             .returning(MessageORM)
         )
@@ -279,6 +281,7 @@ class MessageRepository:
         segments: list[dict[str, Any]] | None = None,
         usage: dict[str, Any] | None = None,
         prompt: dict[str, Any] | None = None,
+        model_messages: list[dict[str, Any]] | None = None,
     ) -> None:
         fields: dict[str, Any] = {}
         if content is not None:
@@ -289,6 +292,8 @@ class MessageRepository:
             fields["usage"] = usage
         if prompt is not None:
             fields["prompt"] = prompt
+        if model_messages is not None:
+            fields["model_messages"] = model_messages
         if not fields:
             return
         await self._session.execute(
@@ -716,6 +721,7 @@ class SteeringRepository:
         status: str,
         profile: str | None = None,
         delivered_at: datetime | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> SteeringORM:
         result = await self._session.execute(
             insert(SteeringORM)
@@ -726,6 +732,7 @@ class SteeringRepository:
                 content=content,
                 status=status,
                 delivered_at=delivered_at,
+                attachments=attachments,
             )
             .returning(SteeringORM)
         )

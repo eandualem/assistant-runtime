@@ -125,7 +125,7 @@ The default assistant profile is `AssistantDefinition.profile` when set, then
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `compaction_enabled` | `true` | run the built-in history policy; `false` when the application supplies its own through `AssistantDefinition.capabilities` |
+| `compaction_enabled` | `false` | run the built-in history policy (the settings below); leave it off when the application manages context itself, for example through `AssistantDefinition.capabilities` |
 | `token_budget` | `100000` | history sent to the model is compacted to fit this |
 | `retain_recent` | `5` | most recent messages kept verbatim |
 | `protect_recent_tool_results` | `3` | most recent tool results (counted individually) never cleared |

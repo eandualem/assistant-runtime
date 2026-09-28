@@ -25,7 +25,7 @@ def _ctx(run_id: str = "run-1"):
 
 @pytest.fixture
 def config():
-    return HistoryConfig()
+    return HistoryConfig(compaction_enabled=True)
 
 
 @pytest.fixture
@@ -109,8 +109,8 @@ class TestProcessor:
         with pytest.raises(CompactionError, match="not started"):
             service.processor({})
 
-    async def test_disabled_compaction_has_no_processor(self, mock_llm):
-        service = HistoryService(HistoryConfig(compaction_enabled=False), llm_service=mock_llm)
+    async def test_compaction_is_off_by_default(self, mock_llm):
+        service = HistoryService(HistoryConfig(), llm_service=mock_llm)
         await service.start()
         assert service.processor({}) is None
 

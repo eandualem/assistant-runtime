@@ -5,6 +5,7 @@ no longer arrive (the session was reloaded without a matching persisted
 pending action, or an operator repaired it), the entry gets a synthetic
 output with ``outcome: "interrupted"`` and a ``status`` saying why, so the
 history stays consistent without asserting that the external action failed.
+The row's model messages get the same results (``with_resolved_returns``).
 """
 
 from __future__ import annotations
@@ -13,9 +14,24 @@ import copy
 from typing import Any, Literal
 
 from loguru import logger
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
+
+from assistant_runtime.app.assistant._serialization import (
+    dump_model_messages,
+    load_model_messages,
+)
 
 ActionStatus = Literal["completed", "failed", "cancelled", "superseded", "unknown"]
 """How a host action was resolved, recorded as ``status`` on its tool entry."""
+
+RepairedMessage = tuple[str, list[dict[str, Any]], list[dict[str, Any]] | None]
+"""``(message_id, segments, model_messages)`` of a message whose tools were resolved."""
 
 STALE_HOST_TOOL_OUTPUT = (
     "[Deferred host tool was not completed before the session was reloaded. "
@@ -55,17 +71,55 @@ def repair_stale_tool_segments(
     return updated, repaired_ids
 
 
+def with_resolved_returns(
+    model_messages: list[dict[str, Any]] | None, segments: list[dict[str, Any]] | None
+) -> list[dict[str, Any]] | None:
+    """``model_messages`` with a tool return for each call that only ``segments`` resolved.
+
+    The returns follow the stored messages in one request, as the synthetic
+    results the segments recorded. A row without model messages stays without.
+    """
+    if model_messages is None:
+        return None
+    messages = load_model_messages(model_messages)
+    answered = {
+        part.tool_call_id
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart | RetryPromptPart)
+    }
+    returns = [
+        ToolReturnPart(
+            tool_name=part.tool_name,
+            content=entry["output"],
+            tool_call_id=part.tool_call_id,
+            outcome=entry.get("outcome", "success"),
+        )
+        for message in messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, ToolCallPart)
+        and part.tool_call_id not in answered
+        and (entry := find_tool_entry(segments, part.tool_call_id)) is not None
+        and "output" in entry
+    ]
+    if not returns:
+        return model_messages
+    return [*model_messages, *dump_model_messages([ModelRequest(parts=returns)])]
+
+
 def repair_stale_tools_in_context(
     ctx: dict[str, Any],
     *,
     keep: frozenset[str] = frozenset(),
-) -> list[tuple[str, list[dict[str, Any]]]]:
+) -> list[RepairedMessage]:
     """Mark stale tools on every assistant message in ``ctx`` (in place).
 
-    Returns ``(message_id, repaired_segments)`` for each message that changed,
-    so the caller can persist them.
+    Returns ``(message_id, segments, model_messages)`` for each message that
+    changed, so the caller can persist them.
     """
-    repaired: list[tuple[str, list[dict[str, Any]]]] = []
+    repaired: list[RepairedMessage] = []
     for msg_id, record in ctx["message_index"].items():
         if record.get("role") != "assistant":
             continue
@@ -75,7 +129,10 @@ def repair_stale_tools_in_context(
         updated_segments, repaired_ids = repair_stale_tool_segments(segments, keep=keep)
         if repaired_ids:
             record["segments"] = updated_segments
-            repaired.append((msg_id, updated_segments))
+            record["model_messages"] = with_resolved_returns(
+                record.get("model_messages"), updated_segments
+            )
+            repaired.append((msg_id, updated_segments, record["model_messages"]))
             logger.debug(
                 "[SESSION] Marked stale host tools",
                 message_id=msg_id,

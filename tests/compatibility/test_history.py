@@ -30,6 +30,7 @@ from sqlalchemy.dialects.postgresql import dialect
 from assistant_runtime.app.assistant._serialization import (
     assistant_record_to_flat_messages,
     build_assistant_message_content,
+    dump_model_messages,
     path_records_to_model_history,
 )
 from assistant_runtime.app.assistant._session_persistence import LoadedSession
@@ -160,6 +161,9 @@ async def test_native_tool_outputs_are_json_compatible_at_database_boundary(
     # Exercise the actual JSONB encoding boundary without requiring Postgres.
     encode = MessageORM.__table__.c.segments.type.bind_processor(dialect())
     assert json.loads(encode(segments)) == segments
+    stored = dump_model_messages(result.new_messages())
+    assert json.loads(encode(stored)) == stored
+    assert stored[-2]["parts"][0]["content"] == expected
     assert value == original
     tool_return = next(
         part
@@ -335,7 +339,9 @@ async def test_public_continuation_closes_older_dangling_call_with_deferred_resu
     assert history == original
 
 
-@pytest.mark.parametrize("history_config", [HistoryConfig(**SMALL_BUDGET)], indirect=True)
+@pytest.mark.parametrize(
+    "history_config", [HistoryConfig(compaction_enabled=True, **SMALL_BUDGET)], indirect=True
+)
 async def test_runtime_clears_old_tool_results_in_model_input_only(runtime, script):
     async def lookup(item):
         return {"value": LONG_TEXT if item == "a" else "small"}
@@ -379,7 +385,9 @@ async def test_runtime_clears_old_tool_results_in_model_input_only(runtime, scri
     assert outputs == [LONG_TEXT, "small"]
 
 
-@pytest.mark.parametrize("history_config", [HistoryConfig(**SMALL_BUDGET)], indirect=True)
+@pytest.mark.parametrize(
+    "history_config", [HistoryConfig(compaction_enabled=True, **SMALL_BUDGET)], indirect=True
+)
 async def test_runtime_summarizes_once_per_turn_through_native_execution(runtime, script):
     follow_up = await _first_turn_with_long_answer(runtime, script)
 
@@ -424,7 +432,9 @@ async def test_runtime_summarizes_once_per_turn_through_native_execution(runtime
     assert [m["role"] for m in path] == ["user", "assistant", "user", "assistant"]
 
 
-@pytest.mark.parametrize("history_config", [HistoryConfig(**SMALL_BUDGET)], indirect=True)
+@pytest.mark.parametrize(
+    "history_config", [HistoryConfig(compaction_enabled=True, **SMALL_BUDGET)], indirect=True
+)
 async def test_runtime_summary_failure_falls_back_without_failing_the_turn(
     runtime, script, monkeypatch
 ):

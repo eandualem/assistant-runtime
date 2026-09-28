@@ -366,25 +366,19 @@ def test_normalize_tool_output_for_storage_handles_nested_binary_values() -> Non
     }
 
 
-def test_sanitize_image_tool_returns_rewrites_screen_payloads() -> None:
+def test_sanitize_image_tool_returns_rewrites_only_screen_payloads() -> None:
     image = BinaryContent(data=b"\xff\xd8", media_type="image/jpeg")
+    prompt = UserPromptPart(content=["Compare with this", image])
     messages = [
+        ModelRequest(parts=[prompt]),
         ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="look_at_screen",
-                    content=image,
-                    tool_call_id="call-1",
-                ),
-                UserPromptPart(content=["Reference: look_at_screen", image]),
-            ]
-        )
+            parts=[ToolReturnPart(tool_name="look_at_screen", content=image, tool_call_id="c1")]
+        ),
     ]
 
     sanitized = sanitize_image_tool_returns(messages)
 
-    request = sanitized[0]
-    assert isinstance(request, ModelRequest)
-    assert len(request.parts) == 1
-    assert isinstance(request.parts[0], ToolReturnPart)
-    assert request.parts[0].content == "[Inspected current screen]"
+    # The user's own prompt, with its image, is left alone.
+    assert sanitized[0].parts == [prompt]
+    assert prompt.content == ["Compare with this", image]
+    assert sanitized[1].parts[0].content == "[Inspected current screen]"

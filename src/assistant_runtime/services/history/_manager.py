@@ -387,7 +387,9 @@ class HistoryManager:
                 for part in msg.parts:
                     if isinstance(part, UserPromptPart):
                         content = (
-                            part.content if isinstance(part.content, str) else str(part.content)
+                            part.content
+                            if isinstance(part.content, str)
+                            else "\n".join(item for item in part.content if isinstance(item, str))
                         )
                         result.append({"role": "user", "content": _truncate(content)})
                     elif isinstance(part, ToolReturnPart):

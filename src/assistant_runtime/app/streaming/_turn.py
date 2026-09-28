@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -29,9 +29,6 @@ from loguru import logger
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.exceptions import ToolFailed
 from pydantic_ai.messages import (
-    BinaryContent,
-    DocumentUrl,
-    ImageUrl,
     ModelMessage,
     ModelRequest,
     ModelResponse,
@@ -44,6 +41,7 @@ from assistant_runtime.app.access.exceptions import AccessDeniedError
 from assistant_runtime.app.access.interface import AccessService
 from assistant_runtime.app.assistant import (
     assistant_record_to_flat_messages,
+    attachment_content,
     find_tool_entry,
     host_context_prompt,
     path_records_to_model_history,
@@ -189,9 +187,11 @@ class TurnPlanner:
             # message is written: a crash in between must not leave a restored
             # pending action next to the message that superseded it.
             await clear_stale_pending_call(self._sessions, session_id, existing)
-        host_context_text = _current_host_context(request, existing or {}) or ""
+        user_prompt = build_user_prompt(
+            request, _current_host_context(request, existing or {}) or ""
+        )
         session_context, _user_record = await self._sessions.register_user_message(
-            request, owner_id=principal.id, host_context_text=host_context_text
+            request, owner_id=principal.id, prompt=user_prompt
         )
         # Registration may have hydrated a stored context that this call did not see.
         await clear_stale_pending_call(self._sessions, session_id, session_context)
@@ -204,7 +204,7 @@ class TurnPlanner:
             session_context=session_context,
             assistant_message_id=assistant_message_id,
             assistant_parent_id=request.id,
-            user_prompt=build_user_prompt(request, host_context_text),
+            user_prompt=user_prompt,
             history=self._sessions.get_history(session_id, exclude_leaf=True),
             screenshot=request.screenshot,
             turn_number=session_context.get("turn_number", 0),
@@ -271,11 +271,15 @@ class TurnPlanner:
             )
         session_context["current_assistant_message_id"] = assistant_message_id
 
-        # pydantic-ai resumes a deferred call from the *last* ModelResponse, so
-        # the assistant row is re-serialised flat: completed tools first, the
-        # pending call alone at the end.
-        flat_assistant = assistant_record_to_flat_messages(assistant_record)
-        if not flat_assistant:
+        if assistant_record.get("model_messages") is not None:
+            # The row's messages as the model produced them.
+            assistant_history = _resumable(path_records_to_model_history([assistant_record]))
+        else:
+            # A row stored before model messages: pydantic-ai resumes a deferred
+            # call from the *last* ModelResponse, so the row is re-serialised
+            # flat: completed tools first, the pending call alone at the end.
+            assistant_history = assistant_record_to_flat_messages(assistant_record)
+        if not assistant_history:
             pending_tool_name = session_context.get("pending_tool_name") or "unknown"
             logger.warning(
                 "Empty segments for assistant record — synthesizing ModelResponse from pending tool state",
@@ -284,7 +288,7 @@ class TurnPlanner:
                 pending_tool_call_id=pending_tool_call_id,
                 pending_tool_name=pending_tool_name,
             )
-            flat_assistant = [
+            assistant_history = [
                 ModelResponse(
                     parts=[
                         ToolCallPart(
@@ -345,7 +349,7 @@ class TurnPlanner:
             prior_usage=assistant_record.get("usage"),
             history=[
                 *self._sessions.get_history(session_id, exclude_leaf=True),
-                *flat_assistant,
+                *assistant_history,
             ],
             deferred_tool_results=(
                 None
@@ -353,8 +357,9 @@ class TurnPlanner:
                 else DeferredToolResults(calls={request.tool_call_id: deferred_result})
             ),
             receipt_only=request.output_mode == "host_tools",
-            # The current context follows the result in the same model request.
-            user_prompt=_current_host_context(request, session_context),
+            # The current context and the request's attachments follow the
+            # result in the same model request.
+            user_prompt=_with_attachments(_current_host_context(request, session_context), request),
             next_pending=next_pending,
             pending_batch=batch,
             accepted_tool_result=ModelRequest(
@@ -461,6 +466,35 @@ def _current_host_context(request: AssistantRequest, session_context: dict[str, 
     return host_context_prompt(current) or None
 
 
+def _resumable(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """``messages`` with the requests after the last response merged into one.
+
+    Pydantic AI resumes the last response's calls and skips those answered in
+    the first request after it; results recorded one at a time (a batch of
+    host calls) must all be in that request. The model sees consecutive
+    requests merged either way.
+    """
+    last_response = max(
+        (index for index, message in enumerate(messages) if isinstance(message, ModelResponse)),
+        default=-1,
+    )
+    trailing = messages[last_response + 1 :]
+    if len(trailing) < 2:
+        return messages
+    merged = replace(trailing[0], parts=[part for message in trailing for part in message.parts])
+    return [*messages[: last_response + 1], merged]
+
+
+def _with_attachments(
+    host_context_text: str | None, request: AssistantRequest
+) -> str | list[UserContent] | None:
+    """The host context block followed by the request's reference attachments."""
+    attachments = [attachment_content(a) for a in request.reference_attachments]
+    if not attachments:
+        return host_context_text
+    return [host_context_text, *attachments] if host_context_text else attachments
+
+
 def _failure_message(tool_result: Any) -> str:
     """The host's failure result as the text the model reads."""
     if tool_result is None:
@@ -478,19 +512,7 @@ def build_user_prompt(
     ``host_context_text`` (see ``host_context_prompt``) comes first.
     Screenshots are not included: they stay available to ``look_at_screen``.
     """
-    parts: list[UserContent] = []
-    for attachment in request.reference_attachments:
-        if attachment.text is not None:
-            label = attachment.name or "attachment"
-            parts.append(f"[{label}]\n{attachment.text}")
-        elif attachment.data_uri is not None:
-            parts.append(BinaryContent.from_data_uri(attachment.data_uri))
-        elif attachment.url is not None:
-            parts.append(
-                ImageUrl(url=attachment.url)
-                if attachment.kind == "image"
-                else DocumentUrl(url=attachment.url)
-            )
+    parts = [attachment_content(attachment) for attachment in request.reference_attachments]
     head: list[UserContent] = [host_context_text] if host_context_text else []
     if not parts and not head:
         return request.content

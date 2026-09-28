@@ -234,7 +234,7 @@ async def test_tiers_survive_cumulative_followup_without_double_counting(codex):
     agent = codex.service("fast").build_agent(system_prompt="Decision.", thinking_budget=4000)
     cumulative = RunUsage()
     first = await agent.run("First.", usage=cumulative)
-    plan = SimpleNamespace(accepted_tool_result=None, prior_usage=None)
+    plan = SimpleNamespace(kind="continuation", accepted_tool_result=None, prior_usage=None)
     state = _RunState()
     TurnRunner._capture_result(plan, state, first)
     second = await agent.run("Follow up.", message_history=first.all_messages(), usage=cumulative)

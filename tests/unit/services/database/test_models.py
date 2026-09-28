@@ -49,9 +49,11 @@ class TestMessageORM:
             "segments",
             "usage",
             "prompt",
+            "model_messages",
             "created_at",
         }
         assert isinstance(columns["segments"].type, JSONB)
+        assert isinstance(columns["model_messages"].type, JSONB)
         assert isinstance(columns["usage"].type, JSONB)
         assert isinstance(columns["content"].type, Text)
 
@@ -76,6 +78,7 @@ class TestSteeringORM:
             "content",
             "profile",
             "status",
+            "attachments",
             "created_at",
             "delivered_at",
         }
