@@ -208,7 +208,11 @@ execution, history, serialization, or the upstream dependency; see
 - **A session is a tree of messages.** Each message has a `parent_id`; the
   session tracks the active leaf and the path to it is the model history.
   A message without `parent_id` is the root when the session is empty and
-  continues from the active leaf otherwise. A session created with a
+  continues from the active leaf otherwise. A role is `user`, `assistant`
+  or `host`: a card the host appends outside any turn, only while the
+  session is idle, at the active leaf (`SessionStore.register_host_message`);
+  the model reads its `content` as request-side text and never its component
+  segments, and an assistant reply parents a `user` or `host` message. A session created with a
   `subject` is bound to that profile and subject (row columns, decided by
   the first saved message; an empty session enforces none); the planner fills them into later requests and rejects
   others. Sessions without a subject keep per-turn profile selection.

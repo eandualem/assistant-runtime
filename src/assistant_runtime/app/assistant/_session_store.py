@@ -250,8 +250,8 @@ class SessionStore:
             raise LookupError("Session not found")
         if parent_id not in ctx["message_index"]:
             raise LookupError(f"Parent message '{parent_id}' not found")
-        if ctx["message_index"][parent_id]["role"] != "user":
-            raise ValueError("Assistant messages must parent a user message")
+        if ctx["message_index"][parent_id]["role"] not in ("user", "host"):
+            raise ValueError("Assistant messages must parent a user or host message")
         if message_id in ctx["message_index"]:
             raise ValueError(f"Message '{message_id}' already exists")
 
@@ -272,6 +272,53 @@ class SessionStore:
 
         _add_message(ctx, record)
         _refresh_cached_path_for_new_leaf(ctx, record)
+        return record
+
+    async def register_host_message(
+        self,
+        session_id: str,
+        *,
+        message_id: str,
+        content: str,
+        segments: list[dict[str, Any]],
+    ) -> MessageRecord:
+        """Append a message the host wrote, at the active leaf, without a model turn.
+
+        It continues from the active leaf (or starts an empty session) and
+        becomes the new leaf; a reply that follows it parents it as it would
+        a user message.
+        """
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is not None and ctx["message_count"] == 0 and self._db is not None:
+            # An empty cached context may shadow a persisted session (as for a user message).
+            loaded = await self._load_session_singleflight(session_id)
+            if loaded is not None:
+                self._sessions[session_id] = loaded
+                ctx = loaded
+        if ctx is None:
+            raise LookupError("Session not found")
+        if message_id in ctx["message_index"]:
+            raise ValueError(f"Message '{message_id}' already exists")
+        parent_id = None
+        if ctx["message_count"] > 0:
+            parent_id = ctx.get("active_leaf_id") or _latest_leaf_id(ctx)
+        record: MessageRecord = {
+            "id": message_id,
+            "session_id": session_id,
+            "parent_id": parent_id,
+            "role": "host",
+            "message_type": "standard",
+            "content": content,
+            "segments": segments,
+            "usage": None,
+            "created_at": datetime.now(UTC),
+        }
+        if self._db is not None:
+            await self._db.ensure_session(session_id, ctx.get("title"), ctx.get("owner_id"))
+            await self._db.create_message(record)
+        _add_message(ctx, record)
+        _refresh_cached_path_for_new_leaf(ctx, record)
+        await self.save_session_state_async(session_id)
         return record
 
     async def update_message(

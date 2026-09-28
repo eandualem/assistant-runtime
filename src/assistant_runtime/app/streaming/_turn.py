@@ -384,7 +384,7 @@ class TurnPlanner:
             raise SessionError(
                 f"Steering rejected: session '{session_id}' has no active conversation"
             )
-        if active_leaf.get("role") not in {"user", "assistant"}:
+        if active_leaf.get("role") not in {"user", "assistant", "host"}:
             raise SessionError(
                 f"Steering rejected: session '{session_id}' has no active assistant context"
             )

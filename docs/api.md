@@ -205,6 +205,7 @@ latest `usage` of each assistant message for a session total, not every
 | `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `arguments`, `assistant_message_id`, `queued`: further call ids from the same response still to be handed over, or null): everything a host needs to perform the waiting action and continue |
 | `GET /api/sessions/{id}/messages?leaf_id=` | the root-to-leaf path for display (see below); `leaf_id` selects another leaf's path, for branch switching |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
+| `POST /api/sessions/{id}/messages` `{"segments", "content"?, "id"?}` | add a card the host made outside any turn as a `host` message at the active leaf (`201`, the display row); administration; `409` while a turn, a pending host action or a voice call has the session, or for a repeated `id` |
 | `GET /api/sessions/{id}/messages/{message_id}/prompt` | the system prompt an assistant message was produced with (see below); `404` when none is recorded |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |
 | `POST /api/sessions/{id}/repair` | resolve the pending host action and every call without a result as `unknown`, so the session can continue |
@@ -219,12 +220,13 @@ and promoted steering, ordered by time. Steering is recorded per session,
 not per message, so when `leaf_id` selects another branch the same steering
 rows appear next to that path too. The route is `404` for a session the
 runtime does not know; a session that was joined but has no messages yet
-returns `[]`. Three row shapes:
+returns `[]`. Four row shapes:
 
 | `role` | Fields |
 |---|---|
 | `user` | `id`, `parent_id`, `text`, `message_type` (`standard`), `timestamp` |
 | `assistant` | `id`, `parent_id`, `text` (the text segments joined), `segments`, `usage` (see [usage](#usage)), `timestamp` |
+| `host` | `id`, `parent_id`, `text` (its `content`), `segments` (its components), `timestamp` |
 | `steering` | `id`, `text`, `message_type: "steering"`, `status` (`delivered` or `promoted`), `timestamp`; no `parent_id`, steering is outside the tree |
 
 `segments` is the assistant message in order. Each segment carries
@@ -240,6 +242,14 @@ returns `[]`. Three row shapes:
   is the pending host action. Entries do not say whether a tool is a host
   or backend tool; the streamed `tool_call` event does (`category`), and a
   host knows its own action names.
+
+A `host` message is a card the host showed outside any turn (a proposal
+made in the background, findings, an action a task suggested). Its
+`segments` are components, `{"kind": "component", "type", "data"}` (up to
+16, 64 KiB of JSON in all), for people only: the model never receives them.
+In later turns the model reads the message's `content`, as request-side
+text, before the next prompt; an empty `content` leaves it out entirely.
+The next reply continues after the host message.
 
 `GET /api/sessions/{id}/tree` returns every message with `id`, `parent_id`,
 `role`, `message_type`, `content` and `created_at`, for drawing branches.

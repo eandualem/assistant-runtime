@@ -9,7 +9,7 @@ tools.
 
 | State | With Postgres | Without Postgres |
 |---|---|---|
-| Sessions, the message tree, steering | rows in `sessions`, `messages`, `steering`; written through on every change | process memory, until cache eviction or process shutdown |
+| Sessions, the message tree (user, assistant and host messages), steering | rows in `sessions`, `messages`, `steering`; written through on every change | process memory, until cache eviction or process shutdown |
 | The pending host action | `sessions.pending_action` | process memory |
 | Prompt-artifact versions, runtime settings | rows | process memory |
 | Queued inbox messages | rows | process memory; listing and marking surfaced through HTTP still need Postgres |
