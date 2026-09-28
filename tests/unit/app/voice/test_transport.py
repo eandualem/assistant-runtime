@@ -10,6 +10,7 @@ import pytest
 from assistant_runtime.app.voice._persistence import VoicePersistence
 from assistant_runtime.app.voice._transport import LiveTransport
 from assistant_runtime.app.voice.exceptions import VoiceError
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 
 async def test_http_creation_uses_documented_live_endpoint_and_shape():
@@ -63,6 +64,25 @@ async def test_unavailable_database_does_not_break_voice():
     assert await persistence.save({"call_id": "call"}) is False
     assert await persistence.load("call") is None
     db.session_context.assert_not_called()
+
+
+async def test_a_lost_database_skips_the_checkpoint_but_fails_the_lookup():
+    class Lost:
+        healthy = True
+
+        def session_context(self):
+            return self
+
+        async def __aenter__(self):
+            raise DatabaseError("Database not reachable")
+
+        async def __aexit__(self, *args):
+            pass
+
+    persistence = VoicePersistence(Lost())
+    assert await persistence.save({"call_id": "call"}) is False
+    with pytest.raises(DatabaseError):  # a 503, not "Voice call not found"
+        await persistence.load("call")
 
 
 async def test_checkpoint_upsert_and_load():

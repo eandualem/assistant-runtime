@@ -82,7 +82,8 @@ survive restarts.
 
 ## Memory-only mode and the session TTL
 
-Without a reachable Postgres the runtime runs entirely in process memory:
+Without a Postgres reachable at startup the runtime runs entirely in
+process memory:
 
 - sessions, the message tree and pending host actions;
 - artifact versions the assistant or the host wrote (`durable: false` in

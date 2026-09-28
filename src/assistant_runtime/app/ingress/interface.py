@@ -207,16 +207,15 @@ class IngressService:
         if session_id:
             context["session_id"] = session_id
         if self._db is not None and getattr(self._db, "healthy", False):
-            try:
-                from assistant_runtime.services.database.repositories import InboxRepository
+            # A failed write raises: a message kept only in memory would look
+            # queued and be lost on restart.
+            from assistant_runtime.services.database.repositories import InboxRepository
 
-                async with self._db.session_context() as db_session:
-                    row = await InboxRepository(db_session).create(
-                        from_agent=from_agent, message=message, severity=severity, context=context
-                    )
-                    return row.id
-            except Exception as e:
-                logger.warning("Inbox write failed; keeping the message in memory", error=str(e))
+            async with self._db.session_context() as db_session:
+                row = await InboxRepository(db_session).create(
+                    from_agent=from_agent, message=message, severity=severity, context=context
+                )
+                return row.id
         item_id = str(uuid.uuid4())
         self._queued.append(
             {

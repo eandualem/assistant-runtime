@@ -16,6 +16,7 @@ from assistant_runtime.app.settings import (
     RuntimeSettings,
     resolve_effective_config,
 )
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 
 class TestRuntimeSettings:
@@ -293,7 +294,10 @@ class TestRuntimeSettingsDB:
         assert rs._updated_at is None
 
     @pytest.mark.asyncio
-    async def test_load_from_db_handles_exception_gracefully(self):
+    async def test_a_failed_load_fails_startup(self):
+        """Defaults would let the next change overwrite the stored overlay."""
+        from assistant_runtime.services.database.exceptions import DatabaseUnavailableError
+
         mock_db = MagicMock()
         mock_db._healthy = True
 
@@ -305,8 +309,8 @@ class TestRuntimeSettingsDB:
         mock_db.session_context = failing_session_context
 
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
-        await rs.load_from_db()  # Should not raise
-        assert rs.overrides == {}
+        with pytest.raises(DatabaseUnavailableError, match="connection lost"):
+            await rs.load_from_db()
 
     @pytest.mark.asyncio
     async def test_load_from_db_raises_when_the_database_is_required(self):
@@ -419,43 +423,11 @@ class TestRuntimeSettingsDB:
         assert set(state_dict.keys()) == TUNABLE_FIELDS
 
     @pytest.mark.asyncio
-    async def test_load_from_db_recovers_after_degraded_startup(self):
-        """The database was down when probed at startup but answers now: settings load."""
-        mock_row = MagicMock()
-        mock_row.default_model = "anthropic:claude-sonnet-4-6"
-        mock_row.thinking_budget = None
-        mock_row.temperature = None
-        mock_row.max_turns = None
-        mock_row.enable_working_memory = None
-        mock_row.summarization_model = None
-        mock_row.working_memory_model = None
-        mock_row.default_image_model = None
-        mock_row.default_video_model = None
-        mock_row.subagent_model = None
-        mock_row.subagent_thinking_budget = None
-        mock_row.updated_at = None
-
-        mock_repo = MagicMock()
-        mock_repo.get = AsyncMock(return_value=mock_row)
-        mock_settings_repo_cls = MagicMock(return_value=mock_repo)
-
-        mock_db = self._make_mock_db(healthy=False, recovers=True)
-        rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
-
-        with patch(
-            "assistant_runtime.services.database.repositories.SettingsRepository",
-            mock_settings_repo_cls,
-        ):
-            await rs.load_from_db()
-
-        mock_db.health_check.assert_awaited_once()
-        assert rs.overrides["default_model"] == "anthropic:claude-sonnet-4-6"
-
-    @pytest.mark.asyncio
-    async def test_load_from_db_skips_when_still_unreachable(self):
+    async def test_load_from_db_follows_the_startup_result(self):
+        """Startup chose memory: settings are not read even if the database answers now."""
         mock_repo = MagicMock()
         mock_repo.get = AsyncMock()
-        mock_db = self._make_mock_db(healthy=False, recovers=False)
+        mock_db = self._make_mock_db(healthy=False, recovers=True)
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
 
         with patch(
@@ -464,24 +436,25 @@ class TestRuntimeSettingsDB:
         ):
             await rs.load_from_db()
 
-        mock_db.health_check.assert_awaited_once()
+        mock_db.health_check.assert_not_awaited()
         mock_repo.get.assert_not_awaited()
         assert rs.overrides == {}
 
     @pytest.mark.asyncio
-    async def test_persist_returns_false_on_failure(self):
-        """DB that throws returns False from update()."""
+    async def test_a_failed_write_is_refused_and_changes_nothing(self):
+        """A database lost after startup: the change is not kept in memory."""
         mock_db = MagicMock()
 
         @asynccontextmanager
         async def failing_session_context():
-            raise RuntimeError("DB connection lost")
+            raise DatabaseError("Database not reachable")
             yield  # noqa: F541
 
         mock_db.session_context = failing_session_context
         rs = RuntimeSettings(frozen_config=AssistantConfig(), database_service=mock_db)
-        result = await rs.update(temperature=0.5)
-        assert result is False
+        with pytest.raises(DatabaseError):
+            await rs.update(temperature=0.5)
+        assert rs.overrides == {}
 
     @pytest.mark.asyncio
     async def test_persist_returns_true_on_success(self):

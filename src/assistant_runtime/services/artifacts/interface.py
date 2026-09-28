@@ -41,6 +41,7 @@ from assistant_runtime.services.artifacts.exceptions import (
     UnknownProfileError,
 )
 from assistant_runtime.services.artifacts.models import Actor, ArtifactVersion, MutationResult
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 if TYPE_CHECKING:
     from assistant_runtime.base.events import EventHub
@@ -314,13 +315,11 @@ class ArtifactService:
                 ):
                     texts[row.name] = row.content
                     versions[row.name] = row.version
+        except DatabaseError:
+            raise  # a lost database is the retryable 503, not a bad request
         except Exception as e:
-            # With DATABASE__REQUIRED the stored versions are the only
-            # source; a prompt from defaults would silently drop them.
-            if getattr(self._database_service, "required", False):
-                raise ArtifactError(f"Failed to load artifacts: {e}") from e
-            logger.warning("Failed to load artifacts, using defaults", error=str(e))
-            return texts, dict.fromkeys(texts)
+            # A prompt from the defaults would silently drop the stored versions.
+            raise ArtifactError(f"Failed to load artifacts: {e}") from e
         if generation == owner._generation:
             self._cache = dict(texts)
             self._cached_versions = dict(versions)
@@ -343,12 +342,10 @@ class ArtifactService:
             return []
         try:
             rows = await self._require_store().get_all_active(self._profile.name)
+        except DatabaseError:
+            raise
         except Exception as e:
-            # The listing is optional prompt text, like the artifacts' own fallback.
-            if getattr(self._database_service, "required", False):
-                raise ArtifactError(f"Failed to list documents: {e}") from e
-            logger.warning("Failed to list documents, leaving them out", error=str(e))
-            return []
+            raise ArtifactError(f"Failed to list documents: {e}") from e
         names = sorted(r.name for r in rows if self._profile.collection_of(r.name))
         if not names:
             return []

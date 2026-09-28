@@ -33,13 +33,15 @@ the marker `serve` looks for before replacing a previous instance on its
 port. The rule is whether the runtime can answer a turn: with no
 provider key configured it reports 503, because it cannot. Optional
 dependencies do not make it unhealthy — Postgres being unreachable is
-reported as `database_service: {"healthy": true, "reachable": false}` and
-sessions live in memory, and an unconfigured integration reports
-`"status": "disabled"`. A service that failed to start is unhealthy.
+reported as `database_service: {"healthy": true, "reachable": false}`, and
+an unconfigured integration reports `"status": "disabled"`. A service that
+failed to start is unhealthy. The database probe only reports: whether
+sessions live in memory was decided at startup.
 
 A route that uses Postgres answers `503` with `{"error": "Database not
 reachable", "type": "DatabaseError"}` when the database was lost after
-startup. The loss is temporary, so a host may retry.
+startup. The loss is temporary: every call tries the database again, so a
+host may retry.
 
 ## Chat (non-streaming)
 

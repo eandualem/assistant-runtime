@@ -28,19 +28,28 @@ expiry deletes the session with its messages, steering and pending action.
 ## Requiring Postgres
 
 The table's right-hand column is a fallback, chosen once at startup. A
-deployment that must not lose state sets `DATABASE__REQUIRED=true`: startup
-then fails with `DatabaseUnavailableError` when Postgres is unreachable,
-nothing falls back to process memory, an artifact read error fails the turn
-instead of building the prompt from the defaults, a runtime-settings change
-that cannot be saved is refused with 503 rather than kept in memory, and
-`/health` reports a database lost later as unhealthy. With
-`DATABASE__MIGRATE_ON_START` as well, the runtime creates its database when
-the server is reachable but the database does not exist, then migrates it;
-a host needs only a running PostgreSQL server.
+database that answers at startup but cannot load the runtime settings fails
+startup, since the next settings change would otherwise overwrite the
+stored ones. A deployment that must not lose state sets
+`DATABASE__REQUIRED=true`: startup then fails with
+`DatabaseUnavailableError` when Postgres is unreachable, nothing falls back
+to process memory, and `/health` reports a database lost later as
+unhealthy. With `DATABASE__MIGRATE_ON_START` as well, the runtime creates
+its database when the server is reachable but the database does not exist,
+then migrates it; a host needs only a running PostgreSQL server.
 
 A database lost after startup is not a fallback, with or without
-`DATABASE__REQUIRED`: a route that uses it answers `503` with
-`{"error": "Database not reachable", "type": "DatabaseError"}`.
+`DATABASE__REQUIRED`. Each call tries it again, so the runtime recovers as
+soon as Postgres is back; until then a route that uses it answers `503`
+with `{"error": "Database not reachable", "type": "DatabaseError"}`. A
+runtime-settings change or an inbox message that cannot be saved is
+refused the same way rather than kept in memory, and a turn whose
+artifacts cannot be read fails instead of building the prompt from the
+defaults. Turn traces, the inbox drain, voice checkpoints and OAuth token
+deletion are best-effort and log a warning; messages a failed drain could
+not read stay in the inbox for the next turn. A refreshed OAuth login that
+cannot be saved stays in memory for the process, and its status reports
+`persisted: false`.
 
 `DatabaseUnavailableError` and `MigrationError` carry a machine-readable
 `cause`, so a host can word them for its own users: `unreachable` (no

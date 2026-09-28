@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.database.exceptions import (
@@ -383,6 +384,22 @@ class TestDatabaseServiceHealthCheck:
             # Degraded, not unhealthy: every request path works without Postgres.
             assert health["healthy"] is True
             assert health["reachable"] is False
+            # The probe only reports: calls keep trying the database.
+            assert service.healthy is True
+
+    async def test_a_database_back_after_a_degraded_start_stays_unused(self):
+        service = DatabaseService(config=DatabaseConfig())
+        mock_engine, _ = _make_mock_engine(connect_ok=False)
+        with patch(
+            "assistant_runtime.services.database.interface.create_async_engine",
+            return_value=mock_engine,
+        ):
+            await service.start()
+        mock_engine.begin.return_value.__aenter__ = AsyncMock()
+
+        assert (await service.health_check())["reachable"] is True
+        # The stores chose memory at startup, so nothing may start using it now.
+        assert service.healthy is False
 
 
 class TestDatabaseServiceSessionContext:
@@ -466,6 +483,14 @@ class TestDatabaseServiceSessionContext:
             async with service.session_context():
                 pass
         assert raised.value.__cause__ is refused
+
+        # No pooled connection frees up in time.
+        exhausted = PoolTimeoutError("QueuePool limit reached")
+        session.connection.side_effect = exhausted
+        with pytest.raises(DatabaseError, match="not reachable") as raised:
+            async with service.session_context():
+                pass
+        assert raised.value.__cause__ is exhausted
         session.connection.side_effect = None
 
         # The connection in use is dropped.

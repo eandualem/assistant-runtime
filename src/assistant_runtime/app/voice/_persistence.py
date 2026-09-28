@@ -34,10 +34,7 @@ class VoicePersistence:
     async def load(self, call_id: str) -> dict | None:
         if self.database is None or not self.database.healthy:
             return None
-        try:
-            async with self.database.session_context() as db:
-                row = await db.get(VoiceCallORM, call_id)
-                return dict(row.snapshot) if row is not None else None
-        except Exception:
-            logger.warning("Voice checkpoint lookup unavailable", call_id=call_id)
-            return None
+        # A failed lookup raises: "not found" would be wrong while the database is lost.
+        async with self.database.session_context() as db:
+            row = await db.get(VoiceCallORM, call_id)
+            return dict(row.snapshot) if row is not None else None

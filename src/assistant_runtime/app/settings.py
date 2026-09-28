@@ -58,7 +58,7 @@ class RuntimeSettings:
     """Mutable overlay on the frozen ``AssistantConfig``.
 
     Holds only the tunables that were explicitly set; everything else falls
-    through to the frozen default. Persisted to Postgres when it is reachable.
+    through to the frozen default. Persisted to Postgres when the runtime uses one.
     """
 
     def __init__(
@@ -84,6 +84,7 @@ class RuntimeSettings:
 
         Raises:
             ValueError: An unknown field or a value out of range.
+            DatabaseError: The database in use could not be written; nothing changes.
         """
         unknown = set(kwargs) - TUNABLE_FIELDS
         if unknown:
@@ -115,21 +116,19 @@ class RuntimeSettings:
             return persisted
 
     async def load_from_db(self) -> None:
-        """Load persisted overrides on startup; silently skipped without a database.
+        """Load persisted overrides on startup; skipped without a database, fatal on failure.
 
-        The database may have come up after the service probed it at startup,
-        so an unhealthy service is probed once more before giving up.
+        Follows the database service's startup result, as every store does,
+        so settings never come from a database the rest of the runtime left.
         """
         if self._db is None:
             return
         if not self._db.healthy:
-            await self._db.health_check()
-            if not self._db.healthy:
-                if self._required:
-                    raise DatabaseUnavailableError(
-                        "Runtime settings could not be loaded: the database is unavailable"
-                    )
-                return
+            if self._required:
+                raise DatabaseUnavailableError(
+                    "Runtime settings could not be loaded: the database is unavailable"
+                )
+            return
         try:
             from assistant_runtime.services.database.repositories import SettingsRepository
 
@@ -145,11 +144,9 @@ class RuntimeSettings:
                     self._updated_at = row.updated_at
             logger.info("Loaded persisted settings from DB", overrides=sorted(self._overrides))
         except Exception as e:
-            if self._required:
-                raise DatabaseUnavailableError(f"Runtime settings could not be loaded: {e}") from e
-            logger.warning(
-                "Failed to load settings from DB — proceeding with defaults", error=str(e)
-            )
+            # Defaults standing in for the stored overlay would be written over
+            # it by the next change, so startup fails instead.
+            raise DatabaseUnavailableError(f"Runtime settings could not be loaded: {e}") from e
 
     @property
     def _required(self) -> bool:
@@ -157,19 +154,19 @@ class RuntimeSettings:
         return getattr(self._db, "required", False) is True
 
     async def _persist_to_db(self, overrides: dict[str, Any]) -> bool:
-        """Write the full overlay (unset fields as NULL). Best-effort."""
+        """Write the full overlay (unset fields as NULL); False without a database.
+
+        A failed write raises, so the change is refused rather than kept
+        only in memory.
+        """
         if self._db is None or not getattr(self._db, "healthy", True):
             return False
         state = {field: overrides.get(field) for field in TUNABLE_FIELDS}
-        try:
-            from assistant_runtime.services.database.repositories import SettingsRepository
+        from assistant_runtime.services.database.repositories import SettingsRepository
 
-            async with self._db.session_context() as db_session:
-                await SettingsRepository(db_session).save(state)
-            return True
-        except Exception as e:
-            logger.warning("Failed to persist settings to DB", error=str(e))
-            return False
+        async with self._db.session_context() as db_session:
+            await SettingsRepository(db_session).save(state)
+        return True
 
     def get(self, field: str, frozen_default: Any = None) -> Any:
         """The runtime override for ``field``, else ``frozen_default``."""

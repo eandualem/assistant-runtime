@@ -11,6 +11,7 @@ import pytest
 from assistant_runtime.app.assistant._session_store import SessionStore
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.app.ingress.interface import IngressService, envelope
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 
 def _request(message_id: str, session_id: str = "sess-1", parent_id: str | None = None):
@@ -218,6 +219,53 @@ class TestDeliver:
 
         assert result == {"status": "queued", "inbox_id": "inbox-9"}
         assert repo.create.await_args.kwargs["context"] == {"via": "inbox", "injected": True}
+
+    async def test_a_failed_database_inbox_write_raises_instead_of_queueing_in_memory(self):
+        db = MagicMock()
+        db.healthy = True
+
+        @asynccontextmanager
+        async def _lost():
+            raise DatabaseError("Database not reachable")
+            yield  # noqa: F541
+
+        db.session_context = _lost
+        service = _service(SessionStore(), db=db)
+        await service.start()
+
+        with pytest.raises(DatabaseError):
+            await service.deliver(from_agent="bot", via="inbox", message="note")
+        assert (await service.health_check())["queued"] == 0
+
+    async def test_a_failed_inbox_read_leaves_the_messages_for_a_later_drain(self):
+        db = MagicMock()
+        db.healthy = True
+        lost = True
+
+        @asynccontextmanager
+        async def _ctx():
+            if lost:
+                raise DatabaseError("Database not reachable")
+            yield AsyncMock()
+
+        db.session_context = _ctx
+        service = _service(await _seeded_store(), db=db)
+        await service.start()
+        row = MagicMock(id="inbox-9", from_agent="bot", message="note", context=None)
+        repo = MagicMock()
+        repo.list_unsurfaced = AsyncMock(return_value=[row])
+        repo.mark_surfaced = AsyncMock()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "assistant_runtime.services.database.repositories.InboxRepository",
+                MagicMock(return_value=repo),
+            )
+            assert await service.drain("sess-1") == 0
+            repo.mark_surfaced.assert_not_awaited()
+            lost = False
+            assert await service.drain("sess-1") == 1
+
+        repo.mark_surfaced.assert_awaited_once_with("inbox-9")
 
     async def test_stop_cancels_background_turns(self):
         store = await _seeded_store()

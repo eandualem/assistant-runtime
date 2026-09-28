@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -143,21 +144,22 @@ class DatabaseService:
         ``reachable: false`` but does not make the runtime unhealthy, because
         every request path works without it — unless ``required`` is set,
         when it does. A service that never started is a genuine failure.
+        The check only reports: it never changes :attr:`healthy`.
         """
         if not self._started or self._engine is None:
             return {"healthy": False, "reachable": False}
-        try:
-            async with self._engine.begin() as conn:
-                await conn.execute(text("SELECT 1"))
-            self._healthy = True
-        except Exception:
-            self._healthy = False
-        healthy = self._healthy or not self._config.required
-        return {"healthy": healthy, "reachable": self._healthy, "host": self._config.host}
+        failure = await self._probe()
+        reachable = failure is None
+        healthy = reachable or not self._config.required
+        return {"healthy": healthy, "reachable": reachable, "host": self._config.host}
 
     @property
     def healthy(self) -> bool:
-        """Whether the database is reachable."""
+        """Whether startup found the database, so this process uses it.
+
+        Fixed at startup: after an outage each call tries the database again
+        (the pool reconnects), and a failed attempt is a :class:`DatabaseError`.
+        """
         return self._healthy
 
     @property
@@ -173,12 +175,13 @@ class DatabaseService:
         if not self._healthy:
             raise DatabaseError("Database not reachable")
         async with self._session_factory() as session:
-            # A database lost after startup: no connection can be made, or the
-            # one in use is dropped. Connecting first keeps the body's own
-            # errors (an OSError from a file, say) out of this.
+            # A database lost after startup: no connection can be made (or none
+            # frees up in the pool in time), or the one in use is dropped.
+            # Connecting first keeps the body's own errors (an OSError from a
+            # file, say) out of this.
             try:
                 await session.connection()
-            except (OSError, DBAPIError) as e:
+            except (OSError, DBAPIError, PoolTimeoutError) as e:
                 raise DatabaseError("Database not reachable") from e
             try:
                 yield session

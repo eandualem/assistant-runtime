@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from assistant_runtime.app.access.deps import require_admin
 from assistant_runtime.app.ingress.deps import IngressServiceDep
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 router = APIRouter(
     prefix="/assistant", tags=["assistant-ingress"], dependencies=[Depends(require_admin)]
@@ -38,6 +39,8 @@ async def inject_message(body: InjectRequest, ingress: IngressServiceDep) -> dic
             session_id=body.session_id,
             telegram_chat_id=body.telegram_chat_id,
         )
+    except DatabaseError:
+        raise  # 503: the message was not stored
     except Exception as e:
         logger.error("Ingress delivery failed", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to deliver the message") from e
