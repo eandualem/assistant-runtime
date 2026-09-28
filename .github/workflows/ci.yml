@@ -39,6 +39,36 @@ jobs:
           TERM: xterm
         run: make check
 
+  database-schema:
+    name: Migrated schema matches the models (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install locked runtime and test dependencies
+        run: uv sync --locked --extra dev
+      - name: Compare the migrated schema with the models
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        # The test skips without a database; a skip here means the job checked nothing.
+        shell: bash
+        run: |
+          uv run --no-sync python -m pytest tests/database -q -rs | tee pytest.log
+          grep -q " passed" pytest.log && ! grep -q "skipped" pytest.log
+
   pydantic-ai-compatibility:
     name: Pydantic AI ${{ matrix.pydantic-ai-version }} compatibility
     runs-on: ubuntu-latest

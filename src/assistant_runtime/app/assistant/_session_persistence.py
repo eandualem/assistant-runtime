@@ -185,8 +185,8 @@ class SessionPersistence:
 
         As for messages, the store checks ids only within its session. The
         primary key is the table's only unique constraint, so a unique
-        violation is that conflict, whatever the constraint is named (it
-        keeps the name the table was created with, ``pk_guidance``).
+        violation is that conflict, whatever the constraint is named
+        (``pk_guidance`` before migration 0038).
         """
         try:
             async with self._db.session_context() as db_session:
