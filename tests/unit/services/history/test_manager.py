@@ -118,6 +118,11 @@ class TestEstimateTokens:
         history = [_make_user_msg(content)]
         assert manager._estimate_tokens(history) == 100
 
+    def test_text_items_of_a_list_prompt(self, manager):
+        # A host context block and the text: 200 + 200 chars → 100 tokens
+        history = [ModelRequest(parts=[UserPromptPart(content=["x" * 200, "y" * 200])])]
+        assert manager._estimate_tokens(history) == 100
+
     def test_assistant_text(self, manager):
         # 80 chars → 20 tokens
         content = "a" * 80

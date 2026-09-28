@@ -50,8 +50,10 @@ class AssistantConfig(BaseModel):
         description="Maximum agent loop turns per request.",
     )
     enable_working_memory: bool = Field(
-        default=True,
-        description="Whether to extract working memory deltas after each turn.",
+        default=False,
+        description=(
+            "Whether to extract working memory after each turn and add it to the system prompt."
+        ),
     )
     budget: UsageBudget = Field(
         default_factory=UsageBudget,

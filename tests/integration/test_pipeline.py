@@ -110,8 +110,8 @@ class TestAssistantPipeline:
         assert "The assistant" in call_kwargs["system_prompt"]
 
     @pytest.mark.asyncio
-    async def test_host_context_in_prompt(self, wired_services):
-        """The host context is included in the system prompt."""
+    async def test_host_context_goes_with_the_message(self, wired_services):
+        """The host context is sent with the user message, not in the system prompt."""
         streaming = wired_services["streaming_service"]
         mock_agent = _make_mock_agent("OK")
 
@@ -138,4 +138,7 @@ class TestAssistantPipeline:
             for _, kwargs in build_mock.call_args_list
             if "toolsets" in kwargs and "system_prompt" in kwargs
         )
-        assert "showing: agents" in prompt
+        assert "showing: agents" not in prompt
+        user_prompt = mock_agent.run_stream_events.call_args.args[0]
+        assert "showing: agents" in user_prompt[0]
+        assert user_prompt[1] == "test"

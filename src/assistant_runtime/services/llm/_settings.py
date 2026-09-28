@@ -148,6 +148,8 @@ def build_model_settings(
             "max_tokens": anthropic_max_tokens,
             "anthropic_cache_instructions": True,
             "anthropic_cache_tool_definitions": True,
+            # A cache point on the conversation, moved forward as it grows.
+            "anthropic_cache": True,
             # Explicit timeout bypasses SDK client-side heuristic that rejects
             # non-streaming requests when max_tokens exceeds ~21k.
             "timeout": httpx.Timeout(1200.0, connect=5.0),

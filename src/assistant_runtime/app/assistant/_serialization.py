@@ -15,6 +15,7 @@ from pydantic_ai.messages import (
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
+    UserContent,
     UserPromptPart,
 )
 from pydantic_ai.usage import RequestUsage
@@ -60,7 +61,7 @@ def path_records_to_model_history(messages: list[MessageRecord]) -> list[ModelMe
     for message in messages:
         role = message.get("role")
         if role == "user":
-            history.append(_user_record_to_request(message))
+            history.append(_user_record_to_request(message, with_host_context=True))
         elif role == "assistant":
             history.extend(_assistant_record_to_messages(message))
         elif role == "host" and message.get("content"):
@@ -463,11 +464,23 @@ def assistant_record_to_flat_messages(message: MessageRecord) -> list[ModelMessa
     return result
 
 
-def _user_record_to_request(message: MessageRecord) -> ModelRequest:
+def _user_record_to_request(
+    message: MessageRecord, *, with_host_context: bool = False
+) -> ModelRequest:
     content = message.get("content", "")
     timestamp = _coerce_datetime(message.get("created_at"))
+    prompt: str | list[UserContent] = content
+    if with_host_context:
+        # The block the message was sent with, ahead of its text (see build_user_prompt).
+        blocks: list[UserContent] = [
+            str(segment.get("text", ""))
+            for segment in message.get("segments") or []
+            if isinstance(segment, dict) and segment.get("kind") == "host_context"
+        ]
+        if blocks:
+            prompt = [*blocks, content] if content else blocks
     return ModelRequest(
-        parts=[UserPromptPart(content=content, timestamp=timestamp or datetime.now(UTC))],
+        parts=[UserPromptPart(content=prompt, timestamp=timestamp or datetime.now(UTC))],
         timestamp=timestamp,
     )
 

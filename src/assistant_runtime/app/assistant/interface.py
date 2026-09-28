@@ -305,7 +305,7 @@ class AssistantService:
             prompt_result = build_system_prompt(
                 available_tools=available_tools,
                 session_context=session_context,
-                host_context=host_context,
+                working_memory=effective.enable_working_memory,
                 mcp_summary=mcp_summary,
                 artifacts=artifacts,
                 profile=artifacts_service.profile,

@@ -97,7 +97,7 @@ class TestRuntimeSettings:
         resp = rs.to_response_dict()
         assert resp["values"]["default_model"]["value"] is None
         assert resp["values"]["max_turns"]["value"] == 10
-        assert resp["values"]["enable_working_memory"]["value"] is True
+        assert resp["values"]["enable_working_memory"]["value"] is False
 
     @pytest.mark.asyncio
     async def test_updated_at_tracking(self):
@@ -583,7 +583,7 @@ class TestResolveEffectiveConfig:
         assert effective.thinking_budget == 10000
         assert effective.temperature == 1.0
         assert effective.max_turns == 10
-        assert effective.enable_working_memory is True
+        assert effective.enable_working_memory is False
 
     @pytest.mark.asyncio
     async def test_runtime_overrides_default(self):

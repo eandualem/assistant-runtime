@@ -4,8 +4,8 @@ The stable part of a prompt (the profile's artifacts, included profiles,
 kept documents, MCP connections) repeats from turn to turn, so it is stored
 once as a snapshot keyed by its hash. The record on each assistant message
 names that snapshot and carries the rest inline: the profile and subject,
-the artifact versions the text came from, the dynamic fragments (time,
-host context, working memory) and any instruction appended after them.
+the artifact versions the text came from, the dynamic fragments (working
+memory) and any instruction appended after them.
 ``prompt_text`` rebuilds the exact text the model received.
 """
 

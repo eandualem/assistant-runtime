@@ -335,7 +335,7 @@ independent of debug events and kept as long as the session:
 ```json
 {"profile": "neutral", "subject": null,
  "artifact_versions": {"instructions": 4, "owner.preferences": null},
- "snapshot_hash": "…", "dynamic": [["datetime", "…"], ["host_context", "…"]],
+ "snapshot_hash": "…", "dynamic": [["working_memory", "…"]],
  "suffix": "", "fragments": [{"name": "instructions", "chars": 812}, …],
  "message_id": "…", "content": "the exact text"}
 ```
@@ -343,7 +343,8 @@ independent of debug events and kept as long as the session:
 `artifact_versions` names the version behind each artifact text (`null`
 where the default applied); the stable text is stored once per
 `snapshot_hash`. A host continuation replaces the record with the prompt of
-its own model request.
+its own model request. The host context is not part of the system prompt:
+it travels with the user message (see [the host contract](host-contract.md)).
 
 Artifact names come from the active profile; `GET /api/artifacts/profile`
 lists them. The built-in `technical_operator` profile defines `soul`,

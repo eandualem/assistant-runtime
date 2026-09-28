@@ -199,8 +199,15 @@ execution, history, serialization, or the upstream dependency; see
   arrives as `host_context` on the request, validated against the
   versioned contract in the leaf `host_context.py` (`HostContext`,
   `Attachment`, `HostAction`; docs in `docs/host-contract.md`) and stored
-  in its canonical form. Reference attachments become native Pydantic AI
-  content on the user prompt; screenshots stay behind `look_at_screen`.
+  in its canonical form. It never enters the system prompt: rendered as a
+  `<host_context>` block (`host_context_prompt`), it opens the user prompt
+  of the message it came with (or of the next message that carries none),
+  and is kept on that user row as a `host_context` segment so later turns
+  replay it unchanged. A continuation or promoted steering sends the
+  session's current context (its own, else the last one received) after
+  the tool result, or just before the steering. Reference
+  attachments become native Pydantic AI content on the user prompt;
+  screenshots stay behind `look_at_screen`.
   Tools the host executes are configuration (`TOOLS__HOST_TOOLS`) or
   request-declared `host_context.actions`; page-scoped tool lists and
   invalidation domains are configuration (`TOOLS__PAGE_SCOPES`,
@@ -327,9 +334,11 @@ execution, history, serialization, or the upstream dependency; see
 - **The system prompt is assembled from the profile's artifacts**, in the
   profile's order (subject-scoped ones for the turn's `subject`), then the
   included profiles' artifacts and the list of the profile's collection
-  documents, then MCP connections, the current time, the host context
-  and working memory. Stable fragments come first so provider prompt
-  caching works; dynamic fragments go last. Each assistant message records
+  documents, then MCP connections, then working memory only when
+  `enable_working_memory` is on (off by default). Nothing else is added,
+  so the prompt stays the same from turn to turn; on Anthropic the tool
+  definitions, the system prompt and the conversation carry cache points
+  (`services/llm/_settings.py`). Each assistant message records
   what it was produced with (`app/assistant/prompt_record.py`: artifact
   versions, a snapshot of the stable part, the dynamic fragments), so the
   exact text is recoverable (the builder marks which fragments are

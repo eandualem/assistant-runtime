@@ -1,14 +1,14 @@
 """Internal prompt builder — composes system prompt from module fragments.
 
-System prompt is built from ordered fragments: stable fragments first (for
-Anthropic prompt caching), dynamic fragments last. Each module can contribute
-a context fragment.
+The system prompt is the profile's artifacts and the connected MCP servers,
+plus working memory when the session enables it. The host context is not
+part of it: ``host_context_prompt`` renders it for the user message it
+arrived with, after the conversation.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -25,12 +25,6 @@ from assistant_runtime.services.history.models import WorkingMemory
 from assistant_runtime.services.tools.models import ToolSet
 
 # --- Fragment builders ---
-
-
-def _datetime_fragment() -> str:
-    """Current date and time context."""
-    now = datetime.now(UTC)
-    return f"Current time: {now.strftime('%Y-%m-%d %H:%M UTC')} ({now.strftime('%A')})"
 
 
 def mcp_connections_fragment(mcp_summary: list[dict[str, Any]] | None) -> str:
@@ -187,18 +181,11 @@ def _render_attachments(attachments: list[Attachment]) -> str:
     return "Attachments:\n" + "\n".join(lines)
 
 
-def _render_freshness(context: HostContext) -> str:
-    age = context.age_seconds()
-    if age is None:
+def _render_captured_at(context: HostContext) -> str:
+    """When the host captured the context, as it said; no age relative to now."""
+    if context.captured_at is None:
         return ""
-    if age < 0:
-        return "Context captured just now."
-    if age < 60:
-        return f"Context captured {int(age)} seconds ago."
-    minutes = int(age // 60)
-    if minutes < 60:
-        return f"Context captured {minutes} minutes ago; it may be stale."
-    return f"Context captured {minutes // 60} hours ago; treat it as stale."
+    return f"Captured at {context.captured_at.isoformat()}."
 
 
 def _host_context_fragment(host_context: dict[str, Any] | None) -> str:
@@ -244,7 +231,7 @@ def _host_context_fragment(host_context: dict[str, Any] | None) -> str:
         _render_attachments(context.attachments),
         _render_background(context.background),
         _render_extensions(context.extensions),
-        _render_freshness(context),
+        _render_captured_at(context),
     ):
         if text:
             sections.append(text)
@@ -262,11 +249,17 @@ def _render_extensions(extensions: dict[str, Any]) -> str:
 # --- Public API ---
 
 
+def host_context_prompt(host_context: dict[str, Any] | None) -> str:
+    """The host context as the text block its user message carries; empty without one."""
+    text = _host_context_fragment(host_context)
+    return f"<host_context>\n{text}\n</host_context>" if text else ""
+
+
 def build_system_prompt(
     *,
     available_tools: ToolSet,
     session_context: dict[str, Any],
-    host_context: dict[str, Any] | None = None,
+    working_memory: bool = False,
     mcp_summary: list[dict[str, Any]] | None = None,
     artifacts: dict[str, str],
     profile: AssistantProfile | None = None,
@@ -274,14 +267,14 @@ def build_system_prompt(
 ) -> PromptResult:
     """Compose system prompt from module fragments.
 
-    Order: the profile's artifacts in their declared order (stable, so
-    provider prompt caching works), then the connected MCP servers, the
-    current time, the host context and working memory (dynamic, last).
+    Order: the profile's artifacts in their declared order, then the
+    connected MCP servers, then working memory (dynamic, last) when
+    ``working_memory`` is set.
 
     Args:
         available_tools: Tools available for this request.
         session_context: Session context dict (may contain working memory).
-        host_context: What the host application is showing (see _host_context_fragment).
+        working_memory: Whether the session's working memory is rendered.
         mcp_summary: MCP server connection summary for prompt context.
         artifacts: Artifact name→text map, normally ``ArtifactService.active_texts()``.
         profile: The assistant profile naming and ordering the artifacts;
@@ -317,13 +310,7 @@ def build_system_prompt(
 
     # Dynamic fragments (change per request); everything before them is stable.
     stable_count = len(named_fragments)
-    named_fragments.append(("datetime", _datetime_fragment()))
-
-    host_frag = _host_context_fragment(host_context)
-    if host_frag:
-        named_fragments.append(("host_context", host_frag))
-
-    memory_frag = _working_memory_fragment(session_context)
+    memory_frag = _working_memory_fragment(session_context) if working_memory else ""
     if memory_frag:
         named_fragments.append(("working_memory", memory_frag))
 

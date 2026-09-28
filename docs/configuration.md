@@ -84,7 +84,7 @@ sampling parameters are not sent a temperature.
 | `request_service_tier` | `true` | whether a request's `config` may pick `codex_service_tier`; `false` pins the configured tier (fast costs more subscription credits) |
 | `request_models` | `[]` (any) | model ids a request's `config` may pick for any `*_model` tunable; a request naming another keeps the host's value. Empty allows any model: fine for development, list the allowed ones for a deployment |
 | `max_turns` | `10` | agent loop iterations per request |
-| `enable_working_memory` | `true` | extract working memory after each turn |
+| `enable_working_memory` | `false` | extract working memory after each turn and add it to the end of the system prompt |
 | `session_ttl_hours` | `24` | Postgres-backed sessions older than this are cleaned up; `0` keeps them until they are deleted |
 | `profile` | unset (neutral) | `neutral`, `technical_operator`, or the path of a TOML profile file; `AssistantDefinition.profile` takes precedence |
 | `profiles` | `[]` | Additional built-in names or TOML paths registered at startup; requests select the profile name with top-level `profile`, never a path. Duplicate names fail startup. |
