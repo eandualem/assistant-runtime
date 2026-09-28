@@ -16,7 +16,7 @@ from loguru import logger
 from pydantic_ai.models.anthropic import AnthropicModelSettings
 from pydantic_ai.models.google import GoogleModelSettings
 from pydantic_ai.models.openrouter import OpenRouterModelSettings
-from pydantic_ai.profiles.anthropic import anthropic_model_profile
+from pydantic_ai.profiles.anthropic import ANTHROPIC_THINKING_BUDGET_MAP, anthropic_model_profile
 
 from assistant_runtime.services.llm.exceptions import ProviderConfigError
 
@@ -36,6 +36,17 @@ def _map_openai_reasoning_effort(*, model_id: str, thinking_budget: int) -> str:
     if thinking_budget <= 32_000:
         return "high"
     return "xhigh"
+
+
+def _application_thinking_budget(settings: Mapping[str, Any], *, adaptive: bool) -> int:
+    """The ``budget_tokens`` the application's own Claude thinking settings send, else 0."""
+    native = settings.get("anthropic_thinking")
+    if native:
+        return int(native.get("budget_tokens", 0)) if native.get("type") == "enabled" else 0
+    level = settings.get("thinking")
+    if adaptive or level in (None, False):
+        return 0
+    return ANTHROPIC_THINKING_BUDGET_MAP.get(level, 0)
 
 
 def _map_anthropic_effort(*, thinking_budget: int, supports_xhigh: bool) -> str:
@@ -171,6 +182,11 @@ def build_model_settings(
                     "budget_tokens": thinking_budget,
                 }
                 anthropic_kwargs["max_tokens"] = thinking_budget + response_tokens
+        elif max_tokens is None and "max_tokens" not in base:
+            # The default limit keeps room for a thinking budget the application set itself.
+            anthropic_kwargs["max_tokens"] = response_tokens + _application_thinking_budget(
+                anthropic_kwargs, adaptive=adaptive
+            )
 
         # Extended thinking requires the default temperature, whichever layer turned it on.
         native_thinking = anthropic_kwargs.get("anthropic_thinking") or {}

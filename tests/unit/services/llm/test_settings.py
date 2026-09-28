@@ -184,6 +184,25 @@ class TestBuildModelSettings:
         )
         assert disabled["temperature"] == 0.3
 
+    def test_default_limit_keeps_room_for_application_thinking(self):
+        native = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5",
+            base={"anthropic_thinking": {"type": "enabled", "budget_tokens": 10_000}},
+        )
+        assert native["max_tokens"] == 10_000 + _RESPONSE_MAX_TOKENS
+        unified = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5", base={"thinking": "high"}
+        )
+        assert unified["max_tokens"] == 16_384 + _RESPONSE_MAX_TOKENS
+        adaptive = build_model_settings(
+            model_id="anthropic:claude-sonnet-4-6", base={"thinking": "high"}
+        )
+        assert adaptive["max_tokens"] == _RESPONSE_MAX_TOKENS
+        explicit = build_model_settings(
+            model_id="anthropic:claude-haiku-4-5", base={"thinking": "high", "max_tokens": 20_000}
+        )
+        assert explicit["max_tokens"] == 20_000  # the application's own limit is kept
+
     def test_budget_headroom_uses_the_application_output_limit(self):
         settings = build_model_settings(
             model_id="anthropic:claude-haiku-4-5",

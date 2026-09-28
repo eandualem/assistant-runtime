@@ -88,7 +88,7 @@ with thinking, models without sampling settings).
 | `default_model` | unset (uses `LLM__PRIMARY_MODEL`) | model override |
 | `thinking_budget` | unset | thinking tokens, mapped to the provider's thinking setting; unset sends none, so the provider's default applies |
 | `temperature` | unset | sampling temperature where the model accepts one; unset sends none |
-| `model_settings` | `{}` | native Pydantic AI `ModelSettings` for conversation turns, as JSON, passed on unchanged: for example `{"max_tokens": 16000, "thinking": "high"}` for the output limit and reasoning effort, or a provider's own keys such as `anthropic_cache` |
+| `model_settings` | `{}` | native Pydantic AI `ModelSettings` for conversation turns, as JSON, passed on unchanged: for example `{"max_tokens": 32000, "thinking": "high"}` for the output limit and reasoning effort, or a provider's own keys such as `anthropic_cache`. An output limit set here is kept as it is, so on Claude models that take `budget_tokens` it must exceed the thinking budget; without one, the default limit leaves room for it. The subscription route leaves out what its backend does not accept ([subscription](subscription.md)) |
 | `subagent_model` | unset (the primary model) | model for `run_subagent`; the `subagent_model` tunable's startup default |
 | `subagent_thinking_budget` | unset | thinking budget for `run_subagent`; the tunable's startup default |
 | `codex_service_tier` | unset (uses `LLM__CODEX_SERVICE_TIER`) | the turn's Codex service tier; the tunable's startup default |
@@ -161,7 +161,7 @@ The default assistant profile is `AssistantDefinition.profile` when set, then
 |---|---|---|
 | `max_tools_per_request` | `64` | warn above this many tools in one request |
 | `tool_timeout_seconds` | `30` | seconds a backend tool may run per attempt; a `ToolDefinition.timeout` overrides it; the model gets a `TOOL_TIMEOUT` error. Only tools declared `idempotent` are retried once on a timeout or connection error |
-| `builtin_tools` | `[]` | built-in groups to enable from `time`, `screen`, `artifacts`, `subagent`, `media`, `video`; an enabled group is registered only when it can work (`media` needs an OpenAI or Google key, `video` a Runway or Luma key) |
+| `builtin_tools` | `[]` | built-in groups to enable from `time`, `screen`, `artifacts`, `subagent`, `media`, `video`; an enabled group is registered only when it can work (`media` and `video` need a key for the provider of their default model, `MEDIA__DEFAULT_IMAGE_MODEL` or `MEDIA__DEFAULT_VIDEO_MODEL`) |
 | `provider_capabilities` | `null` | selected runtime business capabilities from configured providers; `null` enables all configured, `[]` disables all; unknown names fail startup. `approvals` is privileged (it types into other agents' terminals) and is registered only when named here |
 | `host_tools` | `{}` | tools the host executes: `{"name": {"description": "...", "parameters": <JSON schema>}}`; names must match `^[A-Za-z0-9_-]{1,64}$` |
 | `host_tools_path` | unset | a JSON file with the same shape, merged over `host_tools` |

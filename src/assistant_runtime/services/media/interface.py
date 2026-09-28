@@ -116,12 +116,14 @@ class MediaService:
         self._runtime_settings = runtime_settings
 
     def can_generate_images(self) -> bool:
-        """Whether an image provider's key is set (OpenAI or Google)."""
-        return any(os.environ.get(PROVIDER_ENV_VARS[p], "").strip() for p in _PROVIDER_GENERATORS)
+        """Whether the default image model's provider is supported and has a key."""
+        provider = self._config.default_image_model.split(":", 1)[0]
+        return provider in _PROVIDER_GENERATORS and _has_key(PROVIDER_ENV_VARS[provider])
 
     def can_generate_videos(self) -> bool:
-        """Whether a video provider's key is set (Runway or Luma)."""
-        return any(os.environ.get(MEDIA_PROVIDER_ENV_VARS[p], "").strip() for p in _VIDEO_PROVIDERS)
+        """Whether the default video model's provider is supported and has a key."""
+        provider = self._config.default_video_model.split(":", 1)[0]
+        return provider in _VIDEO_PROVIDERS and _has_key(MEDIA_PROVIDER_ENV_VARS[provider])
 
     async def generate_image(
         self,
@@ -363,3 +365,7 @@ def _video_provider(provider: str) -> tuple[Any, Any]:
         raise ProviderError(f"No video handler for provider '{provider}'")
     # Resolved at call time so the module attributes can be replaced (tests, hosts).
     return globals()[names[0]], globals()[names[1]]
+
+
+def _has_key(variable: str) -> bool:
+    return bool(os.environ.get(variable, "").strip())
