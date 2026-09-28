@@ -26,9 +26,10 @@ cards, and the event, action and host-state routes.
 
 `GET /health` is liveness: `{"healthy": bool, "status": "ok" | "degraded" |
 "unhealthy", "runtime": "assistant-runtime", "components": {name: {...}}}`.
-It answers 503 only when `status` is `unhealthy`, meaning the runtime
-cannot answer a turn: no provider key is configured, or a service failed
-to start. `degraded` answers 200. The process is running and recovers by
+It answers 503 only when `status` is `unhealthy`: a component reports
+that it cannot work, so the runtime cannot answer a turn (for example, no
+provider key is configured). A service that fails to start stops startup,
+so no probe gets an answer at all. `degraded` answers 200. The process is running and recovers by
 itself, but something it started with is unavailable. Today that is only a
 database chosen at startup that no longer answers:
 `database_service: {"healthy": true, "reachable": false, "ready": false}`.
