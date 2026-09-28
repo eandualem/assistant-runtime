@@ -38,6 +38,10 @@ that cannot be saved is refused with 503 rather than kept in memory, and
 the server is reachable but the database does not exist, then migrates it;
 a host needs only a running PostgreSQL server.
 
+A database lost after startup is not a fallback, with or without
+`DATABASE__REQUIRED`: a route that uses it answers `503` with
+`{"error", "type": "DatabaseError"}`.
+
 `DatabaseUnavailableError` and `MigrationError` carry a machine-readable
 `cause`, so a host can word them for its own users: `unreachable` (no
 server answers), `auth_refused` (the server refused the role),

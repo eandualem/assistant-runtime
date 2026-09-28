@@ -37,6 +37,10 @@ reported as `database_service: {"healthy": true, "reachable": false}` and
 sessions live in memory, and an unconfigured integration reports
 `"status": "disabled"`. A service that failed to start is unhealthy.
 
+A route that uses Postgres answers `503` with `{"error": "Database not
+reachable", "type": "DatabaseError"}` when the database was lost after
+startup. The loss is temporary, so a host may retry.
+
 ## Chat (non-streaming)
 
 `POST /api/chat` with a message body (below) runs the same turn pipeline

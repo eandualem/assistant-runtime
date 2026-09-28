@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from assistant_runtime.services.database.config import DatabaseConfig
 from assistant_runtime.services.database.exceptions import (
@@ -447,3 +448,29 @@ class TestDatabaseServiceSessionContext:
 
         mock_session.rollback.assert_awaited_once()
         mock_session.commit.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ConnectionRefusedError("Connection refused"),
+            DBAPIError("SELECT 1", {}, Exception("terminated"), connection_invalidated=True),
+        ],
+    )
+    async def test_session_context_reports_a_lost_connection_as_unreachable(self, error):
+        service = DatabaseService(config=DatabaseConfig())
+        mock_session_factory = MagicMock()
+        mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        service._session_factory = mock_session_factory
+        service._started = True
+        service._healthy = True
+
+        with pytest.raises(DatabaseError, match="not reachable") as raised:
+            async with service.session_context():
+                raise error
+        assert raised.value.__cause__ is error
+
+        integrity = IntegrityError("INSERT", {}, Exception("duplicate key"))
+        with pytest.raises(IntegrityError):
+            async with service.session_context():
+                raise integrity
