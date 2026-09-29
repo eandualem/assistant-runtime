@@ -209,6 +209,11 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
   keys, artifact, collection and profile names, local session names, note
   filenames, confirmation hashes and help page names. Before, `$` let
   `PUT /api/host-state/a%0A/key` store the namespace `"a\n"`. (#230)
+- The steering table's constraints carry the names the models give them
+  (`pk_steering`, `ck_steering_ck_steering_status_valid`,
+  `fk_steering_session_id_sessions`); they had kept their names from when the
+  table was `guidance`. With Postgres, apply migration `0038` with
+  `assistant-runtime migrate`. (#234)
 
 ### Upgrading from 0.3.0
 
@@ -219,7 +224,7 @@ handed back to the CLI. If the CLI has refreshed its login since, sync once or
 disconnect while the database is reachable to remove the old copy; a disconnect
 reports `persisted_deleted: true` once it is gone.
 
-Postgres installations apply migrations `0027` to `0037` with
+Postgres installations apply migrations `0027` to `0038` with
 `assistant-runtime migrate` (or `make db-upgrade`) before running this
 version. Nothing is on by default any more (#212–#214): built-in tools,
 working memory, compaction, thinking, temperature and provider fallback take
