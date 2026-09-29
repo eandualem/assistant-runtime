@@ -41,6 +41,10 @@ _NAMES = text(
 
 def _config(name: str) -> DatabaseConfig:
     url = make_url(URL)
+    if url.query:
+        # DatabaseConfig has no connection options: dropping one (ssl=require, say)
+        # would connect differently from what the URL asks for.
+        raise ValueError(f"TEST_DATABASE_URL options are not supported: {dict(url.query)}")
     return DatabaseConfig(
         host=url.host or "localhost",
         port=url.port or 5432,
