@@ -110,7 +110,9 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
   current-time line, working memory off by default
   (`ASSISTANT__ENABLE_WORKING_MEMORY`), and host context moved out of the
   system prompt into the user message it came with, as a `<host_context>`
-  block. Anthropic requests add a cache point on the conversation. See the
+  block. A message sent without `host_context` carries the session's last one,
+  so omitting it does not clear it. Anthropic requests add a cache point on the
+  conversation. See the
   [consumer migration note](https://github.com/eandualem/assistant-runtime/issues/210#issuecomment-5873168712).
   (#212)
 - Later turns replay the conversation exactly as the model saw it, including
