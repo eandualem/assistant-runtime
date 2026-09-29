@@ -426,7 +426,11 @@ make db-upgrade
 ```
 
 `tests/unit/test_alembic_revisions.py` checks that revision ids are unique
-and form one chain. Seed data in migrations must stay generic (no personal
+and form one chain. `tests/database/` checks that the migrated schema names
+every constraint and index as the models do; it needs Postgres, so it is
+skipped unless `TEST_DATABASE_URL` names a server whose role may create
+databases (for example `TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres`),
+and CI's database job runs it. Seed data in migrations must stay generic (no personal
 names, ids or private hostnames).
 
 ## Conventions
