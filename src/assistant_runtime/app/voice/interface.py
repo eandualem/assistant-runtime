@@ -94,7 +94,7 @@ class VoiceService:
         }
 
     async def usage(self) -> dict:
-        """The provider's usage windows and whether its guard would admit a call now."""
+        """The provider's account usage diagnostics; these do not gate calls."""
         transport = self._voice()
         if not transport.reports_usage:
             raise VoiceError("This voice provider reports no usage", 404)

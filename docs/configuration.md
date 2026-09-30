@@ -228,7 +228,9 @@ for live, `cove` for codex, checked against the
 separate from the backend assistant's profile and artifacts unless a call
 names `instructions_profile`. For the codex
 provider: `codex_command` (`codex`), `codex_usage_ceiling_percent` (`97`, 1–100)
-and `codex_usage_check_seconds` (`15`, 5–300).
+and `codex_usage_check_seconds` (`15`, 5–300). The two usage settings are
+deprecated and no longer limit or stop calls; account-usage admission belongs
+to the provider.
 
 `max_sessions` (`4`, 1–100), `max_duration_seconds` (`1800`, 15–7200),
 `connect_timeout_seconds` (`20`, >0–60), `close_timeout_seconds` (`10`, >0–60),

@@ -364,7 +364,7 @@ behave as described above.
   and `cove` (the default). `VOICE__VOICE` is checked against this list at startup,
   and `GET /api/voice/status` returns it as `voices`.
 - `provider_error` codes are `codex_realtime_error`, `usage_limit_reached` and
-  `codex_version_mismatch`, or a usage-guard reason; provider error text is logged,
+  `codex_version_mismatch`; provider error text is logged,
   never returned.
 
 ### Facts for the voice
@@ -388,29 +388,21 @@ per call (`429` otherwise). On realtime v3 the CLI sends facts without a quiet
 channel, so staying silent is the voice's instruction, not a protocol guarantee.
 GPT-Live calls return `409` here; send facts on that provider's data channel.
 
-**Usage window.** Realtime voice draws on the same Codex usage allowance as every
-other Codex use on the machine. Before creating a call, and every
-`VOICE__CODEX_USAGE_CHECK_SECONDS` during it, the runtime reads the account's
-usage and refuses or stops the call when one of these holds. While calls are
-open, one read per interval serves all of them, and a refusal stops them all
-together. Each refusal has a machine-readable `reason`:
+**Account usage.** The runtime does not refuse or stop Codex voice based on
+account usage windows, credit balances, spend-control flags, or unreadable usage.
+It does not read account usage when opening a call or poll it during a call.
+The provider decides whether a session can start or continue; genuine provider
+refusals still reach the caller (including `usage_limit_reached`).
 
-| `reason` | Meaning |
-|---|---|
-| `credits_available` | purchased credits could be charged |
-| `spend_control_reached` | the account's spend control is reached |
-| `usage_not_allowed` | the backend does not allow included usage now |
-| `usage_limit_reached` | the backend reports a reached limit |
-| `usage_window_limit` | a usage window is at `VOICE__CODEX_USAGE_CEILING_PERCENT` (97) or above |
-| `usage_unreadable` | usage could not be read, or its shape is not recognised |
-
-A refused creation returns `409` with `reason` and `allocation_status: "rejected"`.
-A call stopped by the guard emits `provider_error` with the reason and closes with
-reason `usage_guard` (or ends `interrupted` with `connection_lost` if the Codex CLI
-does not confirm the stop). `GET /api/voice/usage` returns the current windows
-(`used_percent`, `window_minutes`, `resets_at`), `credits_available`,
-`spend_control_reached`, `ordinary_usage_allowed`, and the guard's `allowed` and
-`reason`, so an application can show them before opening a call.
+`GET /api/voice/usage` remains an on-demand diagnostic endpoint, returning the
+current windows (`used_percent`, `window_minutes`, `resets_at`),
+`credits_available`, `spend_control_reached`, and `ordinary_usage_allowed`.
+For compatibility, `allowed` is always `true` and `reason` is always `null`:
+these fields mean the runtime imposes no account-usage policy, not that the
+provider guarantees access. A failed diagnostic request can still return an error.
+`ceiling_percent` reports the legacy configured value but has no effect.
+`VOICE__CODEX_USAGE_CEILING_PERCENT` and `VOICE__CODEX_USAGE_CHECK_SECONDS` are
+deprecated settings, accepted for compatibility without limiting calls.
 
 **Codex CLI versions.** The realtime interface is experimental in the CLI, and the
 CLI ignores start parameters it does not know. Before the first call, the runtime
@@ -438,8 +430,8 @@ surface; the native Pydantic AI Realtime adapter implements a different protocol
 The `codex` provider is tested offline against a scripted app-server, and its
 protocol check against the installed CLI. Its session setup, audio in both
 directions and transcripts were confirmed with a real ChatGPT login during
-development. Delegation, facts and the usage guard's in-call stop await the same
-live acceptance, and the Codex realtime interface itself is experimental.
+development. Delegation and facts await the same live acceptance, and the Codex
+realtime interface itself is experimental.
 Its protocol source is the Codex CLI (`codex app-server generate-json-schema
 --experimental`) and the open-source [Codex repository](https://github.com/openai/codex).
 
