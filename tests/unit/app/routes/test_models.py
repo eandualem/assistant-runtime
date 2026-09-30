@@ -107,6 +107,12 @@ class TestEffectiveDefaults:
 
 
 class TestListModels:
+    async def test_catalog_includes_gpt_6_1_sol(self, client):
+        response = await client.get("/api/models")
+        model = next(m for m in response.json()["models"] if m["id"] == "openai:gpt-6.1-sol")
+        assert model["name"] == "GPT-6.1 Sol"
+        assert model["capabilities"] == ["text", "vision", "thinking"]
+
     @pytest.mark.asyncio
     async def test_returns_200(self, client):
         response = await client.get("/api/models")

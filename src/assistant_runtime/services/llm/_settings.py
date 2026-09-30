@@ -136,7 +136,7 @@ def build_model_settings(
     is_openrouter = model_id.startswith("openrouter:")
     is_anthropic = "anthropic" in model_id and not is_openrouter
     is_google = model_id.startswith("google:") or model_id.startswith("google-cloud:")
-    is_gpt6 = model_id.startswith("openai:gpt-6-")
+    is_gpt6 = model_id.startswith(("openai:gpt-6-", "openai:gpt-6.1-"))
     is_openai_reasoning = model_id.startswith("openai:gpt-5") or is_gpt6
 
     base = dict(base or {})
