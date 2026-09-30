@@ -245,7 +245,7 @@ async def test_tiers_survive_cumulative_followup_without_double_counting(codex):
     assert state.usage["output_tokens"] == 4
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra"])
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra", "gpt-6.1-sol"])
 @pytest.mark.parametrize("mode", ["host_tools", "text"])
 async def test_http_host_continuations_retain_tiers(codex, isolated_services, mode, model):
     from assistant_runtime.main import create_app

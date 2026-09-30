@@ -29,7 +29,7 @@ omits unsupported sampling, response-ID chaining, and `max_output_tokens`
 parameters. Use native per-turn usage limits for runtime budget enforcement;
 they are not a server-side generation-token cap.
 For the GPT-6 models on Codex (`openai:gpt-6-astra`, `openai:gpt-6-sol`,
-`openai:gpt-6-luna`), host tools use Responses and a thinking budget of `4000`
+`openai:gpt-6.1-sol`, `openai:gpt-6-luna`), host tools use Responses and a thinking budget of `4000`
 maps to `low` effort. Sampling and log-probability parameters are omitted.
 Account/model eligibility is still decided by the subscription backend.
 
