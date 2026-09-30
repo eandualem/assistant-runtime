@@ -69,7 +69,6 @@ def build_transport(config: VoiceConfig) -> VoiceTransport:
             config.codex_command,
             config.connect_timeout_seconds,
             usage_ceiling_percent=config.codex_usage_ceiling_percent,
-            usage_check_seconds=config.codex_usage_check_seconds,
             close_timeout=config.close_timeout_seconds,
         )
     return LiveTransport(

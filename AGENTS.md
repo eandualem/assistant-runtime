@@ -335,8 +335,8 @@ execution, history, serialization, or the upstream dependency; see
   `app/streaming` and owns the provider sideband; the browser owns WebRTC audio.
   `VOICE__PROVIDER` is `live` (GPT-Live, API key) or `codex` (`_codex.py`: the
   Codex CLI's app-server on its ChatGPT login, API-key variables stripped, no API
-  fallback, turns of the thread's Codex agent interrupted, a usage guard with
-  machine-readable reasons and an offline protocol-schema check before calls).
+  fallback, turns of the thread's Codex agent interrupted, provider-owned account-usage
+  admission and an offline protocol-schema check before calls).
   Conversation-only calls create no backend worker and reject tool-result
   admission; `VOICE__DELEGATION_ENABLED=false` is the startup ceiling.
   Voice enablement, credentials and resource ceilings are startup-only; call creation

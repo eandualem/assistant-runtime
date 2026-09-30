@@ -40,7 +40,6 @@ REALTIME_VERSION = "v3"
 _REQUIRED_METHODS = {
     "ClientRequest.json": {
         "account/read",
-        "account/rateLimits/read",
         "thread/start",
         "thread/realtime/start",
         "thread/realtime/stop",
@@ -115,17 +114,6 @@ def missing_from_schema(directory: Path) -> list[str]:
         started_fields = set()
     if "version" not in started_fields:  # the session's version is checked on start
         missing.append("thread/realtime/started.version")
-    try:
-        limits = json.loads((directory / "v2" / "GetAccountRateLimitsResponse.json").read_text())
-        snapshot = set(limits["definitions"]["RateLimitSnapshot"]["properties"])
-    except (OSError, ValueError, KeyError, TypeError):
-        snapshot = set()
-    # The usage guard reads these; an absent credits value is trusted only
-    # because the protocol defines the field.
-    missing += [
-        f"account/rateLimits/read.{name}"
-        for name in sorted({"credits", "spendControlReached"} - snapshot)
-    ]
     for file, method, needed in (
         ("ThreadStartParams.json", "thread/start", _REQUIRED_THREAD_PARAMS),
         ("ThreadRealtimeAppendTextParams.json", "thread/realtime/appendText", {"role"}),
@@ -139,23 +127,18 @@ def missing_from_schema(directory: Path) -> list[str]:
 
 
 def usage_report(limits: dict, ceiling_percent: int) -> dict:
-    """Normalise ``account/rateLimits/read`` and decide whether a call may use it.
+    """Normalise account diagnostics without deciding whether voice may run.
 
-    The guard never lets a call spend purchased credits: it refuses while any
-    credit balance could be charged, when spend control or a reached limit is
-    reported, when included usage is not allowed, or when a usage window is at
-    the configured ceiling.
+    Legacy admission fields stay in the response for existing clients. The
+    provider decides whether to accept a call; the runtime imposes no ceiling.
     """
     snapshots = limits.get("rateLimitsByLimitId") or {}
     if not isinstance(snapshots, dict):
         snapshots = {}
     if not snapshots and limits.get("rateLimits"):
         snapshots = {"default": limits["rateLimits"]}
-    windows, reasons = [], []
+    windows = []
     has_credits = spend_control = False
-    if not any(isinstance(snapshot, dict) for snapshot in snapshots.values()):
-        # A shape this runtime does not recognise must not read as "allowed".
-        reasons.append("usage_unreadable")
     for limit_id, snapshot in snapshots.items():
         if not isinstance(snapshot, dict):
             continue
@@ -163,7 +146,6 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
         if balance is None:
             balance = {}  # optional in the CLI's schema: no credit information
         elif not isinstance(balance, dict):
-            reasons.append("usage_unreadable")
             balance = {}
         if (
             balance.get("hasCredits")
@@ -173,14 +155,11 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
             has_credits = True
         if snapshot.get("spendControlReached"):
             spend_control = True
-        if snapshot.get("rateLimitReachedType"):
-            reasons.append("usage_limit_reached")
         for name in ("primary", "secondary"):
             window = snapshot.get(name)
             if not isinstance(window, dict) or window.get("usedPercent") is None:
                 continue
             if not isinstance(window["usedPercent"], int | float):
-                reasons.append("usage_unreadable")
                 continue
             windows.append(
                 {
@@ -191,18 +170,9 @@ def usage_report(limits: dict, ceiling_percent: int) -> dict:
                     "resets_at": window.get("resetsAt"),
                 }
             )
-            if window["usedPercent"] >= ceiling_percent:
-                reasons.append("usage_window_limit")
-    if has_credits:
-        reasons.insert(0, "credits_available")
-    if spend_control:
-        reasons.insert(0, "spend_control_reached")
-    if limits.get("ordinaryUsageAllowed") is False:
-        reasons.insert(0, "usage_not_allowed")
-    reason = reasons[0] if reasons else None
     return {
-        "allowed": reason is None,
-        "reason": reason,
+        "allowed": True,
+        "reason": None,
         "ceiling_percent": ceiling_percent,
         "windows": windows,
         "credits_available": has_credits,
@@ -216,8 +186,6 @@ _AGENT_INSTRUCTIONS = (
     "This thread only carries a voice call, and another system answers every request. "
     "Do not run commands, read files or call tools. End every turn at once without output."
 )
-# Consecutive unreadable usage checks that end a call.
-_UNREADABLE_CHECKS = 3
 # Closures the runtime synthesises when it can no longer see the session.
 _LOST = frozenset({"app_server_exit", "stop_failed"})
 
@@ -443,15 +411,6 @@ class _CodexConnection:
         self._closed = False  # the provider session has ended
         self._started_at: float | None = None
         self._tasks: set[asyncio.Task] = set()
-        transport._watch(self)
-
-    def _guard(self, reason: str) -> None:
-        """End the call on the usage guard's verdict, which every attached call shares."""
-        if not self._stopping:
-            logger.warning("Codex voice stopped by the usage guard: {}", reason)
-            # Queued ahead of the closed notification the stop produces.
-            self._queue.put_nowait({"method": "usage_guard", "params": {"code": reason}})
-            self._stop("usage_guard")
 
     def __aiter__(self) -> _CodexConnection:
         return self
@@ -470,8 +429,6 @@ class _CodexConnection:
 
     def _translate(self, message: dict) -> dict | None:
         method, params = message.get("method"), message.get("params") or {}
-        if method == "usage_guard":
-            return {"type": "error", "error": {"code": params.get("code")}}
         if method == "speech_queued":
             return {"type": "session.commentary.appended", "client_event_id": params.get("id")}
         if method == "speech_failed":
@@ -611,7 +568,6 @@ class _CodexConnection:
                     asyncio.shield(self._stop(None)), self._transport.close_timeout
                 )
         self._stopping = True
-        await self._transport._unwatch(self)
         for task in list(self._tasks):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -637,7 +593,6 @@ class CodexTransport:
         timeout: float,
         *,
         usage_ceiling_percent: int,
-        usage_check_seconds: float,
         close_timeout: float,
     ) -> None:
         self.command = command
@@ -646,7 +601,6 @@ class CodexTransport:
         # app-server cannot hold the call's session reservation.
         self.close_timeout = close_timeout
         self.usage_ceiling_percent = usage_ceiling_percent
-        self.usage_check_seconds = usage_check_seconds
         self._server = _AppServer(command, timeout)
         self._workdir: tempfile.TemporaryDirectory | None = None  # threads' empty cwd
         self._compatibility: dict | None = None
@@ -654,41 +608,6 @@ class CodexTransport:
         self._startup: asyncio.Task | None = None  # the background protocol check
         self._background: set[asyncio.Task] = set()
         self._created: dict[str, asyncio.Queue] = {}  # created, not yet attached
-        self._calls: set[_CodexConnection] = set()  # attached, not yet closed
-        self._poller: asyncio.Task | None = None  # reads usage while any call is attached
-
-    def _watch(self, call: _CodexConnection) -> None:
-        self._calls.add(call)
-        if self._poller is None or self._poller.done():
-            self._poller = asyncio.create_task(self._poll_usage())
-
-    async def _unwatch(self, call: _CodexConnection) -> None:
-        self._calls.discard(call)
-        if not self._calls and self._poller is not None:
-            poller, self._poller = self._poller, None
-            poller.cancel()
-            await asyncio.gather(poller, return_exceptions=True)
-
-    async def _poll_usage(self) -> None:
-        """One usage read per interval for every attached call; one verdict for all."""
-        failures = 0
-        while True:
-            await asyncio.sleep(self.usage_check_seconds)
-            try:
-                # Never start a server for calls whose server has gone.
-                reason = (await self.usage(start=False))["reason"]
-            except Exception:
-                reason = "usage_unreadable"
-            if reason == "usage_unreadable":
-                # One bad read is not a reason to end the calls; several in a row are.
-                failures += 1
-                if failures < _UNREADABLE_CHECKS:
-                    reason = None
-            else:
-                failures = 0
-            if reason:
-                for call in list(self._calls):
-                    call._guard(reason)
 
     def checked(self) -> dict | None:
         """The completed protocol check, without running one."""
@@ -773,11 +692,8 @@ class CodexTransport:
             return {"version": version, "compatible": False, "missing": ["codex_cli"]}
         return {"version": version, "compatible": not missing, "missing": missing}
 
-    async def usage(self, *, start: bool = True) -> dict:
-        if start:
-            await self._server.ensure_started()
-        elif not self._server.running:
-            raise VoiceError("Codex app-server is not running", 502)
+    async def usage(self) -> dict:
+        await self._server.ensure_started()
         limits = await self._server.request("account/rateLimits/read", {})
         return usage_report(limits, self.usage_ceiling_percent)
 
@@ -798,16 +714,9 @@ class CodexTransport:
                 allocation_status="rejected",
                 reason="codex_incompatible",
             )
-        report = await self.usage()  # starts the app-server when needed
+        await self._server.ensure_started()
         # The CLI's login can change while its server runs: check it for every call.
         await self._server.require_chatgpt()
-        if report["reason"]:
-            raise VoiceError(
-                f"Codex voice refused by the usage guard: {report['reason']}",
-                409,
-                allocation_status="rejected",
-                reason=report["reason"],
-            )
         if self._workdir is None:
             self._workdir = tempfile.TemporaryDirectory(prefix="assistant-runtime-codex-voice-")
         thread = await self._server.request(
@@ -912,10 +821,6 @@ class CodexTransport:
         if self._startup is not None:
             self._startup.cancel()
             await asyncio.gather(self._startup, return_exceptions=True)
-        if self._poller is not None:
-            self._poller.cancel()
-            await asyncio.gather(self._poller, return_exceptions=True)
-            self._poller = None
         await asyncio.gather(*self._background, return_exceptions=True)
         await self._server.stop()
         if self._workdir is not None:

@@ -36,9 +36,11 @@ class VoiceConfig(BaseModel):
         default=97,
         ge=1,
         le=100,
-        description="Refuse or stop codex calls when a Codex usage window reaches this percent.",
+        description="Deprecated; reported for compatibility but does not limit Codex voice.",
     )
-    codex_usage_check_seconds: float = Field(default=15, ge=5, le=300)
+    codex_usage_check_seconds: float = Field(
+        default=15, ge=5, le=300, description="Deprecated; Codex voice no longer polls usage."
+    )
     api_key_env: str = Field(default="OPENAI_API_KEY", pattern=r"^[A-Z][A-Z0-9_]*$")
     instructions: str = Field(
         default=(

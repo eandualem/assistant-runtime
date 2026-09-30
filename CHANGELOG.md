@@ -12,8 +12,8 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
   through the local Codex CLI's realtime voice on its ChatGPT login, with no API
   key and no API fallback. Delegated calls hand the spoken request to the normal
   turn pipeline and speak the result; each turn the Codex agent behind the call
-  starts is interrupted. A usage guard refuses or stops calls near the Codex usage limit, or
-  whenever credits could be charged, with a machine-readable `reason`.
+  starts is interrupted. Account usage and credit balances do not gate calls in
+  the runtime; the provider decides admission and reports its own refusals.
   `GET /api/voice/usage` shows the usage windows. An offline check of the
   installed CLI's protocol is reported in `/api/voice/status`.
 - Facts for a Codex voice call: `PATCH /api/voice/calls/{id}/context` accepts a

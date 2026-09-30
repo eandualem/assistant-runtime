@@ -1,4 +1,4 @@
-"""Codex voice provider: protocol mapping, guards and drift checks, all offline."""
+"""Codex voice provider: protocol mapping, diagnostics and drift checks, all offline."""
 
 import asyncio
 import json
@@ -38,7 +38,7 @@ def _limits(**changes):
     return {**LIMITS, **changes, "rateLimitsByLimitId": {"codex": snapshot}}
 
 
-def test_usage_report_admits_included_usage_and_names_each_refusal():
+def test_usage_report_preserves_diagnostics_without_an_admission_policy():
     report = usage_report(LIMITS, 97)
     assert report["allowed"] is True
     assert report["reason"] is None
@@ -58,9 +58,9 @@ def test_usage_report_admits_included_usage_and_names_each_refusal():
         "usage_window_limit": _limits(snapshot={"primary": {"usedPercent": 97}}),
         "usage_limit_reached": _limits(snapshot={"rateLimitReachedType": "rate_limit_reached"}),
     }
-    for reason, limits in cases.items():
+    for limits in cases.values():
         report = usage_report(limits, 97)
-        assert (report["allowed"], report["reason"]) == (False, reason)
+        assert (report["allowed"], report["reason"]) == (True, None)
 
 
 def _schema(directory, *, drop_method=None, drop_param=None, versions=("v1", "v2", "v3")):
@@ -153,7 +153,8 @@ def test_schema_check_names_what_an_installed_cli_lacks(tmp_path):
             ["thread/realtime/started.version"],
         ),
         ("no_ephemeral", {"drop_param": "thread.ephemeral"}, ["thread/start.ephemeral"]),
-        ("no_credits", {"drop_param": "snapshot.credits"}, ["account/rateLimits/read.credits"]),
+        ("no_credits", {"drop_param": "snapshot.credits"}, []),
+        ("no_usage", {"drop_method": "account/rateLimits/read"}, []),
     ):
         directory = tmp_path / name
         directory.mkdir()
@@ -217,9 +218,7 @@ class FakeServer:
 
 @pytest.fixture
 def codex():
-    transport = CodexTransport(
-        "codex", 1, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
-    )
+    transport = CodexTransport("codex", 1, usage_ceiling_percent=97, close_timeout=1)
     transport._server = FakeServer()
     transport._compatibility = {"version": "0.157.1", "compatible": True, "missing": []}
     return transport
@@ -252,19 +251,41 @@ async def test_create_starts_a_v3_webrtc_session_without_an_api_key(codex):
     }
 
 
-async def test_create_refuses_before_allocation_with_a_machine_readable_reason(codex):
-    codex._server.results["account/rateLimits/read"] = _limits(
-        snapshot={"primary": {"usedPercent": 99}}
-    )
-    with pytest.raises(VoiceError) as refused:
-        await codex.create(None, SESSION, "offer-sdp")
-    assert refused.value.status_code == 409
-    assert refused.value.metadata == {
-        "allocation_status": "rejected",
-        "reason": "usage_window_limit",
-    }
-    assert not codex._server.sent("thread/start")
+@pytest.mark.parametrize(
+    "limits",
+    [
+        _limits(snapshot={"credits": {"hasCredits": True}, "primary": {"usedPercent": 2}}),
+        _limits(snapshot={"primary": {"usedPercent": 100}}),
+        _limits(snapshot={"spendControlReached": True}),
+        _limits(ordinaryUsageAllowed=False),
+        _limits(snapshot={"rateLimitReachedType": "rate_limit_reached"}),
+        {},
+        None,  # even a failed diagnostic read cannot prevent or stop a call
+    ],
+)
+async def test_usage_does_not_prevent_or_stop_voice(codex, limits):
+    server = codex._server
+    server.results["account/rateLimits/read"] = limits
+    if limits is None:
+        server.failures.add("account/rateLimits/read")
+    # A short former polling interval catches any remaining in-call checks.
+    codex.usage_check_seconds = 0.001
+    thread, answer = await codex.create(None, SESSION, "offer-sdp")
+    assert answer == "answer-sdp"
+    connection = await codex.attach(None, thread)
+    try:
+        await asyncio.sleep(0.02)
+        server.feed(thread, "thread/realtime/transcript/done", role="assistant", text="Hello")
+        [event] = await _events(connection, 1)
+        assert event["type"] == "session.transcript.done"
+        assert server.sent("account/rateLimits/read") == []
+        assert server.sent("thread/realtime/stop") == []
+    finally:
+        await connection.close()
+        await codex.stop()
 
+
+async def test_create_rejects_an_incompatible_cli(codex):
     codex._compatibility = {"version": "0.100.0", "compatible": False, "missing": ["x"]}
     with pytest.raises(VoiceError) as incompatible:
         await codex.create(None, SESSION, "offer-sdp")
@@ -366,50 +387,6 @@ async def test_a_wrong_realtime_version_ends_the_call(codex):
     assert events[1]["type"] == "session.closed"
     assert events[1]["reason"] == "codex_version_mismatch"
     await connection.close()
-
-
-async def test_the_usage_guard_stops_a_running_call(codex):
-    codex.usage_check_seconds = 0.01
-    codex._server.results["account/rateLimits/read"] = _limits(ordinaryUsageAllowed=False)
-    connection = await codex.attach(None, "thread-1")
-    events = await _events(connection, 2)
-    assert events[0] == {"type": "error", "error": {"code": "usage_not_allowed"}}
-    assert events[1]["type"] == "session.closed"
-    assert events[1]["reason"] == "usage_guard"
-    await connection.close()
-
-
-async def test_attached_calls_share_one_usage_read_and_stop_together(codex):
-    codex.usage_check_seconds = 0.01
-    reads = 0
-    release = asyncio.Event()
-
-    async def held(method, params, original=codex._server.request):
-        nonlocal reads
-        if method == "account/rateLimits/read":
-            reads += 1
-            await release.wait()
-        return await original(method, params)
-
-    codex._server.request = held
-    calls = [await codex.attach(None, "thread-1"), await codex.attach(None, "thread-2")]
-    try:
-        await until(lambda: reads)
-        await asyncio.sleep(0.05)  # several intervals pass while the read is held
-        assert reads == 1
-        codex._server.results["account/rateLimits/read"] = _limits(ordinaryUsageAllowed=False)
-        release.set()
-        for connection in calls:
-            events = await _events(connection, 2)
-            assert events[0] == {"type": "error", "error": {"code": "usage_not_allowed"}}
-            assert events[1]["reason"] == "usage_guard"
-    finally:
-        release.set()
-        for connection in calls:
-            await connection.close()
-    after_close = reads
-    await asyncio.sleep(0.05)
-    assert reads == after_close  # no call is attached, so nothing reads usage
 
 
 async def test_voice_service_runs_codex_calls_without_a_key_and_delegates(codex, monkeypatch):
@@ -696,7 +673,6 @@ async def test_a_cli_that_cannot_run_is_checked_again(tmp_path):
         str(tmp_path / "missing-codex"),
         1,
         usage_ceiling_percent=97,
-        usage_check_seconds=60,
         close_timeout=1,
     )
     result = await transport.compatibility()
@@ -744,27 +720,6 @@ async def test_a_slow_stop_does_not_block_the_sender_and_close_waits_for_it(code
     assert len(codex._server.sent("thread/realtime/stop")) == 1
 
 
-async def test_only_repeated_unreadable_usage_ends_a_call(codex):
-    codex.usage_check_seconds = 0.01
-    reads = 0
-
-    async def flaky(method, params, original=codex._server.request):
-        nonlocal reads
-        if method == "account/rateLimits/read":
-            reads += 1
-            if reads in (1, 2, 4, 5, 6):
-                raise VoiceError("Codex account/rateLimits/read failed", 502)
-        return await original(method, params)
-
-    codex._server.request = flaky
-    connection = await codex.attach(None, "thread-1")
-    events = await _events(connection, 2)
-    assert reads == 6  # two failures were tolerated; the third in a row stopped it
-    assert events[0] == {"type": "error", "error": {"code": "usage_unreadable"}}
-    assert events[1]["reason"] == "usage_guard"
-    await connection.close()
-
-
 async def test_a_refused_fact_changes_nothing(codex, monkeypatch):
     from assistant_runtime.app.voice.models import VoiceContext
     from assistant_runtime.host_context import HostContext
@@ -786,9 +741,7 @@ async def test_a_refused_fact_changes_nothing(codex, monkeypatch):
 
 
 async def test_status_reports_the_background_check_without_running_it(monkeypatch):
-    transport = CodexTransport(
-        "codex", 1, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
-    )
+    transport = CodexTransport("codex", 1, usage_ceiling_percent=97, close_timeout=1)
     transport._server = FakeServer()
     gate = asyncio.Event()
 
@@ -810,16 +763,17 @@ async def test_status_reports_the_background_check_without_running_it(monkeypatc
         await service.stop()
 
 
-def test_a_zero_balance_in_any_format_is_not_spendable_credit():
-    for balance, allowed in (
-        ("0.00", True),
-        ("0", True),
-        (None, True),
-        ("1.50", False),
-        ("n/a", False),
+def test_credit_balance_diagnostics_do_not_gate_usage():
+    for balance, has_credits in (
+        ("0.00", False),
+        ("0", False),
+        (None, False),
+        ("1.50", True),
+        ("n/a", True),
     ):
         report = usage_report(_limits(snapshot={"credits": {"balance": balance}}), 97)
-        assert report["allowed"] is allowed, balance
+        assert report["credits_available"] is has_credits, balance
+        assert report["allowed"] is True
 
 
 def test_one_unusual_schema_variant_does_not_hide_the_others(tmp_path):
@@ -914,23 +868,6 @@ async def test_concurrent_facts_respect_the_per_second_limit(codex, monkeypatch)
         await service.stop()
 
 
-async def test_a_lost_server_is_not_restarted_to_read_usage(codex):
-    codex.usage_check_seconds = 0.01
-    codex._server.running = False
-    started = 0
-
-    async def counted():
-        nonlocal started
-        started += 1
-
-    codex._server.ensure_started = counted
-    connection = await codex.attach(None, "thread-1")
-    events = await _events(connection, 1)
-    assert events == [{"type": "error", "error": {"code": "usage_unreadable"}}]
-    assert started == 0
-    await connection.close()
-
-
 async def test_a_session_the_provider_ended_is_not_stopped_again(codex):
     connection = await codex.attach(None, "thread-1")
     codex._server.feed("thread-1", "thread/realtime/closed", reason="transport_closed")
@@ -940,10 +877,10 @@ async def test_a_session_the_provider_ended_is_not_stopped_again(codex):
     assert codex._server.sent("thread/realtime/stop") == []
 
 
-def test_an_unrecognised_usage_shape_is_not_allowed():
+def test_an_unrecognised_usage_shape_does_not_gate_calls():
     for limits in ({}, {"rateLimits": None}, {"rateLimitsByLimitId": {"codex": "text"}}):
         report = usage_report(limits, 97)
-        assert (report["allowed"], report["reason"]) == (False, "usage_unreadable"), limits
+        assert (report["allowed"], report["reason"]) == (True, None), limits
 
 
 async def test_notifications_keep_their_order_around_the_answer(codex):
@@ -1038,9 +975,7 @@ async def test_a_check_that_crashes_is_reported_and_retried(monkeypatch):
         raise OSError("temporary directory unavailable")
 
     monkeypatch.setattr(_codex.tempfile, "TemporaryDirectory", broken)
-    transport = CodexTransport(
-        "codex", 1, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
-    )
+    transport = CodexTransport("codex", 1, usage_ceiling_percent=97, close_timeout=1)
     assert (await transport.compatibility())["missing"] == ["codex_cli"]
     assert transport.checked() is None
 
@@ -1088,9 +1023,7 @@ def test_a_moved_version_list_does_not_hide_the_start_parameters(tmp_path):
 
 async def test_a_cli_that_cannot_run_is_retried_not_cached(tmp_path):
     command = _fake_codex(tmp_path, "import sys\nsys.exit(1)\n")
-    transport = CodexTransport(
-        command, 5, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
-    )
+    transport = CodexTransport(command, 5, usage_ceiling_percent=97, close_timeout=1)
     assert (await transport.compatibility())["missing"] == ["codex_cli"]
     assert transport.checked() is None
 
@@ -1117,29 +1050,10 @@ async def test_closing_a_call_releases_its_thread(codex):
     assert codex._server.sent("thread/unsubscribe") == [{"threadId": "thread-1"}]
 
 
-def test_malformed_usage_values_read_as_unreadable():
+def test_malformed_usage_values_do_not_gate_calls():
     for snapshot in ({"credits": "none"}, {"primary": {"usedPercent": "12"}}):
         report = usage_report(_limits(snapshot=snapshot), 97)
-        assert (report["allowed"], report["reason"]) == (False, "usage_unreadable"), snapshot
-
-
-async def test_unreadable_usage_readings_get_the_same_tolerance_as_failed_reads(codex):
-    codex.usage_check_seconds = 0.01
-    reads = 0
-
-    async def empty(method, params, original=codex._server.request):
-        nonlocal reads
-        if method == "account/rateLimits/read":
-            reads += 1
-            return {"rateLimitsByLimitId": {}}
-        return await original(method, params)
-
-    codex._server.request = empty
-    connection = await codex.attach(None, "thread-1")
-    events = await _events(connection, 1)
-    assert events == [{"type": "error", "error": {"code": "usage_unreadable"}}]
-    assert reads == 3
-    await connection.close()
+        assert (report["allowed"], report["reason"]) == (True, None), snapshot
 
 
 async def test_a_cli_that_runs_but_cannot_describe_its_protocol_is_incompatible(tmp_path):
@@ -1155,9 +1069,7 @@ async def test_a_cli_that_runs_but_cannot_describe_its_protocol_is_incompatible(
     command = tmp_path / "codex"
     command.write_text(f'#!/bin/sh\nexec {sys.executable} {script} "$@"\n')
     command.chmod(command.stat().st_mode | stat.S_IEXEC)
-    transport = CodexTransport(
-        str(command), 5, usage_ceiling_percent=97, usage_check_seconds=60, close_timeout=1
-    )
+    transport = CodexTransport(str(command), 5, usage_ceiling_percent=97, close_timeout=1)
     result = await transport.compatibility()
     assert result == {
         "version": "0.90.0",
@@ -1181,14 +1093,14 @@ async def test_a_hung_server_cannot_hold_a_call_open_on_close(codex):
         await connection.close()
 
 
-def test_absent_credits_are_no_credits_but_a_malformed_snapshot_set_is_unreadable():
+def test_absent_credits_and_malformed_snapshot_sets_do_not_gate_calls():
     snapshot = dict(LIMITS["rateLimitsByLimitId"]["codex"])
     del snapshot["credits"]  # optional and nullable in the CLI's schema
     assert usage_report({"rateLimitsByLimitId": {"codex": snapshot}}, 97)["allowed"] is True
     snapshot["credits"] = None
     assert usage_report({"rateLimitsByLimitId": {"codex": snapshot}}, 97)["allowed"] is True
     report = usage_report({"rateLimitsByLimitId": ["not", "a", "mapping"]}, 97)
-    assert report["reason"] == "usage_unreadable"
+    assert report["reason"] is None
 
 
 async def test_a_failed_interrupt_and_an_unknown_item_are_logged(codex):
