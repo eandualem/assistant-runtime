@@ -152,5 +152,5 @@ async def test_runtime_cleans_up_when_startup_does_not_finish(monkeypatch, stage
     assert started == (
         ["first", "second"] if stage == "component-start" else ["first", "second", "third"]
     )
-    assert stopped == list(reversed(started))
+    assert stopped == ["third", "second", "first"]
     shutdown.assert_called_once_with()

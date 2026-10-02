@@ -1,0 +1,63 @@
+"""Events queries; the caller owns the transaction."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from assistant_runtime.services.database.models import (
+    EventORM,
+)
+
+from ._ordering import _in_commit_order
+
+
+class EventRepository:
+    """Event records, in arrival order. Uses flush() — caller owns commit."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_if_new(self, **values: Any) -> tuple[EventORM, bool]:
+        """Insert the event, or return the stored one with the same (source, event_id)."""
+        await _in_commit_order(self._session, "events")
+        result = await self._session.execute(
+            pg_insert(EventORM)
+            .values(**values)
+            .on_conflict_do_nothing(constraint="uq_events_source_event_id")
+            .returning(EventORM)
+        )
+        row = result.scalar_one_or_none()
+        await self._session.flush()
+        if row is not None:
+            return row, True
+        existing = await self._session.execute(
+            select(EventORM).where(
+                EventORM.source == values["source"], EventORM.event_id == values["event_id"]
+            )
+        )
+        return existing.scalar_one(), False
+
+    async def get(self, event_id: int, *, lock: bool = False) -> EventORM | None:
+        query = select(EventORM).where(EventORM.id == event_id)
+        result = await self._session.execute(query.with_for_update() if lock else query)
+        return result.scalar_one_or_none()
+
+    async def update(self, event_id: int, **fields: Any) -> EventORM | None:
+        result = await self._session.execute(
+            update(EventORM).where(EventORM.id == event_id).values(**fields).returning(EventORM)
+        )
+        await self._session.flush()
+        return result.scalar_one_or_none()
+
+    async def list(self, *, after: int, limit: int, **filters: Any) -> list[EventORM]:
+        """Events after ``after`` in id order; ``history=False`` leaves out imported history."""
+        query = select(EventORM).where(EventORM.id > after)
+        for name, value in filters.items():
+            if value is not None:
+                query = query.where(getattr(EventORM, name) == value)
+        result = await self._session.execute(query.order_by(EventORM.id).limit(limit))
+        return list(result.scalars().all())

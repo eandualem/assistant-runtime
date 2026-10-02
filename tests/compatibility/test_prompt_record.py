@@ -29,7 +29,7 @@ async def test_the_record_rebuilds_the_instructions_the_model_received(runtime, 
 
     assistant = (await runtime.sessions.get_message_path("compat"))[-1]
     record = assistant["prompt"]
-    snapshot = await runtime.sessions.prompt_snapshot(record["snapshot_hash"])
+    snapshot = await runtime.sessions.prompt_snapshot("compat", record["snapshot_hash"])
     assert received[-1] == "Answer briefly."
     assert prompt_text(record, snapshot) == received[-1]
     assert record["profile"] == "neutral"

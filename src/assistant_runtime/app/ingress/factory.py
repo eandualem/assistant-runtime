@@ -17,7 +17,7 @@ async def register_ingress(app_state: Any, lifecycle: LifecycleManager) -> None:
         assistant_service=app_state.assistant_service,
         streaming_service=app_state.streaming_service,
         database_service=getattr(app_state, "database_service", None),
-        socket_server=getattr(app_state, "sio", None),
+        event_sink=getattr(app_state, "ingress_event_sink", None),
     )
     app_state.ingress_service = service
     app_state.streaming_service.attach_ingress(service)

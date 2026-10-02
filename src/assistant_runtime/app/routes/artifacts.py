@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from loguru import logger
 from pydantic import BaseModel, Field
 
 from assistant_runtime.app.access.deps import AdminDep, PrincipalDep
@@ -210,21 +209,13 @@ async def _reject(
 @router.get("")
 async def list_artifacts(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> list[dict]:
     """Active versions of the profile's artifacts, in prompt order."""
-    try:
-        return [row.to_dict() for row in await artifacts.list_active()]
-    except Exception as e:
-        logger.error("Failed to list artifacts", error=str(e))
-        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
+    return [row.to_dict() for row in await artifacts.list_active()]
 
 
 @router.get("/profile")
 async def get_profile(artifacts: ScopedArtifactDep, principal: PrincipalDep) -> dict:
     """The profile: every artifact, its role, policy and whether a version is active."""
-    try:
-        active = {row.name: row.version for row in await artifacts.list_active()}
-    except Exception as e:
-        logger.error("Failed to read artifacts", error=str(e))
-        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
+    active = {row.name: row.version for row in await artifacts.list_active()}
     profile = artifacts.profile
     return {
         "name": profile.name,
@@ -274,9 +265,6 @@ async def get_artifact(name: str, artifacts: ScopedArtifactDep, principal: Princ
         row = await artifacts.get_active(name)
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to get artifact", name=name, error=str(e))
-        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
     if row is None:
         definition = artifacts.profile.get(name)
         return {
@@ -304,9 +292,6 @@ async def get_artifact_history(
         return [row.to_dict() for row in await artifacts.history(name, limit=limit)]
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to get artifact history", name=name, error=str(e))
-        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
 
 
 @router.get("/{name}/versions/{version}")
@@ -318,9 +303,6 @@ async def get_artifact_version(
         return await artifacts.version_record(name, version)
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to get artifact version", name=name, version=version, error=str(e))
-        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
 
 
 @router.post("/{name}/propose", status_code=201)
@@ -335,9 +317,6 @@ async def propose_artifact(
         )
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to propose artifact", name=name, error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to propose artifact") from e
 
 
 @router.patch("/{name}")
@@ -350,9 +329,6 @@ async def update_artifact(
         return await _update(artifacts, name, body.content, who, body.expected_version)
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to update artifact", name=name, error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to update artifact") from e
 
 
 @router.post("/{name}/approve/{version}")
@@ -369,9 +345,6 @@ async def approve_artifact(
         return await _activate(artifacts, name, version, who, rollback=False)
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to approve artifact", name=name, version=version, error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to approve artifact") from e
 
 
 @router.post("/{name}/reject/{version}")
@@ -388,9 +361,6 @@ async def reject_artifact(
         return await _reject(artifacts, name, version, who, body.reason if body else None)
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to reject artifact", name=name, version=version, error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to reject artifact") from e
 
 
 @router.post("/{name}/rollback/{version}")
@@ -402,9 +372,6 @@ async def rollback_artifact(
         return await _activate(artifacts, name, version, admin.id, rollback=True)
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to rollback artifact", name=name, version=version, error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to rollback artifact") from e
 
 
 @router.post("/{name}/actions")
@@ -440,13 +407,8 @@ async def artifact_action(
         return await _update(
             artifacts, name, body.content, _who(admin, body), body.expected_version
         )
-    except HTTPException:
-        raise
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Artifact action failed", name=name, action=body.action, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Artifact action failed: {body.action}") from e
 
 
 @router.delete("/{name}")
@@ -456,9 +418,6 @@ async def delete_artifact(name: str, artifacts: ScopedArtifactDep, admin: AdminD
         count = await artifacts.delete(name, actor=Actor("host", admin.id))
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to delete artifact", name=name, error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to delete artifact") from e
     if count == 0:
         raise HTTPException(status_code=404, detail=f"No stored versions for artifact: {name}")
     return {"success": True, "name": name, "deleted_versions": count, "durable": artifacts.durable}
@@ -489,9 +448,6 @@ async def list_proposals(
             records.extend(await service.for_profile(name).proposals(status, limit + 1, before_id))
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to list proposals", error=str(e))
-        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
     records.sort(key=lambda record: record["id"] or 0, reverse=True)
     page = records[:limit]
     more = len(records) > limit
@@ -510,9 +466,6 @@ async def list_subjects(
         return {"profile": artifacts.profile.name, "subjects": await artifacts.subjects()}
     except ArtifactError as e:
         raise _http_error(e) from e
-    except Exception as e:
-        logger.error("Failed to list subjects", error=str(e))
-        raise HTTPException(status_code=503, detail="Artifact store unavailable") from e
 
 
 @prompt_router.get("")

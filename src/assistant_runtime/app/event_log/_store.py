@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from dataclasses import fields, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -52,19 +53,19 @@ class InMemoryEventStore:
     async def create_if_new(self, **values: Any) -> tuple[EventRecord, bool]:
         key = (values["source"], values["event_id"])
         if key in self._keys:
-            return self._events[self._keys[key]], False
-        record = EventRecord(id=self._next, created_at=datetime.now(UTC), **values)
+            return deepcopy(self._events[self._keys[key]]), False
+        record = EventRecord(id=self._next, created_at=datetime.now(UTC), **deepcopy(values))
         self._events[record.id] = record
         self._keys[key] = record.id
         self._next += 1
-        return record, True
+        return deepcopy(record), True
 
     async def get(self, event_id: int, *, lock: bool = False) -> EventRecord | None:
-        return self._events.get(event_id)
+        return deepcopy(self._events.get(event_id))
 
     async def update(self, event_id: int, **values: Any) -> EventRecord:
-        record = self._events[event_id] = replace(self._events[event_id], **values)
-        return record
+        record = self._events[event_id] = replace(self._events[event_id], **deepcopy(values))
+        return deepcopy(record)
 
     async def list(self, *, after: int, limit: int, **filters: Any) -> list[EventRecord]:
         records = [
@@ -73,7 +74,7 @@ class InMemoryEventStore:
             if r.id > after
             and all(value is None or getattr(r, name) == value for name, value in filters.items())
         ]
-        return sorted(records, key=lambda r: r.id)[:limit]
+        return deepcopy(sorted(records, key=lambda r: r.id)[:limit])
 
 
 class DatabaseEventStore:

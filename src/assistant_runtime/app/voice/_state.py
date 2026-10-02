@@ -4,8 +4,9 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
+from assistant_runtime.app.voice._transport import VoiceConnection
 from assistant_runtime.app.voice.models import VoiceOffer
 from assistant_runtime.principal import Principal
 
@@ -37,7 +38,7 @@ class VoiceCall:
     pending: dict | None = None
     cursor: int = 0
     events: deque = field(default_factory=deque)
-    connection: Any = None
+    connection: VoiceConnection | None = None
     task: asyncio.Task | None = None
     work: asyncio.Task | None = None
     work_delegation: str | None = None  # the delegation the running work belongs to

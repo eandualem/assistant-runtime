@@ -25,7 +25,6 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -34,49 +33,34 @@ from pydantic_ai import DeferredToolRequests, capture_run_messages
 from pydantic_ai.exceptions import RunCancelled, UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    ThinkingPart,
-    ToolCallPart,
-    ToolReturnPart,
-    UserPromptPart,
 )
 from pydantic_ai.usage import RunUsage
 
 from assistant_runtime.app.access.exceptions import AccessDeniedError
-from assistant_runtime.app.assistant import (
-    ActionStatus,
-    build_assistant_message_content,
-    dump_model_messages,
-)
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import HoldDecision
 from assistant_runtime.app.assistant.usage import (
-    cache_counts,
-    merge_usage,
-    response_service_tiers,
     usage_dict,
     with_auxiliary,
 )
+from assistant_runtime.app.streaming import _telemetry
 from assistant_runtime.app.streaming._agent_run import TurnPolicy, iterate_run
 from assistant_runtime.app.streaming._control import TurnControl
 from assistant_runtime.app.streaming._coordinator import EventCoordinator
 from assistant_runtime.app.streaming._event_builder import (
-    make_debug_agent_config_event,
     make_debug_completed_event,
-    make_debug_error_event,
     make_debug_final_response_event,
-    make_debug_history_event,
     make_debug_request_event,
-    make_debug_system_prompt_event,
-    make_debug_tool_selection_event,
-    make_debug_usage_event,
-    make_error_event,
 )
 from assistant_runtime.app.streaming._host_tool import pending_call_payloads, queued_payload
+from assistant_runtime.app.streaming._snapshot import (
+    RunSnapshot,
+    _IncompleteRun,
+    capture_result,
+    mark_unanswered_calls,
+    persist_snapshot,
+)
 from assistant_runtime.app.streaming.exceptions import InvalidDecisionError
-from assistant_runtime.services.llm.exceptions import LLMCallError, classify_llm_error
 from assistant_runtime.services.tools.request_context import (
     assistant_request_context,
     get_current_telegram_chat_binding,
@@ -90,91 +74,8 @@ if TYPE_CHECKING:
     from assistant_runtime.app.streaming._turn import TurnPlan
     from assistant_runtime.app.streaming.config import StreamingConfig
     from assistant_runtime.services.database.interface import DatabaseService
-    from assistant_runtime.services.history.interface import HistoryProcessor, HistoryService
+    from assistant_runtime.services.history.interface import HistoryService
     from assistant_runtime.services.tools.interface import ToolService
-
-_LLM_ERROR_TYPES = {
-    "RATE_LIMIT": "rate_limit",
-    "SERVER_ERROR": "provider_error",
-    "CONNECTION_ERROR": "connection_error",
-    "TIMEOUT": "timeout",
-    "AUTH_ERROR": "provider_auth",
-    "CLIENT_ERROR": "provider_client_error",
-}
-
-
-def format_error_message(message: str, trace_id: str | None) -> str:
-    """Append the trace id so client-visible errors can be correlated with traces."""
-    if trace_id is None or "[trace_id:" in message:
-        return message
-    return f"{message} [trace_id: {trace_id}]"
-
-
-def _describe_error(exc: Exception, *, detail: bool = True) -> tuple[str, str, bool]:
-    """``(message, error_type, retry_allowed)`` for an exception raised by the run.
-
-    ``detail`` (``STREAMING__CLIENT_ERROR_DETAIL``) decides whether the
-    exception text itself reaches the client; the log always has it.
-    """
-    if isinstance(exc, InvalidDecisionError):
-        return str(exc), "invalid_decision", False
-    if isinstance(exc, LLMCallError):
-        llm_error: LLMCallError | None = exc
-    else:
-        classified = classify_llm_error(exc)
-        llm_error = None if classified.error_category == "UNKNOWN" else classified
-    if llm_error is None:
-        message = f"Request failed: {exc.__class__.__name__}: {exc}" if detail else "Request failed"
-        return message, "internal", False
-    error_type = _LLM_ERROR_TYPES.get(llm_error.error_category, "provider_error")
-    message = str(llm_error) if detail else f"LLM call failed ({llm_error.error_category})"
-    return message, error_type, llm_error.retry_allowed
-
-
-def _keep_row_auxiliary(
-    usage: dict[str, Any] | None, row: dict[str, Any] | None
-) -> dict[str, Any] | None:
-    """Keep row-owned memory totals and auxiliary sections missing from a snapshot."""
-    existing = ((row or {}).get("usage") or {}).get("auxiliary") or {}
-    for name, part in existing.items():
-        auxiliary = (usage or {}).get("auxiliary") or {}
-        if name == "working_memory" and name in auxiliary:
-            # Background extraction owns this cumulative total; the turn's
-            # earlier copy must neither overwrite it nor be added a second time.
-            usage = {**usage, "auxiliary": {**auxiliary, name: part}}
-        elif name not in auxiliary:
-            usage = with_auxiliary(usage, name, part)
-    return usage
-
-
-def _persistence_failure(what: str, exc: BaseException, *, detail: bool) -> str:
-    """The client-visible text for a snapshot that could not be saved."""
-    return f"{what} could not be saved: {exc}" if detail else f"{what} could not be saved"
-
-
-@dataclass
-class _RunState:
-    """What one agent run left behind, carried across steering follow-ups."""
-
-    all_messages: list[ModelMessage] = field(default_factory=list)
-    assistant_messages: list[ModelMessage] = field(default_factory=list)
-    assistant_segments: list[dict[str, Any]] | None = None
-    run_usage: Any = None
-    usage: dict[str, int] | None = None
-    service_tiers: list[dict[str, Any]] | None = None
-    output: Any = None
-    final_output: str | None = None
-    pending_tool_call: dict[str, Any] | None = None
-    persisted: bool = False
-    cancelled: bool = False
-    # How calls left without a result by this turn are recorded (see ActionStatus).
-    interrupted_status: ActionStatus = "superseded"
-    history: HistoryProcessor | None = None
-    # The usage written on the assistant row: the run's own plus auxiliary work.
-    stored_usage: dict[str, Any] | None = None
-    # What the latest run of the turn was given (app/assistant/prompt_record).
-    prompt_record: dict[str, Any] | None = None
-    prompt_snapshot: str | None = None
 
 
 class TurnRunner:
@@ -212,7 +113,7 @@ class TurnRunner:
         request = plan.request
         session_id = plan.session_id
         session_context = plan.session_context
-        state = _RunState(
+        state = RunSnapshot(
             assistant_messages=list(plan.prior_assistant_messages), usage=plan.prior_usage
         )
         resolved_model = "unknown"
@@ -228,7 +129,7 @@ class TurnRunner:
             # before dependencies/model setup can be cancelled, using the same row.
             if plan.accepted_tool_result is not None:
                 state.assistant_messages.append(plan.accepted_tool_result)
-                await self._persist(plan, state)
+                await persist_snapshot(self._sessions, plan, state)
                 await self._clear_pending(plan)
             if plan.next_pending is not None:
                 # More host calls from the same response wait; hand the next one
@@ -292,7 +193,7 @@ class TurnRunner:
                 else self._history.processor(session_context, collect_debug=emit_debug)
             )
             if emit_debug:
-                for event in self._setup_debug_events(ctx, session_id):
+                for event in _telemetry._setup_debug_events(ctx, session_id):
                     yield coordinator.track_debug(event)
             logger.info(
                 "[STREAM] Turn setup ready",
@@ -325,12 +226,12 @@ class TurnRunner:
             ):
                 yield event
             if emit_debug:
-                history_event = self._history_debug_event(state)
+                history_event = _telemetry._history_debug_event(state)
                 if history_event is not None:
                     yield coordinator.track_debug(history_event)
-                yield coordinator.track_debug(self._usage_debug_event(state.run_usage))
+                yield coordinator.track_debug(_telemetry._usage_debug_event(state.run_usage))
             control.check_cancelled()
-            await self._persist(plan, state)
+            await persist_snapshot(self._sessions, plan, state)
             await self._clear_pending(plan)
             async for event in self._handle_output(plan, ctx, coordinator, state, control=control):
                 yield event
@@ -358,10 +259,10 @@ class TurnRunner:
                 logger.exception(
                     "Cancelled turn snapshot could not be saved", session_id=session_id
                 )
-                events = self._outcome_events(
+                events = _telemetry._outcome_events(
                     coordinator,
                     session_id=session_id,
-                    message=_persistence_failure(
+                    message=_telemetry._persistence_failure(
                         "Cancelled turn", exc, detail=self._config.client_error_detail
                     ),
                     error_type="persistence_error",
@@ -373,7 +274,7 @@ class TurnRunner:
                 )
             else:
                 if isinstance(cancellation, TimeoutError):
-                    events = self._outcome_events(
+                    events = _telemetry._outcome_events(
                         coordinator,
                         session_id=session_id,
                         message=f"Request timed out after {self._config.stream_timeout_seconds}s",
@@ -385,7 +286,7 @@ class TurnRunner:
                         emit_debug=emit_debug,
                     )
                 else:
-                    events = self._outcome_events(
+                    events = _telemetry._outcome_events(
                         coordinator,
                         session_id=session_id,
                         message="Request cancelled",
@@ -409,10 +310,10 @@ class TurnRunner:
                 await self._persist_cancelled(plan, state, interrupted=False)
             except Exception as persist_exc:
                 logger.exception("Usage-limited turn could not be saved", session_id=session_id)
-                events = self._outcome_events(
+                events = _telemetry._outcome_events(
                     coordinator,
                     session_id=session_id,
-                    message=_persistence_failure(
+                    message=_telemetry._persistence_failure(
                         "Usage-limited turn", persist_exc, detail=self._config.client_error_detail
                     ),
                     error_type="persistence_error",
@@ -427,7 +328,7 @@ class TurnRunner:
                 logger.info(
                     "[STREAM] Turn stopped by usage limit", session_id=session_id, error=str(exc)
                 )
-                events = self._outcome_events(
+                events = _telemetry._outcome_events(
                     coordinator,
                     session_id=session_id,
                     message=str(exc),
@@ -460,7 +361,7 @@ class TurnRunner:
                 )
                 retry_allowed = not own_request
             else:
-                message, error_type, retry_allowed = _describe_error(exc, detail=detail)
+                message, error_type, retry_allowed = _telemetry._describe_error(exc, detail=detail)
             # The log always carries the exception; only the client text is redacted.
             logger.warning(
                 "[STREAM] Turn failed",
@@ -474,9 +375,9 @@ class TurnRunner:
                 await self._resolve_unanswered_calls(plan, state)
             except Exception as persist_exc:
                 logger.exception("Failed turn snapshot could not be saved", session_id=session_id)
-                message = _persistence_failure("Failed turn", persist_exc, detail=detail)
+                message = _telemetry._persistence_failure("Failed turn", persist_exc, detail=detail)
                 error_type, retry_allowed = "persistence_error", False
-            for event in self._outcome_events(
+            for event in _telemetry._outcome_events(
                 coordinator,
                 session_id=session_id,
                 message=message,
@@ -519,7 +420,8 @@ class TurnRunner:
             if trace_cm is not None:
                 with contextlib.suppress(Exception):
                     trace_cm.__exit__(None, None, None)
-            await self.save_trace(
+            await _telemetry.save_trace(
+                self._db,
                 session_id,
                 coordinator.debug_events,
                 trace_id=trace_id,
@@ -540,7 +442,7 @@ class TurnRunner:
                 )
 
     async def _update_working_memory(
-        self, plan: TurnPlan, state: _RunState, *, release_pin: bool = False
+        self, plan: TurnPlan, state: RunSnapshot, *, release_pin: bool = False
     ) -> None:
         """Extract the working-memory delta and account its usage on the assistant row."""
         try:
@@ -570,49 +472,24 @@ class TurnRunner:
         await self._sessions.clear_pending_action(plan.session_id)
 
     async def _persist_cancelled(
-        self, plan: TurnPlan, state: _RunState, *, interrupted: bool = True
+        self, plan: TurnPlan, state: RunSnapshot, *, interrupted: bool = True
     ) -> None:
         """Retain native work and explicitly mark unresolved calls interrupted."""
         state.cancelled = interrupted
         state.interrupted_status = "cancelled"
-        self._mark_unanswered_calls(state)
-        await self._persist(plan, state)
+        mark_unanswered_calls(state)
+        await persist_snapshot(self._sessions, plan, state)
         await self._clear_pending(plan)
 
-    async def _resolve_unanswered_calls(self, plan: TurnPlan, state: _RunState) -> None:
+    async def _resolve_unanswered_calls(self, plan: TurnPlan, state: RunSnapshot) -> None:
         """Save completed work and mark unanswered calls interrupted after a failure."""
         if not state.assistant_messages:
             return
         state.cancelled = True
-        self._mark_unanswered_calls(state)
+        mark_unanswered_calls(state)
         state.interrupted_status = "cancelled"
-        await self._persist(plan, state)
+        await persist_snapshot(self._sessions, plan, state)
         await self._clear_pending(plan)
-
-    @staticmethod
-    def _mark_unanswered_calls(state: _RunState) -> bool:
-        """Append interrupted returns for calls without a result; True when any were added."""
-        returned = {
-            part.tool_call_id
-            for message in state.assistant_messages
-            for part in message.parts
-            if isinstance(part, ToolReturnPart)
-        }
-        interrupted = [
-            ToolReturnPart(
-                tool_name=part.tool_name,
-                tool_call_id=part.tool_call_id,
-                content="[Tool execution was interrupted; its external outcome is unknown.]",
-                outcome="interrupted",
-            )
-            for message in state.assistant_messages
-            for part in message.parts
-            if isinstance(part, ToolCallPart) and part.tool_call_id not in returned
-        ]
-        if not interrupted:
-            return False
-        state.assistant_messages.append(ModelRequest(parts=interrupted))
-        return True
 
     # --- pieces -----------------------------------------------------------------
 
@@ -621,7 +498,7 @@ class TurnRunner:
         plan: TurnPlan,
         ctx: AgentSetupContext,
         coordinator: EventCoordinator,
-        state: _RunState,
+        state: RunSnapshot,
         *,
         control: TurnControl,
         user_prompt: str | None,
@@ -691,15 +568,15 @@ class TurnRunner:
                                 yield event
                     finally:
                         telegram_chat_id = get_current_telegram_chat_binding()
-            self._capture_result(plan, state, run.result)
+            capture_result(plan, state, run.result)
         except (RunCancelled, asyncio.CancelledError, TimeoutError) as exc:
             snapshot = RunCancelled.from_cancellation(exc)
             if snapshot is not None:
-                self._capture_result(plan, state, snapshot)
+                capture_result(plan, state, snapshot)
             raise
         except Exception as exc:
             snapshot = RunCancelled.from_cancellation(exc)
-            self._capture_result(plan, state, snapshot or _IncompleteRun(captured, usage, run_id))
+            capture_result(plan, state, snapshot or _IncompleteRun(captured, usage, run_id))
             raise
         finally:
             if telegram_chat_id:
@@ -712,105 +589,12 @@ class TurnRunner:
                     # or prevent the response snapshot from being persisted.
                     logger.exception("Failed to save Telegram binding", session_id=session_id)
 
-    @staticmethod
-    def _capture_result(plan: TurnPlan, state: _RunState, result: Any) -> None:
-        """Persist native history, including snapshots attached during teardown."""
-        state.all_messages = list(result.all_messages())
-        # new_messages(), not index slicing: pydantic-ai may merge consecutive
-        # ModelRequests while cleaning the history, shrinking the list.
-        new_messages = result.new_messages()
-        if plan.kind == "message" and not state.assistant_messages:
-            new_messages = _without_user_prompt(new_messages)
-        if plan.accepted_tool_result is not None and any(
-            isinstance(part, ToolReturnPart) and part.tool_call_id == plan.request.tool_call_id
-            for message in new_messages
-            for part in message.parts
-        ):
-            # The result was saved before setup; native resumption now includes it.
-            state.assistant_messages = [
-                message
-                for message in state.assistant_messages
-                if message is not plan.accepted_tool_result
-            ]
-        state.assistant_messages.extend(new_messages)
-        state.run_usage = result.usage
-        state.usage = merge_usage(plan.prior_usage, usage_dict(result))
-        # Counts are cumulative within a turn; tiers arrive per response. Restored host
-        # history may lack provider_details, so retain the prior usage prefix explicitly.
-        if state.service_tiers is None:
-            state.service_tiers = list((plan.prior_usage or {}).get("service_tiers") or [])
-        state.service_tiers.extend(response_service_tiers(new_messages))
-        if state.usage is not None and state.service_tiers:
-            state.usage["service_tiers"] = list(state.service_tiers)
-        if not isinstance(result, RunCancelled):
-            state.output = result.output
-
-    async def _persist(self, plan: TurnPlan, state: _RunState) -> None:
-        """Create or extend the assistant row with everything run so far."""
-        if plan.request.output_mode == "host_tools":
-            state.assistant_messages = [
-                replace(
-                    m, parts=[p for p in m.parts if not isinstance(p, (TextPart, ThinkingPart))]
-                )
-                if isinstance(m, ModelResponse)
-                else m
-                for m in state.assistant_messages
-            ]
-        # Steering whose model request did not complete stays queued and is sent
-        # again; the snapshot must not keep a copy of it as well.
-        state.assistant_messages = _without_steering(
-            state.assistant_messages, set(plan.session_context.get("pending_steering_ids") or ())
-        )
-        content, segments, timestamp = build_assistant_message_content(
-            state.assistant_messages, interrupted_status=state.interrupted_status
-        )
-        state.assistant_segments = segments
-        # The history policy's summarisation calls are this turn's auxiliary
-        # model work; state.usage stays the run's own so this is idempotent.
-        summarisation = (
-            usage_dict(state.history.usage)
-            if state.history is not None and state.history.usage.has_values()
-            else None
-        )
-        state.stored_usage = with_auxiliary(state.usage, "summarization", summarisation)
-        # Auxiliary sections already on the row (a background extraction that
-        # finished after this turn took its snapshot) are kept, not erased.
-        if state.prompt_record is not None and state.prompt_snapshot is not None:
-            await self._sessions.save_prompt_snapshot(
-                state.prompt_record["snapshot_hash"], state.prompt_snapshot
-            )
-        model_messages = dump_model_messages(state.assistant_messages)
-        if plan.assistant_parent_id is not None and not state.persisted:
-            await self._sessions.register_assistant_message(
-                plan.session_id,
-                message_id=plan.assistant_message_id,
-                parent_id=plan.assistant_parent_id,
-                content=content,
-                segments=segments,
-                usage=state.stored_usage,
-                created_at=timestamp,
-                prompt=state.prompt_record,
-                model_messages=model_messages,
-            )
-        else:
-            record = await self._sessions.update_message(
-                plan.session_id,
-                plan.assistant_message_id,
-                content=content,
-                segments=segments,
-                usage=lambda current: _keep_row_auxiliary(state.stored_usage, {"usage": current}),
-                prompt=state.prompt_record,
-                model_messages=model_messages,
-            )
-            state.stored_usage = record.get("usage")
-        state.persisted = True
-
     async def _handle_output(
         self,
         plan: TurnPlan,
         ctx: AgentSetupContext,
         coordinator: EventCoordinator,
-        state: _RunState,
+        state: RunSnapshot,
         *,
         control: TurnControl,
     ) -> AsyncIterator[dict[str, Any]]:
@@ -839,11 +623,13 @@ class TurnRunner:
             ):
                 yield event
             control.check_cancelled()
-            await self._persist(plan, state)
+            await persist_snapshot(self._sessions, plan, state)
             if await self._take_output(plan, state, ctx):
                 return
 
-    async def _take_output(self, plan: TurnPlan, state: _RunState, ctx: AgentSetupContext) -> bool:
+    async def _take_output(
+        self, plan: TurnPlan, state: RunSnapshot, ctx: AgentSetupContext
+    ) -> bool:
         """Record the run output on ``state``; True when it is a deferred host-tool call."""
         session_context = plan.session_context
         if isinstance(state.output, DeferredToolRequests):
@@ -881,200 +667,6 @@ class TurnRunner:
         else:
             state.final_output = str(state.output)
         return False
-
-    @staticmethod
-    def _setup_debug_events(ctx: AgentSetupContext, session_id: str) -> list[dict[str, Any]]:
-        tools = ctx.available_tools
-        return [
-            make_debug_tool_selection_event(
-                page=tools.page,
-                backend_count=len(tools.backend_tools),
-                filtered_out=tools.filtered_out_count,
-                tool_names=tools.tool_names,
-                tools=[
-                    {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters_schema": t.parameters_schema,
-                    }
-                    for t in tools.backend_tools
-                ],
-            ),
-            make_debug_system_prompt_event(
-                total_length=len(ctx.prompt_result.content),
-                fragment_count=len(ctx.prompt_result.fragments),
-                fragments=ctx.prompt_result.fragments,
-                content=ctx.prompt_result.content,
-            ),
-            make_debug_agent_config_event(
-                model=ctx.resolved_model,
-                output_type="str",
-                thinking_budget=ctx.effective_config.thinking_budget,
-                temperature=ctx.effective_config.temperature,
-                session_id=session_id,
-            ),
-        ]
-
-    @staticmethod
-    def _history_debug_event(state: _RunState) -> dict[str, Any] | None:
-        """Describe the model input the history policy last produced, if it ran."""
-        result = state.history.result if state.history is not None else None
-        if result is None:
-            return None
-        return make_debug_history_event(
-            message_count=result.message_count,
-            estimated_tokens=result.estimated_tokens,
-            was_compacted=result.was_compacted,
-            compacted_from=result.compacted_from,
-            messages=result.message_summaries,
-        )
-
-    @staticmethod
-    def _usage_debug_event(run_usage: Any) -> dict[str, Any]:
-        snapshot = usage_dict(run_usage) or {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-        }
-        cache_read, cache_write = cache_counts(run_usage)
-        return make_debug_usage_event(
-            input_tokens=snapshot["input_tokens"],
-            output_tokens=snapshot["output_tokens"],
-            cache_read=cache_read,
-            cache_write=cache_write,
-            requests=getattr(run_usage, "requests", 0) or 0,
-            total=snapshot["total_tokens"],
-        )
-
-    @staticmethod
-    def _outcome_events(
-        coordinator: EventCoordinator,
-        *,
-        session_id: str,
-        message: str,
-        error_type: str,
-        retry_allowed: bool,
-        trace_id: str,
-        model: str,
-        phase: str,
-        emit_debug: bool,
-        message_id: str | None = None,
-        content: str | None = None,
-        usage: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """The one terminal lifecycle of a turn that did not finish normally.
-
-        ``final_response(error=True)``, the debug error (always traced, sent
-        only with ``emit_debug``) and the terminal ``error``. A saved snapshot
-        (cancellation, usage limit) names its ``message_id`` and ``usage``;
-        ``content`` stays empty, only native middleware decides what text a
-        client sees. Like the other terminal events, the error is not counted
-        against the event limit: the client must always receive it.
-        """
-        final = coordinator.try_final_response(
-            content,
-            model,
-            session_id=session_id,
-            message_id=message_id,
-            trace_id=trace_id,
-            error=True,
-            error_type=error_type,
-            usage=usage,
-        )
-        debug = coordinator.track_debug(
-            make_debug_error_event(
-                message,
-                error_type=error_type,
-                retry_allowed=retry_allowed,
-                trace_id=trace_id,
-                model=model,
-                phase=phase,
-            )
-        )
-        events: list[dict[str, Any]] = []
-        if final:
-            events.append(final)
-        if emit_debug:
-            events.append(debug)
-        error = make_error_event(
-            format_error_message(message, trace_id),
-            error_type=error_type,
-            trace_id=trace_id,
-            terminal=True,
-            retry_allowed=retry_allowed,
-        )
-        events.append(error)
-        return events
-
-    async def save_trace(
-        self,
-        session_id: str,
-        trace_events: list[dict[str, Any]],
-        *,
-        trace_id: str | None = None,
-        user_message: str | None = None,
-        duration_ms: float | None = None,
-    ) -> None:
-        """Persist collected debug events as a trace row (never the screenshot). Best-effort."""
-        if self._db is None or not self._db.healthy or not trace_events:
-            return
-        try:
-            from assistant_runtime.services.database.repositories import TraceRepository
-
-            async with self._db.session_context() as db_session:
-                await TraceRepository(db_session).create(
-                    trace_id=trace_id or str(uuid.uuid4()),
-                    session_id=session_id,
-                    events=trace_events,
-                    user_message=user_message,
-                    duration_ms=duration_ms,
-                )
-        except Exception as e:
-            logger.warning("Failed to persist trace", session_id=session_id, error=str(e))
-
-
-class _IncompleteRun:
-    """Captured native messages and usage when a run raises without a result."""
-
-    output = None
-
-    def __init__(self, captured: list[ModelMessage], usage: Any, run_id: str) -> None:
-        self._messages = list(captured)
-        self._run_id = run_id
-        self.usage = usage
-
-    def all_messages(self) -> list[ModelMessage]:
-        return list(self._messages)
-
-    def new_messages(self) -> list[ModelMessage]:
-        return [m for m in self._messages if getattr(m, "run_id", None) == self._run_id]
-
-
-def _without_user_prompt(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """A message turn's messages after its user prompt, which the user row keeps.
-
-    Pydantic AI sends the prompt in the run's first request; steering it
-    delivers follows in requests of its own.
-    """
-    if not messages or not isinstance(messages[0], ModelRequest):
-        return messages
-    first = messages[0]
-    rest = [part for part in first.parts if not isinstance(part, UserPromptPart)]
-    return [replace(first, parts=rest), *messages[1:]] if rest else messages[1:]
-
-
-def _without_steering(messages: list[ModelMessage], pending_ids: set[str]) -> list[ModelMessage]:
-    """``messages`` without the steering requests (``build_steering_request``) still pending."""
-    if not pending_ids:
-        return messages
-    return [
-        message
-        for message in messages
-        if not (
-            isinstance(message, ModelRequest)
-            and pending_ids.intersection((message.metadata or {}).get("steering_ids") or ())
-        )
-    ]
 
 
 def _host_tool_names(ctx: AgentSetupContext) -> set[str]:

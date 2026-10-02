@@ -5,7 +5,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.usage import RequestUsage, RunUsage, UsageLimits
 
 from assistant_runtime.services.tools.builtin._subagent_executor import execute_subagent
 from assistant_runtime.services.tools.builtin.subagent import SubagentDefinition
@@ -32,7 +33,14 @@ def mock_agent_result() -> MagicMock:
     """A mock agent run result with sensible defaults."""
     result = MagicMock()
     result.output = "Research findings here"
-    result.all_messages.return_value = []
+    result.all_messages.return_value = [
+        ModelResponse(
+            parts=[ToolCallPart("lookup", {}, "call-1")],
+            usage=RequestUsage(input_tokens=11, output_tokens=13),
+        ),
+        ModelRequest(parts=[ToolReturnPart("lookup", "Found", "call-1")]),
+        ModelResponse(parts=[TextPart("Research findings here")]),
+    ]
     return result
 
 
@@ -97,6 +105,10 @@ class TestExecuteSubagent:
             "duration_seconds",
         }
         assert set(metadata.keys()) == expected_keys
+        assert metadata["iterations"] == 2
+        assert metadata["tool_calls_count"] == 1
+        assert metadata["tools_used"] == ["lookup"]
+        assert (metadata["input_tokens"], metadata["output_tokens"]) == (11, 13)
 
     async def test_exception_returns_error_dict(
         self, subagent_definition, mock_llm_service, mock_agent

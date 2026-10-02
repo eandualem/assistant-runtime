@@ -17,6 +17,7 @@ from pydantic import ConfigDict, TypeAdapter
 from pydantic_ai.messages import (
     BinaryContent,
     DocumentUrl,
+    FileUrl,
     ImageUrl,
     ModelMessage,
     ModelMessagesTypeAdapter,
@@ -364,16 +365,8 @@ def _omit_tool_output_media(tool_name: str, content: Any) -> Any:
         return "[Inspected current screen]"
     if isinstance(content, BinaryContent):
         return "[Binary content omitted]"
-    try:
-        import pydantic_ai.messages as pydantic_messages
-    except ImportError:  # pragma: no cover
-        pydantic_messages = None  # type: ignore[assignment]
-    file_url_cls = getattr(pydantic_messages, "FileUrl", None)
-    if file_url_cls is not None and isinstance(content, file_url_cls):
-        result: dict[str, Any] = {"url": content.url}
-        if hasattr(content, "kind"):
-            result["kind"] = content.kind
-        return result
+    if isinstance(content, FileUrl):
+        return {"url": content.url, "kind": content.kind}
     if isinstance(content, dict):
         return {key: _omit_tool_output_media(tool_name, value) for key, value in content.items()}
     if isinstance(content, (list, tuple)):

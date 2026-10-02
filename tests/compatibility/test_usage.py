@@ -169,3 +169,26 @@ async def test_working_memory_usage_lands_on_the_stored_message(
 
 def test_compaction_result_import_keeps_the_summariser_contract():
     assert CompactionResult(summary="x").summary == "x"
+
+
+async def test_promoted_steering_accumulates_usage_on_the_existing_row(
+    isolated_services, script, monkeypatch
+):
+    script.steps = [["First reply"], ["Steered reply"]]
+    monkeypatch.setattr(LlmService, "_resolve_agent_model", lambda self, name: script.model())
+    async with create_runtime(settings=isolated_services) as runtime:
+        first = await runtime.run_message(
+            AssistantRequest(id="m1", session_id="s", content="Start")
+        )
+        second = await runtime.run_message(
+            AssistantRequest(
+                id="steer", session_id="s", content="Continue", message_type="steering"
+            )
+        )
+        path = await runtime._sessions.get_message_path("s")
+        assert second.message_id == first.message_id
+        assert len(path) == 2
+        assert second.usage["requests"] == 2
+        assert second.usage["input_tokens"] > first.usage["input_tokens"]
+        assert second.usage["output_tokens"] > first.usage["output_tokens"]
+        assert path[-1]["usage"] == second.usage

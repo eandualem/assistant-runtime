@@ -94,7 +94,6 @@ def tool_service() -> MagicMock:
     service = MagicMock()
     service.get_available_tools = MagicMock(return_value=_tool_set())
     service.build_toolset = MagicMock(return_value=[])
-    service.get_mcp_summary = AsyncMock(return_value=None)
     return service
 
 
@@ -212,3 +211,12 @@ class TestProfilePrompt:
         text, versions = await service.profile_prompt("voice")
         assert text == "Speak calmly\n\nBe brief"  # no time, host context or memory
         assert versions == {"persona": 1, "owner.preferences": None}
+
+
+async def test_invalid_setup_does_not_start_prompt_loading(service, artifact_service, llm_service):
+    artifact_service.for_subject.return_value = artifact_service
+    artifact_service.prompt_inputs = AsyncMock()
+    llm_service.resolve_model.side_effect = ValueError("Unknown model")
+    with pytest.raises(ValueError, match="Unknown model"):
+        await service.prepare_agent_context(_request(message_id="bad"), {})
+    artifact_service.prompt_inputs.assert_not_called()

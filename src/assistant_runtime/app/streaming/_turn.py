@@ -419,6 +419,7 @@ class TurnPlanner:
             prior_assistant_messages=(
                 path_records_to_model_history([active_leaf]) if extends_assistant else []
             ),
+            prior_usage=active_leaf.get("usage") if extends_assistant else None,
             # The current context comes just before the steering.
             user_prompt=_current_host_context(request, session_context),
             history=self._sessions.get_history(session_id),

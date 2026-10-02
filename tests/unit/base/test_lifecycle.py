@@ -150,3 +150,66 @@ async def test_health_with_no_components():
     lm = LifecycleManager()
     result = await lm.health()
     assert result == {"healthy": True, "status": "ok", "components": {}}
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_partial_startup_is_rolled_back_in_reverse_order(cancelled):
+    import asyncio
+
+    manager = LifecycleManager()
+    stopped = []
+    failure = asyncio.CancelledError() if cancelled else RuntimeError("startup failed")
+
+    class Component(FakeComponent):
+        async def start(self):
+            self.started = True  # resources can exist before startup finishes
+            if self.name == "partial":
+                raise failure
+
+        async def stop(self):
+            stopped.append(self.name)
+
+    for name in ("first", "partial", "unstarted"):
+        await manager.register(name, Component(name))
+    with pytest.raises(type(failure)) as raised:
+        await manager.start_all()
+    assert raised.value is failure
+    assert stopped == ["partial", "first"]
+    await manager.stop_all()
+    assert stopped == ["partial", "first"]
+
+
+async def test_repeated_cancellation_does_not_interrupt_startup_rollback():
+    import asyncio
+
+    manager = LifecycleManager()
+    starting, stopping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    stopped = []
+
+    class Component(FakeComponent):
+        async def start(self):
+            if self.name == "partial":
+                starting.set()
+                await asyncio.Event().wait()
+
+        async def stop(self):
+            if self.name == "partial":
+                stopping.set()
+                await release.wait()
+            stopped.append(self.name)
+
+    for name in ("first", "partial"):
+        await manager.register(name, Component(name))
+    task = asyncio.create_task(manager.start_all())
+    await starting.wait()
+    task.cancel()
+    await stopping.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped == ["partial", "first"]
+    await manager.stop_all()
+    assert stopped == ["partial", "first"]

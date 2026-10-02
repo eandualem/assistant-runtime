@@ -1,12 +1,11 @@
-"""Base module — foundation layer providing lifecycle, instrumentation, exceptions, and resilience."""
+"""Base module — foundation layer providing lifecycle, exceptions, and resilience."""
 
-from assistant_runtime.base._logging import truncate, truncate_payload
+from assistant_runtime.base._logging import truncate
 from assistant_runtime.base.exceptions import (
     AssistantRuntimeError,
     ConfigurationError,
     ExternalServiceError,
 )
-from assistant_runtime.base.instrument import instrument
 from assistant_runtime.base.lifecycle import LifecycleManager
 from assistant_runtime.base.protocols import LifecycleAware
 from assistant_runtime.base.resilience import retry_with_backoff
@@ -17,8 +16,6 @@ __all__ = [
     "LifecycleAware",
     "LifecycleManager",
     "AssistantRuntimeError",
-    "instrument",
     "retry_with_backoff",
     "truncate",
-    "truncate_payload",
 ]

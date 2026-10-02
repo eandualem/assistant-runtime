@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from dataclasses import fields, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -78,39 +79,41 @@ class InMemoryActionStore:
             yield self
 
     async def create_action(self, **values: Any) -> ActionRecord:
-        record = ActionRecord(id=self._next_action, created_at=datetime.now(UTC), **values)
+        record = ActionRecord(
+            id=self._next_action, created_at=datetime.now(UTC), **deepcopy(values)
+        )
         self._actions[record.id] = record
         self._next_action += 1
-        return record
+        return deepcopy(record)
 
     async def get_action(self, action_id: int, *, lock: bool = False) -> ActionRecord | None:
-        return self._actions.get(action_id)
+        return deepcopy(self._actions.get(action_id))
 
     async def update_action(self, action_id: int, **values: Any) -> ActionRecord:
-        record = self._actions[action_id] = replace(self._actions[action_id], **values)
-        return record
+        record = self._actions[action_id] = replace(self._actions[action_id], **deepcopy(values))
+        return deepcopy(record)
 
     async def list_actions(self, *, limit: int, **filters: Any) -> list[ActionRecord]:
         records = [r for r in self._actions.values() if _matches(r, filters)]
-        return sorted(records, key=lambda r: r.id, reverse=True)[:limit]
+        return deepcopy(sorted(records, key=lambda r: r.id, reverse=True)[:limit])
 
     async def add_confirmation(self, **values: Any) -> ConfirmationRecord | None:
         if values["id"] in self._confirmations:
             return None
-        record = ConfirmationRecord(seq=self._next_seq, **values)
+        record = ConfirmationRecord(seq=self._next_seq, **deepcopy(values))
         self._confirmations[record.id] = record
         self._next_seq += 1
-        return record
+        return deepcopy(record)
 
     async def get_confirmation(
         self, confirmation_id: str, *, lock: bool = False
     ) -> ConfirmationRecord | None:
-        return self._confirmations.get(confirmation_id)
+        return deepcopy(self._confirmations.get(confirmation_id))
 
     async def update_confirmation(self, confirmation_id: str, **values: Any) -> ConfirmationRecord:
-        record = replace(self._confirmations[confirmation_id], **values)
+        record = replace(self._confirmations[confirmation_id], **deepcopy(values))
         self._confirmations[confirmation_id] = record
-        return record
+        return deepcopy(record)
 
     async def list_confirmations(
         self,
@@ -129,7 +132,7 @@ class InMemoryActionStore:
             and (signed is None or (r.key_epoch is not None) == signed)
             and (reconciled is None or (r.reconciled is not None) == reconciled)
         ]
-        return sorted(records, key=lambda r: r.seq)[:limit]
+        return deepcopy(sorted(records, key=lambda r: r.seq)[:limit])
 
 
 class DatabaseActionStore:

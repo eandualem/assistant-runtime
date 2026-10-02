@@ -1,7 +1,6 @@
 """LlmService — provider-aware Pydantic AI agent factory.
 
-Public facade for the LLM module. Creates configured agents, executes standalone
-LLM calls, and manages provider lifecycle (API key loading and export).
+Public facade for the LLM module. Creates configured agents and manages provider lifecycle (API key loading and export).
 """
 
 from __future__ import annotations
@@ -15,14 +14,12 @@ from typing import Any
 import httpx
 from loguru import logger
 from openai import AsyncOpenAI
-from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import AgentCapability
 from pydantic_ai.models import Model
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.tools import Tool, ToolFuncEither
 
-from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.model_catalog import (
     PROVIDER_DEFAULT_MODELS,
     PROVIDER_DEFAULT_SUMMARIZATION_MODELS,
@@ -34,49 +31,8 @@ from assistant_runtime.services.llm.config import LLMConfig, ProviderConfig
 from assistant_runtime.services.llm.exceptions import (
     ProviderConfigError,
     ProviderKeyStoreUnavailableError,
-    classify_llm_error,
 )
-from assistant_runtime.services.tracing import create_span
 
-
-def _collect_retryable_llm_exceptions() -> tuple[type[Exception], ...]:
-    """Collect retryable exception types from installed LLM provider SDKs.
-
-    Lazily imports from anthropic, openai, and google-genai to avoid hard
-    dependency on packages that may not be installed.
-    """
-    types: list[type[Exception]] = [ConnectionError, TimeoutError]
-
-    for module_path in ("anthropic", "openai"):
-        try:
-            mod = __import__(module_path)
-            for name in (
-                "RateLimitError",
-                "InternalServerError",
-                "APIConnectionError",
-                "APITimeoutError",
-            ):
-                cls = getattr(mod, name, None)
-                if cls is not None:
-                    types.append(cls)
-        except ImportError:
-            pass
-
-    # google-genai uses a different module path
-    try:
-        from google.genai import errors as google_errors
-
-        for name in ("ClientError", "ServerError"):
-            cls = getattr(google_errors, name, None)
-            if cls is not None:
-                types.append(cls)
-    except ImportError:
-        pass
-
-    return tuple(types)
-
-
-_LLM_RETRYABLE_EXCEPTIONS = _collect_retryable_llm_exceptions()
 # The Codex CLI's backend; the same client id and device-auth flow (services/oauth).
 _CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex/"
 
@@ -105,13 +61,6 @@ def _cerebras_model(model_name: str) -> Model:
     return CerebrasModel(
         model_name, profile=OpenAIModelProfile(openai_supports_strict_tool_definition=False)
     )
-
-
-class LLMResult(BaseModel):
-    """Result of a standalone LLM call."""
-
-    content: str
-    model: str
 
 
 class LlmService:
@@ -654,83 +603,3 @@ class LlmService:
         )
 
         return agent
-
-    async def execute_llm_call(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-        model: str | None = None,
-        thinking_budget: int | None = None,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-    ) -> LLMResult:
-        """Execute a standalone one-shot LLM call with retry on transient failures.
-
-        Creates a one-shot Pydantic AI Agent (no tools, no history) and runs it.
-        Retries up to 3 times on rate limits, server errors, and connection failures.
-
-        Args:
-            system_prompt: System instructions for the LLM.
-            user_prompt: User message to send.
-            model: Model identifier override.
-            thinking_budget: Optional thinking token budget.
-            temperature: Temperature override.
-            max_tokens: Max tokens override.
-
-        Returns:
-            LLMResult with content and model identifier.
-
-        Raises:
-            LLMCallError: If the LLM call fails after all retries.
-            ProviderConfigError: If the model ID is invalid.
-        """
-        resolved_model = self.resolve_model(model)
-
-        logger.info(
-            "Executing standalone LLM call",
-            model=resolved_model,
-            thinking_budget=thinking_budget,
-        )
-
-        @retry_with_backoff(
-            max_attempts=3,
-            min_wait=1.0,
-            max_wait=30.0,
-            retry_on=_LLM_RETRYABLE_EXCEPTIONS,
-            name="execute_llm_call",
-        )
-        async def _run_with_retry() -> LLMResult:
-            agent_model = self._resolve_agent_model(resolved_model)
-            agent = Agent(
-                model=agent_model,
-                instructions=system_prompt,
-            )
-
-            model_settings = build_model_settings(
-                model_id=resolved_model,
-                thinking_budget=thinking_budget,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            model_settings = self._apply_model_transport_defaults(resolved_model, model_settings)
-
-            result = await agent.run(user_prompt, model_settings=model_settings)
-
-            logger.info("Standalone LLM call completed", model=resolved_model)
-
-            return LLMResult(content=result.output, model=resolved_model)
-
-        with create_span(
-            "standalone-llm-call",
-            input_data=user_prompt,
-            metadata={"model": resolved_model},
-        ) as span:
-            try:
-                llm_result = await _run_with_retry()
-                span.update_output(llm_result.content)
-                return llm_result
-            except ProviderConfigError:
-                raise
-            except Exception as e:
-                raise classify_llm_error(e) from e

@@ -14,9 +14,3 @@ def truncate(text: str, max_length: int = FULL_LOG_THRESHOLD) -> str:
     if len(text) <= max_length:
         return text
     return text[:max_length] + f"... [{len(text) - max_length} chars truncated]"
-
-
-def truncate_payload(payload: object, max_length: int = FULL_LOG_THRESHOLD) -> str:
-    """Truncate an arbitrary payload's string representation for logging."""
-    text = str(payload)
-    return truncate(text, max_length)

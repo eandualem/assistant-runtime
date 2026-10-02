@@ -10,10 +10,10 @@ import pytest
 
 from assistant_runtime.app.voice._codex import (
     CodexTransport,
-    _AppServer,
-    missing_from_schema,
     usage_report,
 )
+from assistant_runtime.app.voice._codex_rpc import _AppServer
+from assistant_runtime.app.voice._codex_schema import missing_from_schema
 from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.interface import VoiceService
@@ -658,13 +658,38 @@ async def test_a_failed_read_ends_the_server_and_releases_waiters(tmp_path):
     server = _AppServer(_fake_codex(tmp_path, OVERSIZED), 5)
     try:
         await server.ensure_started()
+        link = server._link
         calls = server.subscribe("thread-1")
         with pytest.raises(VoiceError, match="exited"):
             await server.request("boom", {})
         closed = await asyncio.wait_for(calls.get(), 5)
         assert closed["params"]["reason"] == "app_server_exit"
         assert not server.running  # the next call starts a new server
+        assert link.proc.returncode is not None
+        assert link.proc.stdin.is_closing()
+        assert link.reader.done()
+        assert link.reader.exception() is None
     finally:
+        await server.stop()
+
+
+async def test_stopping_the_server_releases_an_outstanding_rpc(tmp_path):
+    server = _AppServer(_fake_codex(tmp_path, OVERSIZED), 5)
+    await server.ensure_started()
+    link = server._link
+    calls = server.subscribe("thread-1")
+    pending = asyncio.create_task(server.request("wait", {}))
+    try:
+        await until(lambda: bool(link.pending))
+        await server.stop()
+        with pytest.raises(VoiceError, match="exited"):
+            await asyncio.wait_for(pending, 1)
+        assert (await asyncio.wait_for(calls.get(), 1))["params"]["reason"] == "app_server_exit"
+        assert link.reader.done()
+        assert link.reader.exception() is None
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
         await server.stop()
 
 
@@ -779,7 +804,14 @@ def test_credit_balance_diagnostics_do_not_gate_usage():
 def test_one_unusual_schema_variant_does_not_hide_the_others(tmp_path):
     _schema(tmp_path)
     requests = json.loads((tmp_path / "ClientRequest.json").read_text())
-    requests["oneOf"].append({"properties": {"method": {"const": "future/method"}}})
+    requests["oneOf"].extend(
+        [
+            None,
+            {"properties": True},
+            {"properties": {"method": True}},
+            {"properties": {"method": {"const": "future/method"}}},
+        ]
+    )
     requests["oneOf"].append({"properties": {"params": {}}})
     (tmp_path / "ClientRequest.json").write_text(json.dumps(requests))
     assert missing_from_schema(tmp_path) == []
@@ -817,12 +849,13 @@ async def test_usage_is_not_read_while_the_service_is_stopped(codex):
 
 async def test_a_servers_cleanup_ends_its_own_calls_even_after_it_was_replaced():
     from types import SimpleNamespace
+    from unittest.mock import AsyncMock
 
-    from assistant_runtime.app.voice._codex import _Link
+    from assistant_runtime.app.voice._codex_rpc import _Link
 
     server = _AppServer("codex", 1)
     old_output = asyncio.StreamReader()
-    old = _Link(SimpleNamespace(stdout=old_output, returncode=0))
+    old = _Link(SimpleNamespace(stdout=old_output, returncode=0, communicate=AsyncMock()))
     new = _Link(SimpleNamespace(returncode=None))
     server._link = new  # a newer server took over before the old one's cleanup
     loop = asyncio.get_running_loop()
@@ -1177,3 +1210,22 @@ async def test_an_abandoned_session_is_stopped_and_released(codex):
     assert codex._server.sent("thread/realtime/stop") == [{"threadId": "thread-9"}]
     assert codex._server.sent("thread/unsubscribe") == [{"threadId": "thread-9"}]
     assert "thread-9" not in codex._server.queues
+
+
+async def test_a_process_exiting_between_timeout_and_kill_is_reaped():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from assistant_runtime.app.voice._codex_rpc import _Link
+
+    proc = SimpleNamespace(
+        returncode=None,
+        stdin=SimpleNamespace(close=Mock()),
+        wait=AsyncMock(side_effect=[TimeoutError, 0]),
+        kill=Mock(side_effect=ProcessLookupError),
+    )
+    server = _AppServer("codex", 1)
+    server._link = _Link(proc)
+    await server.stop()
+    assert proc.wait.await_count == 2
+    proc.kill.assert_called_once()

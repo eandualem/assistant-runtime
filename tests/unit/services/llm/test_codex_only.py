@@ -12,9 +12,8 @@ from assistant_runtime.services.llm.interface import LlmService
 
 
 @pytest.mark.parametrize("tier", [None, "fast"])
-@pytest.mark.parametrize("path", ["build_agent", "execute"])
 @pytest.mark.parametrize("scenario", ["missing", "disconnected", "expired", "excluded"])
-async def test_rejects_before_agent_or_api_transport(path, scenario, tier, monkeypatch):
+async def test_rejects_before_agent_or_api_transport(scenario, tier, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-api-key-must-not-be-used")
     service = LlmService(
         LLMConfig(codex_only=True, codex_models=["gpt-5.6-sol"], codex_service_tier=tier)
@@ -31,14 +30,8 @@ async def test_rejects_before_agent_or_api_transport(path, scenario, tier, monke
         patch("assistant_runtime.services.llm.interface.Agent") as agent,
         patch("assistant_runtime.services.llm.interface.AsyncOpenAI") as client,
     ):
-        if path == "execute":
-            with pytest.raises(ProviderConfigError):
-                await service.execute_llm_call(
-                    model=model, system_prompt="test", user_prompt="test"
-                )
-        else:
-            with pytest.raises(ProviderConfigError):
-                service.build_agent(model=model, system_prompt="test")
+        with pytest.raises(ProviderConfigError):
+            service.build_agent(model=model, system_prompt="test")
         agent.assert_not_called()
         client.assert_not_called()
 

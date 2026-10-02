@@ -9,20 +9,20 @@ Flows:
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import contextlib
-import json
 import time
-from enum import StrEnum
-from pathlib import Path
 from typing import Any
 
 import httpx
 from cryptography.fernet import Fernet
 from loguru import logger
-from pydantic import BaseModel
 
+from assistant_runtime.services.oauth._credentials import (
+    extract_account_id,
+    extract_email,
+    extract_token_expiry,
+    read_codex_cli_auth,
+)
 from assistant_runtime.services.oauth.config import OPENAI_OAUTH_CLIENT_ID, OAuthConfig
 from assistant_runtime.services.oauth.exceptions import (
     OAuthCodexSyncError,
@@ -31,71 +31,17 @@ from assistant_runtime.services.oauth.exceptions import (
     OAuthRefreshError,
     OAuthTokenExpiredError,
 )
+from assistant_runtime.services.oauth.models import AuthSource as AuthSource
+from assistant_runtime.services.oauth.models import AuthStatus as AuthStatus
+from assistant_runtime.services.oauth.models import CodexCliAuth as CodexCliAuth
+from assistant_runtime.services.oauth.models import CodexSession as CodexSession
+from assistant_runtime.services.oauth.models import DeviceCodeResponse as DeviceCodeResponse
+from assistant_runtime.services.oauth.models import DeviceCodeStatus as DeviceCodeStatus
 
 CODEX_CLI_LOGIN_EXPIRED = (
     "The Codex CLI login has expired. Run `codex login`; the runtime picks up "
     "the new login on its next request."
 )
-
-
-class DeviceCodeStatus(StrEnum):
-    """State of the device code authorization flow."""
-
-    IDLE = "idle"
-    POLLING = "polling"
-    AUTHORIZED = "authorized"
-    EXPIRED = "expired"
-    ERROR = "error"
-
-
-class AuthSource(StrEnum):
-    """How the current OpenAI auth session was obtained."""
-
-    DEVICE_CODE = "device_code"
-    CODEX_CLI = "codex_cli"
-    DATABASE = "database"
-
-
-class DeviceCodeResponse(BaseModel):
-    """Response from initiating a device code flow."""
-
-    user_code: str
-    verification_uri: str
-    expires_in: int
-
-
-class AuthStatus(BaseModel):
-    """Current OAuth connection status."""
-
-    connected: bool = False
-    status: DeviceCodeStatus = DeviceCodeStatus.IDLE
-    source: AuthSource | None = None
-    email: str | None = None
-    api_key_preview: str | None = None
-    expires_at: float | None = None
-    error: str | None = None
-    persisted: bool = False
-
-
-class CodexSession(BaseModel):
-    """Current ChatGPT/Codex auth context used for backend requests."""
-
-    access_token: str
-    account_id: str
-    expires_at: float | None = None
-    email: str | None = None
-    source: AuthSource | None = None
-
-
-class CodexCliAuth(BaseModel):
-    """Relevant OAuth state imported from the local Codex CLI."""
-
-    access_token: str
-    refresh_token: str
-    id_token: str | None = None
-    account_id: str | None = None
-    auth_mode: str | None = None
-    email: str | None = None
 
 
 class OAuthService:
@@ -591,54 +537,6 @@ class OAuthService:
         except (OAuthCodexSyncError, OSError) as exc:
             logger.debug("Codex CLI auth file unavailable", error=str(exc))
 
-    def _read_codex_cli_auth(self) -> CodexCliAuth:
-        """Read ChatGPT/Codex OAuth state from the local Codex CLI auth file."""
-        auth_path = Path(self._config.codex_auth_file).expanduser()
-        if not auth_path.exists():
-            raise OAuthCodexSyncError(f"Codex auth file not found: {auth_path}")
-
-        try:
-            data = json.loads(auth_path.read_text())
-        except OSError as exc:
-            raise OAuthCodexSyncError(f"Failed to read Codex auth file: {auth_path}") from exc
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise OAuthCodexSyncError(f"Invalid JSON in Codex auth file: {auth_path}") from exc
-
-        if not isinstance(data, dict):
-            raise OAuthCodexSyncError("Codex auth file must contain a JSON object")
-        auth_mode = data.get("auth_mode")
-        if auth_mode == "apikey":
-            raise OAuthCodexSyncError(
-                "Codex CLI is using API key mode, not ChatGPT OAuth. Run `codex login` first."
-            )
-
-        tokens = data.get("tokens")
-        if not isinstance(tokens, dict):
-            raise OAuthCodexSyncError(f"Codex auth file is missing OAuth tokens: {auth_path}")
-
-        access_token = tokens.get("access_token")
-        refresh_token = tokens.get("refresh_token")
-        id_token = tokens.get("id_token")
-        account_id = tokens.get("account_id")
-
-        if not isinstance(access_token, str) or not access_token:
-            raise OAuthCodexSyncError(f"Codex auth file is missing access_token: {auth_path}")
-        if not isinstance(refresh_token, str) or not refresh_token:
-            raise OAuthCodexSyncError(f"Codex auth file is missing refresh_token: {auth_path}")
-        if id_token is not None and not isinstance(id_token, str):
-            id_token = None
-        if account_id is not None and not isinstance(account_id, str):
-            account_id = None
-
-        return CodexCliAuth(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            id_token=id_token,
-            account_id=account_id,
-            auth_mode=auth_mode if isinstance(auth_mode, str) else None,
-            email=self._extract_email_from_id_token(id_token),
-        )
-
     def _parse_interval_seconds(self, value: object) -> int:
         """Normalize device-auth polling intervals, which may arrive as strings."""
         if isinstance(value, int):
@@ -650,67 +548,15 @@ class OAuthService:
 
     def _sync_token_metadata(self) -> None:
         """Refresh derived auth metadata from the current token set."""
-        self._email = self._extract_email_from_id_token(self._id_token) or self._email
-        self._account_id = self._extract_account_id(self._id_token, self._access_token)
-        expires_at = self._extract_token_expiry(self._access_token)
+        self._email = extract_email(self._id_token) or self._email
+        self._account_id = (
+            extract_account_id(self._id_token, self._access_token) or self._account_id
+        )
+        expires_at = extract_token_expiry(self._access_token)
         if expires_at is not None:
             self._expires_at = expires_at
         elif self._access_token and self._expires_at <= 0:
             self._expires_at = time.time() + max(self._config.refresh_buffer_seconds + 300, 3600)
 
-    def _decode_jwt_claims(self, token: str | None) -> dict[str, Any] | None:
-        """Decode JWT claims without verification for local token metadata access."""
-        if not token or token.count(".") < 2:
-            return None
-
-        payload = token.split(".")[1]
-        padding = "=" * (-len(payload) % 4)
-        try:
-            raw = base64.urlsafe_b64decode(payload + padding)
-            claims = json.loads(raw)
-        except (ValueError, TypeError, json.JSONDecodeError, binascii.Error):
-            return None
-
-        return claims if isinstance(claims, dict) else None
-
-    def _extract_email_from_id_token(self, id_token: str | None) -> str | None:
-        """Best-effort decode of email claim from the OIDC id_token payload."""
-        claims = self._decode_jwt_claims(id_token)
-        if claims is None:
-            return None
-
-        email = claims.get("email")
-        if isinstance(email, str) and email:
-            return email
-
-        profile = claims.get("https://api.openai.com/profile")
-        if isinstance(profile, dict):
-            email = profile.get("email")
-            if isinstance(email, str) and email:
-                return email
-
-        return None
-
-    def _extract_account_id(self, id_token: str | None, access_token: str | None) -> str | None:
-        """Extract the ChatGPT workspace/account id from token claims."""
-        for token in (id_token, access_token):
-            claims = self._decode_jwt_claims(token)
-            if claims is None:
-                continue
-            auth_claim = claims.get("https://api.openai.com/auth")
-            if isinstance(auth_claim, dict):
-                account_id = auth_claim.get("chatgpt_account_id")
-                if isinstance(account_id, str) and account_id:
-                    return account_id
-        return self._account_id
-
-    def _extract_token_expiry(self, token: str | None) -> float | None:
-        """Extract expiry from a JWT token, if present."""
-        claims = self._decode_jwt_claims(token)
-        if claims is None:
-            return None
-
-        exp = claims.get("exp")
-        if isinstance(exp, int | float):
-            return float(exp)
-        return None
+    def _read_codex_cli_auth(self) -> CodexCliAuth:
+        return read_codex_cli_auth(self._config.codex_auth_file)

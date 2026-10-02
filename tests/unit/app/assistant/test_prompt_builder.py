@@ -21,7 +21,6 @@ from assistant_runtime.artifacts import (
     technical_operator_profile,
 )
 from assistant_runtime.services.history.models import WorkingMemory
-from assistant_runtime.services.tools.models import ToolCategory, ToolDefinition, ToolSet
 
 REQUIRED_ARTIFACTS = {
     "soul": "The assistant exists to increase the operator's leverage in a live AI workbench.",
@@ -36,7 +35,6 @@ build_system_prompt = partial(_build_system_prompt, profile=technical_operator_p
 class TestProfiles:
     def test_default_profile_adds_nothing(self):
         result = _build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=neutral_profile().defaults,
         )
@@ -53,7 +51,6 @@ class TestProfiles:
             ),
         )
         result = _build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts={"notes": "n", "tone": "Be kind", "policies": "Refund within 30 days"},
             profile=profile,
@@ -66,7 +63,6 @@ class TestProfiles:
             artifacts=(ArtifactDefinition(name="instructions", required=True, default="i"),)
         )
         result = _build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts={"instructions": "Help"},
             profile=profile,
@@ -82,7 +78,6 @@ class TestProfiles:
             )
         )
         result = _build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts={"instructions": "Help", "notes": "  "},
             profile=profile,
@@ -94,9 +89,7 @@ class TestProfiles:
             artifacts=(ArtifactDefinition(name="policies", required=True, default="p"),)
         )
         with pytest.raises(ValueError, match="Missing required artifact: policies"):
-            _build_system_prompt(
-                available_tools=ToolSet(), session_context={}, artifacts={}, profile=profile
-            )
+            _build_system_prompt(session_context={}, artifacts={}, profile=profile)
 
 
 class TestWorkingMemoryFragment:
@@ -342,7 +335,6 @@ class TestRenderState:
 class TestBuildSystemPrompt:
     def test_contains_soul(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -350,7 +342,6 @@ class TestBuildSystemPrompt:
 
     def test_contains_persona(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -358,7 +349,6 @@ class TestBuildSystemPrompt:
 
     def test_contains_communication_protocol(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -366,36 +356,13 @@ class TestBuildSystemPrompt:
 
     def test_no_current_time(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
         assert "Current time" not in result.content
 
-    def test_tools_not_in_prompt_text(self):
-        """Tools are registered natively with the agent, not duplicated in the system prompt."""
-        ts = ToolSet(
-            backend_tools=[
-                ToolDefinition(
-                    name="test_tool",
-                    description="A test",
-                    parameters_schema={},
-                    category=ToolCategory.BACKEND,
-                )
-            ]
-        )
-        result = build_system_prompt(
-            available_tools=ts,
-            session_context={},
-            artifacts=REQUIRED_ARTIFACTS,
-        )
-        assert "test_tool" not in result.content
-        fragment_names = [f["name"] for f in result.fragments]
-        assert "tools" not in fragment_names
-
     def test_includes_working_memory_when_enabled(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={"working_memory": WorkingMemory(active_goal="Deploy v2")},
             working_memory=True,
             artifacts=REQUIRED_ARTIFACTS,
@@ -404,7 +371,6 @@ class TestBuildSystemPrompt:
 
     def test_stored_working_memory_is_not_rendered_when_disabled(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={"working_memory": WorkingMemory(active_goal="Deploy v2")},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -413,7 +379,6 @@ class TestBuildSystemPrompt:
 
     def test_fragments_separated(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -422,7 +387,6 @@ class TestBuildSystemPrompt:
 
     def test_returns_prompt_result(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -433,18 +397,7 @@ class TestBuildSystemPrompt:
         assert len(result.fragments) > 0
 
     def test_fragments_metadata(self):
-        ts = ToolSet(
-            backend_tools=[
-                ToolDefinition(
-                    name="test_tool",
-                    description="A test",
-                    parameters_schema={},
-                    category=ToolCategory.BACKEND,
-                )
-            ]
-        )
         result = build_system_prompt(
-            available_tools=ts,
             session_context={"working_memory": WorkingMemory(active_goal="Deploy v2")},
             working_memory=True,
             artifacts=REQUIRED_ARTIFACTS,
@@ -465,7 +418,6 @@ class TestBuildSystemPrompt:
     def test_working_memory_in_fragments(self):
         """Working memory content appears as a named fragment in the system prompt."""
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={"working_memory": WorkingMemory(active_goal="Ship v3")},
             working_memory=True,
             artifacts=REQUIRED_ARTIFACTS,
@@ -477,7 +429,6 @@ class TestBuildSystemPrompt:
 
     def test_minimal_fragments(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -495,7 +446,6 @@ class TestBuildSystemPrompt:
 
     def test_ecosystem_included_from_artifact(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -505,7 +455,6 @@ class TestBuildSystemPrompt:
 
     def test_required_artifacts_follow_catalog_order(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=REQUIRED_ARTIFACTS,
         )
@@ -520,7 +469,6 @@ class TestArtifactIntegration:
 
     def test_all_artifacts_appear_in_prompt(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts={
                 "soul": "Deeper identity guidance",
@@ -545,7 +493,6 @@ class TestArtifactIntegration:
     def test_scratchpad_appears_when_present(self):
         artifacts = {**REQUIRED_ARTIFACTS, "scratchpad": "Remember: the user prefers dark mode"}
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=artifacts,
         )
@@ -556,7 +503,6 @@ class TestArtifactIntegration:
     def test_empty_scratchpad_excluded(self):
         artifacts = {**REQUIRED_ARTIFACTS, "scratchpad": ""}
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts=artifacts,
         )
@@ -565,7 +511,6 @@ class TestArtifactIntegration:
 
     def test_communication_protocol_content_appears(self):
         result = build_system_prompt(
-            available_tools=ToolSet(),
             session_context={},
             artifacts={
                 **REQUIRED_ARTIFACTS,
@@ -577,7 +522,6 @@ class TestArtifactIntegration:
     def test_missing_persona_raises_error(self):
         with pytest.raises(ValueError, match="Missing required artifact: persona"):
             build_system_prompt(
-                available_tools=ToolSet(),
                 session_context={},
                 artifacts={
                     "soul": "soul",
@@ -589,7 +533,6 @@ class TestArtifactIntegration:
     def test_missing_communication_protocol_raises_error(self):
         with pytest.raises(ValueError, match="Missing required artifact: communication_protocol"):
             build_system_prompt(
-                available_tools=ToolSet(),
                 session_context={},
                 artifacts={
                     "soul": "soul",
@@ -601,7 +544,6 @@ class TestArtifactIntegration:
     def test_missing_soul_raises_error(self):
         with pytest.raises(ValueError, match="Missing required artifact: soul"):
             build_system_prompt(
-                available_tools=ToolSet(),
                 session_context={},
                 artifacts={
                     "persona": "persona",
@@ -613,7 +555,6 @@ class TestArtifactIntegration:
     def test_missing_ecosystem_raises_error(self):
         with pytest.raises(ValueError, match="Missing required artifact: ecosystem"):
             build_system_prompt(
-                available_tools=ToolSet(),
                 session_context={},
                 artifacts={
                     "soul": "soul",
@@ -625,7 +566,6 @@ class TestArtifactIntegration:
     def test_empty_persona_raises(self):
         with pytest.raises(ValueError, match="Missing required artifact: persona"):
             build_system_prompt(
-                available_tools=ToolSet(),
                 session_context={},
                 artifacts={
                     "soul": "soul",
@@ -638,7 +578,6 @@ class TestArtifactIntegration:
     def test_empty_communication_protocol_raises(self):
         with pytest.raises(ValueError, match="Missing required artifact: communication_protocol"):
             build_system_prompt(
-                available_tools=ToolSet(),
                 session_context={},
                 artifacts={
                     "soul": "soul",
@@ -651,7 +590,6 @@ class TestArtifactIntegration:
     def test_empty_soul_raises(self):
         with pytest.raises(ValueError, match="Missing required artifact: soul"):
             build_system_prompt(
-                available_tools=ToolSet(),
                 session_context={},
                 artifacts={
                     "soul": "",
@@ -664,7 +602,6 @@ class TestArtifactIntegration:
     def test_empty_ecosystem_raises(self):
         with pytest.raises(ValueError, match="Missing required artifact: ecosystem"):
             build_system_prompt(
-                available_tools=ToolSet(),
                 session_context={},
                 artifacts={
                     "soul": "soul",

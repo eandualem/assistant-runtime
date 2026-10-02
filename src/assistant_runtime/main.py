@@ -296,7 +296,11 @@ def create_asgi_app(
     *, assistant: AssistantDefinition | None = None, settings: AppSettings | None = None
 ) -> socketio.ASGIApp:
     """Create the full ASGI application with Socket.IO wrapper."""
-    from assistant_runtime.app.socketio_server import create_sio, forward_session_events
+    from assistant_runtime.app.socketio_server import (
+        create_sio,
+        forward_ingress_events,
+        forward_session_events,
+    )
 
     if settings is None:
         # Both transports read the origin rule, so resolve settings once.
@@ -305,6 +309,7 @@ def create_asgi_app(
     sio = create_sio(settings.access)
     sio.fastapi_app = fastapi_app
     fastapi_app.state.sio = sio
+    fastapi_app.state.ingress_event_sink = forward_ingress_events(sio)
     fastapi_app.state.events.subscribe(forward_session_events(sio))
     return socketio.ASGIApp(sio, fastapi_app)
 

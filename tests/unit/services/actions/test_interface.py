@@ -148,3 +148,29 @@ class TestConfirmations:
         assert [r.id for r in await service.confirmations(signed=True, reconciled=False)] == [b.id]
         _, listed = await service.get(second.id)
         assert [r.id for r in listed] == [a.id, c.id]
+
+
+async def test_records_do_not_share_mutable_state_with_callers():
+    service = await _service()
+    arguments = {"target": {"name": "original"}}
+    action = await service.create(kind="message", by="local", arguments=arguments)
+    arguments["target"]["name"] = "changed"
+    action.arguments["target"]["name"] = "changed again"
+    action.history.clear()
+    stored, _ = await service.get(action.id)
+    assert stored.arguments == {"target": {"name": "original"}}
+    assert len(stored.history) == 1
+    stored.arguments.clear()
+    listed = await service.list()
+    listed[0].history.clear()
+    confirmed = await service.confirm(action.id, **_confirmation())
+    result = {"receipt": {"id": 7}}
+    settled = await service.update_confirmation(confirmed.id, {"status": "sent", "result": result})
+    result["receipt"]["id"] = 8
+    settled.result.clear()
+    confirmations = await service.confirmations()
+    confirmations[0].result.clear()
+    reread, confirmations = await service.get(action.id)
+    assert reread.arguments == {"target": {"name": "original"}}
+    assert len(reread.history) == 1
+    assert confirmations[0].result == {"receipt": {"id": 7}}

@@ -265,11 +265,10 @@ class TestPublicApiExports:
     """Verify all modules export their public API correctly."""
 
     def test_llm_exports(self):
-        from assistant_runtime.services.llm import LLMConfig, LLMResult, LlmService
+        from assistant_runtime.services.llm import LLMConfig, LlmService
 
         assert LlmService is not None
         assert LLMConfig is not None
-        assert LLMResult is not None
 
     def test_history_exports(self):
         from assistant_runtime.services.history import (
@@ -319,10 +318,8 @@ class TestPublicApiExports:
             AssistantRuntimeError,
             LifecycleAware,
             LifecycleManager,
-            instrument,
         )
 
         assert LifecycleManager is not None
         assert LifecycleAware is not None
         assert AssistantRuntimeError is not None
-        assert instrument is not None

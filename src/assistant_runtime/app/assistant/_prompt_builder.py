@@ -22,7 +22,6 @@ from assistant_runtime.host_context import (
     NavigationTarget,
 )
 from assistant_runtime.services.history.models import WorkingMemory
-from assistant_runtime.services.tools.models import ToolSet
 
 # --- Fragment builders ---
 
@@ -236,7 +235,6 @@ def host_context_prompt(host_context: dict[str, Any] | None) -> str:
 
 def build_system_prompt(
     *,
-    available_tools: ToolSet,
     session_context: dict[str, Any],
     working_memory: bool = False,
     artifacts: dict[str, str],
@@ -249,7 +247,6 @@ def build_system_prompt(
     memory (dynamic, last) when ``working_memory`` is set.
 
     Args:
-        available_tools: Tools available for this request.
         session_context: Session context dict (may contain working memory).
         working_memory: Whether the session's working memory is rendered.
         artifacts: Artifact name→text map, normally ``ArtifactService.active_texts()``.
