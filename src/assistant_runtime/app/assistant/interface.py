@@ -162,7 +162,7 @@ class AssistantService:
         prompt = (record or {}).get("prompt")
         if not prompt:
             return None
-        snapshot = await self._sessions.prompt_snapshot(prompt["snapshot_hash"])
+        snapshot = await self._sessions.prompt_snapshot(session_id, prompt["snapshot_hash"])
         return {
             **prompt,
             "message_id": message_id,

@@ -118,7 +118,7 @@ def _private_cross_module_imports() -> list[str]:
 _APP_DEPENDENCIES = {
     "access": set(),
     "assistant": {"settings"},
-    "settings": {"assistant"},
+    "settings": {"assistant.config"},
     "streaming": {"access", "assistant"},
     "voice": {"access", "assistant", "streaming"},
     "ingress": {"assistant", "streaming"},
@@ -147,8 +147,9 @@ def _app_layer_violations() -> list[str]:
         for imported in _imported_modules(path):
             if not imported.startswith(prefix):
                 continue
-            target = imported.removeprefix(prefix).split(".")[0]
-            if target != owner and target not in _APP_DEPENDENCIES.get(owner, set()):
+            target = imported.removeprefix(prefix)
+            allowed = {owner, *_APP_DEPENDENCIES.get(owner, set())}
+            if not any(target == edge or target.startswith(edge + ".") for edge in allowed):
                 violations.append(f"{path.relative_to(SRC)}: {imported}")
     return sorted(violations)
 
@@ -223,3 +224,8 @@ class TestResolver:
     def test_lower_application_dependencies_are_allowed(self, check) -> None:
         check("app/ingress/interface.py", f"from {PACKAGE}.app.streaming import StreamingService\n")
         assert _app_layer_violations() == []
+
+    @pytest.mark.parametrize(("module", "allowed"), [("config", True), ("interface", False)])
+    def test_settings_only_depends_on_the_assistant_schema(self, check, module, allowed) -> None:
+        check("app/settings.py", f"import {PACKAGE}.app.assistant.{module}\n")
+        assert bool(_app_layer_violations()) is not allowed

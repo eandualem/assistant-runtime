@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 _MAX_MEMORY_SESSIONS = 200
 
 
-# Stable prompt texts kept in process; without a database they are the only copy.
+# Reloadable database prompt cache; memory-only texts live with their session.
 _SNAPSHOT_CACHE_SIZE = 256
 
 
@@ -413,22 +413,24 @@ class SessionStore:
             ]
             return record
 
-    async def save_prompt_snapshot(self, snapshot_hash: str, content: str) -> None:
-        """Keep the stable text a prompt record names (stored once per hash)."""
+    async def save_prompt_snapshot(self, session_id: str, snapshot_hash: str, content: str) -> None:
+        """Keep stable prompt text for as long as its session can reference it."""
+        if self._db is None:
+            self.get_context(session_id).setdefault("prompt_snapshots", {})[snapshot_hash] = content
+            return
         self._snapshots[snapshot_hash] = content
         self._snapshots.move_to_end(snapshot_hash)
-        while self._db is not None and len(self._snapshots) > _SNAPSHOT_CACHE_SIZE:
+        while len(self._snapshots) > _SNAPSHOT_CACHE_SIZE:
             self._snapshots.popitem(last=False)
-        if self._db is not None:
-            await self._db.save_prompt_snapshot(snapshot_hash, content)
+        await self._db.save_prompt_snapshot(snapshot_hash, content)
 
-    async def prompt_snapshot(self, snapshot_hash: str) -> str | None:
-        """The stable text under ``snapshot_hash``, from the cache or the database."""
+    async def prompt_snapshot(self, session_id: str, snapshot_hash: str) -> str | None:
+        """The stable text from its session, or the reloadable database cache."""
+        if self._db is None:
+            return self._sessions.get(session_id, {}).get("prompt_snapshots", {}).get(snapshot_hash)
         if snapshot_hash in self._snapshots:
             return self._snapshots[snapshot_hash]
-        if self._db is not None:
-            return await self._db.prompt_snapshot(snapshot_hash)
-        return None
+        return await self._db.prompt_snapshot(snapshot_hash)
 
     def get_message(self, session_id: str, message_id: str) -> MessageRecord | None:
         """The cached record of one message, or None when the session or message is not cached."""

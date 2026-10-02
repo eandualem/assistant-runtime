@@ -504,7 +504,10 @@ class TestSizeBound:
         assert described["artifacts"][0]["max_chars"] == 5
 
 
-async def test_database_failure_reaches_the_shared_503_handler(artifacts, monkeypatch):
+@pytest.mark.parametrize(
+    "path", ["/api/artifacts", "/api/artifacts/profile", "/api/artifacts/scratchpad"]
+)
+async def test_database_failure_reaches_the_shared_503_handler(artifacts, monkeypatch, path):
     from unittest.mock import AsyncMock
 
     from assistant_runtime.config import AppSettings
@@ -512,11 +515,16 @@ async def test_database_failure_reaches_the_shared_503_handler(artifacts, monkey
     from assistant_runtime.services.database.exceptions import DatabaseError
 
     monkeypatch.setattr(
-        ArtifactService, "update", AsyncMock(side_effect=DatabaseError("Database not reachable"))
+        ArtifactService,
+        "update" if path.endswith("scratchpad") else "list_active",
+        AsyncMock(side_effect=DatabaseError("Database not reachable")),
     )
     app = create_app(settings=AppSettings(_env_file=None))
     app.state.artifact_service = artifacts
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.patch("/api/artifacts/scratchpad", json={"content": "New text"})
+        if path.endswith("scratchpad"):
+            response = await client.patch(path, json={"content": "New text"})
+        else:
+            response = await client.get(path)
     assert response.status_code == 503
     assert response.json()["type"] == "DatabaseError"

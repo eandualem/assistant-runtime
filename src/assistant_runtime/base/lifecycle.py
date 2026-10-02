@@ -30,12 +30,24 @@ class LifecycleManager:
                 await component.start()
                 logger.info("Component started", component=name)
             except (Exception, asyncio.CancelledError) as e:
-                logger.error("Component failed to start", component=name, error=str(e))
+                logger.error("Component failed to start", component=name, error=repr(e))
                 await self.stop_all()
                 raise
 
     async def stop_all(self) -> None:
         """Stop all started components in reverse order."""
+        cleanup = asyncio.create_task(self._stop_all())
+        cancelled = None
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+        cleanup.result()
+        if cancelled is not None:
+            raise cancelled
+
+    async def _stop_all(self) -> None:
         for name in reversed(self._started):
             try:
                 await self._components[name].stop()

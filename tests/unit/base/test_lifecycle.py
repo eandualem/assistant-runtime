@@ -177,3 +177,39 @@ async def test_partial_startup_is_rolled_back_in_reverse_order(cancelled):
     assert stopped == ["partial", "first"]
     await manager.stop_all()
     assert stopped == ["partial", "first"]
+
+
+async def test_repeated_cancellation_does_not_interrupt_startup_rollback():
+    import asyncio
+
+    manager = LifecycleManager()
+    starting, stopping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    stopped = []
+
+    class Component(FakeComponent):
+        async def start(self):
+            if self.name == "partial":
+                starting.set()
+                await asyncio.Event().wait()
+
+        async def stop(self):
+            if self.name == "partial":
+                stopping.set()
+                await release.wait()
+            stopped.append(self.name)
+
+    for name in ("first", "partial"):
+        await manager.register(name, Component(name))
+    task = asyncio.create_task(manager.start_all())
+    await starting.wait()
+    task.cancel()
+    await stopping.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped == ["partial", "first"]
+    await manager.stop_all()
+    assert stopped == ["partial", "first"]

@@ -80,5 +80,8 @@ async def test_memory_only_snapshots_remain_recoverable_after_the_cache_limit():
 
     sessions = SessionStore()
     for number in range(257):
-        await sessions.save_prompt_snapshot(str(number), f"Instructions {number}")
-    assert await sessions.prompt_snapshot("0") == "Instructions 0"
+        await sessions.save_prompt_snapshot("session", str(number), f"Instructions {number}")
+    assert await sessions.prompt_snapshot("session", "0") == "Instructions 0"
+
+    await sessions.delete_session("session")
+    assert await sessions.prompt_snapshot("session", "0") is None

@@ -183,7 +183,7 @@ async def persist_snapshot(sessions: SessionStore, plan: TurnPlan, state: RunSna
     # finished after this turn took its snapshot) are kept, not erased.
     if state.prompt_record is not None and state.prompt_snapshot is not None:
         await sessions.save_prompt_snapshot(
-            state.prompt_record["snapshot_hash"], state.prompt_snapshot
+            plan.session_id, state.prompt_record["snapshot_hash"], state.prompt_snapshot
         )
     model_messages = dump_model_messages(state.assistant_messages)
     if plan.assistant_parent_id is not None and not state.persisted:
