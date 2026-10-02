@@ -42,7 +42,12 @@ _REQUIRED_START_PARAMS = {
 def _methods(schema: dict) -> set[str]:
     methods = set()
     for variant in schema.get("oneOf", []):
-        method = (variant.get("properties") or {}).get("method") or {}
+        if not isinstance(variant, dict):
+            continue
+        properties = variant.get("properties")
+        method = properties.get("method") if isinstance(properties, dict) else None
+        if not isinstance(method, dict):
+            continue
         # One unusual variant must not hide the others.
         names = method.get("enum") or ([method["const"]] if "const" in method else [])
         methods.update(name for name in names if isinstance(name, str))

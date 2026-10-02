@@ -804,7 +804,14 @@ def test_credit_balance_diagnostics_do_not_gate_usage():
 def test_one_unusual_schema_variant_does_not_hide_the_others(tmp_path):
     _schema(tmp_path)
     requests = json.loads((tmp_path / "ClientRequest.json").read_text())
-    requests["oneOf"].append({"properties": {"method": {"const": "future/method"}}})
+    requests["oneOf"].extend(
+        [
+            None,
+            {"properties": True},
+            {"properties": {"method": True}},
+            {"properties": {"method": {"const": "future/method"}}},
+        ]
+    )
     requests["oneOf"].append({"properties": {"params": {}}})
     (tmp_path / "ClientRequest.json").write_text(json.dumps(requests))
     assert missing_from_schema(tmp_path) == []
@@ -1203,3 +1210,22 @@ async def test_an_abandoned_session_is_stopped_and_released(codex):
     assert codex._server.sent("thread/realtime/stop") == [{"threadId": "thread-9"}]
     assert codex._server.sent("thread/unsubscribe") == [{"threadId": "thread-9"}]
     assert "thread-9" not in codex._server.queues
+
+
+async def test_a_process_exiting_between_timeout_and_kill_is_reaped():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from assistant_runtime.app.voice._codex_rpc import _Link
+
+    proc = SimpleNamespace(
+        returncode=None,
+        stdin=SimpleNamespace(close=Mock()),
+        wait=AsyncMock(side_effect=[TimeoutError, 0]),
+        kill=Mock(side_effect=ProcessLookupError),
+    )
+    server = _AppServer("codex", 1)
+    server._link = _Link(proc)
+    await server.stop()
+    assert proc.wait.await_count == 2
+    proc.kill.assert_called_once()

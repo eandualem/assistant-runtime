@@ -205,7 +205,8 @@ class _AppServer:
             try:
                 await asyncio.wait_for(link.proc.wait(), 5)
             except TimeoutError:
-                link.proc.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    link.proc.kill()
                 await link.proc.wait()
         if link.reader is not None:
             # Process exit delivers EOF; let the reader finish draining and
