@@ -4,7 +4,6 @@ from assistant_runtime.app.assistant._prompt_builder import build_system_prompt
 from assistant_runtime.app.assistant.models import PromptResult
 from assistant_runtime.app.assistant.prompt_record import prompt_record, prompt_text
 from assistant_runtime.artifacts import ArtifactDefinition, AssistantProfile
-from assistant_runtime.services.tools.models import ToolSet
 
 PROFILE = AssistantProfile(
     artifacts=(ArtifactDefinition(name="instructions", required=True, default="i"),)
@@ -13,7 +12,6 @@ PROFILE = AssistantProfile(
 
 def _prompt(**kwargs) -> PromptResult:
     return build_system_prompt(
-        available_tools=ToolSet(),
         artifacts={"instructions": "Help the owner"},
         profile=PROFILE,
         artifact_extras=[("owner.preferences", "Short answers")],
@@ -67,7 +65,6 @@ def test_an_artifact_named_like_a_dynamic_fragment_keeps_its_place():
         )
     )
     prompt = build_system_prompt(
-        available_tools=ToolSet(),
         session_context={},
         artifacts={"working_memory": "REMEMBER", "instructions": "HELP"},
         profile=profile,
@@ -76,3 +73,12 @@ def test_an_artifact_named_like_a_dynamic_fragment_keeps_its_place():
     record, snapshot = prompt_record(appended, profile="p", subject=None, artifact_versions={})
     assert snapshot == "REMEMBER\n\nHELP"
     assert prompt_text(record, snapshot) == appended.content
+
+
+async def test_memory_only_snapshots_remain_recoverable_after_the_cache_limit():
+    from assistant_runtime.app.assistant import SessionStore
+
+    sessions = SessionStore()
+    for number in range(257):
+        await sessions.save_prompt_snapshot(str(number), f"Instructions {number}")
+    assert await sessions.prompt_snapshot("0") == "Instructions 0"

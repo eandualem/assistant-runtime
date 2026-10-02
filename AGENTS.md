@@ -105,7 +105,9 @@ execution, history, serialization, or the upstream dependency; see
   `app/access`, `app/assistant`, `app/streaming`, `app/voice`, `app/ingress`, `app/tasks`, `app/heartbeat`,
   `app/event_log`;
   the leaf modules `base`, `artifacts`, `host_context`, `principal`, `config`
-  and the `app/routes` package are exempt).
+  and the `app/routes` package are exempt). Ingress has no configurable
+  options and omits `config.py`; MCP uses its server configuration file and
+  omits `config.py` and `deps.py`.
   `config.py` (a frozen pydantic
   model nested into `AppSettings`), `deps.py` (FastAPI `Depends` accessors
   reading `app.state`), `factory.py` (`register_<name>(app_state,
@@ -118,7 +120,8 @@ execution, history, serialization, or the upstream dependency; see
   database, oauth, llm, history, media, decisions, actions, host_state, mcp, artifacts, tools,
   assistant, streaming, voice, ingress, tasks, heartbeat, event_log.
   `LifecycleManager` starts in that order, stops in reverse, and rolls back
-  on a failed start. `RuntimeSettings` is created after `start_all()` and
+  on a failed or cancelled start, including the partially started component.
+  `RuntimeSettings` is created after `start_all()` and
   attached through each service's `set_runtime_settings()`.
 - **Layering, bottom up.** `base` (lifecycle, protocols, resilience,
   exceptions, the domain event hub), `artifacts` (assistant profiles: the artifact schema, the
@@ -137,8 +140,11 @@ execution, history, serialization, or the upstream dependency; see
   are the top. `tests/unit/test_imports.py` asserts that nothing below the
   top layer imports `app` and that `_`-prefixed files stay inside their
   module (what another module needs is re-exported from the module's
-  `__init__.py` or a public file such as `services/tools/request_context.py`);
-  a new cross-package import must keep it green. `main.py` builds nothing at
+  `__init__.py` or a public file such as `services/tools/request_context.py`).
+  It also enforces the application-module dependency graph, including that
+  transport edges are never imported by application services. Ingress receives
+  its event sink from composition; Socket.IO delivery stays at the edge.
+  A new cross-package import must keep it green. `main.py` builds nothing at
   import: uvicorn runs the `create_asgi_app` factory, and loading `.env` is
   the CLI's job.
 - **Configuration has three tiers**, resolved once per request by
@@ -311,6 +317,8 @@ execution, history, serialization, or the upstream dependency; see
   `TASKS__MAX_CONCURRENT` at once; a turn that asks the host for an action
   fails its task. `task_finished` is published on `app.state.events` and is
   not forwarded to Socket.IO; nothing is steered into the parent session.
+  Its private `_runner.py` owns queue reservations, ordering, capacity and
+  cancellation; the service owns admission, records and request construction.
   With Postgres a restart marks unfinished tasks `interrupted` and replays
   nothing; without it tasks live in process memory. A *persistent agent*
   is the continuing form: the host starts it for a (profile, subject), one
@@ -456,7 +464,9 @@ names, ids or private hostnames).
 - **Shared turn pipeline.** Every request kind (new message, host-tool
   continuation, promoted steering) is described by `TurnPlanner`
   (`app/streaming/_turn.py`) and executed by `TurnRunner`
-  (`app/streaming/_runner.py`); `_agent_run.py` maps public Pydantic AI events
+  (`app/streaming/_runner.py`), which delegates native message capture and
+  persistence to `_snapshot.py` and diagnostics to `_telemetry.py`;
+  `_agent_run.py` maps public Pydantic AI events
   and applies steering/screen policy through native capability hooks;
   `_host_tool.py` keeps the pending host-tool state. The non-streaming
   `POST /api/chat` collects the same stream through

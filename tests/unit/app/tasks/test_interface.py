@@ -631,3 +631,29 @@ class TestAgents:
             "done: Status?",
             "main-1",
         )
+
+
+async def test_agent_config_and_completed_usage_cannot_be_changed_through_returned_records():
+    from assistant_runtime.app.assistant.config import TunableOverrides
+
+    service, streaming, _ = await _service()
+    try:
+        agent = await service.start_agent(config=TunableOverrides(temperature=0.3))
+        agent.config["temperature"] = 1.5
+        reread = await service.get_agent(agent.id)
+        assert reread.config == {"temperature": 0.3}
+        reread.config.clear()
+        configured = await service.configure_agent(agent.id, TunableOverrides(temperature=0.4))
+        configured.config.clear()
+        listed = await service.list_agents()
+        listed[0].config.clear()
+        assert (await service.get_agent(agent.id)).config == {"temperature": 0.4}
+        task = await service.start_task("One task")
+        streaming.gate("One task").set()
+        await _settle()
+        result = await service.get(task.id)
+        assert result.status == "done"
+        result.usage.clear()
+        assert (await service.get(task.id)).usage == {"requests": 1}
+    finally:
+        await service.stop()

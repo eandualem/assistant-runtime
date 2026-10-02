@@ -417,7 +417,7 @@ class SessionStore:
         """Keep the stable text a prompt record names (stored once per hash)."""
         self._snapshots[snapshot_hash] = content
         self._snapshots.move_to_end(snapshot_hash)
-        while len(self._snapshots) > _SNAPSHOT_CACHE_SIZE:
+        while self._db is not None and len(self._snapshots) > _SNAPSHOT_CACHE_SIZE:
             self._snapshots.popitem(last=False)
         if self._db is not None:
             await self._db.save_prompt_snapshot(snapshot_hash, content)

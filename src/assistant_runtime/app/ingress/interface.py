@@ -14,13 +14,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import AssistantRequest
-from assistant_runtime.app.socketio_server import socket_event_name
 
 if TYPE_CHECKING:
     from assistant_runtime.app.assistant.interface import AssistantService
@@ -42,12 +42,12 @@ class IngressService:
         assistant_service: AssistantService,
         streaming_service: StreamingService,
         database_service: DatabaseService | None = None,
-        socket_server: Any | None = None,
+        event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._assistant = assistant_service
         self._streaming = streaming_service
         self._db = database_service
-        self._sio = socket_server
+        self._event_sink = event_sink
         self._queued: list[dict[str, Any]] = []  # the inbox when there is no database
         self._background: set[asyncio.Task[None]] = set()
         self._started = False
@@ -186,15 +186,12 @@ class IngressService:
         task.add_done_callback(self._background.discard)
 
     async def _run(self, request: AssistantRequest) -> None:
-        """Run the promoted turn; events go to the session's Socket.IO room, if any."""
-        room = f"session:{request.session_id}"
+        """Run the promoted turn and forward its events through the configured sink."""
         try:
             async for event in self._streaming.stream_message(request):
-                if self._sio is not None:
+                if self._event_sink is not None:
                     with contextlib.suppress(Exception):
-                        await self._sio.emit(
-                            socket_event_name(event), event, room=room, namespace="/assistant"
-                        )
+                        await self._event_sink(request.session_id, event)
         except asyncio.CancelledError:
             raise
         except Exception as e:

@@ -159,3 +159,22 @@ class TestNotices:
             await service.record(**_event(direction="outbound", target_session_id="chat"))
         with pytest.raises(EventNotFoundError):
             await service.update_notice(99, "heard")
+
+
+async def test_records_do_not_share_payload_or_delivery_state_with_callers():
+    service = await _service()
+    payload = {"details": {"count": 1}}
+    event, _ = await service.record(**_event(payload=payload, target_session_id="chat"))
+    payload["details"]["count"] = 2
+    event.payload.clear()
+    event.delivery.clear()
+    duplicate, created = await service.record(**_event())
+    assert not created
+    assert duplicate.payload == {"details": {"count": 1}}
+    assert duplicate.delivery == {"session_id": "chat", "how": "queued"}
+    duplicate.payload.clear()
+    listed = await service.list()
+    listed[0].delivery.clear()
+    reread = await service.get(event.id)
+    assert reread.payload == {"details": {"count": 1}}
+    assert reread.delivery == {"session_id": "chat", "how": "queued"}

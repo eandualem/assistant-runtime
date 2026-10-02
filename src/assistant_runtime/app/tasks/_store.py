@@ -5,6 +5,7 @@ Internal module — only accessed through TaskService (interface.py).
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import fields, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -86,9 +87,9 @@ class InMemoryTaskStore:
         self._messages: dict[str, AgentMessageRecord] = {}
 
     async def create(self, record: TaskRecord) -> TaskRecord:
-        record = replace(record, created_at=record.created_at or datetime.now(UTC))
+        record = replace(deepcopy(record), created_at=record.created_at or datetime.now(UTC))
         self._tasks[record.id] = record
-        return record
+        return deepcopy(record)
 
     async def update(
         self, task_id: str, *, only_from: tuple[str, ...] | None = None, **values: Any
@@ -96,11 +97,11 @@ class InMemoryTaskStore:
         record = self._tasks.get(task_id)
         if record is None or (only_from is not None and record.status not in only_from):
             return None
-        record = self._tasks[task_id] = replace(record, **values)
-        return record
+        record = self._tasks[task_id] = replace(record, **deepcopy(values))
+        return deepcopy(record)
 
     async def get(self, task_id: str) -> TaskRecord | None:
-        return self._tasks.get(task_id)
+        return deepcopy(self._tasks.get(task_id))
 
     async def list(
         self,
@@ -117,25 +118,25 @@ class InMemoryTaskStore:
             and (parent_session_id is None or r.parent_session_id == parent_session_id)
             and (status is None or r.status == status)
         ]
-        return list(reversed(records))[:limit]
+        return deepcopy(list(reversed(records))[:limit])
 
     async def mark_unfinished(self, status: str, error: str) -> list[TaskRecord]:
         return []  # nothing survives a restart in memory
 
     async def create_agent(self, record: AgentRecord) -> AgentRecord:
-        record = replace(record, created_at=record.created_at or datetime.now(UTC))
+        record = replace(deepcopy(record), created_at=record.created_at or datetime.now(UTC))
         self._agents[record.id] = record
-        return record
+        return deepcopy(record)
 
     async def update_agent(self, agent_id: str, **values: Any) -> AgentRecord | None:
         record = self._agents.get(agent_id)
         if record is None:
             return None
-        record = self._agents[agent_id] = replace(record, **values)
-        return record
+        record = self._agents[agent_id] = replace(record, **deepcopy(values))
+        return deepcopy(record)
 
     async def get_agent(self, agent_id: str) -> AgentRecord | None:
-        return self._agents.get(agent_id)
+        return deepcopy(self._agents.get(agent_id))
 
     async def list_agents(self, *, created_by: str | None, status: str | None) -> list[AgentRecord]:
         records = [
@@ -144,12 +145,12 @@ class InMemoryTaskStore:
             if (created_by is None or r.created_by == created_by)
             and (status is None or r.status == status)
         ]
-        return list(reversed(records))
+        return deepcopy(list(reversed(records)))
 
     async def create_message(self, record: AgentMessageRecord) -> AgentMessageRecord:
-        record = replace(record, created_at=record.created_at or datetime.now(UTC))
+        record = replace(deepcopy(record), created_at=record.created_at or datetime.now(UTC))
         self._messages[record.id] = record
-        return record
+        return deepcopy(record)
 
     async def update_message(
         self, message_id: str, *, only_from: tuple[str, ...] | None = None, **values: Any
@@ -157,11 +158,11 @@ class InMemoryTaskStore:
         record = self._messages.get(message_id)
         if record is None or (only_from is not None and record.status not in only_from):
             return None
-        record = self._messages[message_id] = replace(record, **values)
-        return record
+        record = self._messages[message_id] = replace(record, **deepcopy(values))
+        return deepcopy(record)
 
     async def get_message(self, message_id: str) -> AgentMessageRecord | None:
-        return self._messages.get(message_id)
+        return deepcopy(self._messages.get(message_id))
 
     async def list_messages(
         self,
@@ -180,7 +181,7 @@ class InMemoryTaskStore:
             and (parent_session_id is None or r.parent_session_id == parent_session_id)
             and (status is None or r.status == status)
         ]
-        return list(reversed(records))[:limit]
+        return deepcopy(list(reversed(records))[:limit])
 
     async def mark_unfinished_messages(self, status: str, error: str) -> list[AgentMessageRecord]:
         return []  # nothing survives a restart in memory

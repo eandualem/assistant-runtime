@@ -6,7 +6,6 @@ lives in ``app/streaming``; this service owns what a turn is built from.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import time
 from typing import TYPE_CHECKING, Any
@@ -177,7 +176,6 @@ class AssistantService:
         ).for_subject(subject)
         texts, extras, versions = await artifacts.prompt_inputs()
         prompt = build_system_prompt(
-            available_tools=self._tools.get_available_tools(None),
             session_context={},
             artifacts=texts,
             profile=artifacts.profile,
@@ -200,7 +198,6 @@ class AssistantService:
         artifacts = self._artifacts.for_profile(profile)
         texts, extras, versions = await artifacts.prompt_inputs()
         prompt = build_system_prompt(
-            available_tools=self._tools.get_available_tools(None),
             session_context={},
             artifacts=texts,
             profile=artifacts.profile,
@@ -268,9 +265,7 @@ class AssistantService:
                     if inspect.isawaitable(deps):
                         deps = await deps
 
-            inputs_task = asyncio.create_task(artifacts_service.prompt_inputs())
-
-            # 2. Config resolution can run while prompt inputs load.
+            # 2. Resolve synchronous configuration before loading prompt inputs.
             effective = resolve_effective_config(
                 self._config, self._runtime_settings, request_config
             )
@@ -282,10 +277,9 @@ class AssistantService:
             )
 
             # 3. Artifacts + system prompt
-            artifacts, artifact_extras, artifact_versions = await inputs_task
+            artifacts, artifact_extras, artifact_versions = await artifacts_service.prompt_inputs()
 
             prompt_result = build_system_prompt(
-                available_tools=available_tools,
                 session_context=session_context,
                 working_memory=effective.enable_working_memory,
                 artifacts=artifacts,

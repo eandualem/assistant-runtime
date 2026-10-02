@@ -24,11 +24,9 @@ and marks unfinished messages ``interrupted``.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import uuid
-from collections.abc import Awaitable, Callable, Hashable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic import ValidationError
@@ -36,6 +34,7 @@ from pydantic import ValidationError
 from assistant_runtime.app.assistant.config import AssistantConfig, TunableOverrides
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.app.settings import outside_request_allowance
+from assistant_runtime.app.tasks._runner import INTERRUPTED, BackgroundTurnRunner
 from assistant_runtime.app.tasks._store import (
     AgentTakenError,
     DatabaseTaskStore,
@@ -48,7 +47,6 @@ from assistant_runtime.app.tasks.exceptions import (
     AgentConflictError,
     AgentNotFoundError,
     TaskError,
-    TaskLimitError,
     TaskNotFoundError,
     TasksDisabledError,
 )
@@ -60,19 +58,6 @@ if TYPE_CHECKING:
     from assistant_runtime.base.events import EventHub
     from assistant_runtime.services.database.interface import DatabaseService
     from assistant_runtime.services.tools.interface import ToolService
-
-_INTERRUPTED = "The runtime stopped while it was queued or running"
-# An end is recorded once: later terminal updates find it finished and change nothing.
-_UNFINISHED = ("queued", "running")
-
-
-class _Job(NamedTuple):
-    """A queued or running background turn: a task, or a message to an agent."""
-
-    worker: asyncio.Task[None]
-    update: Callable[..., Awaitable[Any]]
-    publish: Callable[[Any], Awaitable[None]]
-    agent_id: str | None = None
 
 
 class TaskService:
@@ -93,15 +78,11 @@ class TaskService:
         self._assistant_config = assistant_config or AssistantConfig()
         self._tool_service = tool_service
         self._default_profile = default_profile
-        self._reserved = 0
         self._streaming = streaming_service
         self._database = database_service
         self._events = events
         self._store: TaskStore | None = None
-        self._slots = asyncio.Semaphore(config.max_concurrent)
-        self._order_locks: dict[Hashable, list[Any]] = {}
-        self._running: dict[str, _Job] = {}
-        self._cancel_requested: set[str] = set()
+        self._runner = BackgroundTurnRunner(config, streaming_service)
         # Agent starts, moves, stops and message admission see one another's changes.
         self._agent_admission = asyncio.Lock()
 
@@ -111,9 +92,9 @@ class TaskService:
         database = self._database
         if database is not None and getattr(database, "healthy", False):
             self._store = DatabaseTaskStore(database)
-            for record in await self._store.mark_unfinished("interrupted", _INTERRUPTED):
+            for record in await self._store.mark_unfinished("interrupted", INTERRUPTED):
                 await self._publish(record)
-            for message in await self._store.mark_unfinished_messages("interrupted", _INTERRUPTED):
+            for message in await self._store.mark_unfinished_messages("interrupted", INTERRUPTED):
                 await self._publish_message(message)
             for agent in await self._store.list_agents(created_by=None, status="active"):
                 self._streaming.pin_session(agent.session_id)
@@ -125,13 +106,7 @@ class TaskService:
         logger.info("Task service started", enabled=self._config.enabled)
 
     async def stop(self) -> None:
-        running = list(self._running.items())
-        for _, job in running:
-            job.worker.cancel()
-        for job_id, job in running:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await job.worker
-            await self._finish_unstarted(job_id, "interrupted")
+        await self._runner.stop()
         self._store = None
         logger.info("Task service stopped")
 
@@ -139,7 +114,7 @@ class TaskService:
         return {
             "healthy": self._store is not None,
             "enabled": self._config.enabled,
-            "running": len(self._running),
+            "running": self._runner.count,
             "durable": self._store.durable if self._store is not None else None,
         }
 
@@ -162,16 +137,9 @@ class TaskService:
         if not task:
             raise TaskError("A task needs a description of the work")
         self._check_names(profile, subject)
-        # Reserve a place before any await, so concurrent starts cannot all pass.
-        if len(self._running) + self._reserved >= self._config.max_waiting:
-            raise TaskLimitError(
-                f"{len(self._running) + self._reserved} tasks are queued or running; "
-                "wait for some to finish"
-            )
-        self._reserved += 1
         principal = principal or LOCAL_PRINCIPAL
         task_id = str(uuid.uuid4())
-        try:
+        with self._runner.reserve():
             record = await store.create(
                 TaskRecord(
                     id=task_id,
@@ -186,13 +154,13 @@ class TaskService:
                     parent_session_id=parent_session_id,
                 )
             )
-            self._running[task_id] = _Job(
-                asyncio.create_task(self._run(record, principal), name=f"task-{task_id}"),
+            self._runner.submit(
+                task_id,
+                self._run(record, principal),
                 store.update,
                 self._publish,
+                name=f"task-{task_id}",
             )
-        finally:
-            self._reserved -= 1
         logger.info("Task queued", task_id=task_id, profile=profile, subject=subject)
         return record
 
@@ -222,9 +190,9 @@ class TaskService:
     async def cancel(self, task_id: str, principal: Principal | None = None) -> TaskRecord:
         """Stop a queued or running task; a finished one is returned as it is."""
         record = await self.get(task_id, principal)
-        if task_id not in self._running or record.finished:
+        if record.finished:
             return record
-        await self._cancel_job(task_id)
+        await self._runner.cancel(task_id)
         return await self.get(task_id, principal)
 
     # --- persistent agents ---
@@ -324,8 +292,7 @@ class TaskService:
             if agent.status != "active":
                 return agent
             stopped = await store.update_agent(agent_id, status="stopped", stopped_at=_now())
-        for job_id in [i for i, job in self._running.items() if job.agent_id == agent_id]:
-            await self._cancel_job(job_id)
+        await self._runner.cancel_agent(agent_id)
         self._streaming.unpin_session(agent.session_id)
         logger.info("Agent stopped", agent_id=agent_id)
         return stopped or agent
@@ -370,14 +337,8 @@ class TaskService:
             agent = await self._find_agent(agent_id, profile, subject, principal)
             if agent.status != "active":
                 raise AgentConflictError(f"Agent '{agent.id}' is stopped")
-            if len(self._running) + self._reserved >= self._config.max_waiting:
-                raise TaskLimitError(
-                    f"{len(self._running) + self._reserved} background turns are queued or "
-                    "running; wait for some to finish"
-                )
-            self._reserved += 1
             message_id = str(uuid.uuid4())
-            try:
+            with self._runner.reserve():
                 record = await store.create_message(
                     AgentMessageRecord(
                         id=message_id,
@@ -388,16 +349,14 @@ class TaskService:
                         parent_session_id=parent_session_id,
                     )
                 )
-                self._running[message_id] = _Job(
-                    asyncio.create_task(
-                        self._run_message(record, principal), name=f"agent-message-{message_id}"
-                    ),
+                self._runner.submit(
+                    message_id,
+                    self._run_message(record, principal),
                     store.update_message,
                     self._publish_message,
-                    agent.id,
+                    name=f"agent-message-{message_id}",
+                    agent_id=agent.id,
                 )
-            finally:
-                self._reserved -= 1
         logger.info("Agent message queued", agent_id=agent.id, message_id=message_id)
         return record
 
@@ -448,8 +407,8 @@ class TaskService:
             )
 
         subject_key = (record.profile, record.subject) if record.subject is not None else None
-        await self._execute(
-            record.id, self._in_order(subject_key), start, store.update, self._publish, principal
+        await self._runner.execute(
+            record.id, subject_key, start, store.update, self._publish, principal
         )
 
     async def _run_message(self, record: AgentMessageRecord, principal: Principal) -> None:
@@ -461,7 +420,7 @@ class TaskService:
                 agent = await store.get_agent(record.agent_id)
                 if agent is None or agent.status != "active":
                     # Stopped elsewhere while this waited: end it as the stop would have.
-                    self._cancel_requested.add(record.id)
+                    self._runner.mark_cancelled(record.id)
                     raise asyncio.CancelledError
                 # The agent's session now, so a move applies to every message not yet started.
                 started = await store.update_message(
@@ -483,126 +442,14 @@ class TaskService:
                 config=TunableOverrides(**agent.config),
             )
 
-        await self._execute(
+        await self._runner.execute(
             record.id,
-            self._in_order(("agent", record.agent_id)),
+            ("agent", record.agent_id),
             start,
             store.update_message,
             self._publish_message,
             principal,
         )
-
-    async def _execute(
-        self,
-        job_id: str,
-        order: contextlib.AbstractAsyncContextManager[None],
-        start: Callable[[], Awaitable[AssistantRequest | None]],
-        update: Callable[..., Awaitable[Any]],
-        publish: Callable[[Any], Awaitable[None]],
-        principal: Principal,
-    ) -> None:
-        """Run one background turn in its order and a free slot; record and publish its end."""
-        final: Any = None
-        try:
-            async with order, self._slots:
-                request = await start()
-                if request is None:
-                    return
-                async with asyncio.timeout(self._config.timeout_seconds):
-                    result = await self._streaming.run_message(request, principal=principal)
-            if result.pending_tool_call:
-                # A background turn has no host to perform an action and send its result back.
-                raise TaskError(
-                    "The turn asked the host to perform "
-                    f"'{result.pending_tool_call.get('tool_name')}', which a background "
-                    "turn cannot answer"
-                )
-            final = await update(
-                job_id,
-                only_from=_UNFINISHED,
-                status="done",
-                result=(result.content or "")[: self._config.result_max_chars],
-                usage=result.usage,
-                finished_at=_now(),
-            )
-        except asyncio.CancelledError:
-            requested = job_id in self._cancel_requested
-            final = await update(
-                job_id,
-                only_from=_UNFINISHED,
-                status="cancelled" if requested else "interrupted",
-                error=None if requested else _INTERRUPTED,
-                finished_at=_now(),
-            )
-        except TimeoutError:
-            final = await update(
-                job_id,
-                only_from=_UNFINISHED,
-                status="failed",
-                error=f"Timed out after {self._config.timeout_seconds} s",
-                finished_at=_now(),
-            )
-        except Exception as e:
-            logger.warning("Background turn failed", job_id=job_id, error=str(e))
-            final = await update(
-                job_id,
-                only_from=_UNFINISHED,
-                status="failed",
-                error=str(e) or type(e).__name__,
-                finished_at=_now(),
-            )
-        finally:
-            self._running.pop(job_id, None)
-            self._cancel_requested.discard(job_id)
-        if final is not None:
-            await publish(final)
-
-    async def _cancel_job(self, job_id: str) -> None:
-        """Cancel a queued or running background turn and wait until its end is recorded."""
-        job = self._running.get(job_id)
-        if job is None:
-            return
-        self._cancel_requested.add(job_id)
-        job.worker.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await job.worker
-        await self._finish_unstarted(job_id, "cancelled")
-
-    async def _finish_unstarted(self, job_id: str, status: str) -> None:
-        """Record the end of a background turn whose worker was cancelled before it ever ran.
-
-        asyncio does not enter a coroutine cancelled before its first step, so
-        its own handler and ``finally`` never run; this does their work.
-        """
-        job = self._running.pop(job_id, None)
-        if job is None:
-            return  # the worker ran and finished its record itself
-        self._cancel_requested.discard(job_id)
-        final = await job.update(
-            job_id,
-            only_from=_UNFINISHED,
-            status=status,
-            error=None if status == "cancelled" else _INTERRUPTED,
-            finished_at=_now(),
-        )
-        if final is not None:
-            await job.publish(final)
-
-    @contextlib.asynccontextmanager
-    async def _in_order(self, key: Hashable | None):
-        """One background turn at a time per key, in arrival order; no key, no order."""
-        if key is None:
-            yield
-            return
-        entry = self._order_locks.setdefault(key, [asyncio.Lock(), 0])
-        entry[1] += 1
-        try:
-            async with entry[0]:
-                yield
-        finally:
-            entry[1] -= 1
-            if entry[1] == 0:
-                self._order_locks.pop(key, None)
 
     async def _publish(self, record: TaskRecord) -> None:
         if self._events is None:

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from assistant_runtime.app.streaming._runner import _describe_error
+from assistant_runtime.app.streaming._telemetry import _describe_error
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.services.llm.exceptions import LLMCallError
@@ -40,7 +40,7 @@ class TestDescribeError:
 
 class TestPersistenceFailureText:
     def test_detail_decides_whether_the_exception_is_shown(self):
-        from assistant_runtime.app.streaming._runner import _persistence_failure
+        from assistant_runtime.app.streaming._telemetry import _persistence_failure
 
         exc = RuntimeError("connection to db-host refused")
         assert _persistence_failure("Cancelled turn", exc, detail=True) == (
@@ -54,18 +54,10 @@ class TestPersistenceFailureText:
 class TestTraceRetention:
     @pytest.mark.asyncio
     async def test_save_trace_skips_an_unreachable_database(self):
-        from assistant_runtime.app.streaming._runner import TurnRunner
+        from assistant_runtime.app.streaming._telemetry import save_trace
 
         unreachable = MagicMock(healthy=False)
-        runner = TurnRunner(
-            config=StreamingConfig(),
-            sessions=MagicMock(),
-            tools=MagicMock(),
-            history=MagicMock(),
-            assistant_service=MagicMock(),
-            database_service=unreachable,
-        )
-        await runner.save_trace("s1", [{"type": "debug"}])
+        await save_trace(unreachable, "s1", [{"type": "debug"}])
         unreachable.session_context.assert_not_called()
 
     @pytest.mark.asyncio

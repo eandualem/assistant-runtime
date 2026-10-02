@@ -29,6 +29,7 @@ from assistant_runtime.services.artifacts.exceptions import (
 )
 from assistant_runtime.services.artifacts.interface import ArtifactService
 from assistant_runtime.services.artifacts.models import Actor, MutationResult
+from assistant_runtime.services.database.exceptions import DatabaseError
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 proposals_router = APIRouter(prefix="/artifact-proposals", tags=["artifacts"])
@@ -272,6 +273,8 @@ async def get_artifact(name: str, artifacts: ScopedArtifactDep, principal: Princ
     """The active version of an artifact, or its default text when none is active."""
     try:
         row = await artifacts.get_active(name)
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -302,6 +305,8 @@ async def get_artifact_history(
     """Version history for an artifact, newest first."""
     try:
         return [row.to_dict() for row in await artifacts.history(name, limit=limit)]
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -316,6 +321,8 @@ async def get_artifact_version(
     """One version as a proposal record: its content, the active text and a unified diff."""
     try:
         return await artifacts.version_record(name, version)
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -333,6 +340,8 @@ async def propose_artifact(
         return await _propose(
             artifacts, name, body.content, who, body.expected_version, body.rationale
         )
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -348,6 +357,8 @@ async def update_artifact(
     who = _who(admin, body)
     try:
         return await _update(artifacts, name, body.content, who, body.expected_version)
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -367,6 +378,8 @@ async def approve_artifact(
     who = _who(admin, body)
     try:
         return await _activate(artifacts, name, version, who, rollback=False)
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -386,6 +399,8 @@ async def reject_artifact(
     who = _who(admin, body)
     try:
         return await _reject(artifacts, name, version, who, body.reason if body else None)
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -400,6 +415,8 @@ async def rollback_artifact(
     """Reactivate an earlier version of an artifact."""
     try:
         return await _activate(artifacts, name, version, admin.id, rollback=True)
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -442,6 +459,8 @@ async def artifact_action(
         )
     except HTTPException:
         raise
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -454,6 +473,8 @@ async def delete_artifact(name: str, artifacts: ScopedArtifactDep, admin: AdminD
     """Delete every stored version; the profile's default text applies again."""
     try:
         count = await artifacts.delete(name, actor=Actor("host", admin.id))
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -487,6 +508,8 @@ async def list_proposals(
         records: list[dict] = []
         for name in names:
             records.extend(await service.for_profile(name).proposals(status, limit + 1, before_id))
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -508,6 +531,8 @@ async def list_subjects(
     try:
         artifacts = get_artifact_service(request).for_profile(profile)
         return {"profile": artifacts.profile.name, "subjects": await artifacts.subjects()}
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except Exception as e:
@@ -529,6 +554,8 @@ async def preview_prompt(
     """
     try:
         return await request.app.state.assistant_service.preview_prompt(profile, subject)
+    except DatabaseError:
+        raise
     except ArtifactError as e:
         raise _http_error(e) from e
     except ValueError as e:  # a required artifact without text

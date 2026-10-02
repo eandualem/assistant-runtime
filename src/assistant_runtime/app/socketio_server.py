@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
@@ -85,6 +85,19 @@ def forward_session_events(sio: socketio.AsyncServer) -> Callable[[dict[str, Any
             stream_event,
             room=f"session:{session_id}",
             namespace="/assistant",
+        )
+
+    return forward
+
+
+def forward_ingress_events(
+    sio: socketio.AsyncServer,
+) -> Callable[[str, dict[str, Any]], Awaitable[None]]:
+    """Adapt promoted ingress turns to the session's Socket.IO room."""
+
+    async def forward(session_id: str, event: dict[str, Any]) -> None:
+        await sio.emit(
+            socket_event_name(event), event, room=f"session:{session_id}", namespace="/assistant"
         )
 
     return forward

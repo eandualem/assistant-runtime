@@ -1,5 +1,7 @@
 """Lifecycle manager — ordered startup, shutdown, and health aggregation."""
 
+import asyncio
+
 from loguru import logger
 
 from assistant_runtime.base.protocols import LifecycleAware
@@ -22,11 +24,12 @@ class LifecycleManager:
     async def start_all(self) -> None:
         """Start all components in registration order. Rolls back on failure."""
         for name, component in self._components.items():
+            # Own resources as soon as startup begins, including partial acquisition.
+            self._started.append(name)
             try:
                 await component.start()
-                self._started.append(name)
                 logger.info("Component started", component=name)
-            except Exception as e:
+            except (Exception, asyncio.CancelledError) as e:
                 logger.error("Component failed to start", component=name, error=str(e))
                 await self.stop_all()
                 raise

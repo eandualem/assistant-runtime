@@ -10,10 +10,10 @@ import pytest
 
 from assistant_runtime.app.voice._codex import (
     CodexTransport,
-    _AppServer,
-    missing_from_schema,
     usage_report,
 )
+from assistant_runtime.app.voice._codex_rpc import _AppServer
+from assistant_runtime.app.voice._codex_schema import missing_from_schema
 from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.interface import VoiceService
@@ -818,7 +818,7 @@ async def test_usage_is_not_read_while_the_service_is_stopped(codex):
 async def test_a_servers_cleanup_ends_its_own_calls_even_after_it_was_replaced():
     from types import SimpleNamespace
 
-    from assistant_runtime.app.voice._codex import _Link
+    from assistant_runtime.app.voice._codex_rpc import _Link
 
     server = _AppServer("codex", 1)
     old_output = asyncio.StreamReader()

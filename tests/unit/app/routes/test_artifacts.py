@@ -502,3 +502,21 @@ class TestSizeBound:
         assert refused.status_code == 422
         assert "at most 5 characters" in refused.json()["detail"]
         assert described["artifacts"][0]["max_chars"] == 5
+
+
+async def test_database_failure_reaches_the_shared_503_handler(artifacts, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from assistant_runtime.config import AppSettings
+    from assistant_runtime.main import create_app
+    from assistant_runtime.services.database.exceptions import DatabaseError
+
+    monkeypatch.setattr(
+        ArtifactService, "update", AsyncMock(side_effect=DatabaseError("Database not reachable"))
+    )
+    app = create_app(settings=AppSettings(_env_file=None))
+    app.state.artifact_service = artifacts
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.patch("/api/artifacts/scratchpad", json={"content": "New text"})
+    assert response.status_code == 503
+    assert response.json()["type"] == "DatabaseError"

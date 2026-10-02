@@ -793,3 +793,16 @@ class TestSessionEventForwarding:
         await forward({"type": "artifact_decision", "session_id": None})
         await forward({"type": "task_finished", "session_id": "s-1"})
         sio.emit.assert_not_awaited()
+
+
+async def test_composed_ingress_sink_uses_the_session_room():
+    from assistant_runtime.main import create_asgi_app
+
+    app = create_asgi_app()
+    sio = app.engineio_server
+    sio.emit = AsyncMock()
+    event = {"type": "text_delta", "content": "A background reply"}
+    await sio.fastapi_app.state.ingress_event_sink("s1", event)
+    sio.emit.assert_awaited_once_with(
+        "assistant:text_delta", event, room="session:s1", namespace="/assistant"
+    )

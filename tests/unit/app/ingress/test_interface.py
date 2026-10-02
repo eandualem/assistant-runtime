@@ -32,7 +32,9 @@ async def _seeded_store() -> SessionStore:
     return store
 
 
-def _service(store: SessionStore | None, *, streaming=None, db=None, sio=None) -> IngressService:
+def _service(
+    store: SessionStore | None, *, streaming=None, db=None, event_sink=None
+) -> IngressService:
     assistant = MagicMock()
     assistant.get_session_store.return_value = store
     streaming = streaming or MagicMock()
@@ -40,7 +42,7 @@ def _service(store: SessionStore | None, *, streaming=None, db=None, sio=None) -
         assistant_service=assistant,
         streaming_service=streaming,
         database_service=db,
-        socket_server=sio,
+        event_sink=event_sink,
     )
 
 
@@ -67,9 +69,8 @@ class TestDeliver:
         streaming = MagicMock()
         streaming.accept_steering = AsyncMock(return_value="promoted")
         streaming.stream_message = _stream
-        sio = MagicMock()
-        sio.emit = AsyncMock()
-        service = _service(store, streaming=streaming, sio=sio)
+        sink = AsyncMock()
+        service = _service(store, streaming=streaming, event_sink=sink)
         await service.start()
 
         result = await service.deliver(
@@ -81,8 +82,9 @@ class TestDeliver:
         request = streaming.accept_steering.await_args.args[0]
         assert request.is_steering
         assert request.content == "[via:tmux from:planner] done"
-        assert sio.emit.await_count == 2
-        assert sio.emit.await_args.kwargs["room"] == "session:sess-1"
+        assert [call.args for call in sink.await_args_list] == [
+            ("sess-1", event) for event in events
+        ]
 
     async def test_queued_into_a_live_turn_runs_nothing(self):
         store = await _seeded_store()

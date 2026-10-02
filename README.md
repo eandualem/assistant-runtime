@@ -108,6 +108,13 @@ src/assistant_runtime/cli/       chat, serve, doctor, docs and migrations
 docs/ and alembic/               documentation and database migrations
 ```
 
+Within each service, `interface.py` owns the public operations and lifecycle;
+private modules hold the implementation. Database queries are grouped by record
+domain behind `services/database/repositories`. The turn runner delegates native
+message snapshots and diagnostics to separate modules, and background tasks use
+one scheduler for ordering, capacity and cancellation. Transport adapters own
+Socket.IO and voice protocol details. The import checks enforce these boundaries.
+
 ## License
 
 MIT — see [LICENSE](https://github.com/eandualem/assistant-runtime/blob/main/LICENSE).

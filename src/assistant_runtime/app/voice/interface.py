@@ -14,6 +14,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator
+from typing import cast
 
 from loguru import logger
 
@@ -22,7 +23,12 @@ from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.app.voice._persistence import VoicePersistence
 from assistant_runtime.app.voice._state import VoiceCall
-from assistant_runtime.app.voice._transport import VoiceTransport, build_transport, send
+from assistant_runtime.app.voice._transport import (
+    FactConnection,
+    VoiceTransport,
+    build_transport,
+    send,
+)
 from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.models import VoiceContext, VoiceOffer, VoiceToolResult
@@ -276,7 +282,9 @@ class VoiceService:
             claimed = call.last_fact_at = time.monotonic()
             try:
                 # The host's own words, as context for the voice (not backend context).
-                await call.connection.append_fact(update.fact, speak=update.speak)
+                await cast(FactConnection, call.connection).append_fact(
+                    update.fact, speak=update.speak
+                )
             except BaseException:
                 if call.last_fact_at == claimed:  # a newer fact may hold the slot now
                     call.last_fact_at = previous

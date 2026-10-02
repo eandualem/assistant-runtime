@@ -229,16 +229,16 @@ async def test_native_stream_cancellation_closes_transport_and_keeps_actual_unkn
 async def test_tiers_survive_cumulative_followup_without_double_counting(codex):
     from pydantic_ai.usage import RunUsage
 
-    from assistant_runtime.app.streaming._runner import TurnRunner, _RunState
+    from assistant_runtime.app.streaming._snapshot import RunSnapshot, capture_result
 
     agent = codex.service("fast").build_agent(system_prompt="Decision.", thinking_budget=4000)
     cumulative = RunUsage()
     first = await agent.run("First.", usage=cumulative)
     plan = SimpleNamespace(kind="continuation", accepted_tool_result=None, prior_usage=None)
-    state = _RunState()
-    TurnRunner._capture_result(plan, state, first)
+    state = RunSnapshot()
+    capture_result(plan, state, first)
     second = await agent.run("Follow up.", message_history=first.all_messages(), usage=cumulative)
-    TurnRunner._capture_result(plan, state, second)
+    capture_result(plan, state, second)
     assert state.usage["requests"] == 2
     assert len(state.usage["service_tiers"]) == 2
     assert state.usage["input_tokens"] == 6

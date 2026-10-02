@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 if TYPE_CHECKING:
@@ -123,7 +123,7 @@ def _subagent_limits(host: UsageLimits | None, max_iterations: int) -> UsageLimi
     )
 
 
-def _extract_metadata(messages: list, duration: float) -> dict[str, Any]:
+def _extract_metadata(messages: list[ModelMessage], duration: float) -> dict[str, Any]:
     """Extract lightweight metadata from the subagent's message history."""
     tool_call_ids: set[str] = set()
     tools_used: set[str] = set()
@@ -132,24 +132,15 @@ def _extract_metadata(messages: list, duration: float) -> dict[str, Any]:
     output_tokens = 0
 
     for msg in messages:
-        # Count model responses as iterations
-        if hasattr(msg, "parts"):
-            for part in msg.parts:
-                if isinstance(part, ToolCallPart):
-                    tool_call_ids.add(part.tool_call_id)
-                    tools_used.add(part.tool_name)
-                elif isinstance(part, ToolReturnPart):
-                    # Already counted via ToolCallPart
-                    pass
-
-        # Count model requests as iterations
-        if hasattr(msg, "kind") and msg.kind == "response":
-            iterations += 1
-
-        # Extract usage if available
-        if hasattr(msg, "usage") and msg.usage:
-            input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
-            output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
+        if not isinstance(msg, ModelResponse):
+            continue
+        iterations += 1
+        input_tokens += msg.usage.input_tokens
+        output_tokens += msg.usage.output_tokens
+        for part in msg.parts:
+            if isinstance(part, ToolCallPart):
+                tool_call_ids.add(part.tool_call_id)
+                tools_used.add(part.tool_name)
 
     return {
         "iterations": iterations,

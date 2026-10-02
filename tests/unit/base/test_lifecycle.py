@@ -150,3 +150,30 @@ async def test_health_with_no_components():
     lm = LifecycleManager()
     result = await lm.health()
     assert result == {"healthy": True, "status": "ok", "components": {}}
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_partial_startup_is_rolled_back_in_reverse_order(cancelled):
+    import asyncio
+
+    manager = LifecycleManager()
+    stopped = []
+    failure = asyncio.CancelledError() if cancelled else RuntimeError("startup failed")
+
+    class Component(FakeComponent):
+        async def start(self):
+            self.started = True  # resources can exist before startup finishes
+            if self.name == "partial":
+                raise failure
+
+        async def stop(self):
+            stopped.append(self.name)
+
+    for name in ("first", "partial", "unstarted"):
+        await manager.register(name, Component(name))
+    with pytest.raises(type(failure)) as raised:
+        await manager.start_all()
+    assert raised.value is failure
+    assert stopped == ["partial", "first"]
+    await manager.stop_all()
+    assert stopped == ["partial", "first"]

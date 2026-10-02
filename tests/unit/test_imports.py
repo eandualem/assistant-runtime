@@ -89,7 +89,7 @@ def _all_offenders(forbidden: tuple[str, ...], allowed_top_level: tuple[str, ...
 def _module_of(parts: tuple[str, ...]) -> str:
     """The module a file or import path belongs to: ``app/<name>``, ``services/<name>``, or the top dir."""
     if parts[0] in ("app", "services") and len(parts) > 1:
-        return f"{parts[0]}/{parts[1]}"
+        return f"{parts[0]}/{parts[1].removesuffix('.py')}"
     return parts[0]
 
 
@@ -113,6 +113,50 @@ def _private_cross_module_imports() -> list[str]:
     return result
 
 
+# These are module dependencies, including type-only imports. Settings compose
+# the assistant config schema; all transport adapters stay above application services.
+_APP_DEPENDENCIES = {
+    "access": set(),
+    "assistant": {"settings"},
+    "settings": {"assistant"},
+    "streaming": {"access", "assistant"},
+    "voice": {"access", "assistant", "streaming"},
+    "ingress": {"assistant", "streaming"},
+    "tasks": {"assistant", "settings", "streaming"},
+    "heartbeat": {"ingress"},
+    "event_log": {"ingress"},
+    "routes": {
+        "access",
+        "assistant",
+        "settings",
+        "streaming",
+        "voice",
+        "ingress",
+        "tasks",
+        "event_log",
+    },
+    "socketio_server": {"access", "assistant", "streaming"},
+}
+
+
+def _app_layer_violations() -> list[str]:
+    violations = []
+    prefix = f"{PACKAGE}.app."
+    for path in sorted((SRC / "app").rglob("*.py")):
+        owner = path.relative_to(SRC / "app").parts[0].removesuffix(".py")
+        for imported in _imported_modules(path):
+            if not imported.startswith(prefix):
+                continue
+            target = imported.removeprefix(prefix).split(".")[0]
+            if target != owner and target not in _APP_DEPENDENCIES.get(owner, set()):
+                violations.append(f"{path.relative_to(SRC)}: {imported}")
+    return sorted(violations)
+
+
+def test_application_dependencies_follow_the_module_graph() -> None:
+    assert _app_layer_violations() == []
+
+
 def test_private_modules_stay_inside_their_module() -> None:
     """A ``_``-prefixed file is imported only by files of the same module (AGENTS.md)."""
     assert _private_cross_module_imports() == []
@@ -130,7 +174,9 @@ def test_base_does_not_import_app_or_services() -> None:
     assert _offenders("base", (f"{PACKAGE}.app", f"{PACKAGE}.services")) == []
 
 
-@pytest.mark.parametrize("leaf", ["artifacts.py", "model_catalog.py"])
+@pytest.mark.parametrize(
+    "leaf", ["artifacts.py", "model_catalog.py", "host_context.py", "principal.py"]
+)
 def test_leaf_modules_import_nothing_from_the_package(leaf: str) -> None:
     project_imports = {m for m in _imported_modules(SRC / leaf) if m.startswith(PACKAGE)}
     assert project_imports == set()
@@ -166,3 +212,14 @@ class TestResolver:
     def test_init_relative_import_resolves(self, check) -> None:
         found = check("services/tools/__init__.py", "from ..llm import z\n")
         assert f"{PACKAGE}.services.llm" in found
+
+    def test_transport_dependencies_are_rejected_inside_services(self, check) -> None:
+        check(
+            "app/ingress/interface.py",
+            f"from {PACKAGE}.app.socketio_server import socket_event_name\n",
+        )
+        assert _app_layer_violations()
+
+    def test_lower_application_dependencies_are_allowed(self, check) -> None:
+        check("app/ingress/interface.py", f"from {PACKAGE}.app.streaming import StreamingService\n")
+        assert _app_layer_violations() == []

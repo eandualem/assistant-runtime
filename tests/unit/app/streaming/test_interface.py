@@ -555,7 +555,9 @@ class TestStreamingService:
         )
         await service.start()
 
-        with patch.object(TurnRunner, "save_trace", new=AsyncMock()) as save_trace:
+        with patch(
+            "assistant_runtime.app.streaming._telemetry.save_trace", new=AsyncMock()
+        ) as save_trace:
             events = [
                 event async for event in service.stream_message(_request(message_id="user-1"))
             ]
@@ -575,7 +577,7 @@ class TestStreamingService:
         trace_args = save_trace.await_args
         assert trace_args is not None
         assert trace_args.kwargs["trace_id"] == final["trace_id"]
-        assert any(event["type"] == "debug_error" for event in trace_args.args[1])
+        assert any(event["type"] == "debug_error" for event in trace_args.args[2])
 
     @pytest.mark.asyncio
     async def test_provider_client_error_persists_debug_error_with_trace_id(self) -> None:
@@ -603,7 +605,9 @@ class TestStreamingService:
         )
         await service.start()
 
-        with patch.object(TurnRunner, "save_trace", new=AsyncMock()) as save_trace:
+        with patch(
+            "assistant_runtime.app.streaming._telemetry.save_trace", new=AsyncMock()
+        ) as save_trace:
             events = [
                 event async for event in service.stream_message(_request(message_id="user-1"))
             ]
@@ -626,7 +630,7 @@ class TestStreamingService:
             event["type"] == "debug_error"
             and event["trace_id"] == final["trace_id"]
             and event["error_type"] == "provider_client_error"
-            for event in trace_args.args[1]
+            for event in trace_args.args[2]
         )
 
 
@@ -1392,7 +1396,7 @@ class TestAuxiliaryUsageMerge:
     @pytest.mark.asyncio
     async def test_extraction_merges_into_the_rows_current_usage(self) -> None:
         """A continuation that saved newer usage on the row is not overwritten."""
-        from assistant_runtime.app.streaming._runner import TurnRunner, _RunState
+        from assistant_runtime.app.streaming._snapshot import RunSnapshot
 
         service = _make_service()
         await service.start()
@@ -1404,7 +1408,7 @@ class TestAuxiliaryUsageMerge:
             "sess-1", result.message_id, usage={"input_tokens": 50, "output_tokens": 5}
         )
         runner = service._runner
-        state = _RunState(stored_usage={"input_tokens": 5, "output_tokens": 1})
+        state = RunSnapshot(stored_usage={"input_tokens": 5, "output_tokens": 1})
         plan = MagicMock(
             session_id="sess-1",
             assistant_message_id=result.message_id,
@@ -1444,7 +1448,7 @@ class TestExtractionSnapshot:
 
 class TestAuxiliaryKeptAtPersistence:
     def test_row_sections_the_snapshot_lacks_are_kept(self) -> None:
-        from assistant_runtime.app.streaming._runner import _keep_row_auxiliary
+        from assistant_runtime.app.streaming._snapshot import _keep_row_auxiliary
 
         row = {"usage": {"input_tokens": 9, "auxiliary": {"working_memory": {"input_tokens": 3}}}}
         snapshot = {"input_tokens": 12, "auxiliary": {"summarization": {"input_tokens": 1}}}
@@ -1461,7 +1465,7 @@ class TestAuxiliaryKeptAtPersistence:
 
 class TestLatestBackgroundUsage:
     async def test_continuation_keeps_newer_memory_total_without_double_counting(self):
-        from assistant_runtime.app.streaming._runner import _RunState
+        from assistant_runtime.app.streaming._snapshot import RunSnapshot, persist_snapshot
         from assistant_runtime.app.streaming._turn import TurnPlan
 
         service = _make_service()
@@ -1488,13 +1492,13 @@ class TestLatestBackgroundUsage:
                 assistant_parent_id=None,
                 prior_usage=old,
             )
-            continuation = _RunState(usage=plan.prior_usage)
+            continuation = RunSnapshot(usage=plan.prior_usage)
             service._assistant_service.update_working_memory = AsyncMock(
                 return_value={"input_tokens": 7}
             )
-            await service._runner._update_working_memory(plan, _RunState(stored_usage=old))
+            await service._runner._update_working_memory(plan, RunSnapshot(stored_usage=old))
             for _ in range(2):
-                await service._runner._persist(plan, continuation)
+                await persist_snapshot(service._sessions, plan, continuation)
                 usage = sessions.get_message("sess-1", "answer")["usage"]
                 assert usage["input_tokens"] == 10
                 assert usage["auxiliary"]["working_memory"]["input_tokens"] == 10

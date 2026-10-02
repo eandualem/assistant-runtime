@@ -23,6 +23,7 @@ from assistant_runtime.app.access.exceptions import AccessDeniedError
 from assistant_runtime.app.access.interface import AccessService
 from assistant_runtime.app.assistant.exceptions import AgentRunError, SessionError
 from assistant_runtime.app.assistant.models import AssistantRequest, AssistantResult
+from assistant_runtime.app.streaming import _telemetry
 from assistant_runtime.app.streaming._control import TurnControl
 from assistant_runtime.app.streaming._event_builder import (
     make_agent_status_event,
@@ -32,7 +33,7 @@ from assistant_runtime.app.streaming._event_builder import (
     make_voice_event,
 )
 from assistant_runtime.app.streaming._host_tool import clear_stale_pending_call
-from assistant_runtime.app.streaming._runner import TurnRunner, format_error_message
+from assistant_runtime.app.streaming._runner import TurnRunner
 from assistant_runtime.app.streaming._turn import TurnPlanner, apply_binding
 from assistant_runtime.app.streaming.config import StreamingConfig
 from assistant_runtime.app.streaming.exceptions import StreamingError, StreamSetupError
@@ -630,7 +631,8 @@ class StreamingService:
             message = "Setup failed"
         # A denied request leaves nothing under the session it could not reach.
         if not isinstance(exc, AccessDeniedError):
-            await self._runner.save_trace(
+            await _telemetry.save_trace(
+                self._db,
                 request.session_id,
                 [
                     make_debug_error_event(
@@ -655,7 +657,7 @@ class StreamingService:
             error_type=error_type,
         )
         yield make_error_event(
-            format_error_message(message, trace_id),
+            _telemetry.format_error_message(message, trace_id),
             error_type=error_type,
             trace_id=trace_id,
             terminal=True,

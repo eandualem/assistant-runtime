@@ -13,7 +13,8 @@ import asyncio
 import json
 import os
 import re
-from typing import Any, Protocol
+from collections.abc import AsyncIterator
+from typing import Protocol
 from urllib.parse import quote
 
 import httpx
@@ -24,6 +25,22 @@ from assistant_runtime.app.voice.exceptions import VoiceError
 
 # Known request rejections; timeout, proxy/nonstandard and other statuses stay unknown.
 _REJECTED_CREATE_STATUSES = {400, 401, 402, 403, 404, 405, 409, 413, 415, 422, 429}
+
+
+class VoiceConnection(Protocol):
+    """The sideband operations shared by the provider adapters."""
+
+    def __aiter__(self) -> AsyncIterator[str | bytes]: ...
+
+    async def send(self, frame: str) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+class FactConnection(VoiceConnection, Protocol):
+    """The extra operation supplied when a transport accepts host facts."""
+
+    async def append_fact(self, text: str, *, speak: bool) -> None: ...
 
 
 class VoiceTransport(Protocol):
@@ -52,7 +69,7 @@ class VoiceTransport(Protocol):
 
     async def create(self, api_key: str | None, session: dict, sdp: str) -> tuple[str, str]: ...
 
-    async def attach(self, api_key: str | None, provider_id: str) -> Any: ...
+    async def attach(self, api_key: str | None, provider_id: str) -> VoiceConnection: ...
 
     def abandon(self, provider_id: str, api_key: str | None) -> None:
         """Stop a session that was created but never attached; best effort, not awaited."""
@@ -207,7 +224,7 @@ class LiveTransport:
                 allocation_status="unknown",
             ) from exc
 
-    async def attach(self, api_key: str, session_id: str) -> Any:
+    async def attach(self, api_key: str, session_id: str) -> VoiceConnection:
         # Import only when voice is enabled, with a declared optional extra.
         from websockets.asyncio.client import connect
 
@@ -246,6 +263,6 @@ class LiveTransport:
         await self.http.aclose()
 
 
-async def send(connection: Any, event: dict) -> None:
+async def send(connection: VoiceConnection, event: dict) -> None:
     async with asyncio.timeout(10):
         await connection.send(json.dumps(event))
