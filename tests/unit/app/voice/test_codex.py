@@ -673,6 +673,26 @@ async def test_a_failed_read_ends_the_server_and_releases_waiters(tmp_path):
         await server.stop()
 
 
+async def test_stopping_the_server_releases_an_outstanding_rpc(tmp_path):
+    server = _AppServer(_fake_codex(tmp_path, OVERSIZED), 5)
+    await server.ensure_started()
+    link = server._link
+    calls = server.subscribe("thread-1")
+    pending = asyncio.create_task(server.request("wait", {}))
+    try:
+        await until(lambda: bool(link.pending))
+        await server.stop()
+        with pytest.raises(VoiceError, match="exited"):
+            await asyncio.wait_for(pending, 1)
+        assert (await asyncio.wait_for(calls.get(), 1))["params"]["reason"] == "app_server_exit"
+        assert link.reader.done()
+        assert link.reader.exception() is None
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        await server.stop()
+
+
 async def test_a_cli_that_cannot_run_is_checked_again(tmp_path):
     transport = CodexTransport(
         str(tmp_path / "missing-codex"),

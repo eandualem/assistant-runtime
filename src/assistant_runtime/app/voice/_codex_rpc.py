@@ -145,17 +145,22 @@ class _AppServer:
                     link.proc.kill()
             # Drain and reap before releasing waiters or losing the only link to
             # this process; stop() can no longer find it after detachment.
-            await link.proc.communicate()
-            if self._link is link:
-                self._link = None
-            for future in link.pending.values():
-                if not future.done():
-                    future.set_exception(VoiceError("Codex app-server exited", 502))
-            link.pending.clear()
-            for queue in link.threads.values():
-                queue.put_nowait(
-                    {"method": "thread/realtime/closed", "params": {"reason": "app_server_exit"}}
-                )
+            try:
+                await link.proc.communicate()
+            finally:
+                if self._link is link:
+                    self._link = None
+                for future in link.pending.values():
+                    if not future.done():
+                        future.set_exception(VoiceError("Codex app-server exited", 502))
+                link.pending.clear()
+                for queue in link.threads.values():
+                    queue.put_nowait(
+                        {
+                            "method": "thread/realtime/closed",
+                            "params": {"reason": "app_server_exit"},
+                        }
+                    )
 
     async def request(self, method: str, params: dict) -> dict:
         link = self._link
@@ -203,5 +208,6 @@ class _AppServer:
                 link.proc.kill()
                 await link.proc.wait()
         if link.reader is not None:
-            link.reader.cancel()
+            # Process exit delivers EOF; let the reader finish draining and
+            # notifying its waiters instead of interrupting its finalization.
             await asyncio.gather(link.reader, return_exceptions=True)
