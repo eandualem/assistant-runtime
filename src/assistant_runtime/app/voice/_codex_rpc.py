@@ -134,15 +134,20 @@ class _AppServer:
                 thread = (message.get("params") or {}).get("threadId")
                 if thread in link.threads:
                     link.threads[thread].put_nowait(message)
+        except Exception as exc:
+            logger.warning("Codex app-server reader failed: {}", type(exc).__name__)
         finally:
             # Also when reading fails (an oversized line): nothing reads this
             # server any more, so end it; its requests and calls end with it,
             # and the next call starts a new one.
-            if self._link is link:
-                self._link = None
             if link.proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
                     link.proc.kill()
+            # Drain and reap before releasing waiters or losing the only link to
+            # this process; stop() can no longer find it after detachment.
+            await link.proc.communicate()
+            if self._link is link:
+                self._link = None
             for future in link.pending.values():
                 if not future.done():
                     future.set_exception(VoiceError("Codex app-server exited", 502))

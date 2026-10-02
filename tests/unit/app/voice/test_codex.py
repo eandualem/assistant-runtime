@@ -658,12 +658,17 @@ async def test_a_failed_read_ends_the_server_and_releases_waiters(tmp_path):
     server = _AppServer(_fake_codex(tmp_path, OVERSIZED), 5)
     try:
         await server.ensure_started()
+        link = server._link
         calls = server.subscribe("thread-1")
         with pytest.raises(VoiceError, match="exited"):
             await server.request("boom", {})
         closed = await asyncio.wait_for(calls.get(), 5)
         assert closed["params"]["reason"] == "app_server_exit"
         assert not server.running  # the next call starts a new server
+        assert link.proc.returncode is not None
+        assert link.proc.stdin.is_closing()
+        assert link.reader.done()
+        assert link.reader.exception() is None
     finally:
         await server.stop()
 
@@ -817,12 +822,13 @@ async def test_usage_is_not_read_while_the_service_is_stopped(codex):
 
 async def test_a_servers_cleanup_ends_its_own_calls_even_after_it_was_replaced():
     from types import SimpleNamespace
+    from unittest.mock import AsyncMock
 
     from assistant_runtime.app.voice._codex_rpc import _Link
 
     server = _AppServer("codex", 1)
     old_output = asyncio.StreamReader()
-    old = _Link(SimpleNamespace(stdout=old_output, returncode=0))
+    old = _Link(SimpleNamespace(stdout=old_output, returncode=0, communicate=AsyncMock()))
     new = _Link(SimpleNamespace(returncode=None))
     server._link = new  # a newer server took over before the old one's cleanup
     loop = asyncio.get_running_loop()
