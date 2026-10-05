@@ -175,6 +175,8 @@ class TestWorkingMemory:
 
         prompt = llm_service.build_agent.call_args.kwargs["system_prompt"]
         assert ("Ship the release" in prompt) is enabled
+        # The session routes its requests to one prompt cache.
+        assert llm_service.build_agent.call_args.kwargs["prompt_cache_key"] == "sess-1"
 
 
 class TestProfilePrompt:
