@@ -223,11 +223,12 @@ latest `usage` of each assistant message for a session total, not every
 
 | Route | Returns |
 |---|---|
-| `GET /api/sessions?limit=50&offset=0` | `[{session_id, owner_id, title, turn_number, message_count, created_at}]`; the caller's own sessions, every session for an administrator |
+| `GET /api/sessions?limit=50&offset=0&updated_after=` | `[{session_id, owner_id, title, turn_number, message_count, created_at, updated_at}]`, most recently updated first; the caller's own sessions, every session for an administrator. `updated_after` (ISO 8601, UTC when it has no timezone) keeps those updated strictly later; without Postgres `updated_at` is the session's last use (reads included) |
 | `GET /api/sessions/{id}` | turn count, message count, `pending_action` (`tool_call_id`, `tool_name`, `arguments`, `assistant_message_id`, `queued`: further call ids from the same response still to be handed over, or null): everything a host needs to perform the waiting action and continue |
 | `GET /api/sessions/{id}/messages?leaf_id=` | the root-to-leaf path for display (see below); `leaf_id` selects another leaf's path, for branch switching |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
 | `POST /api/sessions/{id}/messages` `{"segments", "content"?, "id"?, "profile"?, "subject"?}` | add a card the host made outside any turn as a `host` message at the active leaf (`201`, the display row); administration. A missing session is started, owned by the caller, and `profile` and `subject` bind a session the card starts as a first message's would. `409` while a turn, a pending host action or a voice call has the session, for a repeated `id`, or for a `profile` or `subject` other than the session's binding; `404` for an unknown profile |
+| `GET /api/sessions/{id}/messages/{message_id}` | one message in the display form `/messages` uses; `404` when the session or the message is unknown, or the message is another session's |
 | `GET /api/sessions/{id}/messages/{message_id}/prompt` | the system prompt an assistant message was produced with (see below); `404` when none is recorded |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |
 | `POST /api/sessions/{id}/repair` | resolve the pending host action and every call without a result as `unknown`, so the session can continue |
@@ -395,7 +396,7 @@ time, in order; at most `TASKS__MAX_CONCURRENT` run at once. They need
 | Route | Purpose |
 |---|---|
 | `POST /api/tasks` `{"task", "profile"?, "subject"?, "context"?, "parent_session_id"?}` | queue a task (`202`); `503` when disabled, `429` when too many wait, `422` for an empty task or an invalid subject name, `404` for a profile that isn't registered (whatever its spelling) |
-| `GET /api/tasks?parent_session_id=&status=&limit=` | the caller's tasks newest first (every task for an administrator) |
+| `GET /api/tasks?parent_session_id=&status=&limit=&before=` | the caller's tasks newest first (every task for an administrator); `before` names a task the caller can see and lists only older ones (by `created_at`, then id), `404` when unknown |
 | `GET /api/tasks/{id}` | one task: `status` (`queued`, `running`, `done`, `failed`, `cancelled`, `interrupted`), `result`, `error`, `usage`, times |
 | `POST /api/tasks/{id}/cancel` | stop a queued or running task |
 
@@ -441,7 +442,7 @@ is off. A host shows an agent's effective values from its `config`, then
 | `POST /api/agents/{id}/session` `{"session_id"?}` | move the agent to a fresh session (a new id unless one is given); `409` when stopped or the session is taken |
 | `POST /api/agents/{id}/stop` | stop the agent; its queued and running messages end `cancelled` |
 | `POST /api/agents/{id}/messages` `{"content", "parent_session_id"?}` | queue a message (`202`); `409` when the agent is stopped, `429` when too many wait |
-| `GET /api/agents/{id}/messages?parent_session_id=&status=&limit=` | the agent's messages newest first |
+| `GET /api/agents/{id}/messages?parent_session_id=&status=&limit=&before=` | the agent's messages newest first; `before` names one of them and lists only older ones (by `created_at`, then id), `404` when unknown |
 | `GET /api/agents/{id}/messages/{message_id}` | one message: `status` (as for tasks), `session_id` it ran in, `result`, `error`, `usage`, times |
 
 When a message's turn ends, `agent_message_finished` is published on
@@ -483,7 +484,7 @@ status change is appended to `history` with its time and principal; new
 | Route | Purpose |
 |---|---|
 | `POST /api/actions` `{"kind", "text"?, "arguments"?, "profile"?, "subject"?, "status"?}` | record an action (`201`), `proposed` by default; `id` is an increasing integer |
-| `GET /api/actions?status=&kind=&profile=&subject=&limit=` | `{actions}`, newest first |
+| `GET /api/actions?status=&kind=&profile=&subject=&limit=&before=` | `{actions}`, newest first (by id); `before` names an action and lists only lower ids, `404` when unknown |
 | `GET /api/actions/{id}` | the action with its `confirmations` in insertion order |
 | `PATCH /api/actions/{id}` `{"status"?, "text"?, "arguments"?, "confirmed_by"?, "decided_at"?, "results"?, "expected_status"?, "expected_revision"?}` | change it; `results` merge per recipient; with `expected_status` (a list) or `expected_revision`, only while the action matches (`409` otherwise) |
 | `POST /api/actions/{id}/confirmations` `{"id", "recipient", "kind", "revision", "text_sha256", "source", "confirmed_at", "key_epoch"?}` | the owner's confirmation for one recipient, written before the send (`201`; a repeated `id` is `409`); `id` is a UUID4, `kind` `message` or `steer`, `source` `button`, `typed` or `voice`, `confirmed_at` with a UTC offset |
@@ -518,6 +519,7 @@ is 1 to 200 letters, digits or `_ . : @ -`.
 | `GET /api/media/{image_id}` | a generated image from the cache |
 | `GET /api/media/video/{job_id}` | video job status |
 | `GET /api/debug/tools` | the complete tool registry and MCP server status |
+| `GET /api/counts?from=&to=` | `{from, to, events, tasks, actions, agent_messages, messages}`: records created in `[from, to)` (ISO 8601, UTC when they have no timezone; `422` unless `from` is before `to`), from Postgres when it is up, the in-memory stores otherwise (a service that is not running counts 0; voice calls are not counted); administration |
 
 ## Decisions
 

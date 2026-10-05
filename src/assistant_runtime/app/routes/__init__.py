@@ -9,6 +9,7 @@ from assistant_runtime.app.routes.agui import router as agui_router
 from assistant_runtime.app.routes.artifacts import prompt_router, proposals_router, subjects_router
 from assistant_runtime.app.routes.artifacts import router as artifacts_router
 from assistant_runtime.app.routes.chat import router as chat_router
+from assistant_runtime.app.routes.counts import router as counts_router
 from assistant_runtime.app.routes.debug import router as debug_router
 from assistant_runtime.app.routes.decisions import router as decisions_router
 from assistant_runtime.app.routes.events import router as events_router
@@ -34,6 +35,7 @@ router.include_router(proposals_router)
 router.include_router(subjects_router)
 router.include_router(prompt_router)
 router.include_router(chat_router)
+router.include_router(counts_router)
 router.include_router(debug_router)
 router.include_router(decisions_router)
 router.include_router(events_router)

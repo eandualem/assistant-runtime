@@ -245,11 +245,16 @@ class SessionPersistence:
             await SessionRepository(db_session).delete(session_id)
 
     async def list_sessions(
-        self, limit: int, offset: int, *, owner_id: str | None = None
+        self,
+        limit: int,
+        offset: int,
+        *,
+        owner_id: str | None = None,
+        updated_after: datetime | None = None,
     ) -> list[dict[str, Any]]:
         async with self._db.session_context() as db_session:
             rows = await SessionRepository(db_session).list_all(
-                limit=limit, offset=offset, owner_id=owner_id
+                limit=limit, offset=offset, owner_id=owner_id, updated_after=updated_after
             )
             counts = await MessageRepository(db_session).count_by_sessions([row.id for row in rows])
             return [
@@ -260,9 +265,14 @@ class SessionPersistence:
                     "turn_number": row.turn_number,
                     "message_count": counts.get(row.id, 0),
                     "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
                 }
                 for row in rows
             ]
+
+    async def count_messages(self, start: datetime, end: datetime) -> int:
+        async with self._db.session_context() as db_session:
+            return await MessageRepository(db_session).count_created(start, end)
 
     async def cleanup_expired(self) -> int:
         async with self._db.session_context() as db_session:

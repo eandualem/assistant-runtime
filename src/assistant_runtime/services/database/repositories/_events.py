@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,3 +62,12 @@ class EventRepository:
                 query = query.where(getattr(EventORM, name) == value)
         result = await self._session.execute(query.order_by(EventORM.id).limit(limit))
         return list(result.scalars().all())
+
+    async def count_created(self, start: datetime, end: datetime) -> int:
+        """Events created in ``[start, end)``."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(EventORM)
+            .where(EventORM.created_at >= start, EventORM.created_at < end)
+        )
+        return int(result.scalar_one())

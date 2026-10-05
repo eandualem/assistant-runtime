@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,14 +42,27 @@ class ActionRepository:
         await self._session.flush()
         return result.scalar_one()
 
-    async def list(self, *, limit: int, **filters: Any) -> list[ActionORM]:
-        """Newest first, filtered by whatever is given."""
+    async def list(
+        self, *, limit: int, before: int | None = None, **filters: Any
+    ) -> list[ActionORM]:
+        """Newest first (by id), filtered by whatever is given; ``before`` lists lower ids only."""
         query = select(ActionORM)
+        if before is not None:
+            query = query.where(ActionORM.id < before)
         for name, value in filters.items():
             if value is not None:
                 query = query.where(getattr(ActionORM, name) == value)
         result = await self._session.execute(query.order_by(ActionORM.id.desc()).limit(limit))
         return list(result.scalars().all())
+
+    async def count_created(self, start: datetime, end: datetime) -> int:
+        """Actions created in ``[start, end)``."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(ActionORM)
+            .where(ActionORM.created_at >= start, ActionORM.created_at < end)
+        )
+        return int(result.scalar_one())
 
     async def add_confirmation(self, **values: Any) -> ActionConfirmationORM | None:
         """Insert a confirmation; None when its id is already taken."""

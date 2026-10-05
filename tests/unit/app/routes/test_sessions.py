@@ -70,7 +70,9 @@ class TestListSessions:
             response = await client.get("/api/sessions")
 
         assert response.status_code == 200
-        assert response.json() == [
+        listed = response.json()
+        assert isinstance(listed[0].pop("updated_at"), str)
+        assert listed == [
             {
                 "session_id": "sess-1",
                 "owner_id": None,
@@ -80,6 +82,26 @@ class TestListSessions:
                 "created_at": None,
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_updated_after_filters_by_last_update(self) -> None:
+        from datetime import UTC, datetime
+
+        sessions = SessionStore()
+        sessions.get_context("old")["used_at"] = datetime(2026, 10, 1, 8, tzinfo=UTC)
+        sessions.get_context("new")["used_at"] = datetime(2026, 10, 1, 12, tzinfo=UTC)
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            aware = await client.get(
+                "/api/sessions", params={"updated_after": "2026-10-01T10:00:00+00:00"}
+            )
+            naive = await client.get("/api/sessions", params={"updated_after": "2026-10-01T12:00"})
+            bad = await client.get("/api/sessions", params={"updated_after": "yesterday"})
+
+        assert [s["session_id"] for s in aware.json()] == ["new"]
+        assert naive.json() == []  # strictly later, the naive value read as UTC
+        assert bad.status_code == 422
 
 
 class TestGetSession:
@@ -245,6 +267,27 @@ class TestGetSessionMessages:
         messages = response.json()
         assert [message["id"] for message in messages] == ["user-1", "assistant-1", "steering-1"]
         assert messages[-1]["role"] == "steering"
+
+
+class TestGetSessionMessage:
+    @pytest.mark.asyncio
+    async def test_returns_one_message_in_display_form(self) -> None:
+        sessions = SessionStore()
+        await _seed_branching_session(sessions)
+        await sessions.register_user_message(_request(message_id="other-1", session_id="sess-2"))
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            listed = await client.get("/api/sessions/sess-1/messages?leaf_id=assistant-1")
+            found = await client.get("/api/sessions/sess-1/messages/assistant-1")
+            elsewhere = await client.get("/api/sessions/sess-1/messages/other-1")
+            unknown = await client.get("/api/sessions/sess-1/messages/missing")
+            no_session = await client.get("/api/sessions/nope/messages/assistant-1")
+
+        assert found.status_code == 200
+        assert found.json() == listed.json()[-1]
+        assert (elsewhere.status_code, unknown.status_code) == (404, 404)
+        assert no_session.json()["detail"] == "Session not found"
 
 
 class TestGetSessionTree:

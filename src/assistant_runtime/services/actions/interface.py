@@ -128,16 +128,27 @@ class ActionService:
         profile: str | None = None,
         subject: str | None = None,
         limit: int = 100,
+        before: int | None = None,
     ) -> list[ActionRecord]:
-        """Newest first."""
+        """Newest first; with ``before`` (an action's id), only the actions older than it."""
         async with self._require_store().transaction() as tx:
+            if before is not None and await tx.get_action(before) is None:
+                raise ActionNotFoundError(f"No action {before}")
             return await tx.list_actions(
                 limit=min(limit, self._config.max_page),
+                before=before,
                 status=status,
                 kind=kind,
                 profile=profile,
                 subject=subject,
             )
+
+    async def count(self, start: datetime, end: datetime) -> int:
+        """Actions created in ``[start, end)``; 0 while the service is not started."""
+        if self._store is None:
+            return 0
+        async with self._store.transaction() as tx:
+            return await tx.count_created(start, end)
 
     async def update(
         self,

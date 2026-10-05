@@ -21,6 +21,22 @@ class AgentTakenError(Exception):
     """Another active agent has this profile and subject, or this session."""
 
 
+def _older_than(records: dict[str, Any], before: Any) -> list[Any]:
+    """The records created before ``before``, oldest first (all of them without it).
+
+    Records are kept in creation order, the order the lists are read in.
+    """
+    values = list(records.values())
+    if before is None:
+        return values
+    return values[: list(records).index(before.id)]
+
+
+def _key(before: Any) -> tuple[datetime, str] | None:
+    """The ``(created_at, id)`` keyset a database list continues below."""
+    return (before.created_at, before.id) if before is not None else None
+
+
 class TaskStore(Protocol):
     durable: bool
 
@@ -39,9 +55,14 @@ class TaskStore(Protocol):
         parent_session_id: str | None,
         status: str | None,
         limit: int,
+        before: TaskRecord | None = None,
     ) -> list[TaskRecord]: ...
 
     async def mark_unfinished(self, status: str, error: str) -> list[TaskRecord]: ...
+
+    async def count(self, start: datetime, end: datetime) -> int: ...
+
+    async def count_messages(self, start: datetime, end: datetime) -> int: ...
 
     async def create_agent(self, record: AgentRecord) -> AgentRecord: ...
 
@@ -69,6 +90,7 @@ class TaskStore(Protocol):
         parent_session_id: str | None,
         status: str | None,
         limit: int,
+        before: AgentMessageRecord | None = None,
     ) -> list[AgentMessageRecord]: ...
 
     async def mark_unfinished_messages(
@@ -110,10 +132,11 @@ class InMemoryTaskStore:
         parent_session_id: str | None,
         status: str | None,
         limit: int,
+        before: TaskRecord | None = None,
     ) -> list[TaskRecord]:
         records = [
             r
-            for r in self._tasks.values()
+            for r in _older_than(self._tasks, before)
             if (created_by is None or r.created_by == created_by)
             and (parent_session_id is None or r.parent_session_id == parent_session_id)
             and (status is None or r.status == status)
@@ -122,6 +145,12 @@ class InMemoryTaskStore:
 
     async def mark_unfinished(self, status: str, error: str) -> list[TaskRecord]:
         return []  # nothing survives a restart in memory
+
+    async def count(self, start: datetime, end: datetime) -> int:
+        return sum(1 for r in self._tasks.values() if start <= r.created_at < end)
+
+    async def count_messages(self, start: datetime, end: datetime) -> int:
+        return sum(1 for r in self._messages.values() if start <= r.created_at < end)
 
     async def create_agent(self, record: AgentRecord) -> AgentRecord:
         record = replace(deepcopy(record), created_at=record.created_at or datetime.now(UTC))
@@ -172,10 +201,11 @@ class InMemoryTaskStore:
         parent_session_id: str | None,
         status: str | None,
         limit: int,
+        before: AgentMessageRecord | None = None,
     ) -> list[AgentMessageRecord]:
         records = [
             r
-            for r in self._messages.values()
+            for r in _older_than(self._messages, before)
             if (agent_id is None or r.agent_id == agent_id)
             and (created_by is None or r.created_by == created_by)
             and (parent_session_id is None or r.parent_session_id == parent_session_id)
@@ -229,6 +259,7 @@ class DatabaseTaskStore:
         parent_session_id: str | None,
         status: str | None,
         limit: int,
+        before: TaskRecord | None = None,
     ) -> list[TaskRecord]:
         async with self._database.session_context() as session:
             rows = await self._repository(session).list(
@@ -236,6 +267,7 @@ class DatabaseTaskStore:
                 parent_session_id=parent_session_id,
                 status=status,
                 limit=limit,
+                before=_key(before),
             )
             return [self._record(row) for row in rows]
 
@@ -243,6 +275,14 @@ class DatabaseTaskStore:
         async with self._database.session_context() as session:
             rows = await self._repository(session).mark_unfinished(status, error)
             return [self._record(row) for row in rows]
+
+    async def count(self, start: datetime, end: datetime) -> int:
+        async with self._database.session_context() as session:
+            return await self._repository(session).count_created(start, end)
+
+    async def count_messages(self, start: datetime, end: datetime) -> int:
+        async with self._database.session_context() as session:
+            return await self._agents(session).count_messages_created(start, end)
 
     @staticmethod
     def _agents(session: Any) -> Any:
@@ -315,6 +355,7 @@ class DatabaseTaskStore:
         parent_session_id: str | None,
         status: str | None,
         limit: int,
+        before: AgentMessageRecord | None = None,
     ) -> list[AgentMessageRecord]:
         async with self._database.session_context() as session:
             rows = await self._agents(session).list_messages(
@@ -323,6 +364,7 @@ class DatabaseTaskStore:
                 parent_session_id=parent_session_id,
                 status=status,
                 limit=limit,
+                before=_key(before),
             )
             return [self._message(row) for row in rows]
 

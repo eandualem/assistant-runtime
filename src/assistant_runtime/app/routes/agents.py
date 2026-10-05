@@ -154,19 +154,24 @@ async def list_agent_messages(
         None, pattern="^(queued|running|done|failed|cancelled|interrupted)$"
     ),
     limit: int = Query(50, ge=1, le=500),
+    before: str | None = None,
 ) -> list[dict]:
-    """Newest first: the agent's messages that the caller may read."""
+    """Newest first: the agent's messages that the caller may read.
+
+    ``before`` names one of them: only older ones are listed (``404`` when it is unknown).
+    """
     try:
         await tasks.get_agent(agent_id, principal)
+        records = await tasks.list_messages(
+            principal,
+            agent_id=agent_id,
+            parent_session_id=parent_session_id,
+            status=status,
+            limit=limit,
+            before=before,
+        )
     except TaskError as e:
         raise _http_error(e) from e
-    records = await tasks.list_messages(
-        principal,
-        agent_id=agent_id,
-        parent_session_id=parent_session_id,
-        status=status,
-        limit=limit,
-    )
     return [record.to_dict() for record in records]
 
 

@@ -657,3 +657,64 @@ async def test_agent_config_and_completed_usage_cannot_be_changed_through_return
         assert (await service.get(task.id)).usage == {"requests": 1}
     finally:
         await service.stop()
+
+
+class TestReadPaging:
+    async def _seeded(self):
+        from datetime import UTC, datetime, timedelta
+
+        service, _, _ = await _service()
+        start = datetime(2026, 10, 1, tzinfo=UTC)
+        for n in range(4):
+            owner = "bob" if n == 2 else "alice"
+            at = start + timedelta(minutes=n)
+            await service._store.create(
+                TaskRecord(
+                    id=f"t{n}",
+                    session_id=f"task-t{n}",
+                    task=f"task {n}",
+                    status="done",
+                    created_by=owner,
+                    created_at=at,
+                )
+            )
+            await service._store.create_message(
+                AgentMessageRecord(
+                    id=f"m{n}",
+                    agent_id="a2" if n == 2 else "a1",
+                    content=f"message {n}",
+                    status="done",
+                    created_by=owner,
+                    created_at=at,
+                )
+            )
+        return service, start
+
+    async def test_before_lists_the_next_older_tasks(self):
+        service, _ = await self._seeded()
+        assert [r.id for r in await service.list(ADMIN, before="t3", limit=2)] == ["t2", "t1"]
+        assert [r.id for r in await service.list(ALICE, before="t3")] == ["t1", "t0"]
+        assert [r.id for r in await service.list(ALICE, before="t0")] == []
+        with pytest.raises(TaskNotFoundError):
+            await service.list(ALICE, before="missing")
+        with pytest.raises(TaskNotFoundError):  # another caller's task is no cursor
+            await service.list(ALICE, before="t2")
+
+    async def test_before_lists_the_next_older_agent_messages(self):
+        service, _ = await self._seeded()
+        older = await service.list_messages(ADMIN, agent_id="a1", before="m3")
+        assert [r.id for r in older] == ["m1", "m0"]
+        with pytest.raises(AgentNotFoundError):
+            await service.list_messages(ADMIN, agent_id="a1", before="missing")
+        with pytest.raises(AgentNotFoundError):  # a message of another agent
+            await service.list_messages(ADMIN, agent_id="a1", before="m2")
+
+    async def test_counts_cover_the_half_open_range(self):
+        from datetime import timedelta
+
+        service, start = await self._seeded()
+        end = start + timedelta(minutes=3)
+        assert await service.count(start, end) == 3
+        assert await service.count_messages(start + timedelta(minutes=1), end) == 2
+        await service.stop()
+        assert await service.count(start, end) == 0  # not running: nothing to count

@@ -79,6 +79,7 @@ class SessionStore:
             return self._sessions[session_id]
         self._evict_if_needed()
         ctx = _empty_context()
+        ctx["used_at"] = datetime.now(UTC)
         self._sessions[session_id] = ctx
         return ctx
 
@@ -610,31 +611,49 @@ class SessionStore:
         self._sessions.pop(session_id, None)
 
     async def list_sessions(
-        self, limit: int = 50, offset: int = 0, *, owner_id: str | None = None
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        *,
+        owner_id: str | None = None,
+        updated_after: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions with metadata and tree message counts.
 
         ``owner_id`` limits the list to that principal's sessions; None lists
-        everything (administration).
+        everything (administration). ``updated_after`` keeps only sessions
+        whose ``updated_at`` is strictly later; a value without a timezone is
+        taken as UTC. Without a database, ``updated_at`` is when the session
+        was last used (read or written), the clock that orders this list.
         """
+        if updated_after is not None and updated_after.tzinfo is None:
+            updated_after = updated_after.replace(tzinfo=UTC)
         if self._db is None:
             # Most recently used first, like the database's ``updated_at desc``:
             # ``_touch_session`` moves a used session to the end of the dict.
-            sessions = [
-                {
-                    "session_id": sid,
-                    "owner_id": ctx.get("owner_id"),
-                    "title": ctx.get("title"),
-                    "turn_number": ctx.get("turn_number", 0),
-                    "message_count": ctx.get("message_count", 0),
-                    "created_at": None,
-                }
-                for sid, ctx in reversed(list(self._sessions.items()))
-                if owner_id is None or ctx.get("owner_id") == owner_id
-            ]
+            sessions = []
+            for sid, ctx in reversed(list(self._sessions.items())):
+                used_at = ctx.get("used_at")
+                if owner_id is not None and ctx.get("owner_id") != owner_id:
+                    continue
+                if updated_after is not None and (used_at is None or used_at <= updated_after):
+                    continue
+                sessions.append(
+                    {
+                        "session_id": sid,
+                        "owner_id": ctx.get("owner_id"),
+                        "title": ctx.get("title"),
+                        "turn_number": ctx.get("turn_number", 0),
+                        "message_count": ctx.get("message_count", 0),
+                        "created_at": None,
+                        "updated_at": used_at.isoformat() if used_at else None,
+                    }
+                )
             return sessions[offset : offset + limit]
 
-        results = await self._db.list_sessions(limit, offset, owner_id=owner_id)
+        results = await self._db.list_sessions(
+            limit, offset, owner_id=owner_id, updated_after=updated_after
+        )
         # The in-memory context is ahead of the row for sessions being worked on.
         for result in results:
             ctx = self._sessions.get(result["session_id"])
@@ -645,6 +664,21 @@ class SessionStore:
             if ctx.get("title"):
                 result["title"] = ctx["title"]
         return results
+
+    async def count_messages(self, start: datetime, end: datetime) -> int:
+        """Conversation messages created in ``[start, end)``, across every session.
+
+        Without a database, only the sessions this process still holds count.
+        """
+        if self._db is not None:
+            return await self._db.count_messages(start, end)
+        return sum(
+            1
+            for ctx in self._sessions.values()
+            for record in ctx["message_index"].values()
+            if (created_at := _as_datetime(record.get("created_at"))) is not None
+            and start <= created_at < end
+        )
 
     async def cleanup_expired(self) -> int:
         if self._db is None:
@@ -764,6 +798,7 @@ class SessionStore:
         """Move the session to the most-recently-used end."""
         ctx = self._sessions.pop(session_id, None)
         if ctx is not None:
+            ctx["used_at"] = datetime.now(UTC)
             self._sessions[session_id] = ctx
 
     async def _load_session_singleflight(self, session_id: str) -> dict[str, Any] | None:

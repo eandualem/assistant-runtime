@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant_runtime.services.database.models import (
@@ -47,9 +48,15 @@ class TaskRepository:
         parent_session_id: str | None = None,
         status: str | None = None,
         limit: int = 50,
+        before: tuple[datetime, str] | None = None,
     ) -> list[TaskORM]:
-        """Newest first, filtered by whatever is given."""
+        """Newest first, filtered by whatever is given.
+
+        ``before`` is a ``(created_at, id)`` keyset: only older tasks are listed.
+        """
         query = select(TaskORM).order_by(TaskORM.created_at.desc(), TaskORM.id.desc())
+        if before is not None:
+            query = query.where(tuple_(TaskORM.created_at, TaskORM.id) < tuple_(*before))
         if created_by is not None:
             query = query.where(TaskORM.created_by == created_by)
         if parent_session_id is not None:
@@ -58,6 +65,15 @@ class TaskRepository:
             query = query.where(TaskORM.status == status)
         result = await self._session.execute(query.limit(limit))
         return list(result.scalars().all())
+
+    async def count_created(self, start: datetime, end: datetime) -> int:
+        """Tasks created in ``[start, end)``."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(TaskORM)
+            .where(TaskORM.created_at >= start, TaskORM.created_at < end)
+        )
+        return int(result.scalar_one())
 
     async def mark_unfinished(self, status: str, error: str) -> list[TaskORM]:
         """Finish every queued or running task with ``status`` (after a restart)."""
@@ -137,11 +153,19 @@ class AgentRepository:
         parent_session_id: str | None = None,
         status: str | None = None,
         limit: int = 50,
+        before: tuple[datetime, str] | None = None,
     ) -> list[AgentMessageORM]:
-        """Newest first, filtered by whatever is given."""
+        """Newest first, filtered by whatever is given.
+
+        ``before`` is a ``(created_at, id)`` keyset: only older messages are listed.
+        """
         query = select(AgentMessageORM).order_by(
             AgentMessageORM.created_at.desc(), AgentMessageORM.id.desc()
         )
+        if before is not None:
+            query = query.where(
+                tuple_(AgentMessageORM.created_at, AgentMessageORM.id) < tuple_(*before)
+            )
         if agent_id is not None:
             query = query.where(AgentMessageORM.agent_id == agent_id)
         if created_by is not None:
@@ -152,6 +176,15 @@ class AgentRepository:
             query = query.where(AgentMessageORM.status == status)
         result = await self._session.execute(query.limit(limit))
         return list(result.scalars().all())
+
+    async def count_messages_created(self, start: datetime, end: datetime) -> int:
+        """Agent messages created in ``[start, end)``."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(AgentMessageORM)
+            .where(AgentMessageORM.created_at >= start, AgentMessageORM.created_at < end)
+        )
+        return int(result.scalar_one())
 
     async def mark_unfinished_messages(self, status: str, error: str) -> list[AgentMessageORM]:
         """Finish every queued or running message with ``status`` (after a restart)."""

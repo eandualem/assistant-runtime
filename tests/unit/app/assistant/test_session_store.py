@@ -296,6 +296,7 @@ class TestListSessions:
 
         result = await store.list_sessions()
 
+        assert isinstance(result[0].pop("updated_at"), str)
         assert result == [
             {
                 "session_id": "sess-1",
@@ -306,6 +307,44 @@ class TestListSessions:
                 "created_at": None,
             }
         ]
+
+    async def test_updated_after_keeps_sessions_used_strictly_later(self) -> None:
+        from datetime import UTC, datetime
+
+        store = SessionStore()
+        for sid, hour in (("early", 8), ("noon", 12), ("late", 16)):
+            store.get_context(sid)["used_at"] = datetime(2026, 10, 1, hour, tzinfo=UTC)
+
+        later = await store.list_sessions(updated_after=datetime(2026, 10, 1, 12, tzinfo=UTC))
+        naive = await store.list_sessions(updated_after=datetime(2026, 10, 1, 9))  # UTC
+
+        assert [s["session_id"] for s in later] == ["late"]
+        assert later[0]["updated_at"] == "2026-10-01T16:00:00+00:00"
+        assert [s["session_id"] for s in naive] == ["late", "noon"]
+
+    async def test_updated_after_reaches_the_database_query(self) -> None:
+        from datetime import UTC, datetime
+        from unittest.mock import MagicMock
+
+        store = SessionStore(database_service=MagicMock())
+        store._db.list_sessions = AsyncMock(return_value=[])
+
+        await store.list_sessions(updated_after=datetime(2026, 10, 1, 9))
+
+        store._db.list_sessions.assert_awaited_once_with(
+            50, 0, owner_id=None, updated_after=datetime(2026, 10, 1, 9, tzinfo=UTC)
+        )
+
+    async def test_count_messages_counts_the_half_open_range(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        store = SessionStore()
+        _, user, assistant = await _seed_basic_turn(store)
+        start = user["created_at"]
+
+        assert await store.count_messages(start, assistant["created_at"] + timedelta(1)) == 2
+        assert await store.count_messages(start, start) == 0
+        assert await store.count_messages(datetime(2000, 1, 1, tzinfo=UTC), start) == 0
 
 
 class TestSingleflightHydration:

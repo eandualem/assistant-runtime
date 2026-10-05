@@ -177,15 +177,30 @@ class TaskService:
         parent_session_id: str | None = None,
         status: str | None = None,
         limit: int = 50,
+        before: str | None = None,
     ) -> list[TaskRecord]:
-        """Newest first: the caller's own tasks, or every task for an administrator."""
+        """Newest first: the caller's own tasks, or every task for an administrator.
+
+        ``before`` names a task the caller can see; only older ones are listed
+        (``TaskNotFoundError`` when it is unknown).
+        """
         principal = principal or LOCAL_PRINCIPAL
+        anchor = await self.get(before, principal) if before is not None else None
         return await self._require_store().list(
             created_by=None if principal.is_admin else principal.id,
             parent_session_id=parent_session_id,
             status=status,
             limit=limit,
+            before=anchor,
         )
+
+    async def count(self, start: datetime, end: datetime) -> int:
+        """Tasks created in ``[start, end)``, everyone's; 0 while the service is not started."""
+        return await self._store.count(start, end) if self._store is not None else 0
+
+    async def count_messages(self, start: datetime, end: datetime) -> int:
+        """Agent messages created in ``[start, end)``, everyone's; 0 while not started."""
+        return await self._store.count_messages(start, end) if self._store is not None else 0
 
     async def cancel(self, task_id: str, principal: Principal | None = None) -> TaskRecord:
         """Stop a queued or running task; a finished one is returned as it is."""
@@ -376,15 +391,26 @@ class TaskService:
         parent_session_id: str | None = None,
         status: str | None = None,
         limit: int = 50,
+        before: str | None = None,
     ) -> list[AgentMessageRecord]:
-        """Newest first: the caller's own messages, or every message for an administrator."""
+        """Newest first: the caller's own messages, or every message for an administrator.
+
+        ``before`` names a message the caller can see (of ``agent_id``, when
+        given); only older ones are listed (``AgentNotFoundError`` when it is unknown).
+        """
         principal = principal or LOCAL_PRINCIPAL
+        anchor = None
+        if before is not None:
+            anchor = await self.get_message(before, principal)
+            if agent_id is not None and anchor.agent_id != agent_id:
+                raise AgentNotFoundError(f"No agent message '{before}'")
         return await self._require_store().list_messages(
             agent_id=agent_id,
             created_by=None if principal.is_admin else principal.id,
             parent_session_id=parent_session_id,
             status=status,
             limit=limit,
+            before=anchor,
         )
 
     # --- running ---

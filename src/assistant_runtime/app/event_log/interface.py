@@ -152,6 +152,13 @@ class EventLogService:
                 history=False if news_only else None,
             )
 
+    async def count(self, start: datetime, end: datetime) -> int:
+        """Events stored in ``[start, end)``; 0 while the service is not started."""
+        if self._store is None:
+            return 0
+        async with self._store.transaction() as tx:
+            return await tx.count_created(start, end)
+
     async def update_notice(self, event_id: int, status: str) -> EventRecord:
         """Move an outbound notice forward: ``pending`` → ``delivered`` → ``heard``."""
         if status not in ("delivered", "heard"):

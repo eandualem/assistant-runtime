@@ -176,3 +176,37 @@ class TestOAuthTokenRepository:
         assert "ON CONFLICT (provider, kind) DO UPDATE" in upsert
         assert "oauth_tokens.kind = " in delete
         assert "oauth_tokens.kind = " in get
+
+
+class TestReadApiQueries:
+    """The keyset, ``updated_after`` and count filters reach the SQL."""
+
+    async def test_filters_and_counts_compile(self, mock_session: AsyncMock) -> None:
+        from datetime import UTC, datetime
+
+        from assistant_runtime.services.database.repositories import (
+            ActionRepository,
+            AgentRepository,
+            EventRepository,
+            TaskRepository,
+        )
+
+        when = datetime(2026, 10, 1, tzinfo=UTC)
+        mock_session.execute.return_value = MagicMock(scalar_one=MagicMock(return_value=0))
+        await SessionRepository(mock_session).list_all(updated_after=when)
+        await TaskRepository(mock_session).list(before=(when, "t1"))
+        await AgentRepository(mock_session).list_messages(before=(when, "m1"))
+        await ActionRepository(mock_session).list(limit=10, before=7)
+        await MessageRepository(mock_session).count_created(when, when)
+
+        sessions, tasks, messages, actions, count = (
+            str(call.args[0].compile(dialect=postgresql.dialect()))
+            for call in mock_session.execute.await_args_list
+        )
+        assert "sessions.updated_at > " in sessions
+        assert "(tasks.created_at, tasks.id) < (" in tasks
+        assert "(agent_messages.created_at, agent_messages.id) < (" in messages
+        assert "actions.id < " in actions
+        assert "count(*)" in count
+        assert "messages.created_at < " in count
+        assert await EventRepository(mock_session).count_created(when, when) == 0
