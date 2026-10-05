@@ -74,6 +74,7 @@ class VoiceService:
 
     async def start(self) -> None:
         self._started = True
+        await self._persistence.mark_restarted()
         if self.config.enabled:
             await self._voice().start()
 

@@ -941,3 +941,36 @@ async def test_calls_route_takes_a_cursor(setup):
     assert [call["call_id"] for call in listed["calls"]] == [call_id]
     assert idle.json() == {"calls": [], "next_cursor": listed["next_cursor"]}
     assert bad.status_code == 422
+
+
+async def test_a_restart_moves_unfinished_calls_past_change_cursors():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from sqlalchemy.dialects import postgresql
+
+    from assistant_runtime.app.voice._persistence import VoicePersistence
+
+    statements = []
+
+    class Db:
+        async def execute(self, statement):
+            statements.append(statement)
+
+    @asynccontextmanager
+    async def session_context():
+        yield Db()
+
+    persistence = VoicePersistence(SimpleNamespace(healthy=True, session_context=session_context))
+    await persistence.mark_restarted()
+    sql = str(statements[0].compile(dialect=postgresql.dialect()))
+    assert sql.startswith("UPDATE voice_calls SET updated_at=now()")
+    assert "NOT IN" in sql
+    assert "snapshot ->> " in sql
+
+
+async def test_start_marks_calls_a_restart_interrupted():
+    service = VoiceService(VoiceConfig(enabled=False), None)
+    service._persistence.mark_restarted = AsyncMock()
+    await service.start()
+    service._persistence.mark_restarted.assert_awaited_once()

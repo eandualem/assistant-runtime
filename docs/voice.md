@@ -217,7 +217,8 @@ malformed). With Postgres it reads the checkpoint rows, whose `updated_at` is th
 time of the last checkpoint write, so a live call appears there about a second after
 it changes; without Postgres it reads the calls this process retains
 (`VOICE__RETAINED_CALLS`). As with `GET /calls/{id}`, a stored call that is not
-running in this process and did not close is reported `interrupted`, and a caller
+running in this process and did not close is reported `interrupted` (startup gives
+such calls a new `updated_at`, so they appear after an earlier cursor), and a caller
 who is not an administrator sees only calls whose session they can still access.
 Continue from `next_cursor`, which echoes `updated_after` when nothing changed.
 `GET /api/counts` includes `voice_calls`, counted by when each call started.

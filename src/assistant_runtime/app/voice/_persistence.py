@@ -3,12 +3,14 @@
 from datetime import UTC, datetime
 
 from loguru import logger
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 
 from assistant_runtime.base.cursors import ChangeCursor
 from assistant_runtime.services.database.interface import DatabaseService
 from assistant_runtime.services.database.models import VoiceCallORM
+
+_FINISHED = ("closed", "interrupted")
 
 
 def _snapshot(row: VoiceCallORM) -> dict:
@@ -45,6 +47,26 @@ class VoicePersistence:
             # or SQL parameter strings when the optional database is unavailable.
             logger.warning("Voice checkpoint unavailable", call_id=record["call_id"])
             return False
+
+    async def mark_restarted(self) -> None:
+        """Move unfinished calls past every change cursor once a restart has interrupted them.
+
+        Reads report a stored call this process does not hold as interrupted;
+        without a new ``updated_at`` a reader following changes would never
+        see that. The stored snapshot is left as it was. Best effort: it never
+        fails startup.
+        """
+        try:
+            if not self.available:
+                return
+            async with self.database.session_context() as db:
+                await db.execute(
+                    update(VoiceCallORM)
+                    .where(VoiceCallORM.snapshot["status"].astext.not_in(_FINISHED))
+                    .values(updated_at=func.now())
+                )
+        except Exception:
+            logger.warning("Voice calls interrupted by the restart could not be marked")
 
     async def load(self, call_id: str) -> dict | None:
         if not self.available:
