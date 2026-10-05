@@ -146,7 +146,13 @@ async def test_messages_are_read_through_their_agent():
         return AGENT
 
     async def list_messages(principal, **kwargs):
-        assert kwargs == {"agent_id": "a1", "parent_session_id": None, "status": "done", "limit": 5}
+        assert kwargs == {
+            "agent_id": "a1",
+            "parent_session_id": None,
+            "status": "done",
+            "limit": 5,
+            "before": None,
+        }
         return [MESSAGE]
 
     async def get_message(message_id, principal):
@@ -157,3 +163,19 @@ async def test_messages_are_read_through_their_agent():
     assert [m["id"] for m in listed.json()] == ["m1"]
     assert (await _call(app, "GET", "/agents/a1/messages/m1")).json()["agent_id"] == "a1"
     assert (await _call(app, "GET", "/agents/a2/messages/m1")).status_code == 404
+
+
+async def test_message_paging_passes_before_and_an_unknown_cursor_is_404():
+    async def get_agent(agent_id, principal):
+        return AGENT
+
+    async def list_messages(principal, **kwargs):
+        if kwargs["before"] == "m9":
+            raise AgentNotFoundError("No agent message 'm9'")
+        assert kwargs["before"] == "m2"
+        return [MESSAGE]
+
+    app = _app(get_agent=get_agent, list_messages=list_messages)
+    listed = await _call(app, "GET", "/agents/a1/messages", params={"before": "m2"})
+    assert [m["id"] for m in listed.json()] == ["m1"]
+    assert (await _call(app, "GET", "/agents/a1/messages?before=m9")).status_code == 404

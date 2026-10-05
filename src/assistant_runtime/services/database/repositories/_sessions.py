@@ -61,15 +61,23 @@ class SessionRepository:
         return result.scalar_one_or_none()
 
     async def list_all(
-        self, limit: int = 50, offset: int = 0, *, owner_id: str | None = None
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        *,
+        owner_id: str | None = None,
+        updated_after: datetime | None = None,
     ) -> list[SessionORM]:
         """List non-expired sessions, most recently updated first.
 
-        With ``owner_id``, only that principal's sessions are listed.
+        With ``owner_id``, only that principal's sessions are listed; with
+        ``updated_after`` (timezone-aware), only those updated strictly later.
         """
         stmt = select(SessionORM).where(SessionORM.expires_at > func.now())
         if owner_id is not None:
             stmt = stmt.where(SessionORM.owner_id == owner_id)
+        if updated_after is not None:
+            stmt = stmt.where(SessionORM.updated_at > updated_after)
         result = await self._session.execute(
             stmt.order_by(SessionORM.updated_at.desc()).limit(limit).offset(offset)
         )
@@ -234,6 +242,15 @@ class MessageRepository:
             .group_by(MessageORM.session_id)
         )
         return {session_id: int(count) for session_id, count in result.all()}
+
+    async def count_created(self, start: datetime, end: datetime) -> int:
+        """Messages created in ``[start, end)``, across every session."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(MessageORM)
+            .where(MessageORM.created_at >= start, MessageORM.created_at < end)
+        )
+        return int(result.scalar_one())
 
     async def update(
         self,

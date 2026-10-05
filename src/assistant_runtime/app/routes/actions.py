@@ -105,11 +105,15 @@ async def list_actions(
     profile: str | None = None,
     subject: str | None = None,
     limit: int = Query(100, ge=1, le=500),
+    before: int | None = None,
 ) -> dict:
-    """Newest first."""
-    records = await actions.list(
-        status=status, kind=kind, profile=profile, subject=subject, limit=limit
-    )
+    """Newest first; ``before`` names an action: only older ones (``404`` when unknown)."""
+    try:
+        records = await actions.list(
+            status=status, kind=kind, profile=profile, subject=subject, limit=limit, before=before
+        )
+    except ActionError as e:
+        raise _http_error(e) from e
     return {"actions": [r.to_dict() for r in records]}
 
 

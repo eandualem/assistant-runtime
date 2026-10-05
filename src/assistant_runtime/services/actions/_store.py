@@ -28,7 +28,11 @@ class ActionTransaction(Protocol):
 
     async def update_action(self, action_id: int, **values: Any) -> ActionRecord: ...
 
-    async def list_actions(self, *, limit: int, **filters: Any) -> list[ActionRecord]: ...
+    async def list_actions(
+        self, *, limit: int, before: int | None = None, **filters: Any
+    ) -> list[ActionRecord]: ...
+
+    async def count_created(self, start: datetime, end: datetime) -> int: ...
 
     async def add_confirmation(self, **values: Any) -> ConfirmationRecord | None: ...
 
@@ -93,9 +97,18 @@ class InMemoryActionStore:
         record = self._actions[action_id] = replace(self._actions[action_id], **deepcopy(values))
         return deepcopy(record)
 
-    async def list_actions(self, *, limit: int, **filters: Any) -> list[ActionRecord]:
-        records = [r for r in self._actions.values() if _matches(r, filters)]
+    async def list_actions(
+        self, *, limit: int, before: int | None = None, **filters: Any
+    ) -> list[ActionRecord]:
+        records = [
+            r
+            for r in self._actions.values()
+            if (before is None or r.id < before) and _matches(r, filters)
+        ]
         return deepcopy(sorted(records, key=lambda r: r.id, reverse=True)[:limit])
+
+    async def count_created(self, start: datetime, end: datetime) -> int:
+        return sum(1 for r in self._actions.values() if start <= r.created_at < end)
 
     async def add_confirmation(self, **values: Any) -> ConfirmationRecord | None:
         if values["id"] in self._confirmations:
@@ -173,8 +186,14 @@ class _DatabaseTransaction:
     async def update_action(self, action_id: int, **values: Any) -> ActionRecord:
         return self._action(await self._repository.update(action_id, **values))
 
-    async def list_actions(self, *, limit: int, **filters: Any) -> list[ActionRecord]:
-        return [self._action(row) for row in await self._repository.list(limit=limit, **filters)]
+    async def list_actions(
+        self, *, limit: int, before: int | None = None, **filters: Any
+    ) -> list[ActionRecord]:
+        rows = await self._repository.list(limit=limit, before=before, **filters)
+        return [self._action(row) for row in rows]
+
+    async def count_created(self, start: datetime, end: datetime) -> int:
+        return await self._repository.count_created(start, end)
 
     async def add_confirmation(self, **values: Any) -> ConfirmationRecord | None:
         row = await self._repository.add_confirmation(**values)

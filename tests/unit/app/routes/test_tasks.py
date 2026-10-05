@@ -64,7 +64,12 @@ async def test_errors_map_to_statuses():
 
 async def test_list_passes_the_filters():
     async def list_(principal, **kwargs):
-        assert kwargs == {"parent_session_id": "chat-1", "status": "done", "limit": 5}
+        assert kwargs == {
+            "parent_session_id": "chat-1",
+            "status": "done",
+            "limit": 5,
+            "before": None,
+        }
         return [RECORD]
 
     response = await _call(
@@ -80,3 +85,16 @@ async def test_a_missing_service_is_503():
     app = FastAPI()
     app.include_router(router)
     assert (await _call(app, "GET", "/tasks")).status_code == 503
+
+
+async def test_before_pages_and_an_unknown_cursor_is_404():
+    async def list_(principal, **kwargs):
+        if kwargs["before"] == "t9":
+            raise TaskNotFoundError("No task 't9'")
+        assert kwargs["before"] == "t2"
+        return [RECORD]
+
+    app = _app(list=list_)
+    assert [r["id"] for r in (await _call(app, "GET", "/tasks?before=t2")).json()] == ["t1"]
+    missing = await _call(app, "GET", "/tasks?before=t9")
+    assert (missing.status_code, missing.json()["detail"]) == (404, "No task 't9'")

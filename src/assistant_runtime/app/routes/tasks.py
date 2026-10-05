@@ -69,11 +69,22 @@ async def list_tasks(
         None, pattern="^(queued|running|done|failed|cancelled|interrupted)$"
     ),
     limit: int = Query(50, ge=1, le=500),
+    before: str | None = None,
 ) -> list[dict]:
-    """Newest first: the caller's tasks (every task for an administrator)."""
-    records = await tasks.list(
-        principal, parent_session_id=parent_session_id, status=status, limit=limit
-    )
+    """Newest first: the caller's tasks (every task for an administrator).
+
+    ``before`` names a task: only older ones are listed (``404`` when it is unknown).
+    """
+    try:
+        records = await tasks.list(
+            principal,
+            parent_session_id=parent_session_id,
+            status=status,
+            limit=limit,
+            before=before,
+        )
+    except TaskError as e:
+        raise _http_error(e) from e
     return [record.to_dict() for record in records]
 
 

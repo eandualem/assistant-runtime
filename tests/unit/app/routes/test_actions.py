@@ -80,3 +80,14 @@ async def test_confirmations_are_written_before_the_send_and_read_in_order():
     assert (settled.json()["status"], elsewhere.status_code) == ("failed", 404)
     assert [c["id"] for c in detail["confirmations"]] == [body["id"]]
     assert (page["next_after"], page["confirmations"][0]["recipient"]) == (1, "agent-a")
+
+
+async def test_before_lists_the_next_older_actions():
+    async with await _client() as c:
+        ids = [(await c.post("/actions", json={"kind": "message"})).json()["id"] for _ in range(4)]
+        page = (await c.get("/actions", params={"before": ids[2], "limit": 1})).json()
+        rest = (await c.get("/actions", params={"before": ids[1]})).json()
+        unknown = await c.get("/actions", params={"before": 999})
+    assert [a["id"] for a in page["actions"]] == [ids[1]]
+    assert [a["id"] for a in rest["actions"]] == [ids[0]]
+    assert (unknown.status_code, unknown.json()["detail"]) == (404, "No action 999")

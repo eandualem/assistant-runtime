@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path
@@ -88,14 +89,22 @@ async def list_sessions(
     principal: PrincipalDep,
     limit: int = 50,
     offset: int = 0,
+    updated_after: datetime | None = None,
 ) -> list[dict]:
-    """List the caller's sessions (every session for an administrator); metadata only."""
+    """List the caller's sessions (every session for an administrator); metadata only.
+
+    ``updated_after`` (ISO 8601; UTC when it has no timezone) keeps only the
+    sessions whose ``updated_at`` is strictly later.
+    """
     sessions = service.get_session_store()
     if sessions is None:
         return []
 
     return await sessions.list_sessions(
-        limit=limit, offset=offset, owner_id=None if principal.is_admin else principal.id
+        limit=limit,
+        offset=offset,
+        owner_id=None if principal.is_admin else principal.id,
+        updated_after=updated_after,
     )
 
 
@@ -190,6 +199,23 @@ async def append_host_message(
     except (SessionError, ValueError) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return merge_display_messages([record], [])[0]
+
+
+@router.get("/sessions/{session_id}/messages/{message_id}")
+async def get_session_message(
+    session_id: str, message_id: str, service: AssistantServiceDep, principal: PrincipalDep
+) -> dict:
+    """One message of the session, in the display form ``/messages`` lists it in."""
+    ctx = await _get_session_context(session_id, service.get_session_store(), principal)
+    record = ctx["message_index"].get(message_id)
+    if record is not None:
+        return merge_display_messages([record], [])[0]
+    # Delivered steering is listed too; queued steering is not on display yet.
+    steering = ctx["steering_index"].get(message_id)
+    displayed = merge_display_messages([], [steering]) if steering is not None else []
+    if not displayed:
+        raise HTTPException(status_code=404, detail=f"Message '{message_id}' not found")
+    return displayed[0]
 
 
 @router.get("/sessions/{session_id}/messages/{message_id}/prompt")

@@ -112,8 +112,8 @@ settings, models and the artifact profile. Everything that changes the
 installation is administration and requires the `admin` role: writing
 settings, provider keys and OAuth, injecting messages and the inbox,
 debugging routes, every artifact mutation (propose, update, approve,
-rollback, delete), session reassignment, host cards, and the event, action
-and host-state routes.
+rollback, delete), session reassignment, host cards, record counts, and
+the event, action and host-state routes.
 
 ## Inside a turn
 

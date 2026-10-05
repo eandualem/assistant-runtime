@@ -27,6 +27,8 @@ class EventTransaction(Protocol):
 
     async def list(self, *, after: int, limit: int, **filters: Any) -> list[EventRecord]: ...
 
+    async def count_created(self, start: datetime, end: datetime) -> int: ...
+
 
 class EventStore(Protocol):
     durable: bool
@@ -76,6 +78,9 @@ class InMemoryEventStore:
         ]
         return deepcopy(sorted(records, key=lambda r: r.id)[:limit])
 
+    async def count_created(self, start: datetime, end: datetime) -> int:
+        return sum(1 for r in self._events.values() if start <= r.created_at < end)
+
 
 class DatabaseEventStore:
     """Events in the ``events`` table."""
@@ -115,3 +120,6 @@ class _DatabaseTransaction:
     async def list(self, *, after: int, limit: int, **filters: Any) -> list[EventRecord]:
         rows = await self._repository.list(after=after, limit=limit, **filters)
         return [self._record(row) for row in rows]
+
+    async def count_created(self, start: datetime, end: datetime) -> int:
+        return await self._repository.count_created(start, end)
