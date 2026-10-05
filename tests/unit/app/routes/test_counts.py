@@ -16,6 +16,8 @@ from assistant_runtime.app.routes.counts import router
 from assistant_runtime.app.tasks.config import TasksConfig
 from assistant_runtime.app.tasks.interface import TaskService
 from assistant_runtime.app.tasks.models import AgentMessageRecord, TaskRecord
+from assistant_runtime.app.voice.config import VoiceConfig
+from assistant_runtime.app.voice.interface import VoiceService
 from assistant_runtime.principal import Principal
 from assistant_runtime.services.actions.config import ActionsConfig
 from assistant_runtime.services.actions.interface import ActionService
@@ -49,6 +51,10 @@ async def _app() -> FastAPI:
     app.state.action_service = actions
     app.state.task_service = tasks
     app.state.assistant_service = SimpleNamespace(get_session_store=lambda: sessions)
+    voice = VoiceService(VoiceConfig(), SimpleNamespace())
+    voice._calls["c1"] = SimpleNamespace(created_at=datetime.now(UTC).timestamp())
+    voice._calls["c0"] = SimpleNamespace(created_at=NOON.timestamp())
+    app.state.voice_service = voice
     return app
 
 
@@ -77,9 +83,11 @@ async def test_counts_records_created_in_the_range():
         "actions": 1,
         "agent_messages": 1,
         "messages": 1,
+        "voice_calls": 1,
     }
     assert earlier.json()["tasks"] == 0  # the end is excluded
     assert at_noon.json()["tasks"] == 1  # the start is included; a naive value is UTC
+    assert (earlier.json()["voice_calls"], at_noon.json()["voice_calls"]) == (0, 1)
     assert at_noon.json()["from"] == "2026-10-01T12:00:00+00:00"
 
 

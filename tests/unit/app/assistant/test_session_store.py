@@ -347,6 +347,36 @@ class TestListSessions:
         assert await store.count_messages(datetime(2000, 1, 1, tzinfo=UTC), start) == 0
 
 
+class TestMessageChanges:
+    async def test_updates_and_repairs_mark_the_change_time(self) -> None:
+        from assistant_runtime.base.cursors import ChangeCursor
+
+        store = SessionStore()
+        _, user, assistant = await _seed_basic_turn(store)
+        assert user["updated_at"] == user["created_at"]
+        cursor = ChangeCursor(assistant["updated_at"], "assistant-1")
+        assert await store.message_changes("sess-1", after=cursor) == []
+
+        updated = await store.update_message("sess-1", "user-1", content="Edited")
+        unchanged = await store.update_message("sess-1", "assistant-1")  # nothing to write
+
+        assert updated["updated_at"] > assistant["updated_at"]
+        assert unchanged["updated_at"] == assistant["updated_at"]
+        assert [r["id"] for r in await store.message_changes("sess-1", after=cursor)] == ["user-1"]
+        with pytest.raises(LookupError):
+            await store.message_changes("missing")
+
+    async def test_the_database_answers_when_there_is_one(self) -> None:
+        from unittest.mock import MagicMock
+
+        store = SessionStore(database_service=MagicMock())
+        store.get_context("sess-1")  # cached, so the session check needs no load
+        store._db.message_changes = AsyncMock(return_value=[])
+
+        assert await store.message_changes("sess-1", limit=7) == []
+        store._db.message_changes.assert_awaited_once_with("sess-1", None, 7)
+
+
 class TestSingleflightHydration:
     async def test_cancelled_waiter_does_not_cancel_the_shared_load(self) -> None:
         import asyncio

@@ -13,6 +13,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import UUID4, AwareDatetime, BaseModel, ConfigDict, Field
 
 from assistant_runtime.app.access.deps import AdminDep
+from assistant_runtime.app.routes._cursors import cursor_param, exclusive
+from assistant_runtime.base.cursors import next_cursor
 from assistant_runtime.services.actions.deps import ActionServiceDep
 from assistant_runtime.services.actions.exceptions import (
     ActionConflictError,
@@ -106,15 +108,31 @@ async def list_actions(
     subject: str | None = None,
     limit: int = Query(100, ge=1, le=500),
     before: int | None = None,
+    updated_after: str | None = None,
 ) -> dict:
-    """Newest first; ``before`` names an action: only older ones (``404`` when unknown)."""
+    """Newest first; ``before`` names an action: only older ones (``404`` when unknown).
+
+    ``updated_after`` (a change cursor, not with ``before``) lists the actions
+    changed after it instead, oldest change first, with a ``next_cursor``.
+    """
+    exclusive(updated_after, before=before)
+    cursor = cursor_param(updated_after, id_type=int)
     try:
         records = await actions.list(
-            status=status, kind=kind, profile=profile, subject=subject, limit=limit, before=before
+            status=status,
+            kind=kind,
+            profile=profile,
+            subject=subject,
+            limit=limit,
+            before=before,
+            updated_after=cursor,
         )
     except ActionError as e:
         raise _http_error(e) from e
-    return {"actions": [r.to_dict() for r in records]}
+    body: dict = {"actions": [r.to_dict() for r in records]}
+    if cursor is not None:
+        body["next_cursor"] = next_cursor(records, updated_after)
+    return body
 
 
 @router.get("/{action_id}")

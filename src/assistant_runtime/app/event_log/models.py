@@ -44,6 +44,7 @@ class EventRecord:
     created_at: datetime | None = None
     delivered_at: datetime | None = None
     heard_at: datetime | None = None
+    updated_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,4 +65,5 @@ class EventRecord:
             "created_at": _iso(self.created_at),
             "delivered_at": _iso(self.delivered_at),
             "heard_at": _iso(self.heard_at),
+            "updated_at": _iso(self.updated_at),
         }

@@ -39,6 +39,7 @@ from assistant_runtime.services.actions.models import (
 )
 
 if TYPE_CHECKING:
+    from assistant_runtime.base.cursors import ChangeCursor
     from assistant_runtime.services.database.interface import DatabaseService
 
 _ACTION_CHANGES = frozenset(
@@ -129,14 +130,19 @@ class ActionService:
         subject: str | None = None,
         limit: int = 100,
         before: int | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[ActionRecord]:
-        """Newest first; with ``before`` (an action's id), only the actions older than it."""
+        """Newest first; with ``before`` (an action's id), only the actions older than it.
+
+        With ``updated_after``, the actions changed after that cursor, oldest change first.
+        """
         async with self._require_store().transaction() as tx:
             if before is not None and await tx.get_action(before) is None:
                 raise ActionNotFoundError(f"No action {before}")
             return await tx.list_actions(
                 limit=min(limit, self._config.max_page),
                 before=before,
+                updated_after=updated_after,
                 status=status,
                 kind=kind,
                 profile=profile,

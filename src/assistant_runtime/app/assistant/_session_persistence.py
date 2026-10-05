@@ -18,6 +18,7 @@ from sqlalchemy.exc import DisconnectionError, IntegrityError, InterfaceError, O
 
 from assistant_runtime.app.assistant._serialization import MessageRecord, SteeringRecord
 from assistant_runtime.app.assistant._stale_tools import RepairedMessage
+from assistant_runtime.base.cursors import ChangeCursor
 from assistant_runtime.base.resilience import retry_with_backoff
 from assistant_runtime.services.database.models import MessageORM
 from assistant_runtime.services.database.repositories import (
@@ -270,6 +271,15 @@ class SessionPersistence:
                 for row in rows
             ]
 
+    async def message_changes(
+        self, session_id: str, after: ChangeCursor | None, limit: int
+    ) -> list[MessageRecord]:
+        async with self._db.session_context() as db_session:
+            rows = await MessageRepository(db_session).list_changes(
+                session_id, after=after, limit=limit
+            )
+            return [_message_record(row) for row in rows]
+
     async def count_messages(self, start: datetime, end: datetime) -> int:
         async with self._db.session_context() as db_session:
             return await MessageRepository(db_session).count_created(start, end)
@@ -305,22 +315,7 @@ class SessionPersistence:
                     pending_action=row.pending_action,
                     profile=row.profile,
                     subject=row.subject,
-                    messages=[
-                        {
-                            "id": m.id,
-                            "session_id": m.session_id,
-                            "parent_id": m.parent_id,
-                            "role": m.role,
-                            "message_type": m.message_type,
-                            "content": m.content,
-                            "segments": m.segments,
-                            "usage": m.usage,
-                            "prompt": m.prompt,
-                            "model_messages": m.model_messages,
-                            "created_at": m.created_at,
-                        }
-                        for m in messages
-                    ],
+                    messages=[_message_record(m) for m in messages],
                     steering=[
                         {
                             "id": s.id,
@@ -337,6 +332,23 @@ class SessionPersistence:
                 )
 
         return await _load()
+
+
+def _message_record(row: MessageORM) -> MessageRecord:
+    return {
+        "id": row.id,
+        "session_id": row.session_id,
+        "parent_id": row.parent_id,
+        "role": row.role,
+        "message_type": row.message_type,
+        "content": row.content,
+        "segments": row.segments,
+        "usage": row.usage,
+        "prompt": row.prompt,
+        "model_messages": row.model_messages,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
 
 
 def pending_action_from_context(ctx: dict[str, Any]) -> dict[str, Any] | None:

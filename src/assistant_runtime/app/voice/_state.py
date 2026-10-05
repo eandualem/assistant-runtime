@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Literal
 
 from assistant_runtime.app.voice._transport import VoiceConnection
@@ -25,6 +26,7 @@ class VoiceCall:
     status: str = "connecting"
     reason: str | None = None
     created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)  # when the snapshot last changed
     finalized: bool = False
     usage: dict = field(default_factory=dict)
     transcript: list[dict] = field(default_factory=list)
@@ -67,6 +69,8 @@ class VoiceCall:
             "reason": self.reason,
             "created_at": self.created_at,
             "last_activity_at": self.last_activity_at,
+            # ISO 8601, unlike the other times: it builds change cursors.
+            "updated_at": datetime.fromtimestamp(self.updated_at, UTC).isoformat(),
             "finalized": self.finalized,
             "usage": dict(self.usage),
             "transcript": list(self.transcript),

@@ -31,9 +31,11 @@ from assistant_runtime.app.assistant._session_persistence import (
     SessionPersistence,
 )
 from assistant_runtime.app.assistant._stale_tools import (
+    RepairedMessage,
     find_tool_entry,
     repair_stale_tools_in_context,
 )
+from assistant_runtime.base.cursors import ChangeCursor
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import UserContent
@@ -219,6 +221,7 @@ class SessionStore:
                 request.content if prompt is None else prompt, created_at
             ),
             "created_at": created_at,
+            "updated_at": created_at,
         }
         if self._db is not None:
             await self._db.ensure_session(
@@ -283,6 +286,7 @@ class SessionStore:
             "prompt": prompt,
             "model_messages": model_messages,
             "created_at": created_at or datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
         if self._db is not None:
             await self._db.create_message(record)
@@ -344,6 +348,7 @@ class SessionStore:
             "usage": None,
             "created_at": datetime.now(UTC),
         }
+        record["updated_at"] = record["created_at"]
         if self._db is not None:
             await self._db.ensure_session(
                 session_id,
@@ -399,6 +404,9 @@ class SessionStore:
                 record["prompt"] = prompt
             if model_messages is not None:
                 record["model_messages"] = model_messages
+            changes = (content, segments, resolved_usage, prompt, model_messages)
+            if any(change is not None for change in changes):
+                record["updated_at"] = datetime.now(UTC)
             if self._db is not None:
                 await self._db.update_message(
                     message_id,
@@ -459,6 +467,25 @@ class SessionStore:
         if target_leaf not in ctx["message_index"]:
             raise LookupError(f"Message '{target_leaf}' not found")
         return _resolve_path(ctx, target_leaf)
+
+    async def message_changes(
+        self, session_id: str, *, after: ChangeCursor | None = None, limit: int = 100
+    ) -> list[MessageRecord]:
+        """The session's messages changed after ``after`` (all without it), oldest change first.
+
+        Ordered by ``(updated_at, id)``; read from the database when there is one.
+        """
+        ctx = await self.get_context_if_exists_async(session_id)
+        if ctx is None:
+            raise LookupError("Session not found")
+        if self._db is not None:
+            return await self._db.message_changes(session_id, after, limit)
+        records = [
+            record
+            for record in ctx["message_index"].values()
+            if after is None or after.admits(record.get("updated_at"), record["id"])
+        ]
+        return sorted(records, key=lambda record: (record["updated_at"], record["id"]))[:limit]
 
     async def get_tree_messages(self, session_id: str) -> list[MessageRecord]:
         """Return all messages in a session ordered by created_at."""
@@ -760,6 +787,7 @@ class SessionStore:
         repaired = repair_stale_tools_in_context(ctx)
         if repaired and self._db is not None:
             await self._db.update_segments(repaired)
+        _mark_changed(ctx, repaired)
         report["repaired_tools"] = [msg_id for msg_id, _segments, _messages in repaired]
         if repaired and ctx.get("active_leaf_id"):
             ctx["cached_path"] = _resolve_path(ctx, ctx["active_leaf_id"])
@@ -837,6 +865,7 @@ class SessionStore:
         repaired = repair_stale_tools_in_context(ctx, keep=keep)
         if repaired:
             await self._db.update_segments(repaired)
+            _mark_changed(ctx, repaired)
             logger.info(
                 "[SESSION] Repaired stale host tools on DB load",
                 session_id=session_id,
@@ -943,6 +972,13 @@ def _add_message(ctx: dict[str, Any], record: MessageRecord) -> None:
     children_by_parent.setdefault(record.get("parent_id"), []).append(record["id"])
     children_by_parent.setdefault(record["id"], [])
     ctx["message_count"] = len(message_index)
+
+
+def _mark_changed(ctx: dict[str, Any], repaired: list[RepairedMessage]) -> None:
+    """Note the change time of messages repaired in place."""
+    now = datetime.now(UTC)
+    for message_id, _segments, _messages in repaired:
+        ctx["message_index"][message_id]["updated_at"] = now
 
 
 def _add_steering(ctx: dict[str, Any], record: SteeringRecord) -> None:

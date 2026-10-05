@@ -210,3 +210,72 @@ class TestReadApiQueries:
         assert "count(*)" in count
         assert "messages.created_at < " in count
         assert await EventRepository(mock_session).count_created(when, when) == 0
+
+
+class TestChangeCursors:
+    """Every write sets ``updated_at``; change lists filter and order by ``(updated_at, id)``."""
+
+    async def test_every_update_sets_updated_at(self, mock_session: AsyncMock) -> None:
+        from assistant_runtime.services.database.repositories import (
+            ActionRepository,
+            AgentRepository,
+            EventRepository,
+            TaskRepository,
+        )
+
+        mock_session.execute.return_value = MagicMock()
+        tasks, agents = TaskRepository(mock_session), AgentRepository(mock_session)
+        await tasks.update("t1", only_from=("queued",), status="running")
+        await tasks.mark_unfinished("interrupted", "restart")
+        await agents.update_message("m1", status="done")
+        await agents.mark_unfinished_messages("interrupted", "restart")
+        await ActionRepository(mock_session).update(1, status="sent")
+        await EventRepository(mock_session).update(1, status="heard")
+        await MessageRepository(mock_session).update("a1", content="Edited")
+
+        for call in mock_session.execute.await_args_list:
+            sql = str(call.args[0].compile(dialect=postgresql.dialect()))
+            assert sql.startswith("UPDATE ")
+            assert "updated_at=now()" in sql
+
+    async def test_change_lists_compile(self, mock_session: AsyncMock) -> None:
+        from datetime import UTC, datetime
+
+        from assistant_runtime.base.cursors import ChangeCursor
+        from assistant_runtime.services.database.repositories import (
+            ActionRepository,
+            AgentRepository,
+            EventRepository,
+            TaskRepository,
+        )
+
+        mock_session.execute.return_value = MagicMock()
+        at = ChangeCursor(datetime(2026, 10, 1, tzinfo=UTC), "x")
+        bare = ChangeCursor(at.updated_at)
+        await MessageRepository(mock_session).list_changes("s1", after=at, limit=5)
+        await MessageRepository(mock_session).list_changes("s1", after=None, limit=5)
+        await TaskRepository(mock_session).list(updated_after=bare)
+        await AgentRepository(mock_session).list_messages(agent_id="a1", updated_after=at)
+        await ActionRepository(mock_session).list(limit=5, updated_after=bare, status="sent")
+        await EventRepository(mock_session).list(after=0, limit=5, updated_after=at)
+
+        messages, everything, tasks, agent_messages, actions, events = (
+            str(call.args[0].compile(dialect=postgresql.dialect()))
+            for call in mock_session.execute.await_args_list
+        )
+        assert "messages.session_id = " in messages
+        assert "(messages.updated_at, messages.id) > (" in messages
+        assert "updated_at >" not in everything  # no cursor: from the beginning
+        assert "tasks.updated_at > " in tasks
+        assert "(agent_messages.updated_at, agent_messages.id) > (" in agent_messages
+        assert "actions.status = " in actions  # other filters still apply
+        assert "(events.updated_at, events.id) > (" in events
+        for sql, table in (
+            (messages, "messages"),
+            (everything, "messages"),
+            (tasks, "tasks"),
+            (agent_messages, "agent_messages"),
+            (actions, "actions"),
+            (events, "events"),
+        ):
+            assert f"ORDER BY {table}.updated_at ASC, {table}.id ASC" in sql

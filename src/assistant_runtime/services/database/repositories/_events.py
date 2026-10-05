@@ -9,11 +9,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant_runtime.base.cursors import ChangeCursor
 from assistant_runtime.services.database.models import (
     EventORM,
 )
 
-from ._ordering import _in_commit_order
+from ._ordering import _in_change_order, _in_commit_order
 
 
 class EventRepository:
@@ -49,18 +50,35 @@ class EventRepository:
 
     async def update(self, event_id: int, **fields: Any) -> EventORM | None:
         result = await self._session.execute(
-            update(EventORM).where(EventORM.id == event_id).values(**fields).returning(EventORM)
+            update(EventORM)
+            .where(EventORM.id == event_id)
+            .values({**fields, "updated_at": func.now()})
+            .returning(EventORM)
         )
         await self._session.flush()
         return result.scalar_one_or_none()
 
-    async def list(self, *, after: int, limit: int, **filters: Any) -> list[EventORM]:
-        """Events after ``after`` in id order; ``history=False`` leaves out imported history."""
+    async def list(
+        self,
+        *,
+        after: int,
+        limit: int,
+        updated_after: ChangeCursor | None = None,
+        **filters: Any,
+    ) -> list[EventORM]:
+        """Events after ``after`` in id order; ``history=False`` leaves out imported history.
+
+        With ``updated_after``, the events changed after that cursor, oldest change first.
+        """
         query = select(EventORM).where(EventORM.id > after)
         for name, value in filters.items():
             if value is not None:
                 query = query.where(getattr(EventORM, name) == value)
-        result = await self._session.execute(query.order_by(EventORM.id).limit(limit))
+        if updated_after is not None:
+            query = _in_change_order(query, EventORM, updated_after)
+        else:
+            query = query.order_by(EventORM.id)
+        result = await self._session.execute(query.limit(limit))
         return list(result.scalars().all())
 
     async def count_created(self, start: datetime, end: datetime) -> int:

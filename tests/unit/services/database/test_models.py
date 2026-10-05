@@ -51,6 +51,7 @@ class TestMessageORM:
             "prompt",
             "model_messages",
             "created_at",
+            "updated_at",
         }
         assert isinstance(columns["segments"].type, JSONB)
         assert isinstance(columns["model_messages"].type, JSONB)
@@ -65,6 +66,7 @@ class TestMessageORM:
         assert any("ck_messages_message_type_valid" in name for name in constraint_names)
         assert "ix_messages_parent_id" in index_names
         assert "ix_messages_session_id_created_at" in index_names
+        assert "ix_messages_session_id_updated_at_id" in index_names
         assert "uq_messages_single_root_per_session" in index_names
 
 

@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -20,8 +20,10 @@ from assistant_runtime.app.assistant import (
     tree_messages_to_tree,
 )
 from assistant_runtime.app.assistant.deps import AssistantServiceDep
+from assistant_runtime.app.routes._cursors import cursor_param
 from assistant_runtime.app.streaming.deps import StreamingServiceDep
 from assistant_runtime.app.voice.deps import OptionalVoiceServiceDep
+from assistant_runtime.base.cursors import format_cursor
 from assistant_runtime.principal import Principal
 from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 
@@ -199,6 +201,41 @@ async def append_host_message(
     except (SessionError, ValueError) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return merge_display_messages([record], [])[0]
+
+
+# Registered before ``/messages/{message_id}``, so ``changes`` is not read as a message id.
+@router.get("/sessions/{session_id}/messages/changes")
+async def get_message_changes(
+    session_id: str,
+    service: AssistantServiceDep,
+    principal: PrincipalDep,
+    after: str | None = None,
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    """The session's messages changed after the ``after`` cursor, oldest change first.
+
+    Each is a ``/tree`` row with ``updated_at``. ``after`` is ``<ISO time>|<id>``
+    or a bare ISO time (``422`` when malformed); without it the feed starts at
+    the beginning. Continue from ``next_cursor``, which echoes ``after`` when
+    nothing changed.
+    """
+    cursor = cursor_param(after, "after")
+    sessions = service.get_session_store()
+    ctx = await _get_session_context(session_id, sessions, principal)
+    try:
+        records = await sessions.message_changes(session_id, after=cursor, limit=limit)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    rows = tree_messages_to_tree(records)
+    for row, record in zip(rows, records, strict=True):
+        row["updated_at"] = record["updated_at"].isoformat()
+    return {
+        "messages": rows,
+        "next_cursor": format_cursor(records[-1]["updated_at"], records[-1]["id"])
+        if records
+        else after,
+        "active_leaf_id": ctx.get("active_leaf_id"),
+    }
 
 
 @router.get("/sessions/{session_id}/messages/{message_id}")

@@ -67,12 +67,20 @@ class VoiceCallORM(Base):
     """Checkpointed voice transcript/usage; delegated turns remain normal messages."""
 
     __tablename__ = "voice_calls"
+    __table_args__ = (Index("ix_voice_calls_updated_at_id", "updated_at", "id"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
     snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    """When the row last changed (the writing transaction's time); orders change cursors."""
 
 
 class MessageORM(Base):
@@ -86,6 +94,8 @@ class MessageORM(Base):
             name="ck_messages_message_type_valid",
         ),
         Index("ix_messages_session_id_created_at", "session_id", "created_at"),
+        Index("ix_messages_updated_at_id", "updated_at", "id"),
+        Index("ix_messages_session_id_updated_at_id", "session_id", "updated_at", "id"),
         Index("ix_messages_parent_id", "parent_id"),
         Index(
             "uq_messages_single_root_per_session",
@@ -116,6 +126,10 @@ class MessageORM(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    """When the row last changed (the writing transaction's time); orders change cursors."""
 
 
 class SteeringORM(Base):
@@ -301,6 +315,7 @@ class TaskORM(Base):
         ),
         Index("ix_tasks_parent_session_id", "parent_session_id"),
         Index("ix_tasks_status", "status"),
+        Index("ix_tasks_updated_at_id", "updated_at", "id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -320,6 +335,10 @@ class TaskORM(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    """When the row last changed (the writing transaction's time); orders change cursors."""
 
 
 class AgentORM(Base):
@@ -372,6 +391,7 @@ class AgentMessageORM(Base):
         Index("ix_agent_messages_agent_id_created_at", "agent_id", "created_at"),
         Index("ix_agent_messages_parent_session_id", "parent_session_id"),
         Index("ix_agent_messages_status", "status"),
+        Index("ix_agent_messages_updated_at_id", "updated_at", "id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -389,6 +409,10 @@ class AgentMessageORM(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    """When the row last changed (the writing transaction's time); orders change cursors."""
 
 
 class EventORM(Base):
@@ -403,6 +427,7 @@ class EventORM(Base):
             "status IN ('received', 'delivered', 'pending', 'heard')", name="ck_events_status"
         ),
         Index("ix_events_agent", "agent"),
+        Index("ix_events_updated_at_id", "updated_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -424,6 +449,10 @@ class EventORM(Base):
     )
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     heard_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    """When the row last changed (the writing transaction's time); orders change cursors."""
 
 
 class ActionORM(Base):
@@ -437,6 +466,7 @@ class ActionORM(Base):
             name="ck_actions_status",
         ),
         Index("ix_actions_status", "status"),
+        Index("ix_actions_updated_at_id", "updated_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -457,6 +487,10 @@ class ActionORM(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    """When the row last changed (the writing transaction's time); orders change cursors."""
 
 
 class ActionConfirmationORM(Base):

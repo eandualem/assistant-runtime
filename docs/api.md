@@ -219,6 +219,42 @@ message: it includes the requests made before the host action. Sum the
 latest `usage` of each assistant message for a session total, not every
 `final_response`.
 
+## Change cursors
+
+A host that mirrors the runtime's records into its own index reads what
+changed since its last pass. Messages, tasks, agent messages, actions,
+events and voice calls carry `updated_at`, which every write sets, so a
+message reappears when a tool result or a host result is recorded on it
+later, and a task, action or event when its status moves.
+
+A change cursor is `<ISO 8601 updated_at>|<id>`, for example
+`2026-10-06T12:00:00.123456+00:00|t-42`, or a bare ISO time, which means
+everything changed strictly after that time. A time without a timezone is
+UTC. A list read with a cursor is ordered by `(updated_at, id)`, oldest
+change first, and returns the records after it; continue from the last
+record (`next_cursor`, or build it from the last record's `updated_at` and
+`id` where the list is a bare array). A malformed cursor, or an id of the
+wrong type (actions and events have integer ids), is `422`. Encode the
+cursor in the query string (`+` is `%2B`; an unencoded `+` before the
+offset is still read).
+
+With Postgres, `updated_at` is the time of the writing transaction, not of
+its commit, so a change can become visible after a reader has passed its
+time. Re-read with a few seconds of overlap (start from a cursor a little
+earlier than the last one) and deduplicate by id. Without Postgres it is
+the process clock.
+
+| Route | Cursor parameter |
+|---|---|
+| `GET /api/sessions/{id}/messages/changes` | `after`, returns `next_cursor` |
+| `GET /api/tasks`, `GET /api/agents/{id}/messages` | `updated_after`; not with `before` |
+| `GET /api/actions` | `updated_after`, adds `next_cursor`; not with `before` |
+| `GET /api/events` | `updated_after`, `next_cursor` in place of `next_after`; not with `after` |
+| `GET /api/voice/calls` | `updated_after`, returns `next_cursor` |
+
+The other filters of a list still apply, and so does its `limit`.
+`GET /api/counts` gives totals to check a mirror against.
+
 ## Sessions
 
 | Route | Returns |
@@ -228,6 +264,7 @@ latest `usage` of each assistant message for a session total, not every
 | `GET /api/sessions/{id}/messages?leaf_id=` | the root-to-leaf path for display (see below); `leaf_id` selects another leaf's path, for branch switching |
 | `GET /api/sessions/{id}/tree` | every message with its `parent_id` |
 | `POST /api/sessions/{id}/messages` `{"segments", "content"?, "id"?, "profile"?, "subject"?}` | add a card the host made outside any turn as a `host` message at the active leaf (`201`, the display row); administration. A missing session is started, owned by the caller, and `profile` and `subject` bind a session the card starts as a first message's would. `409` while a turn, a pending host action or a voice call has the session, for a repeated `id`, or for a `profile` or `subject` other than the session's binding; `404` for an unknown profile |
+| `GET /api/sessions/{id}/messages/changes?after=&limit=100` | `{messages, next_cursor, active_leaf_id}`: the session's messages changed after the `after` [change cursor](#change-cursors), oldest change first, each a `/tree` row with `updated_at`; from the beginning without `after`. `next_cursor` continues after the last row, or echoes `after` when nothing changed; `limit` is 1 to 500 |
 | `GET /api/sessions/{id}/messages/{message_id}` | one message in the display form `/messages` uses; `404` when the session or the message is unknown, or the message is another session's |
 | `GET /api/sessions/{id}/messages/{message_id}/prompt` | the system prompt an assistant message was produced with (see below); `404` when none is recorded |
 | `GET /api/sessions/{id}/traces?limit=` | debug traces (Postgres) |
@@ -396,7 +433,7 @@ time, in order; at most `TASKS__MAX_CONCURRENT` run at once. They need
 | Route | Purpose |
 |---|---|
 | `POST /api/tasks` `{"task", "profile"?, "subject"?, "context"?, "parent_session_id"?}` | queue a task (`202`); `503` when disabled, `429` when too many wait, `422` for an empty task or an invalid subject name, `404` for a profile that isn't registered (whatever its spelling) |
-| `GET /api/tasks?parent_session_id=&status=&limit=&before=` | the caller's tasks newest first (every task for an administrator); `before` names a task the caller can see and lists only older ones (by `created_at`, then id), `404` when unknown |
+| `GET /api/tasks?parent_session_id=&status=&limit=&before=&updated_after=` | the caller's tasks newest first (every task for an administrator); `before` names a task the caller can see and lists only older ones (by `created_at`, then id), `404` when unknown. `updated_after` (a [change cursor](#change-cursors), not with `before`) lists the tasks changed after it instead, oldest change first |
 | `GET /api/tasks/{id}` | one task: `status` (`queued`, `running`, `done`, `failed`, `cancelled`, `interrupted`), `result`, `error`, `usage`, times |
 | `POST /api/tasks/{id}/cancel` | stop a queued or running task |
 
@@ -442,7 +479,7 @@ is off. A host shows an agent's effective values from its `config`, then
 | `POST /api/agents/{id}/session` `{"session_id"?}` | move the agent to a fresh session (a new id unless one is given); `409` when stopped or the session is taken |
 | `POST /api/agents/{id}/stop` | stop the agent; its queued and running messages end `cancelled` |
 | `POST /api/agents/{id}/messages` `{"content", "parent_session_id"?}` | queue a message (`202`); `409` when the agent is stopped, `429` when too many wait |
-| `GET /api/agents/{id}/messages?parent_session_id=&status=&limit=&before=` | the agent's messages newest first; `before` names one of them and lists only older ones (by `created_at`, then id), `404` when unknown |
+| `GET /api/agents/{id}/messages?parent_session_id=&status=&limit=&before=&updated_after=` | the agent's messages newest first; `before` names one of them and lists only older ones (by `created_at`, then id), `404` when unknown. `updated_after` (a [change cursor](#change-cursors), not with `before`) lists the messages changed after it instead, oldest change first |
 | `GET /api/agents/{id}/messages/{message_id}` | one message: `status` (as for tasks), `session_id` it ran in, `result`, `error`, `usage`, times |
 
 When a message's turn ends, `agent_message_finished` is published on
@@ -467,7 +504,7 @@ session's next turn while a voice call holds it. Imported history
 | Route | Purpose |
 |---|---|
 | `POST /api/events` `{"event_id", "direction", "source", "kind", "agent"?, "severity"?, "summary"?, "payload"?, "target_session_id"?, "history"?, "occurred_at"?}` | store an event (`201`), or return the stored one for a repeated key (`200`; delivered then only if no request ever started delivering it, as when the process stopped right after storing it); `severity` is `info` (default), `warning` or `critical`; `occurred_at` needs a UTC offset |
-| `GET /api/events?after=&direction=&source=&agent=&kind=&news_only=&limit=` | `{events, next_after}` in arrival order; `news_only=true` leaves out history |
+| `GET /api/events?after=&direction=&source=&agent=&kind=&news_only=&limit=&updated_after=` | `{events, next_after}` in arrival order; `news_only=true` leaves out history. `updated_after` (a [change cursor](#change-cursors), not with `after`) lists the events changed after it instead, oldest change first, as `{events, next_cursor}` |
 | `GET /api/events/{id}` | one event: its `status` (`received` or `delivered` inbound; `pending`, `delivered`, `heard` outbound), `delivery` (`{session_id, how}` with `how` `queued`, `promoted` or `inbox`, `{session_id, error}`, or `{session_id}` alone while delivery runs, or when the process stopped during it and the outcome is unknown), and times |
 | `PATCH /api/events/{id}` `{"status": "delivered"\|"heard"}` | move a notice forward (`409` backwards or for an inbound event) |
 
@@ -484,7 +521,7 @@ status change is appended to `history` with its time and principal; new
 | Route | Purpose |
 |---|---|
 | `POST /api/actions` `{"kind", "text"?, "arguments"?, "profile"?, "subject"?, "status"?}` | record an action (`201`), `proposed` by default; `id` is an increasing integer |
-| `GET /api/actions?status=&kind=&profile=&subject=&limit=&before=` | `{actions}`, newest first (by id); `before` names an action and lists only lower ids, `404` when unknown |
+| `GET /api/actions?status=&kind=&profile=&subject=&limit=&before=&updated_after=` | `{actions}`, newest first (by id); `before` names an action and lists only lower ids, `404` when unknown. `updated_after` (a [change cursor](#change-cursors), not with `before`) lists the actions changed after it instead, oldest change first, as `{actions, next_cursor}` |
 | `GET /api/actions/{id}` | the action with its `confirmations` in insertion order |
 | `PATCH /api/actions/{id}` `{"status"?, "text"?, "arguments"?, "confirmed_by"?, "decided_at"?, "results"?, "expected_status"?, "expected_revision"?}` | change it; `results` merge per recipient; with `expected_status` (a list) or `expected_revision`, only while the action matches (`409` otherwise) |
 | `POST /api/actions/{id}/confirmations` `{"id", "recipient", "kind", "revision", "text_sha256", "source", "confirmed_at", "key_epoch"?}` | the owner's confirmation for one recipient, written before the send (`201`; a repeated `id` is `409`); `id` is a UUID4, `kind` `message` or `steer`, `source` `button`, `typed` or `voice`, `confirmed_at` with a UTC offset |
@@ -519,7 +556,7 @@ is 1 to 200 letters, digits or `_ . : @ -`.
 | `GET /api/media/{image_id}` | a generated image from the cache |
 | `GET /api/media/video/{job_id}` | video job status |
 | `GET /api/debug/tools` | the complete tool registry and MCP server status |
-| `GET /api/counts?from=&to=` | `{from, to, events, tasks, actions, agent_messages, messages}`: records created in `[from, to)` (ISO 8601, UTC when they have no timezone; `422` unless `from` is before `to`), from Postgres when it is up, the in-memory stores otherwise (a service that is not running counts 0; voice calls are not counted); administration |
+| `GET /api/counts?from=&to=` | `{from, to, events, tasks, actions, agent_messages, messages, voice_calls}`: records created in `[from, to)` (ISO 8601, UTC when they have no timezone; `422` unless `from` is before `to`), from Postgres when it is up, the in-memory stores otherwise (a service that is not running counts 0); administration |
 
 ## Decisions
 
@@ -537,7 +574,9 @@ The optional [voice integration](voice.md) (GPT-Live, or the Codex CLI's realtim
 voice) exposes authenticated `/api/voice/status`, `/api/voice/usage` (Codex usage
 diagnostics; codex provider only) and `/api/voice/calls` endpoints. POST an SDP offer to
 create a call (its persona from `instructions`, or from a registered profile's
-artifacts with `instructions_profile`, recorded on the call), GET its snapshot or `/events` SSE stream, POST `/close` to
+artifacts with `instructions_profile`, recorded on the call), GET its snapshot or `/events` SSE stream,
+list snapshots changed after a [change cursor](#change-cursors) with
+`GET /api/voice/calls?updated_after=&limit=100` (`{calls, next_cursor}`), POST `/close` to
 finalize it, POST `/cancel` to cancel delegated backend work, PATCH `/context`
 to update host context, send a fact to a codex call, or both, and POST `/delegations/{id}/tool-result` for a pending
 host action. The voice guide specifies request/response and event shapes.

@@ -49,6 +49,7 @@ class ActionRecord:
     proposed_text: str | None = None
     revised_at: datetime | None = None
     created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +69,7 @@ class ActionRecord:
             "revised_at": _iso(self.revised_at),
             "created_by": self.created_by,
             "created_at": _iso(self.created_at),
+            "updated_at": _iso(self.updated_at),
         }
 
 

@@ -37,6 +37,7 @@ from assistant_runtime.app.event_log.models import (
 
 if TYPE_CHECKING:
     from assistant_runtime.app.ingress.interface import IngressService
+    from assistant_runtime.base.cursors import ChangeCursor
     from assistant_runtime.services.database.interface import DatabaseService
 
 # The inbox orders waiting messages by its own severity names.
@@ -139,12 +140,17 @@ class EventLogService:
         agent: str | None = None,
         kind: str | None = None,
         news_only: bool = False,
+        updated_after: ChangeCursor | None = None,
     ) -> list[EventRecord]:
-        """Events after ``after`` in arrival order; ``news_only`` leaves out imported history."""
+        """Events after ``after`` in arrival order; ``news_only`` leaves out imported history.
+
+        With ``updated_after``, the events changed after that cursor, oldest change first.
+        """
         async with self._require_store().transaction() as tx:
             return await tx.list(
                 after=after,
                 limit=min(limit, self._config.max_page),
+                updated_after=updated_after,
                 direction=direction,
                 source=source,
                 agent=agent,

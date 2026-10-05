@@ -14,11 +14,13 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import cast
 
 from loguru import logger
 
 from assistant_runtime.app.access.exceptions import AccessDeniedError
+from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.app.streaming.interface import StreamingService
 from assistant_runtime.app.voice._persistence import VoicePersistence
@@ -32,6 +34,7 @@ from assistant_runtime.app.voice._transport import (
 from assistant_runtime.app.voice.config import VoiceConfig
 from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.models import VoiceContext, VoiceOffer, VoiceToolResult
+from assistant_runtime.base.cursors import ChangeCursor, format_cursor
 from assistant_runtime.principal import Principal, can_access_session
 from assistant_runtime.services.artifacts.exceptions import UnknownProfileError
 from assistant_runtime.services.database.interface import DatabaseService
@@ -43,6 +46,11 @@ _FACTS_NOTE = (
     "\nThe application may add short background facts during the call. "
     "Use them when relevant; do not read a fact aloud just because it arrived."
 )
+
+
+def _change_key(snapshot: dict) -> tuple[datetime, str]:
+    """A snapshot's place in change order: ``(updated_at, call id)``."""
+    return datetime.fromisoformat(snapshot["updated_at"]), snapshot["call_id"]
 
 
 class VoiceService:
@@ -245,6 +253,57 @@ class VoiceService:
             record.update(status="interrupted", reason="runtime_restarted", finalized=False)
         return record
 
+    async def list(
+        self, principal: Principal, *, updated_after: ChangeCursor | None = None, limit: int = 100
+    ) -> tuple[list[dict], str | None]:
+        """Call snapshots changed after the cursor, oldest change first, as ``get`` returns them.
+
+        The caller's own calls, or every call for an administrator: persisted
+        rows when the database is up, else the calls this process holds.
+        Returns the cursor after the last call read (None when none was).
+        """
+        owner_id = None if principal.is_admin else principal.id
+        if self._persistence.available:
+            records = await self._persistence.list_changes(
+                after=updated_after, limit=limit, owner_id=owner_id
+            )
+        else:
+            records = [
+                snapshot
+                for snapshot in (call.snapshot() for call in self._calls.values())
+                if (owner_id is None or snapshot["owner_id"] == owner_id)
+                and (updated_after is None or updated_after.admits(*_change_key(snapshot)))
+            ]
+            records = sorted(records, key=_change_key)[:limit]
+        last = format_cursor(*_change_key(records[-1])) if records else None
+        visible = []
+        for record in records:
+            record.setdefault("mode", "delegated")
+            if not can_access_session(principal, record["owner_id"]):
+                continue
+            if not principal.is_admin:  # as ``get``: the session must still be the caller's
+                try:
+                    await self._streaming.authorize_session(record["session_id"], principal)
+                except (AccessDeniedError, SessionError):
+                    continue
+            if record["call_id"] not in self._calls and record["status"] not in (
+                "closed",
+                "interrupted",
+            ):
+                record.update(status="interrupted", reason="runtime_restarted", finalized=False)
+            visible.append(record)
+        return visible, last
+
+    async def count(self, start: datetime, end: datetime) -> int:
+        """Calls created in ``[start, end)``: persisted ones, else those this process holds."""
+        if self._persistence.available:
+            return await self._persistence.count_created(start, end)
+        return sum(
+            1
+            for call in self._calls.values()
+            if start <= datetime.fromtimestamp(call.created_at, UTC) < end
+        )
+
     def forget_session(self, session_id: str) -> None:
         """Purge closed call caches after deletion, before the id can be reused."""
         for call_id, call in list(self._calls.items()):
@@ -439,6 +498,7 @@ class VoiceService:
                 yield ": keepalive\n\n"
 
     def _emit(self, call: VoiceCall, event: str, data: dict) -> None:
+        call.updated_at = time.time()
         call.cursor += 1
         call.events.append((call.cursor, self._streaming.voice_event(call.id, event, data)))
         while len(call.events) > self.config.event_buffer_size:

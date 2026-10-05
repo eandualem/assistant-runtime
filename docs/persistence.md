@@ -18,6 +18,13 @@ tools.
 | Background tasks, persistent agents and their messages | rows in `tasks`, `agents`, `agent_messages` | process memory, lost on restart |
 | Events, actions and their confirmations, host state | rows in `events`, `actions`, `action_confirmations`, `host_state` | process memory, lost on restart |
 
+Messages, tasks, agent messages, actions, events and voice calls record
+`updated_at`, which every write sets to the writing transaction's time
+(migration `0039`; existing rows took the latest time they already
+recorded). Change cursors read them in `(updated_at, id)` order, through
+an index on each table (see [change cursors](api.md#change-cursors)).
+Without Postgres the in-memory stores keep it from the process clock.
+
 The session store is a write-through cache: every change is written to the
 row before the in-memory context is updated. The row may be ahead while a
 write completes, but memory is never durably ahead of the row. A session that is not in
@@ -310,7 +317,8 @@ are never assumed, never undone and never retried by the runtime.
 ## Voice checkpoints
 
 Migration `0023` adds `voice_calls` with a JSON snapshot and a cascading
-foreign key to the backend session. The optional [voice bridge](voice.md)
+foreign key to the backend session; `0039` adds `created_at` (when the call
+started, from the snapshot) and `updated_at` (the last checkpoint write). The optional [voice bridge](voice.md)
 coalesces transcript, delegation and cumulative duration-usage checkpoints
 while connected and writes a final snapshot on close. Audio is not retained.
 Backend tool/message history still uses the normal native persistence path.

@@ -18,6 +18,8 @@ from assistant_runtime.app.event_log.exceptions import (
     EventLogError,
     EventNotFoundError,
 )
+from assistant_runtime.app.routes._cursors import cursor_param, exclusive
+from assistant_runtime.base.cursors import next_cursor
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -71,28 +73,38 @@ async def record_event(
 async def list_events(
     events: EventLogServiceDep,
     admin: AdminDep,
-    after: int = Query(0, ge=0),
+    after: int | None = Query(None, ge=0),
     direction: Literal["inbound", "outbound"] | None = None,
     source: str | None = None,
     agent: str | None = None,
     kind: str | None = None,
     news_only: bool = False,
     limit: int = Query(100, ge=1, le=500),
+    updated_after: str | None = None,
 ) -> dict:
-    """Events after ``after`` in arrival order; continue from ``next_after``."""
+    """Events after ``after`` in arrival order; continue from ``next_after``.
+
+    ``updated_after`` (a change cursor, not with ``after``) lists the events
+    changed after it instead, oldest change first; continue from ``next_cursor``.
+    """
+    exclusive(updated_after, after=after)
+    cursor = cursor_param(updated_after, id_type=int)
     records = await events.list(
-        after=after,
+        after=after or 0,
         limit=limit,
         direction=direction,
         source=source,
         agent=agent,
         kind=kind,
         news_only=news_only,
+        updated_after=cursor,
     )
-    return {
-        "events": [r.to_dict() for r in records],
-        "next_after": records[-1].id if records else after,
-    }
+    body: dict = {"events": [r.to_dict() for r in records]}
+    if cursor is not None:
+        body["next_cursor"] = next_cursor(records, updated_after)
+    else:
+        body["next_after"] = records[-1].id if records else after or 0
+    return body
 
 
 @router.get("/{event_id}")
