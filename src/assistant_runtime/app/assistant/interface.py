@@ -316,6 +316,7 @@ class AssistantService:
                 temperature=effective.temperature,
                 codex_service_tier=effective.codex_service_tier,
                 model_settings=self._config.model_settings,
+                prompt_cache_key=request.session_id,
                 **native_options,
             )
 

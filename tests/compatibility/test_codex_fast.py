@@ -197,6 +197,22 @@ async def test_tier_rejection_does_not_retry_with_standard_or_api(codex):
     assert codex.requests[0]["service_tier"] == "priority"
 
 
+@pytest.mark.parametrize(
+    ("configured", "sent"),
+    [({}, "session-1"), ({"openai_prompt_cache_key": "app-key"}, "app-key")],
+)
+async def test_prompt_cache_key_defaults_to_the_session(codex, configured, sent):
+    service = codex.service(None)
+    agent = service.build_agent(
+        system_prompt="Decision.",
+        model_settings={**configured, "openai_prompt_cache_retention": "24h"},
+        prompt_cache_key="session-1",
+    )
+    await agent.run("Wait.")
+    assert codex.requests[0]["prompt_cache_key"] == sent
+    assert codex.requests[0]["prompt_cache_retention"] == "24h"
+
+
 def test_startup_config_validation(monkeypatch):
     monkeypatch.setenv("LLM__CODEX_SERVICE_TIER", "fast")
     assert AppSettings(_env_file=None).llm.codex_service_tier == "fast"

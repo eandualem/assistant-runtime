@@ -28,6 +28,11 @@ billing. Disable unwanted tools/providers separately. The Codex transport
 omits unsupported sampling, response-ID chaining, and `max_output_tokens`
 parameters. Use native per-turn usage limits for runtime budget enforcement;
 they are not a server-side generation-token cap.
+Each conversation turn sends its session id as `prompt_cache_key`. This helps
+the backend send the conversation's requests to the same prompt cache. An
+`openai_prompt_cache_key` or `openai_prompt_cache_retention` in
+`ASSISTANT__MODEL_SETTINGS` is sent as configured, and a configured key takes
+precedence over the session id.
 For the GPT-6 models on Codex (`openai:gpt-6-astra`, `openai:gpt-6-sol`,
 `openai:gpt-6.1-sol`, `openai:gpt-6-luna`), host tools use Responses and a thinking budget of `4000`
 maps to `low` effort. Sampling and log-probability parameters are omitted.
