@@ -208,9 +208,14 @@ async def get_session_message(
     """One message of the session, in the display form ``/messages`` lists it in."""
     ctx = await _get_session_context(session_id, service.get_session_store(), principal)
     record = ctx["message_index"].get(message_id)
-    if record is None:
+    if record is not None:
+        return merge_display_messages([record], [])[0]
+    # Delivered steering is listed too; queued steering is not on display yet.
+    steering = ctx["steering_index"].get(message_id)
+    displayed = merge_display_messages([], [steering]) if steering is not None else []
+    if not displayed:
         raise HTTPException(status_code=404, detail=f"Message '{message_id}' not found")
-    return merge_display_messages([record], [])[0]
+    return displayed[0]
 
 
 @router.get("/sessions/{session_id}/messages/{message_id}/prompt")

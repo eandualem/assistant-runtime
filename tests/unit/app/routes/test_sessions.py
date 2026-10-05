@@ -289,6 +289,27 @@ class TestGetSessionMessage:
         assert (elsewhere.status_code, unknown.status_code) == (404, 404)
         assert no_session.json()["detail"] == "Session not found"
 
+    @pytest.mark.asyncio
+    async def test_returns_delivered_steering_but_not_queued(self) -> None:
+        sessions = SessionStore()
+        await _seed_branching_session(sessions)
+        for message_id in ("steering-1", "steering-2"):
+            await sessions.queue_steering(
+                "sess-1",
+                _request(message_id=message_id, content="Focus", message_type="steering"),
+            )
+        await sessions.mark_steering_delivered("sess-1", ["steering-1"])
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            delivered = await client.get("/api/sessions/sess-1/messages/steering-1")
+            queued = await client.get("/api/sessions/sess-1/messages/steering-2")
+
+        assert delivered.status_code == 200
+        assert delivered.json()["id"] == "steering-1"
+        assert delivered.json()["role"] == "steering"
+        assert queued.status_code == 404
+
 
 class TestGetSessionTree:
     @pytest.mark.asyncio
