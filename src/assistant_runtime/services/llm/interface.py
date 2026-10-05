@@ -442,11 +442,14 @@ class LlmService:
         settings: dict[str, Any] | Any,
         *,
         service_tier: str | None = None,
+        prompt_cache_key: str | None = None,
     ) -> dict[str, Any] | Any:
         """Apply transport-specific defaults for certain providers.
 
         ``service_tier`` is the turn's Codex tier (the tunable); unset falls
-        back to ``LLM__CODEX_SERVICE_TIER``.
+        back to ``LLM__CODEX_SERVICE_TIER``. ``prompt_cache_key`` (the session
+        id) routes a conversation's requests to the same prompt cache unless
+        the application configures ``openai_prompt_cache_key`` itself.
         """
         if not self._should_use_codex_provider(resolved_model):
             return settings
@@ -468,9 +471,13 @@ class LlmService:
                 "thinking",
                 "openai_truncation",
                 "openai_user",
+                "openai_prompt_cache_key",
+                "openai_prompt_cache_retention",
             ):
                 if key in settings:
                     codex_settings[key] = settings[key]
+        if prompt_cache_key is not None:
+            codex_settings.setdefault("openai_prompt_cache_key", prompt_cache_key)
         return codex_settings
 
     def _get_or_create_codex_provider(self, session: Any) -> OpenAIProvider:
@@ -543,6 +550,7 @@ class LlmService:
         capabilities: Sequence[AgentCapability[Any]] = (),
         codex_service_tier: str | None = None,
         model_settings: Mapping[str, Any] | None = None,
+        prompt_cache_key: str | None = None,
     ) -> Agent:
         """Create a configured Pydantic AI Agent.
 
@@ -561,6 +569,7 @@ class LlmService:
             temperature: Optional temperature override.
             model_settings: The application's native model settings, merged over the
                 runtime's defaults and under the tunables.
+            prompt_cache_key: The Codex prompt cache key when the application sets none.
 
         Returns:
             Configured Pydantic AI Agent instance.
@@ -574,7 +583,10 @@ class LlmService:
             base=model_settings,
         )
         settings = self._apply_model_transport_defaults(
-            resolved_model, settings, service_tier=codex_service_tier
+            resolved_model,
+            settings,
+            service_tier=codex_service_tier,
+            prompt_cache_key=prompt_cache_key,
         )
         agent_model = self._resolve_agent_model(resolved_model)
 
