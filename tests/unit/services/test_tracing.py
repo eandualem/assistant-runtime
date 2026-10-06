@@ -363,6 +363,22 @@ class TestCreateRequestTrace:
         tracing._propagate_attributes.assert_called_once()
         mock_obs.end.assert_called_once()
 
+    def test_manual_mode_makes_the_trace_the_parent(self):
+        """Spans started inside the block (the agent run) join the request's trace."""
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        root = TracerProvider().get_tracer("test").start_span("agent-request")
+        mock_client = MagicMock()
+        mock_client.start_observation.return_value = MagicMock(_otel_span=root)
+
+        tracing._tracing_enabled = True
+        tracing._langfuse_client = mock_client
+
+        with create_request_trace(session_id="s1", set_current_observation=False):
+            assert otel_trace.get_current_span() is root
+        assert otel_trace.get_current_span() is not root
+
     def test_manual_mode_end_failure_is_swallowed(self):
         mock_client = MagicMock()
         mock_obs = MagicMock()
@@ -407,6 +423,18 @@ class TestCreateSpan:
             metadata={"key": "val"},
         )
         mock_cm.__exit__.assert_called_once()
+
+    def test_no_current_trace_yields_noop(self):
+        """A span outside any trace would start a trace of its own, without a session."""
+        mock_client = MagicMock()
+        mock_client.get_current_trace_id.return_value = None
+
+        tracing._tracing_enabled = True
+        tracing._langfuse_client = mock_client
+
+        with create_span("test-span") as handle:
+            assert isinstance(handle, _NoOpHandle)
+        mock_client.start_as_current_observation.assert_not_called()
 
     def test_start_failure_yields_noop(self):
         mock_client = MagicMock()

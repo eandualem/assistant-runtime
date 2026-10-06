@@ -195,8 +195,9 @@ def create_request_trace(
 
     ``set_current_observation=False`` is intended for async generator flows
     where the request lifecycle spans multiple ``yield`` points. In that mode
-    we avoid OpenTelemetry context attach/detach and end the observation
-    manually, which is safe across async generator shutdown.
+    the observation is ended manually, which is safe across async generator
+    shutdown; its span is still made current, like the propagated attributes,
+    so spans started inside the block (the agent run) belong to this trace.
     """
     if not _tracing_enabled or _langfuse_client is None:
         yield _NoOpHandle()
@@ -216,6 +217,7 @@ def create_request_trace(
     # propagated to observations created inside a propagate_attributes() context;
     # update_trace() no longer exists. Metadata values must be strings.
     propagate_cm = None
+    parent_cm = None
     try:
         if _propagate_attributes is not None:
             propagate_cm = _propagate_attributes(
@@ -243,8 +245,18 @@ def create_request_trace(
                 input=input_message,
                 metadata=trace_metadata,
             )
+            from opentelemetry import trace as otel_trace
+
+            parent_cm = otel_trace.use_span(
+                obs._otel_span,
+                end_on_exit=False,
+                record_exception=False,
+                set_status_on_exception=False,
+            )
+            parent_cm.__enter__()
     except Exception as e:
         logger.warning(f"[TRACING] Failed to start request trace: {e}")
+        _exit_quietly(parent_cm)
         _exit_quietly(propagate_cm)
         yield _NoOpHandle()
         return
@@ -259,6 +271,7 @@ def create_request_trace(
                 obs.end()
         except Exception as e:
             logger.warning(f"[TRACING] Error closing request trace: {e}")
+        _exit_quietly(parent_cm)
         _exit_quietly(propagate_cm)
 
 
@@ -269,7 +282,7 @@ def _exit_quietly(cm: Any) -> None:
     try:
         cm.__exit__(None, None, None)
     except Exception as e:
-        logger.warning(f"[TRACING] Error leaving attribute propagation: {e}")
+        logger.warning(f"[TRACING] Error leaving trace context: {e}")
 
 
 @contextmanager
@@ -282,9 +295,14 @@ def create_span(
     """Create a child span under the current trace.
 
     Yields a handle with ``update_output()`` / ``update()`` methods.
-    When tracing is disabled, yields a ``_NoOpHandle``.
+    When tracing is disabled, or no trace is current (the span would start a
+    trace of its own, without the request's session), yields a ``_NoOpHandle``.
     """
-    if not _tracing_enabled or _langfuse_client is None:
+    if (
+        not _tracing_enabled
+        or _langfuse_client is None
+        or _langfuse_client.get_current_trace_id() is None
+    ):
         yield _NoOpHandle()
         return
 

@@ -208,7 +208,7 @@ class TurnRunner:
                 model=resolved_model,
                 is_continuation=plan.kind == "continuation",
                 input_message=plan.input_message,
-                metadata=plan.trace_metadata or None,
+                metadata={**plan.trace_metadata, "agent_setup_ms": round(agent_setup_ms)},
                 set_current_observation=False,
             )
             trace_cm.__enter__()
