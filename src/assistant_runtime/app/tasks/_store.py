@@ -11,10 +11,13 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from assistant_runtime.app.tasks.models import AgentMessageRecord, AgentRecord, TaskRecord
+from assistant_runtime.base.cursors import ChangeCursor
 
 _FIELDS = tuple(f.name for f in fields(TaskRecord))
 _AGENT_FIELDS = tuple(f.name for f in fields(AgentRecord))
 _MESSAGE_FIELDS = tuple(f.name for f in fields(AgentMessageRecord))
+# Set by the database on insert.
+_STAMPS = ("created_at", "updated_at")
 
 
 class AgentTakenError(Exception):
@@ -30,6 +33,27 @@ def _older_than(records: dict[str, Any], before: Any) -> list[Any]:
     if before is None:
         return values
     return values[: list(records).index(before.id)]
+
+
+def _changed(records: list[Any], updated_after: ChangeCursor | None, limit: int) -> list[Any]:
+    """The newest-first ``records`` changed after the cursor, oldest change first.
+
+    Without a cursor, the newest ``limit`` of them, as they are.
+    """
+    if updated_after is None:
+        return list(reversed(records))[:limit]
+    changed = [r for r in records if updated_after.admits(r.updated_at, r.id)]
+    return sorted(changed, key=lambda r: (r.updated_at, r.id))[:limit]
+
+
+def _created(record: Any) -> Any:
+    """A new record, stamped with its creation (and so its first change) time."""
+    created_at = record.created_at or datetime.now(UTC)
+    return replace(deepcopy(record), created_at=created_at, updated_at=created_at)
+
+
+def _changed_now(record: Any, values: dict[str, Any]) -> Any:
+    return replace(record, **deepcopy(values), updated_at=datetime.now(UTC))
 
 
 def _key(before: Any) -> tuple[datetime, str] | None:
@@ -56,6 +80,7 @@ class TaskStore(Protocol):
         status: str | None,
         limit: int,
         before: TaskRecord | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[TaskRecord]: ...
 
     async def mark_unfinished(self, status: str, error: str) -> list[TaskRecord]: ...
@@ -91,6 +116,7 @@ class TaskStore(Protocol):
         status: str | None,
         limit: int,
         before: AgentMessageRecord | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[AgentMessageRecord]: ...
 
     async def mark_unfinished_messages(
@@ -109,7 +135,7 @@ class InMemoryTaskStore:
         self._messages: dict[str, AgentMessageRecord] = {}
 
     async def create(self, record: TaskRecord) -> TaskRecord:
-        record = replace(deepcopy(record), created_at=record.created_at or datetime.now(UTC))
+        record = _created(record)
         self._tasks[record.id] = record
         return deepcopy(record)
 
@@ -119,7 +145,7 @@ class InMemoryTaskStore:
         record = self._tasks.get(task_id)
         if record is None or (only_from is not None and record.status not in only_from):
             return None
-        record = self._tasks[task_id] = replace(record, **deepcopy(values))
+        record = self._tasks[task_id] = _changed_now(record, values)
         return deepcopy(record)
 
     async def get(self, task_id: str) -> TaskRecord | None:
@@ -133,6 +159,7 @@ class InMemoryTaskStore:
         status: str | None,
         limit: int,
         before: TaskRecord | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[TaskRecord]:
         records = [
             r
@@ -141,7 +168,7 @@ class InMemoryTaskStore:
             and (parent_session_id is None or r.parent_session_id == parent_session_id)
             and (status is None or r.status == status)
         ]
-        return deepcopy(list(reversed(records))[:limit])
+        return deepcopy(_changed(records, updated_after, limit))
 
     async def mark_unfinished(self, status: str, error: str) -> list[TaskRecord]:
         return []  # nothing survives a restart in memory
@@ -177,7 +204,7 @@ class InMemoryTaskStore:
         return deepcopy(list(reversed(records)))
 
     async def create_message(self, record: AgentMessageRecord) -> AgentMessageRecord:
-        record = replace(deepcopy(record), created_at=record.created_at or datetime.now(UTC))
+        record = _created(record)
         self._messages[record.id] = record
         return deepcopy(record)
 
@@ -187,7 +214,7 @@ class InMemoryTaskStore:
         record = self._messages.get(message_id)
         if record is None or (only_from is not None and record.status not in only_from):
             return None
-        record = self._messages[message_id] = replace(record, **deepcopy(values))
+        record = self._messages[message_id] = _changed_now(record, values)
         return deepcopy(record)
 
     async def get_message(self, message_id: str) -> AgentMessageRecord | None:
@@ -202,6 +229,7 @@ class InMemoryTaskStore:
         status: str | None,
         limit: int,
         before: AgentMessageRecord | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[AgentMessageRecord]:
         records = [
             r
@@ -211,7 +239,7 @@ class InMemoryTaskStore:
             and (parent_session_id is None or r.parent_session_id == parent_session_id)
             and (status is None or r.status == status)
         ]
-        return deepcopy(list(reversed(records))[:limit])
+        return deepcopy(_changed(records, updated_after, limit))
 
     async def mark_unfinished_messages(self, status: str, error: str) -> list[AgentMessageRecord]:
         return []  # nothing survives a restart in memory
@@ -236,7 +264,7 @@ class DatabaseTaskStore:
         return TaskRecord(**{name: getattr(row, name) for name in _FIELDS})
 
     async def create(self, record: TaskRecord) -> TaskRecord:
-        values = {name: getattr(record, name) for name in _FIELDS if name != "created_at"}
+        values = {name: getattr(record, name) for name in _FIELDS if name not in _STAMPS}
         async with self._database.session_context() as session:
             return self._record(await self._repository(session).create(**values))
 
@@ -260,6 +288,7 @@ class DatabaseTaskStore:
         status: str | None,
         limit: int,
         before: TaskRecord | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[TaskRecord]:
         async with self._database.session_context() as session:
             rows = await self._repository(session).list(
@@ -268,6 +297,7 @@ class DatabaseTaskStore:
                 status=status,
                 limit=limit,
                 before=_key(before),
+                updated_after=updated_after,
             )
             return [self._record(row) for row in rows]
 
@@ -329,7 +359,7 @@ class DatabaseTaskStore:
             return [self._agent(row) for row in rows]
 
     async def create_message(self, record: AgentMessageRecord) -> AgentMessageRecord:
-        values = {name: getattr(record, name) for name in _MESSAGE_FIELDS if name != "created_at"}
+        values = {name: getattr(record, name) for name in _MESSAGE_FIELDS if name not in _STAMPS}
         async with self._database.session_context() as session:
             return self._message(await self._agents(session).create_message(**values))
 
@@ -356,6 +386,7 @@ class DatabaseTaskStore:
         status: str | None,
         limit: int,
         before: AgentMessageRecord | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[AgentMessageRecord]:
         async with self._database.session_context() as session:
             rows = await self._agents(session).list_messages(
@@ -365,6 +396,7 @@ class DatabaseTaskStore:
                 status=status,
                 limit=limit,
                 before=_key(before),
+                updated_after=updated_after,
             )
             return [self._message(row) for row in rows]
 

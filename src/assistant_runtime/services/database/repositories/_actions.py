@@ -9,12 +9,13 @@ from sqlalchemy import func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant_runtime.base.cursors import ChangeCursor
 from assistant_runtime.services.database.models import (
     ActionConfirmationORM,
     ActionORM,
 )
 
-from ._ordering import _in_commit_order
+from ._ordering import _in_change_order, _in_commit_order
 
 
 class ActionRepository:
@@ -37,22 +38,37 @@ class ActionRepository:
 
     async def update(self, action_id: int, **fields: Any) -> ActionORM:
         result = await self._session.execute(
-            update(ActionORM).where(ActionORM.id == action_id).values(**fields).returning(ActionORM)
+            update(ActionORM)
+            .where(ActionORM.id == action_id)
+            .values({**fields, "updated_at": func.now()})
+            .returning(ActionORM)
         )
         await self._session.flush()
         return result.scalar_one()
 
     async def list(
-        self, *, limit: int, before: int | None = None, **filters: Any
+        self,
+        *,
+        limit: int,
+        before: int | None = None,
+        updated_after: ChangeCursor | None = None,
+        **filters: Any,
     ) -> list[ActionORM]:
-        """Newest first (by id), filtered by whatever is given; ``before`` lists lower ids only."""
+        """Newest first (by id), filtered by whatever is given; ``before`` lists lower ids only.
+
+        With ``updated_after``, the actions changed after that cursor, oldest change first.
+        """
         query = select(ActionORM)
         if before is not None:
             query = query.where(ActionORM.id < before)
         for name, value in filters.items():
             if value is not None:
                 query = query.where(getattr(ActionORM, name) == value)
-        result = await self._session.execute(query.order_by(ActionORM.id.desc()).limit(limit))
+        if updated_after is not None:
+            query = _in_change_order(query, ActionORM, updated_after)
+        else:
+            query = query.order_by(ActionORM.id.desc())
+        result = await self._session.execute(query.limit(limit))
         return list(result.scalars().all())
 
     async def count_created(self, start: datetime, end: datetime) -> int:
@@ -73,8 +89,11 @@ class ActionRepository:
             .on_conflict_do_nothing(index_elements=["id"])
             .returning(ActionConfirmationORM)
         )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            await self._touch(row.action_id)
         await self._session.flush()
-        return result.scalar_one_or_none()
+        return row
 
     async def get_confirmation(
         self, confirmation_id: str, *, lock: bool = False
@@ -92,8 +111,16 @@ class ActionRepository:
             .values(**fields)
             .returning(ActionConfirmationORM)
         )
+        row = result.scalar_one()
+        await self._touch(row.action_id)
         await self._session.flush()
-        return result.scalar_one()
+        return row
+
+    async def _touch(self, action_id: int) -> None:
+        """A confirmation's change is a change of its action, for change cursors."""
+        await self._session.execute(
+            update(ActionORM).where(ActionORM.id == action_id).values(updated_at=func.now())
+        )
 
     async def list_confirmations(
         self,

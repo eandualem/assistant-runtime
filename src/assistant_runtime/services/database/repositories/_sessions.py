@@ -9,12 +9,15 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant_runtime.base.cursors import ChangeCursor
 from assistant_runtime.services.database.models import (
     MessageORM,
     PromptSnapshotORM,
     SessionORM,
     SteeringORM,
 )
+
+from ._ordering import _in_change_order
 
 
 class SessionRepository:
@@ -233,6 +236,16 @@ class MessageRepository:
         )
         return list(result.scalars().all())
 
+    async def list_changes(
+        self, session_id: str, *, after: ChangeCursor | None, limit: int
+    ) -> list[MessageORM]:
+        """The session's messages changed after ``after`` (all without it), oldest change first."""
+        query = _in_change_order(
+            select(MessageORM).where(MessageORM.session_id == session_id), MessageORM, after
+        )
+        result = await self._session.execute(query.limit(limit))
+        return list(result.scalars().all())
+
     async def count_by_sessions(self, session_ids: list[str]) -> dict[str, int]:
         if not session_ids:
             return {}
@@ -276,7 +289,9 @@ class MessageRepository:
         if not fields:
             return
         await self._session.execute(
-            update(MessageORM).where(MessageORM.id == message_id).values(**fields)
+            update(MessageORM)
+            .where(MessageORM.id == message_id)
+            .values(**fields, updated_at=func.now())
         )
         await self._session.flush()
 

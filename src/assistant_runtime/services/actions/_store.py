@@ -15,6 +15,7 @@ from dataclasses import fields, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from assistant_runtime.base.cursors import ChangeCursor
 from assistant_runtime.services.actions.models import ActionRecord, ConfirmationRecord
 
 _ACTION_FIELDS = tuple(f.name for f in fields(ActionRecord))
@@ -29,7 +30,12 @@ class ActionTransaction(Protocol):
     async def update_action(self, action_id: int, **values: Any) -> ActionRecord: ...
 
     async def list_actions(
-        self, *, limit: int, before: int | None = None, **filters: Any
+        self,
+        *,
+        limit: int,
+        before: int | None = None,
+        updated_after: ChangeCursor | None = None,
+        **filters: Any,
     ) -> list[ActionRecord]: ...
 
     async def count_created(self, start: datetime, end: datetime) -> int: ...
@@ -83,8 +89,9 @@ class InMemoryActionStore:
             yield self
 
     async def create_action(self, **values: Any) -> ActionRecord:
+        now = datetime.now(UTC)
         record = ActionRecord(
-            id=self._next_action, created_at=datetime.now(UTC), **deepcopy(values)
+            id=self._next_action, created_at=now, updated_at=now, **deepcopy(values)
         )
         self._actions[record.id] = record
         self._next_action += 1
@@ -94,17 +101,26 @@ class InMemoryActionStore:
         return deepcopy(self._actions.get(action_id))
 
     async def update_action(self, action_id: int, **values: Any) -> ActionRecord:
-        record = self._actions[action_id] = replace(self._actions[action_id], **deepcopy(values))
+        record = replace(self._actions[action_id], **deepcopy(values), updated_at=datetime.now(UTC))
+        self._actions[action_id] = record
         return deepcopy(record)
 
     async def list_actions(
-        self, *, limit: int, before: int | None = None, **filters: Any
+        self,
+        *,
+        limit: int,
+        before: int | None = None,
+        updated_after: ChangeCursor | None = None,
+        **filters: Any,
     ) -> list[ActionRecord]:
         records = [
             r
             for r in self._actions.values()
             if (before is None or r.id < before) and _matches(r, filters)
         ]
+        if updated_after is not None:
+            changed = [r for r in records if updated_after.admits(r.updated_at, r.id)]
+            return deepcopy(sorted(changed, key=lambda r: (r.updated_at, r.id))[:limit])
         return deepcopy(sorted(records, key=lambda r: r.id, reverse=True)[:limit])
 
     async def count_created(self, start: datetime, end: datetime) -> int:
@@ -116,6 +132,7 @@ class InMemoryActionStore:
         record = ConfirmationRecord(seq=self._next_seq, **deepcopy(values))
         self._confirmations[record.id] = record
         self._next_seq += 1
+        self._touch(record.action_id)
         return deepcopy(record)
 
     async def get_confirmation(
@@ -126,7 +143,15 @@ class InMemoryActionStore:
     async def update_confirmation(self, confirmation_id: str, **values: Any) -> ConfirmationRecord:
         record = replace(self._confirmations[confirmation_id], **deepcopy(values))
         self._confirmations[confirmation_id] = record
+        self._touch(record.action_id)
         return deepcopy(record)
+
+    def _touch(self, action_id: int) -> None:
+        """A confirmation's change is a change of its action, for change cursors."""
+        if action_id in self._actions:
+            self._actions[action_id] = replace(
+                self._actions[action_id], updated_at=datetime.now(UTC)
+            )
 
     async def list_confirmations(
         self,
@@ -187,9 +212,16 @@ class _DatabaseTransaction:
         return self._action(await self._repository.update(action_id, **values))
 
     async def list_actions(
-        self, *, limit: int, before: int | None = None, **filters: Any
+        self,
+        *,
+        limit: int,
+        before: int | None = None,
+        updated_after: ChangeCursor | None = None,
+        **filters: Any,
     ) -> list[ActionRecord]:
-        rows = await self._repository.list(limit=limit, before=before, **filters)
+        rows = await self._repository.list(
+            limit=limit, before=before, updated_after=updated_after, **filters
+        )
         return [self._action(row) for row in rows]
 
     async def count_created(self, start: datetime, end: datetime) -> int:

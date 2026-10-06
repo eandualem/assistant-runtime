@@ -718,3 +718,32 @@ class TestReadPaging:
         assert await service.count_messages(start + timedelta(minutes=1), end) == 2
         await service.stop()
         assert await service.count(start, end) == 0  # not running: nothing to count
+
+    async def test_updated_after_lists_changes_oldest_first(self):
+        from datetime import timedelta
+
+        from assistant_runtime.base.cursors import ChangeCursor
+
+        service, start = await self._seeded()
+        cursor = ChangeCursor(start + timedelta(minutes=3), "t3")
+        assert await service.list(ADMIN, updated_after=cursor) == []
+        await service._store.update("t1", status="failed")  # a change moves it past the cursor
+        assert [r.id for r in await service.list(ADMIN, updated_after=cursor)] == ["t1"]
+        since = ChangeCursor(start + timedelta(minutes=1))  # a bare time: strictly later
+        assert [r.id for r in await service.list(ADMIN, updated_after=since)] == ["t2", "t3", "t1"]
+        assert [r.id for r in await service.list(ALICE, updated_after=since)] == ["t3", "t1"]
+        assert [r.id for r in await service.list(ADMIN, updated_after=since, limit=1)] == ["t2"]
+        changed = (await service.get("t1", ADMIN)).to_dict()
+        assert changed["updated_at"] > changed["created_at"]
+
+    async def test_updated_after_lists_agent_message_changes(self):
+        from datetime import timedelta
+
+        from assistant_runtime.base.cursors import ChangeCursor
+
+        service, start = await self._seeded()
+        cursor = ChangeCursor(start + timedelta(minutes=3), "m3")
+        await service._store.update_message("m0", status="failed")
+        changed = await service.list_messages(ADMIN, agent_id="a1", updated_after=cursor)
+        assert [r.id for r in changed] == ["m0"]
+        assert changed[0].to_dict()["updated_at"] == changed[0].updated_at.isoformat()

@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from assistant_runtime.app.event_log.models import EventRecord
+from assistant_runtime.base.cursors import ChangeCursor
 
 _FIELDS = tuple(f.name for f in fields(EventRecord))
 
@@ -25,7 +26,14 @@ class EventTransaction(Protocol):
 
     async def update(self, event_id: int, **values: Any) -> EventRecord: ...
 
-    async def list(self, *, after: int, limit: int, **filters: Any) -> list[EventRecord]: ...
+    async def list(
+        self,
+        *,
+        after: int,
+        limit: int,
+        updated_after: ChangeCursor | None = None,
+        **filters: Any,
+    ) -> list[EventRecord]: ...
 
     async def count_created(self, start: datetime, end: datetime) -> int: ...
 
@@ -56,7 +64,8 @@ class InMemoryEventStore:
         key = (values["source"], values["event_id"])
         if key in self._keys:
             return deepcopy(self._events[self._keys[key]]), False
-        record = EventRecord(id=self._next, created_at=datetime.now(UTC), **deepcopy(values))
+        now = datetime.now(UTC)
+        record = EventRecord(id=self._next, created_at=now, updated_at=now, **deepcopy(values))
         self._events[record.id] = record
         self._keys[key] = record.id
         self._next += 1
@@ -66,16 +75,27 @@ class InMemoryEventStore:
         return deepcopy(self._events.get(event_id))
 
     async def update(self, event_id: int, **values: Any) -> EventRecord:
-        record = self._events[event_id] = replace(self._events[event_id], **deepcopy(values))
+        record = replace(self._events[event_id], **deepcopy(values), updated_at=datetime.now(UTC))
+        self._events[event_id] = record
         return deepcopy(record)
 
-    async def list(self, *, after: int, limit: int, **filters: Any) -> list[EventRecord]:
+    async def list(
+        self,
+        *,
+        after: int,
+        limit: int,
+        updated_after: ChangeCursor | None = None,
+        **filters: Any,
+    ) -> list[EventRecord]:
         records = [
             r
             for r in self._events.values()
             if r.id > after
             and all(value is None or getattr(r, name) == value for name, value in filters.items())
         ]
+        if updated_after is not None:
+            changed = [r for r in records if updated_after.admits(r.updated_at, r.id)]
+            return deepcopy(sorted(changed, key=lambda r: (r.updated_at, r.id))[:limit])
         return deepcopy(sorted(records, key=lambda r: r.id)[:limit])
 
     async def count_created(self, start: datetime, end: datetime) -> int:
@@ -117,8 +137,17 @@ class _DatabaseTransaction:
     async def update(self, event_id: int, **values: Any) -> EventRecord:
         return self._record(await self._repository.update(event_id, **values))
 
-    async def list(self, *, after: int, limit: int, **filters: Any) -> list[EventRecord]:
-        rows = await self._repository.list(after=after, limit=limit, **filters)
+    async def list(
+        self,
+        *,
+        after: int,
+        limit: int,
+        updated_after: ChangeCursor | None = None,
+        **filters: Any,
+    ) -> list[EventRecord]:
+        rows = await self._repository.list(
+            after=after, limit=limit, updated_after=updated_after, **filters
+        )
         return [self._record(row) for row in rows]
 
     async def count_created(self, start: datetime, end: datetime) -> int:

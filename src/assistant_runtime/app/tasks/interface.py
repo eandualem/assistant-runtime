@@ -55,6 +55,7 @@ from assistant_runtime.principal import LOCAL_PRINCIPAL, Principal
 
 if TYPE_CHECKING:
     from assistant_runtime.app.streaming.interface import StreamingService
+    from assistant_runtime.base.cursors import ChangeCursor
     from assistant_runtime.base.events import EventHub
     from assistant_runtime.services.database.interface import DatabaseService
     from assistant_runtime.services.tools.interface import ToolService
@@ -178,11 +179,13 @@ class TaskService:
         status: str | None = None,
         limit: int = 50,
         before: str | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[TaskRecord]:
         """Newest first: the caller's own tasks, or every task for an administrator.
 
         ``before`` names a task the caller can see; only older ones are listed
-        (``TaskNotFoundError`` when it is unknown).
+        (``TaskNotFoundError`` when it is unknown). With ``updated_after``, the
+        tasks changed after that cursor, oldest change first.
         """
         principal = principal or LOCAL_PRINCIPAL
         anchor = await self.get(before, principal) if before is not None else None
@@ -192,6 +195,7 @@ class TaskService:
             status=status,
             limit=limit,
             before=anchor,
+            updated_after=updated_after,
         )
 
     async def count(self, start: datetime, end: datetime) -> int:
@@ -392,11 +396,13 @@ class TaskService:
         status: str | None = None,
         limit: int = 50,
         before: str | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[AgentMessageRecord]:
         """Newest first: the caller's own messages, or every message for an administrator.
 
         ``before`` names a message the caller can see (of ``agent_id``, when
         given); only older ones are listed (``AgentNotFoundError`` when it is unknown).
+        With ``updated_after``, the messages changed after that cursor, oldest change first.
         """
         principal = principal or LOCAL_PRINCIPAL
         anchor = None
@@ -411,6 +417,7 @@ class TaskService:
             status=status,
             limit=limit,
             before=anchor,
+            updated_after=updated_after,
         )
 
     # --- running ---

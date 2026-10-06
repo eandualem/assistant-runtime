@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from assistant_runtime.app.access.deps import PrincipalDep
+from assistant_runtime.app.routes._cursors import cursor_param, exclusive
 from assistant_runtime.app.tasks.deps import TaskServiceDep
 from assistant_runtime.app.tasks.exceptions import (
     TaskError,
@@ -70,11 +71,16 @@ async def list_tasks(
     ),
     limit: int = Query(50, ge=1, le=500),
     before: str | None = None,
+    updated_after: str | None = None,
 ) -> list[dict]:
     """Newest first: the caller's tasks (every task for an administrator).
 
     ``before`` names a task: only older ones are listed (``404`` when it is unknown).
+    ``updated_after`` (a change cursor, not with ``before``) lists the tasks
+    changed after it instead, oldest change first.
     """
+    exclusive(updated_after, before=before)
+    cursor = cursor_param(updated_after)
     try:
         records = await tasks.list(
             principal,
@@ -82,6 +88,7 @@ async def list_tasks(
             status=status,
             limit=limit,
             before=before,
+            updated_after=cursor,
         )
     except TaskError as e:
         raise _http_error(e) from e

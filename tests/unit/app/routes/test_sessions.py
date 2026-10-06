@@ -311,6 +311,62 @@ class TestGetSessionMessage:
         assert queued.status_code == 404
 
 
+class TestMessageChanges:
+    URL = "/api/sessions/sess-1/messages/changes"
+
+    @pytest.mark.asyncio
+    async def test_rows_follow_change_order_and_an_updated_row_reappears(self) -> None:
+        sessions = SessionStore()
+        await _seed_branching_session(sessions)
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            first = (await client.get(self.URL)).json()
+            page = (await client.get(self.URL, params={"limit": 2})).json()
+            rest = (await client.get(self.URL, params={"after": page["next_cursor"]})).json()
+            idle = (await client.get(self.URL, params={"after": first["next_cursor"]})).json()
+            await sessions.update_message(
+                "sess-1", "assistant-1", segments=[{"kind": "text", "text": "Edited"}]
+            )
+            changed = (await client.get(self.URL, params={"after": first["next_cursor"]})).json()
+            tree = (await client.get("/api/sessions/sess-1/tree")).json()
+
+        rows = first["messages"]
+        assert sorted(row["id"] for row in rows) == ["assistant-1", "user-1", "user-2", "user-3"]
+        assert [(r["updated_at"], r["id"]) for r in rows] == sorted(
+            (r["updated_at"], r["id"]) for r in rows
+        )
+        # A /tree row with updated_at.
+        by_id = {row["id"]: row for row in tree}
+        assert all({**by_id[row["id"]], "updated_at": row["updated_at"]} == row for row in rows)
+        assert first["next_cursor"] == f"{rows[-1]['updated_at']}|{rows[-1]['id']}"
+        assert first["active_leaf_id"] == "user-3"
+        assert page["messages"] + rest["messages"] == rows
+        assert idle == {
+            "messages": [],
+            "next_cursor": first["next_cursor"],
+            "active_leaf_id": "user-3",
+        }
+        assert [row["id"] for row in changed["messages"]] == ["assistant-1"]
+        assert changed["messages"][0]["updated_at"] > rows[-1]["updated_at"]
+
+    @pytest.mark.asyncio
+    async def test_changes_is_not_a_message_id_and_bad_cursors_are_refused(self) -> None:
+        sessions = SessionStore()
+        await _seed_branching_session(sessions)
+        app = _create_test_app(sessions=sessions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            feed = await client.get(self.URL)
+            bad = await client.get(self.URL, params={"after": "yesterday|user-1"})
+            too_many = await client.get(self.URL, params={"limit": 501})
+            missing = await client.get("/api/sessions/nope/messages/changes")
+
+        assert feed.status_code == 200
+        assert "messages" in feed.json()  # not "Message 'changes' not found"
+        assert (bad.status_code, too_many.status_code, missing.status_code) == (422, 422, 404)
+
+
 class TestGetSessionTree:
     @pytest.mark.asyncio
     async def test_returns_all_messages_with_parent_links(self) -> None:

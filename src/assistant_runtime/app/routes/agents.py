@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from assistant_runtime.app.access.deps import AdminDep, PrincipalDep
 from assistant_runtime.app.assistant.config import TunableOverrides
+from assistant_runtime.app.routes._cursors import cursor_param, exclusive
 from assistant_runtime.app.tasks.deps import TaskServiceDep
 from assistant_runtime.app.tasks.exceptions import (
     AgentConflictError,
@@ -155,11 +156,16 @@ async def list_agent_messages(
     ),
     limit: int = Query(50, ge=1, le=500),
     before: str | None = None,
+    updated_after: str | None = None,
 ) -> list[dict]:
     """Newest first: the agent's messages that the caller may read.
 
     ``before`` names one of them: only older ones are listed (``404`` when it is unknown).
+    ``updated_after`` (a change cursor, not with ``before``) lists the messages
+    changed after it instead, oldest change first.
     """
+    exclusive(updated_after, before=before)
+    cursor = cursor_param(updated_after)
     try:
         await tasks.get_agent(agent_id, principal)
         records = await tasks.list_messages(
@@ -169,6 +175,7 @@ async def list_agent_messages(
             status=status,
             limit=limit,
             before=before,
+            updated_after=cursor,
         )
     except TaskError as e:
         raise _http_error(e) from e

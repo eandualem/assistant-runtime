@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from assistant_runtime.app.access.deps import PrincipalDep
+from assistant_runtime.app.routes._cursors import cursor_param
 from assistant_runtime.app.voice.deps import VoiceServiceDep
 from assistant_runtime.app.voice.exceptions import VoiceError
 from assistant_runtime.app.voice.models import VoiceContext, VoiceOffer, VoiceToolResult
@@ -39,6 +40,23 @@ async def create_call(
         # Reachable through the host's server when the runtime is mounted under a prefix.
         result["events_url"] = request.scope.get("root_path", "") + result["events_url"]
     return result
+
+
+@router.get("/calls")
+async def list_calls(
+    service: VoiceServiceDep,
+    principal: PrincipalDep,
+    updated_after: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    """Call snapshots changed after the ``updated_after`` cursor, oldest change first.
+
+    The caller's calls (every call for an administrator), in the form
+    ``/calls/{id}`` returns them; continue from ``next_cursor``.
+    """
+    cursor = cursor_param(updated_after)
+    calls, last = await _http(service.list(principal, updated_after=cursor, limit=limit))
+    return {"calls": calls, "next_cursor": last or updated_after}
 
 
 @router.get("/calls/{call_id}")

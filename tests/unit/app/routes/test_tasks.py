@@ -69,6 +69,7 @@ async def test_list_passes_the_filters():
             "status": "done",
             "limit": 5,
             "before": None,
+            "updated_after": None,
         }
         return [RECORD]
 
@@ -98,3 +99,19 @@ async def test_before_pages_and_an_unknown_cursor_is_404():
     assert [r["id"] for r in (await _call(app, "GET", "/tasks?before=t2")).json()] == ["t1"]
     missing = await _call(app, "GET", "/tasks?before=t9")
     assert (missing.status_code, missing.json()["detail"]) == (404, "No task 't9'")
+
+
+async def test_updated_after_is_a_cursor_and_excludes_before():
+    seen = []
+
+    async def list_(principal, **kwargs):
+        seen.append(kwargs["updated_after"])
+        return [RECORD]
+
+    app = _app(list=list_)
+    ok = await _call(app, "GET", "/tasks", params={"updated_after": "2026-10-01T12:00|t1"})
+    both = await _call(app, "GET", "/tasks", params={"updated_after": "2026-10-01", "before": "t1"})
+    bad = await _call(app, "GET", "/tasks", params={"updated_after": "soon"})
+    assert ok.status_code == 200
+    assert (seen[0].id, seen[0].updated_at.tzinfo is not None) == ("t1", True)
+    assert (both.status_code, bad.status_code, len(seen)) == (422, 422, 1)

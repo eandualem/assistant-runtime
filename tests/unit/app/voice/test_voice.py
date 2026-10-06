@@ -896,3 +896,81 @@ async def test_call_instructions_do_not_override_startup_capacity(setup):
         )
     assert len(transport.created) == 1
     assert set(backend.leases) == {"first"}
+
+
+async def test_calls_are_listed_by_change_for_their_owner_and_counted(setup):
+    from datetime import UTC, datetime, timedelta
+
+    from assistant_runtime.base.cursors import parse_cursor
+
+    service, _, _ = setup
+    call_id, _ = await create(setup)
+    calls, last = await service.list(OWNER)
+    assert [call["call_id"] for call in calls] == [call_id]
+    assert calls == [await service.get(call_id, OWNER)]  # the form ``get`` returns
+    assert last == f"{calls[0]['updated_at']}|{call_id}"
+    assert await service.list(OTHER) == ([], None)
+    admin = Principal("root", roles=frozenset({"admin"}))
+    assert [call["call_id"] for call in (await service.list(admin))[0]] == [call_id]
+    assert await service.list(OWNER, updated_after=parse_cursor(last)) == ([], None)
+    await service.close(call_id, OWNER)  # a change moves it past the cursor
+    changed, _ = await service.list(OWNER, updated_after=parse_cursor(last))
+    assert [(call["call_id"], call["status"]) for call in changed] == [(call_id, "closed")]
+    now = datetime.now(UTC)
+    assert await service.count(now - timedelta(hours=1), now + timedelta(hours=1)) == 1
+    assert await service.count(now + timedelta(hours=1), now + timedelta(hours=2)) == 0
+
+
+async def test_calls_route_takes_a_cursor(setup):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from assistant_runtime.app.access.deps import get_principal
+    from assistant_runtime.app.routes.voice import router
+
+    service, _, _ = setup
+    call_id, _ = await create(setup)
+    app = FastAPI()
+    app.include_router(router)
+    app.state.voice_service = service
+    app.dependency_overrides[get_principal] = lambda: OWNER
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        listed = (await client.get("/voice/calls")).json()
+        idle = await client.get("/voice/calls", params={"updated_after": listed["next_cursor"]})
+        bad = await client.get("/voice/calls", params={"updated_after": "soon"})
+    assert [call["call_id"] for call in listed["calls"]] == [call_id]
+    assert idle.json() == {"calls": [], "next_cursor": listed["next_cursor"]}
+    assert bad.status_code == 422
+
+
+async def test_a_restart_moves_unfinished_calls_past_change_cursors():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from sqlalchemy.dialects import postgresql
+
+    from assistant_runtime.app.voice._persistence import VoicePersistence
+
+    statements = []
+
+    class Db:
+        async def execute(self, statement):
+            statements.append(statement)
+
+    @asynccontextmanager
+    async def session_context():
+        yield Db()
+
+    persistence = VoicePersistence(SimpleNamespace(healthy=True, session_context=session_context))
+    await persistence.mark_restarted()
+    sql = str(statements[0].compile(dialect=postgresql.dialect()))
+    assert sql.startswith("UPDATE voice_calls SET updated_at=now()")
+    assert "NOT IN" in sql
+    assert "snapshot ->> " in sql
+
+
+async def test_start_marks_calls_a_restart_interrupted():
+    service = VoiceService(VoiceConfig(enabled=False), None)
+    service._persistence.mark_restarted = AsyncMock()
+    await service.start()
+    service._persistence.mark_restarted.assert_awaited_once()

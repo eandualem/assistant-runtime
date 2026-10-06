@@ -8,11 +8,14 @@ from typing import Any
 from sqlalchemy import func, insert, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant_runtime.base.cursors import ChangeCursor
 from assistant_runtime.services.database.models import (
     AgentMessageORM,
     AgentORM,
     TaskORM,
 )
+
+from ._ordering import _in_change_order
 
 
 class TaskRepository:
@@ -33,7 +36,9 @@ class TaskRepository:
         statement = update(TaskORM).where(TaskORM.id == task_id)
         if only_from is not None:
             statement = statement.where(TaskORM.status.in_(only_from))
-        result = await self._session.execute(statement.values(**fields).returning(TaskORM))
+        result = await self._session.execute(
+            statement.values({**fields, "updated_at": func.now()}).returning(TaskORM)
+        )
         await self._session.flush()
         return result.scalar_one_or_none()
 
@@ -49,12 +54,17 @@ class TaskRepository:
         status: str | None = None,
         limit: int = 50,
         before: tuple[datetime, str] | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[TaskORM]:
         """Newest first, filtered by whatever is given.
 
         ``before`` is a ``(created_at, id)`` keyset: only older tasks are listed.
+        With ``updated_after``, the tasks changed after that cursor, oldest change first.
         """
-        query = select(TaskORM).order_by(TaskORM.created_at.desc(), TaskORM.id.desc())
+        if updated_after is not None:
+            query = _in_change_order(select(TaskORM), TaskORM, updated_after)
+        else:
+            query = select(TaskORM).order_by(TaskORM.created_at.desc(), TaskORM.id.desc())
         if before is not None:
             query = query.where(tuple_(TaskORM.created_at, TaskORM.id) < tuple_(*before))
         if created_by is not None:
@@ -80,7 +90,7 @@ class TaskRepository:
         result = await self._session.execute(
             update(TaskORM)
             .where(TaskORM.status.in_(("queued", "running")))
-            .values(status=status, error=error, finished_at=func.now())
+            .values(status=status, error=error, finished_at=func.now(), updated_at=func.now())
             .returning(TaskORM)
         )
         await self._session.flush()
@@ -135,7 +145,9 @@ class AgentRepository:
         statement = update(AgentMessageORM).where(AgentMessageORM.id == message_id)
         if only_from is not None:
             statement = statement.where(AgentMessageORM.status.in_(only_from))
-        result = await self._session.execute(statement.values(**fields).returning(AgentMessageORM))
+        result = await self._session.execute(
+            statement.values({**fields, "updated_at": func.now()}).returning(AgentMessageORM)
+        )
         await self._session.flush()
         return result.scalar_one_or_none()
 
@@ -154,14 +166,19 @@ class AgentRepository:
         status: str | None = None,
         limit: int = 50,
         before: tuple[datetime, str] | None = None,
+        updated_after: ChangeCursor | None = None,
     ) -> list[AgentMessageORM]:
         """Newest first, filtered by whatever is given.
 
         ``before`` is a ``(created_at, id)`` keyset: only older messages are listed.
+        With ``updated_after``, the messages changed after that cursor, oldest change first.
         """
-        query = select(AgentMessageORM).order_by(
-            AgentMessageORM.created_at.desc(), AgentMessageORM.id.desc()
-        )
+        if updated_after is not None:
+            query = _in_change_order(select(AgentMessageORM), AgentMessageORM, updated_after)
+        else:
+            query = select(AgentMessageORM).order_by(
+                AgentMessageORM.created_at.desc(), AgentMessageORM.id.desc()
+            )
         if before is not None:
             query = query.where(
                 tuple_(AgentMessageORM.created_at, AgentMessageORM.id) < tuple_(*before)
@@ -191,7 +208,7 @@ class AgentRepository:
         result = await self._session.execute(
             update(AgentMessageORM)
             .where(AgentMessageORM.status.in_(("queued", "running")))
-            .values(status=status, error=error, finished_at=func.now())
+            .values(status=status, error=error, finished_at=func.now(), updated_at=func.now())
             .returning(AgentMessageORM)
         )
         await self._session.flush()

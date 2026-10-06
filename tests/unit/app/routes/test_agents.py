@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -152,6 +153,7 @@ async def test_messages_are_read_through_their_agent():
             "status": "done",
             "limit": 5,
             "before": None,
+            "updated_after": None,
         }
         return [MESSAGE]
 
@@ -179,3 +181,13 @@ async def test_message_paging_passes_before_and_an_unknown_cursor_is_404():
     listed = await _call(app, "GET", "/agents/a1/messages", params={"before": "m2"})
     assert [m["id"] for m in listed.json()] == ["m1"]
     assert (await _call(app, "GET", "/agents/a1/messages?before=m9")).status_code == 404
+
+
+async def test_agent_messages_updated_after_excludes_before():
+    app = _app(get_agent=AsyncMock(), list_messages=AsyncMock(return_value=[]))
+    url = "/agents/a1/messages"
+    ok = await _call(app, "GET", url, params={"updated_after": "2026-10-01T12:00Z|m1"})
+    both = await _call(app, "GET", url, params={"updated_after": "2026-10-01", "before": "m1"})
+    bad = await _call(app, "GET", url, params={"updated_after": "2026-10-01|"})
+    assert (ok.status_code, ok.json()) == (200, [])
+    assert (both.status_code, bad.status_code) == (422, 422)

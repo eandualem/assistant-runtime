@@ -1,8 +1,7 @@
 """Record counts — how many records each store created in a time range (administration).
 
 A host's tooling compares these with its own index to see what it is missing.
-A store that is not running contributes 0; voice calls carry no timestamps yet
-and are not counted.
+A store that is not running contributes 0.
 """
 
 from __future__ import annotations
@@ -28,7 +27,8 @@ async def get_counts(
     start: datetime = Query(alias="from"),
     end: datetime = Query(alias="to"),
 ) -> dict:
-    """Records created in ``[from, to)``: events, tasks, actions, agent and conversation messages.
+    """Records created in ``[from, to)``: events, tasks, actions, agent and conversation
+    messages, and voice calls.
 
     ``from`` and ``to`` are ISO 8601 (UTC when they have no timezone); ``422``
     unless ``from`` is before ``to``.
@@ -42,6 +42,7 @@ async def get_counts(
     actions = getattr(state, "action_service", None)
     assistant = getattr(state, "assistant_service", None)
     sessions = assistant.get_session_store() if assistant is not None else None
+    voice = getattr(state, "voice_service", None)
     return {
         "from": start.isoformat(),
         "to": end.isoformat(),
@@ -50,4 +51,5 @@ async def get_counts(
         "actions": await actions.count(start, end) if actions is not None else 0,
         "agent_messages": await tasks.count_messages(start, end) if tasks is not None else 0,
         "messages": await sessions.count_messages(start, end) if sessions is not None else 0,
+        "voice_calls": await voice.count(start, end) if voice is not None else 0,
     }

@@ -204,9 +204,24 @@ responsible for durable conversation context and selecting relevant prior turns.
 
 `GET /api/voice/calls/{call_id}` returns the current snapshot: identity, model,
 voice, resolved `mode`, status/reason, transcript fragments, delegation states,
-`active_delegation`, `pending_tool_call`, cumulative `usage`, `finalized`, `cursor`
-and `last_activity_at` (the time of the latest transcript activity, for an
-application-side idle close).
+`active_delegation`, `pending_tool_call`, cumulative `usage`, `finalized`, `cursor`,
+`last_activity_at` (the time of the latest transcript activity, for an
+application-side idle close) and `updated_at` (when the snapshot last changed, ISO
+8601; `created_at` and `last_activity_at` are Unix seconds).
+
+`GET /api/voice/calls?updated_after=<cursor>&limit=100` lists snapshots in the same
+form, ordered by `(updated_at, call id)`, as `{calls, next_cursor}`: the caller's own
+calls, or every call for an administrator, changed after the
+[change cursor](api.md#change-cursors) (all of them without one; `422` when it is
+malformed). With Postgres it reads the checkpoint rows, whose `updated_at` is the
+time of the last checkpoint write, so a live call appears there about a second after
+it changes; without Postgres it reads the calls this process retains
+(`VOICE__RETAINED_CALLS`). As with `GET /calls/{id}`, a stored call that is not
+running in this process and did not close is reported `interrupted` (startup gives
+such calls a new `updated_at`, so they appear after an earlier cursor), and a caller
+who is not an administrator sees only calls whose session they can still access.
+Continue from `next_cursor`, which echoes `updated_after` when nothing changed.
+`GET /api/counts` includes `voice_calls`, counted by when each call started.
 
 `GET /api/voice/calls/{call_id}/events?after=123` streams SSE. Each event has an
 integer `id` and JSON `data` with this envelope:
