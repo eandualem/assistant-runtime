@@ -145,6 +145,10 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Parallel function calls on the ChatGPT/Codex subscription keep their
+  arguments. The backend sends them only when each call is done, which
+  Pydantic AI does not read, so every call arrived empty and the turn failed
+  after its retry.
 - A GPT-Live session that the provider created but the runtime could not attach
   to is now hung up, best effort, as Codex sessions already were. Previously
   nothing closed it.
