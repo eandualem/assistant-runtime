@@ -363,6 +363,13 @@ def parallel_call_frames():
         arguments = json.dumps({"city": city})
         events += [
             {"type": "response.output_item.added", "output_index": n, "item": call(n, "")},
+            # An empty delta is not arguments.
+            {
+                "type": "response.function_call_arguments.delta",
+                "item_id": f"fc_{n}",
+                "output_index": n,
+                "delta": "",
+            },
             {
                 "type": "response.function_call_arguments.done",
                 "item_id": f"fc_{n}",

@@ -85,7 +85,8 @@ class _ObservedCodexStream:
                 if event.item.type == "function_call" and event.item.arguments:
                     self._calls_with_arguments.add(event.item.id)
             elif event.type == "response.function_call_arguments.delta":
-                self._calls_with_arguments.add(event.item_id)
+                if event.delta:
+                    self._calls_with_arguments.add(event.item_id)
             elif event.type == "response.function_call_arguments.done":
                 if event.arguments and event.item_id not in self._calls_with_arguments:
                     yield ResponseFunctionCallArgumentsDeltaEvent(
