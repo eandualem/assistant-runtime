@@ -76,14 +76,21 @@ async def codex(monkeypatch):
     # Real model requests are allowed only into this explicitly replaced HTTP client.
     monkeypatch.setattr(models, "ALLOW_MODEL_REQUESTS", True)
     state = SimpleNamespace(
-        requests=[], actual="priority", status=200, streams=[], tool=False, model="gpt-5.6-sol"
+        requests=[],
+        actual="priority",
+        status=200,
+        streams=[],
+        tool=False,
+        model="gpt-5.6-sol",
+        body=None,
     )
 
     class WireStream(httpx.AsyncByteStream):
         closed = False
 
         async def __aiter__(self):
-            for frame in frames(state.actual, tool=state.tool, model=state.model).split("\n\n"):
+            body = state.body or frames(state.actual, tool=state.tool, model=state.model)
+            for frame in body.split("\n\n"):
                 await asyncio.sleep(0)
                 yield (frame + "\n\n").encode()
 
@@ -335,3 +342,81 @@ async def test_http_host_continuations_retain_tiers(codex, isolated_services, mo
                 assert receipt.json()["content"] == "Hold."
                 assert len(tiers) == len(codex.requests) == 2
                 assert receipt.json()["usage"]["requests"] == 2
+
+
+def parallel_call_frames():
+    """Recorded shape: parallel calls whose arguments arrive only when done."""
+
+    def call(n, arguments):
+        return {
+            "type": "function_call",
+            "id": f"fc_{n}",
+            "call_id": f"call_{n}",
+            "name": "lookup",
+            "arguments": arguments,
+        }
+
+    response = {"id": "resp_parallel", "object": "response", "model": "gpt-6.1-sol"}
+    response |= {"created_at": 1, "status": "in_progress", "output": []}
+    events = [{"type": "response.created", "response": response}]
+    for n, city in enumerate(["Paris", "Tokyo"]):
+        arguments = json.dumps({"city": city})
+        events += [
+            {"type": "response.output_item.added", "output_index": n, "item": call(n, "")},
+            # An empty delta is not arguments.
+            {
+                "type": "response.function_call_arguments.delta",
+                "item_id": f"fc_{n}",
+                "output_index": n,
+                "delta": "",
+            },
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": f"fc_{n}",
+                "output_index": n,
+                "name": "lookup",
+                "arguments": arguments,
+            },
+            {"type": "response.output_item.done", "output_index": n, "item": call(n, arguments)},
+        ]
+    # A call whose arguments did stream keeps them once.
+    arguments = json.dumps({"city": "Lima"})
+    events += [
+        {"type": "response.output_item.added", "output_index": 2, "item": call(2, "")},
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_2",
+            "output_index": 2,
+            "delta": arguments,
+        },
+        {
+            "type": "response.function_call_arguments.done",
+            "item_id": "fc_2",
+            "output_index": 2,
+            "name": "lookup",
+            "arguments": arguments,
+        },
+        {"type": "response.output_item.done", "output_index": 2, "item": call(2, arguments)},
+        {"type": "response.completed", "response": {**response, "status": "completed"}},
+    ]
+    for sequence_number, event in enumerate(events):
+        event["sequence_number"] = sequence_number
+    return "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+
+
+async def test_parallel_call_arguments_sent_only_when_done_reach_the_calls(codex):
+    codex.body = parallel_call_frames()
+    agent = codex.service(None).build_agent(system_prompt="Decision.")
+    async with agent.model.request_stream(
+        [ModelRequest(parts=[UserPromptPart("Look up three cities.")])],
+        agent.model_settings,
+        ModelRequestParameters(),
+    ) as streamed:
+        async for _event in streamed:
+            pass
+    calls = streamed.get().tool_calls
+    assert [c.args_as_dict() for c in calls] == [
+        {"city": "Paris"},
+        {"city": "Tokyo"},
+        {"city": "Lima"},
+    ]
