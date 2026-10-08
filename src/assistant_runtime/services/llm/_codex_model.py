@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from openai.resources.responses import AsyncResponses
+from openai.types.responses import ResponseFunctionCallArgumentsDeltaEvent
 from pydantic_ai.messages import ModelRequest, ModelResponse
 from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.openai import OpenAIResponsesModel
@@ -50,11 +51,17 @@ _KNOWN_TIERS = {
 
 
 class _ObservedCodexStream:
-    """Observe SDK-decoded events; leave SSE parsing and execution to upstream."""
+    """Observe SDK-decoded events; leave SSE parsing and execution to upstream.
+
+    The backend sends the arguments of parallel function calls only in
+    ``function_call_arguments.done``, while Pydantic AI reads them only from
+    deltas; a call with no arguments yet gets the done arguments as one delta.
+    """
 
     def __init__(self, stream: Any, observation: _TierObservation):
         self.stream = stream
         self.observation = observation
+        self._calls_with_arguments: set[str] = set()
 
     async def __aenter__(self):
         await self.stream.__aenter__()
@@ -74,11 +81,25 @@ class _ObservedCodexStream:
                     tier if isinstance(tier, str) and tier in _KNOWN_TIERS else None
                 )
                 self.observation.publish()
+            elif event.type == "response.output_item.added":
+                if event.item.type == "function_call" and event.item.arguments:
+                    self._calls_with_arguments.add(event.item.id)
+            elif event.type == "response.function_call_arguments.delta":
+                self._calls_with_arguments.add(event.item_id)
+            elif event.type == "response.function_call_arguments.done":
+                if event.arguments and event.item_id not in self._calls_with_arguments:
+                    yield ResponseFunctionCallArgumentsDeltaEvent(
+                        type="response.function_call_arguments.delta",
+                        item_id=event.item_id,
+                        output_index=event.output_index,
+                        sequence_number=event.sequence_number,
+                        delta=event.arguments,
+                    )
             yield event
 
 
 class CodexResponses(AsyncResponses):
-    """Keep the actual subscription tier that Pydantic AI does not yet retain."""
+    """Keep the actual subscription tier and the parallel-call arguments Pydantic AI misses."""
 
     async def create(self, **kwargs: Any) -> Any:
         stream = await super().create(**kwargs)
