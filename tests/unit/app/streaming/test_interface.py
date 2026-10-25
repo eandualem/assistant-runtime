@@ -1654,3 +1654,31 @@ class TestAdmissionLockLifetime:
         gate.set()
         await asyncio.gather(holder, stopping)
         assert not service._admission_locks
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_replacement_cannot_cancel_another_principals_turn(persisted):
+    from assistant_runtime.app.streaming._control import TurnControl
+    from assistant_runtime.principal import Principal
+
+    service = _make_service()
+    await service.start()
+    if persisted:
+        await service._sessions.register_user_message(
+            _request(message_id="first"), owner_id="alice"
+        )
+    active = TurnControl(owner_id="alice")
+    service._active_turns["sess-1"] = active
+    try:
+        events = [
+            e
+            async for e in service.stream_message(
+                _request(message_id="intruder"), principal=Principal(id="bob")
+            )
+        ]
+        assert not active.token.cancelled
+        assert service._active_turns["sess-1"] is active
+        assert any(e.get("error_type") == "forbidden" for e in events)
+    finally:
+        service._active_turns.clear()
+        await service.stop()

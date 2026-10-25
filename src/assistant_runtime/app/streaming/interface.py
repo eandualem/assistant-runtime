@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing, contextmanager
+from contextlib import aclosing, asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
@@ -164,10 +164,12 @@ class StreamingService:
         ``principal`` must own the session (``AccessDeniedError`` otherwise);
         in-process callers that pass none act as the local operator.
         """
-        await self._authorize(session_id, principal)
-        self.check_session_available(session_id, session_lease)
-        turn = self._active_turns.get(session_id)
-        return turn.cancel() if turn is not None else False
+        async with self.session_access(
+            session_id, principal or LOCAL_PRINCIPAL, allow_missing=True
+        ):
+            self.check_session_available(session_id, session_lease)
+            turn = self._active_turns.get(session_id)
+            return turn.cancel() if turn is not None else False
 
     def pin_session(self, session_id: str) -> None:
         """Keep a session cached for a long-lived owner, such as a persistent agent.
@@ -204,6 +206,24 @@ class StreamingService:
             raise SessionError("Session not found")
         await self._authorize(session_id, principal)
 
+    @asynccontextmanager
+    async def session_access(
+        self, session_id: str, principal: Principal, *, allow_missing: bool = False
+    ):
+        """Keep authorization valid through an operation, excluding owner reassignment."""
+        async with self._admission_lock(session_id):
+            if allow_missing:
+                await self._authorize(session_id, principal)
+            else:
+                await self.authorize_session(session_id, principal)
+            yield
+
+    async def set_session_owner(self, session_id: str, owner_id: str | None) -> None:
+        """Serialize the administrative owner update with admission and event delivery."""
+        async with self._admission_lock(session_id):
+            with self.session_mutation(session_id):
+                await self._sessions.set_owner(session_id, owner_id)
+
     def _admission_lock(self, session_id: str) -> asyncio.Lock:
         if not self._started:
             raise StreamingError("Streaming service not started")
@@ -218,6 +238,7 @@ class StreamingService:
         self, session_id: str, lease: str, principal: Principal
     ) -> list[dict]:
         """Reserve an idle session and return client-visible text history only."""
+        self.check_session_available(session_id)
         await self._authorize(session_id, principal)
         async with self._admission_lock(session_id):
             self.check_session_available(session_id)
@@ -270,6 +291,9 @@ class StreamingService:
         context = await self._sessions.get_context_if_exists_async(session_id)
         if context is not None:
             AccessService.check_session(actor, context.get("owner_id"), session_id)
+        elif (turn := self._active_turns.get(session_id)) is not None:
+            # Admission precedes the first saved message. Protect that interval too.
+            AccessService.check_session(actor, turn.owner_id, session_id)
 
     @staticmethod
     def cancelled_before_start_events(session_id: str) -> list[dict[str, Any]]:
@@ -486,20 +510,30 @@ class StreamingService:
             self.validate_profile(request.profile)
         except UnknownProfileError as exc:
             raise SessionError(str(exc)) from exc
-        self.check_session_available(request.session_id, session_lease)
-        while (previous := self._active_turns.get(request.session_id)) is not None:
-            if not request.is_continuation and not request.is_steering:
-                previous.cancel()
-            await previous.done.wait()
-            self.check_session_available(request.session_id, session_lease)
-            if not self._started:
-                raise StreamingError("Streaming service not started")
-        turn = TurnControl(native_sink=native_sink, cancel_after_plan=cancel_after_plan)
-        self._active_turns[request.session_id] = turn
-        self._sessions.pin(request.session_id)
-        turn.task = asyncio.create_task(
-            self._produce_turn(request, turn, principal or LOCAL_PRINCIPAL)
-        )
+        actor = principal or LOCAL_PRINCIPAL
+        try:
+            while True:
+                async with self.session_access(request.session_id, actor, allow_missing=True):
+                    self.check_session_available(request.session_id, session_lease)
+                    previous = self._active_turns.get(request.session_id)
+                    if previous is None:
+                        turn = TurnControl(
+                            native_sink=native_sink,
+                            cancel_after_plan=cancel_after_plan,
+                            owner_id=actor.id,
+                        )
+                        self._active_turns[request.session_id] = turn
+                        self._sessions.pin(request.session_id)
+                        turn.task = asyncio.create_task(self._produce_turn(request, turn, actor))
+                        break
+                    if not request.is_continuation and not request.is_steering:
+                        previous.cancel()
+                # Cleanup can run tools that publish events; never drain under the lock.
+                await previous.done.wait()
+        except AccessDeniedError as exc:
+            async for event in self._setup_failure_envelope(request, exc):
+                yield event
+            return
         try:
             while (event := await turn.events.get()) is not None:
                 yield event

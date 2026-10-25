@@ -188,6 +188,12 @@ class TestServeReplace:
         assert serve.replace_previous_instance("127.0.0.1", 7100, log=lambda m: None) is True
         assert fake_port["killed"] == []
 
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "*", ""])
+    def test_wildcard_replacement_never_signals_unverified_listeners(self, fake_port, host):
+        fake_port["pids"] = [4242, 4243]
+        assert serve.replace_previous_instance(host, 7100, log=lambda _: None) is False
+        assert fake_port["killed"] == []
+
     def test_previous_runtime_is_stopped_and_replaced(self, fake_port):
         messages = []
         assert serve.replace_previous_instance("127.0.0.1", 7100, log=messages.append) is True

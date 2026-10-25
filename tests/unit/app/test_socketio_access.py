@@ -71,6 +71,7 @@ class TestHandlersCarryThePrincipal:
     async def connected(self):
         streaming = MagicMock()
         streaming.warm_session = AsyncMock()
+        streaming.session_access.return_value.__aenter__ = AsyncMock()
         streaming.cancel_session = AsyncMock(return_value=False)
         streaming.accept_steering = AsyncMock(return_value="queued")
         namespace = _namespace(AccessService(AccessConfig(mode="header")), streaming)
@@ -84,7 +85,7 @@ class TestHandlersCarryThePrincipal:
         namespace.enter_room.assert_awaited_once_with("sid-1", "session:s1")
 
         namespace.enter_room.reset_mock()
-        streaming.warm_session.side_effect = AccessDeniedError(
+        streaming.session_access.return_value.__aenter__.side_effect = AccessDeniedError(
             "Session 's2' belongs to another principal"
         )
         await namespace.on_assistant_join_session("sid-1", {"session_id": "s2"})

@@ -307,3 +307,19 @@ class TestExecuteSubagent:
         assert "error" in result
         assert result["error_code"] == "SUBAGENT_EXECUTION_ERROR"
         assert "Unknown model" in result["error"]
+
+
+def test_subagent_limits_preserve_the_complete_native_policy():
+    from dataclasses import replace
+
+    from assistant_runtime.services.tools.builtin._subagent_executor import _subagent_limits
+
+    parent = UsageLimits(
+        request_limit=3,
+        tool_calls_limit=2,
+        per_request_input_tokens_limit=20,
+        count_tokens_before_request=True,
+        total_tokens_limit=100,
+    )
+    assert _subagent_limits(parent, 10) == parent
+    assert _subagent_limits(parent, 1) == replace(parent, request_limit=1)

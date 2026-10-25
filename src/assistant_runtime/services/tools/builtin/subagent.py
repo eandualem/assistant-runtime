@@ -89,8 +89,8 @@ def register_subagent_tools(
     ``backend_toolsets`` and ``runtime_settings`` are callables because both
     change after registration: tools keep being registered, and the runtime
     settings overlay is attached once the lifecycle has started.
-    ``usage_limits`` are the host's per-turn ceilings; a subagent run stays
-    within them on top of its own iteration limit.
+    The native run context supplies the current turn's complete usage ceilings;
+    ``usage_limits`` is only a fallback outside a bounded parent run.
     """
 
     async def run_subagent(
@@ -152,7 +152,7 @@ def register_subagent_tools(
             usage=ctx.usage,
             model_override=model_override,
             thinking_budget_override=thinking_override,
-            usage_limits=usage_limits,
+            usage_limits=ctx.usage_limits if ctx.usage_limits is not None else usage_limits,
         )
 
     registry.register_backend_tool(

@@ -317,8 +317,7 @@ async def set_session_owner(
     if sessions is None:
         raise HTTPException(status_code=404, detail="Session not found")
     try:
-        with streaming.session_mutation(session_id):
-            await sessions.set_owner(session_id, body.owner_id)
+        await streaming.set_session_owner(session_id, body.owner_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     return {"session_id": session_id, "owner_id": body.owner_id}

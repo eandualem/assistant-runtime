@@ -59,7 +59,7 @@ Register application profiles to share a runtime: [deployments](https://github.c
 Voice needs explicit enablement and either the `[voice]` extra with an OpenAI API key, or a Codex CLI signed in with ChatGPT; each call reserves a session the caller is authorized to access. Codex voice leaves account-usage admission to the provider: [voice setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/voice.md).
 Local ChatGPT/Codex subscription authentication is also supported for backend models, including `openai:gpt-6.1-sol`: [subscription setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/subscription.md).
 
-The server defaults to localhost and trusts the local operator. Before exposing it to other people, configure authentication and allowed browser origins: [identity and access](https://github.com/eandualem/assistant-runtime/blob/main/docs/access.md).
+The server defaults to localhost and trusts the local operator. Before exposing it to other people, configure authentication and allowed browser origins. Session replacement and event subscriptions enforce current ownership: [identity and access](https://github.com/eandualem/assistant-runtime/blob/main/docs/access.md).
 
 Optional notes and document-library tools use configured folders; [filesystem provider configuration](https://github.com/eandualem/assistant-runtime/blob/main/docs/configuration.md#providers) covers symlinks and note moves.
 
