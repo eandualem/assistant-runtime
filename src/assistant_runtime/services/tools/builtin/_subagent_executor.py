@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -113,14 +114,7 @@ def _subagent_limits(host: UsageLimits | None, max_iterations: int) -> UsageLimi
         if host.request_limit is not None
         else max_iterations
     )
-    return UsageLimits(
-        request_limit=request_limit,
-        tool_calls_limit=host.tool_calls_limit,
-        input_tokens_limit=host.input_tokens_limit,
-        output_tokens_limit=host.output_tokens_limit,
-        total_tokens_limit=host.total_tokens_limit,
-        cost_limit=host.cost_limit,
-    )
+    return replace(host, request_limit=request_limit)
 
 
 def _extract_metadata(messages: list[ModelMessage], duration: float) -> dict[str, Any]:

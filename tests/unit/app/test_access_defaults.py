@@ -90,9 +90,9 @@ class TestOriginRule:
         assert callable(check)
         assert check("http://localhost:7140", {}) is True
         assert check("https://evil.example", {}) is False
-        # The page's own origin is always allowed, like Engine.IO's default.
+        # An untrusted Host header cannot authorize a DNS-rebound origin.
         environ = {"wsgi.url_scheme": "https", "HTTP_HOST": "runtime.example"}
-        assert check("https://runtime.example", environ) is True
+        assert check("https://runtime.example", environ) is False
         assert check("https://other.example", environ) is False
         # Forwarded headers are client-controllable and must not widen the rule.
         forged = {
@@ -102,7 +102,7 @@ class TestOriginRule:
             "HTTP_X_FORWARDED_HOST": "evil.example",
         }
         assert check("https://evil.example", forged) is False
-        assert check("http://runtime.example", forged) is True
+        assert check("http://runtime.example", forged) is False
         wildcard = create_sio(AccessConfig(cors_origins=["*"])).eio
         assert wildcard.cors_allowed_origins == "*"
         assert wildcard.cors_credentials is False

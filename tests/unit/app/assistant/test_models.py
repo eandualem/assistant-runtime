@@ -252,3 +252,38 @@ class TestAssistantResult:
             "pending_tool_call": None,
             "decision": None,
         }
+
+
+def test_screenshot_search_visits_preferred_children_once_and_bounds_work():
+    from assistant_runtime.app.assistant.models import extract_screenshot_data_uri
+
+    class Counted(dict):
+        visits = 0
+
+        def __getitem__(self, key):
+            type(self).visits += 1
+            assert type(self).visits < 100, "Preferred child visited repeatedly"
+            return super().__getitem__(key)
+
+    nested = "no image"
+    for _ in range(25):
+        nested = Counted(screenshot=nested)
+    assert extract_screenshot_data_uri(tool_result=nested) is None
+    assert Counted.visits == 25
+    cycle = {}
+    cycle["image"] = cycle
+    assert extract_screenshot_data_uri(tool_result=cycle) is None
+    assert (
+        extract_screenshot_data_uri(
+            tool_result={"other": "data:image/png;second", "image": "data:image/png;first"}
+        )
+        == "data:image/png;first"
+    )
+
+
+def test_screenshot_search_uses_the_same_json_containers_as_stripping():
+    from assistant_runtime.app.assistant.models import extract_screenshot_data_uri
+
+    image = "data:image/png;base64,sample"
+    assert extract_screenshot_data_uri(tool_result={"result": (image,)}) is None
+    assert extract_screenshot_data_uri(tool_result={"result": [image]}) == image

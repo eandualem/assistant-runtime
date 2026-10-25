@@ -34,7 +34,7 @@ and administer the runtime. So by default only pages served from this
 machine may talk to it: `ACCESS__CORS_ORIGIN_REGEX` admits
 `http(s)://localhost`, `127.0.0.1` and `[::1]` on any port, and
 `ACCESS__CORS_ORIGINS` (a JSON list) adds exact origins. Both HTTP and
-Socket.IO apply the same rule. When you expose the server, clear the regex
+Socket.IO apply the same rule; a request's `Host` header never adds an allowed origin. When you expose the server, clear the regex
 (`ACCESS__CORS_ORIGIN_REGEX=`) and list the real origins, including the
 public origin of a reverse proxy in front of the runtime (forwarded
 headers are not trusted for this decision); `["*"]` opens it to every
@@ -91,6 +91,10 @@ on HTTP, `assistant:error` of type `forbidden` on Socket.IO, and a
 terminal `final_response` / `error` of type `forbidden` for a streamed
 turn. Administrators reach every session and `GET /api/sessions` lists
 all of them for an administrator and only the caller's own otherwise.
+Replacement checks ownership before interrupting a running turn. Socket.IO
+room joins require a string session id and successful authorization; each
+room event rechecks current ownership, removing subscriptions that lost access
+after reassignment.
 
 Sessions without an owner — rows created before ownership existed — are
 reachable only by administrators until one assigns them with

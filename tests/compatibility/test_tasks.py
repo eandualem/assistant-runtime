@@ -1,8 +1,18 @@
 """A task investigates in the background while the conversation keeps being served."""
 
 import asyncio
+from types import SimpleNamespace
 
-from pydantic_ai.messages import UserPromptPart
+import pytest
+from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
+from pydantic_ai.models.function import FunctionModel
 
 from assistant_runtime.app.assistant.config import TunableOverrides
 from assistant_runtime.app.tasks.config import TasksConfig
@@ -10,7 +20,7 @@ from assistant_runtime.app.tasks.interface import TaskService
 from assistant_runtime.base.events import EventHub
 from assistant_runtime.services.llm.config import LLMConfig
 
-from .test_execution import assert_terminal, request
+from .test_execution import assert_terminal, calls, request
 
 
 async def test_a_long_task_runs_while_another_request_is_served(runtime, script):
@@ -169,5 +179,82 @@ async def test_each_message_runs_with_the_agents_config_when_it_starts(
                 await asyncio.sleep(0.01)
         assert [e["status"] for e in finished] == ["done", "done"]
         assert models == ["openai:gpt-5.1", LLMConfig().primary_model]
+    finally:
+        await tasks.stop()
+
+
+@pytest.mark.parametrize("delegated", [False, True])
+async def test_tasks_cannot_schedule_successors_even_through_subagents(runtime, script, delegated):
+    from assistant_runtime.services.tools.builtin.subagent import register_subagent_tools
+
+    hub, finished, returns = EventHub(), [], []
+    hub.subscribe(finished.append)
+    tasks = TaskService(
+        TasksConfig(enabled=True), runtime.streaming, events=hub, tool_service=runtime.tools
+    )
+    await tasks.start()
+    try:
+        agent = await tasks.start_agent(subject="agent-a")
+        attempts = [
+            ("start_task", '{"task":"successor"}', "spawn"),
+            ("message_agent", '{"message":"start more work","subject":"agent-a"}', "delegate"),
+        ]
+        if delegated:
+
+            def child_model(messages, info):
+                results = [
+                    part.content
+                    for message in messages
+                    for part in message.parts
+                    if isinstance(part, ToolReturnPart)
+                ]
+                if results:
+                    returns.extend(results)
+                    return ModelResponse(parts=[TextPart("Child finished.")])
+                return ModelResponse(parts=[ToolCallPart(*attempt) for attempt in attempts])
+
+            llm = SimpleNamespace(
+                resolve_model=lambda _: "test",
+                build_agent=lambda **kwargs: Agent(
+                    FunctionModel(child_model), toolsets=kwargs["toolsets"]
+                ),
+            )
+            register_subagent_tools(
+                runtime.tools._registry,
+                llm,
+                backend_toolsets=runtime.tools._registry.build_subagent_toolset,
+                runtime_settings=lambda: None,
+            )
+            first = calls(("run_subagent", '{"task":"try scheduling"}', "child"))
+        else:
+            first = calls(*attempts)
+        script.steps = [[first], ["Task finished."]]
+        parent = await tasks.start_task("Investigate")
+        for _ in range(200):
+            if finished:
+                break
+            await asyncio.sleep(0.01)
+        assert [(e["type"], e["status"]) for e in finished] == [("task_finished", "done")]
+        if not delegated:
+            returns.extend(
+                part.content
+                for message in script.requests[-1]
+                for part in message.parts
+                if isinstance(part, ToolReturnPart)
+            )
+        assert len(returns) == 2
+        assert all(r["success"] is False and "cannot schedule" in r["error"] for r in returns)
+        assert [r.id for r in await tasks.list()] == [parent.id]
+        assert await tasks.list_messages(agent_id=agent.id) == []
+
+        # Host-delivered persistent-agent messages still run after the task ends.
+        script.steps.append(["Agent answered."])
+        await tasks.message_agent("Status?", agent_id=agent.id)
+        for _ in range(200):
+            if len(finished) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert finished[-1]["type"] == "agent_message_finished"
+        assert finished[-1]["result"] == "Agent answered."
     finally:
         await tasks.stop()

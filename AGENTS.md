@@ -314,7 +314,9 @@ execution, history, serialization, or the upstream dependency; see
   `list_tasks`, `get_task` and `cancel_task` (registered by `app/tasks`, not
   as a builtin or capability) and `POST /api/tasks` accepts work. Tasks about
   the same (profile, subject) run one at a time, at most
-  `TASKS__MAX_CONCURRENT` at once; a turn that asks the host for an action
+  `TASKS__MAX_CONCURRENT` at once; tasks and their synchronous subagents cannot
+  schedule successor tasks or persistent-agent messages; ordinary conversations
+  and host-delivered persistent-agent turns retain delegation. A turn that asks the host for an action
   fails its task. `task_finished` is published on `app.state.events` and is
   not forwarded to Socket.IO; nothing is steered into the parent session.
   Its private `_runner.py` owns queue reservations, ordering, capacity and

@@ -763,7 +763,9 @@ class TestSessionEventForwarding:
 
         from assistant_runtime.app.socketio_server import forward_session_events
 
-        sio = AsyncMock()
+        sio = MagicMock()
+        namespace = sio.namespace_handlers["/assistant"]
+        namespace.emit_session_event = AsyncMock()
         forward = forward_session_events(sio)
         event = {
             "type": "artifact_proposal",
@@ -777,22 +779,24 @@ class TestSessionEventForwarding:
             "session_id": "s-1",
         }
         await forward(event)
-        sio.emit.assert_awaited_once()
-        args, kwargs = sio.emit.await_args
-        assert args[0] == "assistant:artifact_proposal"
+        namespace.emit_session_event.assert_awaited_once()
+        args, kwargs = namespace.emit_session_event.await_args
+        assert args[0] == "s-1"
+        assert args[1]["type"] == "artifact_proposal"
         assert args[1]["version"] == 2
-        assert kwargs == {"room": "session:s-1", "namespace": "/assistant"}
 
     async def test_events_without_a_session_or_unknown_types_stay_in_process(self) -> None:
         from unittest.mock import AsyncMock
 
         from assistant_runtime.app.socketio_server import forward_session_events
 
-        sio = AsyncMock()
+        sio = MagicMock()
+        namespace = sio.namespace_handlers["/assistant"]
+        namespace.emit_session_event = AsyncMock()
         forward = forward_session_events(sio)
         await forward({"type": "artifact_decision", "session_id": None})
         await forward({"type": "task_finished", "session_id": "s-1"})
-        sio.emit.assert_not_awaited()
+        namespace.emit_session_event.assert_not_awaited()
 
 
 async def test_composed_ingress_sink_uses_the_session_room():
@@ -800,9 +804,8 @@ async def test_composed_ingress_sink_uses_the_session_room():
 
     app = create_asgi_app()
     sio = app.engineio_server
-    sio.emit = AsyncMock()
+    namespace = sio.namespace_handlers["/assistant"]
+    namespace.emit_session_event = AsyncMock()
     event = {"type": "text_delta", "content": "A background reply"}
     await sio.fastapi_app.state.ingress_event_sink("s1", event)
-    sio.emit.assert_awaited_once_with(
-        "assistant:text_delta", event, room="session:s1", namespace="/assistant"
-    )
+    namespace.emit_session_event.assert_awaited_once_with("s1", event)

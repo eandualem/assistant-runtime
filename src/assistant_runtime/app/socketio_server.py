@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -19,6 +18,7 @@ from loguru import logger
 
 from assistant_runtime.app.access.config import AccessConfig
 from assistant_runtime.app.access.exceptions import AccessDeniedError, AuthenticationError
+from assistant_runtime.app.assistant.exceptions import SessionError
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.app.streaming import (
     make_artifact_decision_event,
@@ -80,12 +80,7 @@ def forward_session_events(sio: socketio.AsyncServer) -> Callable[[dict[str, Any
             return
         fields = {key: value for key, value in event.items() if key != "type"}
         stream_event = build(**fields)
-        await sio.emit(
-            socket_event_name(stream_event),
-            stream_event,
-            room=f"session:{session_id}",
-            namespace="/assistant",
-        )
+        await sio.namespace_handlers["/assistant"].emit_session_event(session_id, stream_event)
 
     return forward
 
@@ -96,9 +91,7 @@ def forward_ingress_events(
     """Adapt promoted ingress turns to the session's Socket.IO room."""
 
     async def forward(session_id: str, event: dict[str, Any]) -> None:
-        await sio.emit(
-            socket_event_name(event), event, room=f"session:{session_id}", namespace="/assistant"
-        )
+        await sio.namespace_handlers["/assistant"].emit_session_event(session_id, event)
 
     return forward
 
@@ -108,7 +101,7 @@ def create_sio(access: AccessConfig | None = None) -> socketio.AsyncServer:
 
     Browser origins are checked against the same ``AccessConfig`` as the HTTP
     CORS middleware: the listed origins, the origin regex (localhost by
-    default) and the page's own origin. ``*`` in ``cors_origins`` opens it.
+    default). ``*`` in ``cors_origins`` opens it.
     """
     config = access or AccessConfig()
     wildcard = "*" in config.cors_origins
@@ -123,28 +116,12 @@ def create_sio(access: AccessConfig | None = None) -> socketio.AsyncServer:
 
 
 def _origin_check(config: AccessConfig) -> Callable[[str | None, dict[str, Any] | None], bool]:
-    """The Engine.IO origin callback for ``config``; the request's own origin always passes."""
+    """Apply only the operator's origin policy, independent of request headers."""
 
     def allowed(origin: str | None, environ: dict[str, Any] | None = None) -> bool:
-        if config.origin_allowed(origin):
-            return True
-        return bool(origin) and origin in _own_origins(environ or {})
+        return config.origin_allowed(origin)
 
     return allowed
-
-
-def _own_origins(environ: dict[str, Any]) -> set[str]:
-    """The request's own origin, from the connection's scheme and ``Host``.
-
-    ``X-Forwarded-*`` headers are deliberately not consulted: a client can
-    send them too. Behind a reverse proxy, list the public origin in
-    ``ACCESS__CORS_ORIGINS`` (or keep the localhost regex when the proxy is
-    on this machine).
-    """
-    host = environ.get("HTTP_HOST")
-    if not host:
-        return set()
-    return {f"{environ.get('wsgi.url_scheme', 'http')}://{host}"}
 
 
 @dataclass
@@ -208,7 +185,7 @@ class AssistantNamespace(socketio.AsyncNamespace):
     async def on_assistant_join_session(self, sid: str, data: dict[str, Any]) -> None:
         """Client joins a session room for receiving events."""
         session_id = data.get("session_id") if isinstance(data, dict) else None
-        if not session_id:
+        if not isinstance(session_id, str) or not session_id:
             await self.emit(
                 "assistant:error", {"type": "validation", "message": "Missing session_id"}, to=sid
             )
@@ -229,25 +206,48 @@ class AssistantNamespace(socketio.AsyncNamespace):
             )
             return
         streaming_service = self._try_get_streaming_service()
-        if streaming_service is not None:
-            warm = getattr(streaming_service, "warm_session", None)
-            if callable(warm):
-                try:
-                    maybe_awaitable = warm(session_id, host_context, principal=principal)
-                    if inspect.isawaitable(maybe_awaitable):
-                        await maybe_awaitable
-                except AccessDeniedError as e:
-                    await self._forbid(sid, e)
-                    return
-                except Exception as e:
-                    logger.warning(
-                        "Session warmup failed during join",
-                        sid=sid,
-                        session_id=session_id,
-                        error=str(e),
-                    )
-        await self.enter_room(sid, f"session:{session_id}")
+        if streaming_service is None:
+            await self._forbid(sid, AuthenticationError("Session authorization unavailable"))
+            return
+        try:
+            async with streaming_service.session_access(session_id, principal, allow_missing=True):
+                await self.enter_room(sid, f"session:{session_id}")
+        except AccessDeniedError as exc:
+            await self._forbid(sid, exc)
+            return
+        except Exception as exc:
+            logger.warning(
+                "Session authorization failed during join", session_id=session_id, error=str(exc)
+            )
+            await self._forbid(sid, AuthenticationError("Session authorization unavailable"))
+            return
+        # Warm-up is optional, but permission to join is not.
+        try:
+            await streaming_service.warm_session(session_id, host_context, principal=principal)
+        except Exception as exc:
+            logger.warning(
+                "Session warmup failed during join", session_id=session_id, error=str(exc)
+            )
         logger.info("Client joined session room", sid=sid, session_id=session_id)
+
+    async def emit_session_event(self, session_id: str, event: dict[str, Any]) -> None:
+        """Deliver only to room members who still have access, revoking stale membership."""
+        room = f"session:{session_id}"
+        participants = list(self.server.manager.get_participants(self.namespace, room))
+        for sid, _ in participants:
+            principal = self._principal(sid)
+            if principal is None:
+                await self.leave_room(sid, room)
+                continue
+            try:
+                async with self._streaming_service.session_access(session_id, principal):
+                    await self.emit(socket_event_name(event), event, to=sid)
+            except (AccessDeniedError, SessionError):
+                await self.leave_room(sid, room)
+            except Exception as exc:
+                logger.warning(
+                    "Session event delivery failed", sid=sid, session_id=session_id, error=str(exc)
+                )
 
     async def on_assistant_message(self, sid: str, data: dict[str, Any]) -> None:
         """Handle incoming chat message — start streaming to client."""

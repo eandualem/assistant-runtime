@@ -14,7 +14,7 @@ An assistant backend for the application you already have: it holds the conversa
 
 ## What it enables
 
-- **A conversation people can keep working in.** Branch from an earlier message, steer a turn while it runs, opt into working memory, and edit the assistant's versioned system prompt, with proposed changes approved or rejected by the application. Keep separate, versioned memory for each subject a conversation is about. Hand bounded work to background tasks that run while the conversation goes on, or keep persistent agents that continue their own conversation with each message.
+- **A conversation people can keep working in.** Branch from an earlier message, steer a turn while it runs, opt into working memory, and edit the assistant's versioned system prompt, with proposed changes approved or rejected by the application. Keep separate, versioned memory for each subject a conversation is about. Hand bounded work to background tasks that run while the conversation goes on and cannot schedule further background work, or keep persistent agents that continue their own conversation with each message.
 - **An assistant that can use your application.** Send what is on screen and declare actions such as editing a document or moving an object. The runtime requests an action; your app performs it and returns the result to continue the turn.
 - **One store for the application's own records.** Log what other systems report, steering an event into a conversation only when you name it, and keep the notices you show people and the actions they confirm, with each person's confirmation recorded before anything is sent.
 - **A UI that follows the work.** Thinking, text, tool calls and results arrive as ordered events. Cancellation and provider failures preserve partial text and completed tool results.
@@ -59,7 +59,7 @@ Register application profiles to share a runtime: [deployments](https://github.c
 Voice needs explicit enablement and either the `[voice]` extra with an OpenAI API key, or a Codex CLI signed in with ChatGPT; each call reserves a session the caller is authorized to access. Codex voice leaves account-usage admission to the provider: [voice setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/voice.md).
 Local ChatGPT/Codex subscription authentication is also supported for backend models, including `openai:gpt-6.1-sol`: [subscription setup](https://github.com/eandualem/assistant-runtime/blob/main/docs/subscription.md).
 
-The server defaults to localhost and trusts the local operator. Before exposing it to other people, configure authentication and allowed browser origins: [identity and access](https://github.com/eandualem/assistant-runtime/blob/main/docs/access.md).
+The server defaults to localhost and trusts the local operator. Before exposing it to other people, configure authentication and allowed browser origins. Session replacement and event subscriptions enforce current ownership: [identity and access](https://github.com/eandualem/assistant-runtime/blob/main/docs/access.md).
 
 Optional notes and document-library tools use configured folders; [filesystem provider configuration](https://github.com/eandualem/assistant-runtime/blob/main/docs/configuration.md#providers) covers symlinks and note moves.
 

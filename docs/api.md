@@ -430,6 +430,12 @@ time, in order; at most `TASKS__MAX_CONCURRENT` run at once. They need
 `TASKS__ENABLED=true`; the model gets `start_task`, `list_tasks`,
 `get_task` and `cancel_task`, with the calling session as the parent.
 
+A task cannot start another task or send a persistent agent a message to run
+more work. Both scheduling calls fail before queuing anything, including when
+called by a task's synchronous subagent. The task's existing budget and deadline
+therefore cannot be renewed through successor tasks. Ordinary conversations and
+host-delivered messages to persistent agents retain their delegation behavior.
+
 | Route | Purpose |
 |---|---|
 | `POST /api/tasks` `{"task", "profile"?, "subject"?, "context"?, "parent_session_id"?}` | queue a task (`202`); `503` when disabled, `429` when too many wait, `422` for an empty task or an invalid subject name, `404` for a profile that isn't registered (whatever its spelling) |

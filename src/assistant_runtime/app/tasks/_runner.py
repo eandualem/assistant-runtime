@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable, Coroutine, Hashable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -21,6 +22,13 @@ if TYPE_CHECKING:
 
 INTERRUPTED = "The runtime stopped while it was queued or running"
 _UNFINISHED = ("queued", "running")
+_running_task: ContextVar[bool] = ContextVar("running_background_task", default=False)
+
+
+def require_scheduling_allowed() -> None:
+    """A task and its delegated tools cannot escape its budget by queuing more work."""
+    if _running_task.get():
+        raise TaskError("Background tasks cannot schedule further background work")
 
 
 class _Job(NamedTuple):
@@ -106,6 +114,8 @@ class BackgroundTurnRunner:
         update: Callable[..., Awaitable[Any]],
         publish: Callable[[Any], Awaitable[None]],
         principal: Principal,
+        *,
+        is_task: bool = False,
     ) -> None:
         """Run one background turn in its order and a free slot; record and publish its end."""
         final: Any = None
@@ -115,7 +125,11 @@ class BackgroundTurnRunner:
                 if request is None:
                     return
                 async with asyncio.timeout(self._config.timeout_seconds):
-                    result = await self._streaming.run_message(request, principal=principal)
+                    token = _running_task.set(_running_task.get() or is_task)
+                    try:
+                        result = await self._streaming.run_message(request, principal=principal)
+                    finally:
+                        _running_task.reset(token)
             if result.pending_tool_call:
                 # A background turn has no host to perform an action and send its result back.
                 raise TaskError(

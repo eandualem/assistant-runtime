@@ -101,7 +101,9 @@ own environment (see [composition](composition.md)).
 If a previous assistant-runtime still holds the port (recognised by its
 `/health` answer), `serve` stops it and takes over, so a new configuration
 takes effect with one command; anything else on the port is left alone and
-reported. `--no-replace` turns the takeover off.
+reported. Automatic replacement requires a specific listen address; when a
+wildcard address such as `0.0.0.0` or `::` is busy, stop the old instance
+explicitly. `--no-replace` turns the takeover off.
 
 ## 5. Connect an application
 

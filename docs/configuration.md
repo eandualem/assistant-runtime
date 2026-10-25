@@ -109,7 +109,9 @@ request cannot turn it on.
 
 Native Pydantic AI usage limits for one turn; unset means no limit of
 that kind. `AssistantDefinition.usage_limits` sets the same limits from
-host code, and where both set one the stricter applies.
+host code, and where both set one the stricter applies. Built-in subagents
+share the parent's usage accounting and inherit its complete resolved limits,
+including a request's lower `max_turns` and native token-counting policy.
 
 | Setting | Default | Meaning |
 |---|---|---|

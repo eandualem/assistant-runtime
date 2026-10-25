@@ -1654,3 +1654,87 @@ class TestAdmissionLockLifetime:
         gate.set()
         await asyncio.gather(holder, stopping)
         assert not service._admission_locks
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_replacement_cannot_cancel_another_principals_turn(persisted):
+    from assistant_runtime.app.streaming._control import TurnControl
+    from assistant_runtime.principal import Principal
+
+    service = _make_service()
+    await service.start()
+    if persisted:
+        await service._sessions.register_user_message(
+            _request(message_id="first"), owner_id="alice"
+        )
+    active = TurnControl(owner_id="alice")
+    service._active_turns["sess-1"] = active
+    try:
+        events = [
+            e
+            async for e in service.stream_message(
+                _request(message_id="intruder"), principal=Principal(id="bob")
+            )
+        ]
+        assert not active.token.cancelled
+        assert service._active_turns["sess-1"] is active
+        assert any(e.get("error_type") == "forbidden" for e in events)
+    finally:
+        service._active_turns.clear()
+        await service.stop()
+
+
+async def test_shutdown_rejects_a_request_waiting_for_admission():
+    service = _make_service()
+    await service.start()
+    lock = service._admission_lock("sess-1")
+    await lock.acquire()
+
+    async def consume():
+        return [e async for e in service.stream_message(_request(message_id="waiting"))]
+
+    waiting = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    stopped = asyncio.create_task(service.stop())
+    await asyncio.sleep(0)
+    lock.release()
+    with pytest.raises(StreamingError, match="not started"):
+        await waiting
+    await stopped
+    assert service._active_turns == {}
+
+
+async def test_authorization_lookup_failure_keeps_terminal_envelope_and_redaction():
+    from assistant_runtime.principal import Principal
+    from assistant_runtime.services.database.exceptions import DatabaseError
+
+    service = _make_service()
+    service._config = StreamingConfig(client_error_detail=False)
+    await service.start()
+    service._sessions.get_context_if_exists_async = AsyncMock(
+        side_effect=DatabaseError("sensitive database detail")
+    )
+    events = [
+        e
+        async for e in service.stream_message(
+            _request(message_id="lookup-failure"), principal=Principal(id="alice")
+        )
+    ]
+    assert events[-1] == {"type": "agent_status", "status": "completed"}
+    assert any(e.get("error_type") == "setup_error" for e in events)
+    assert "sensitive database detail" not in str(events)
+    assert service._active_turns == {}
+    await service.stop()
+
+
+async def test_voice_reservation_does_not_disclose_another_owners_busy_state():
+    from assistant_runtime.app.access.exceptions import AccessDeniedError
+    from assistant_runtime.principal import Principal
+
+    service = _make_service()
+    await service.start()
+    await service._sessions.register_user_message(_request(message_id="first"), owner_id="alice")
+    service._session_leases["sess-1"] = "existing-lease"
+    with pytest.raises(AccessDeniedError):
+        await service.reserve_session("sess-1", "intruder", Principal(id="bob"))
+    await service.stop()

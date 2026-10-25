@@ -67,6 +67,12 @@ def replace_previous_instance(
     """
     if not port_in_use(host, port):
         return True
+    if host in _WILDCARD_HOSTS:
+        log(
+            f"serve: {host}:{port} is in use; automatic replacement requires a specific "
+            "listen address. Stop the previous instance yourself or choose another --port."
+        )
+        return False
     if not is_assistant_runtime(host, port):
         log(
             f"serve: {host}:{port} is in use by something that is not an assistant-runtime; "

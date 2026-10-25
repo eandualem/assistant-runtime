@@ -96,26 +96,37 @@ SCREENSHOT_KEYS = (
 
 
 def _find_screenshot_data_uri(value: Any) -> str | None:
-    """Recursively search common payload shapes for an image data URI."""
-    if isinstance(value, str):
-        return value if value.startswith("data:image/") else None
-    if isinstance(value, dict):
-        for key in SCREENSHOT_KEYS:
-            if key in value:
-                found = _find_screenshot_data_uri(value[key])
-                if found is not None:
-                    return found
-        for child in value.values():
-            found = _find_screenshot_data_uri(child)
-            if found is not None:
-                return found
-        return None
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for item in value:
-            found = _find_screenshot_data_uri(item)
-            if found is not None:
-                return found
+    """Search each child once, with bounded work even for deeply nested results."""
+    # Iterators avoid copying wide containers. Preferred screenshot keys keep
+    # their precedence; repeated containers cannot amplify traversal work.
+    pending = [iter((value,))]
+    seen: set[int] = set()
+    remaining = 10_000
+    while pending:
+        try:
+            child = next(pending[-1])
+        except StopIteration:
+            pending.pop()
+            continue
+        if remaining == 0:
+            raise ValueError("Tool result exceeds screenshot inspection budget")
+        remaining -= 1
+        if isinstance(child, str):
+            if child.startswith("data:image/"):
+                return child
+        elif isinstance(child, (dict, list)) and id(child) not in seen:
+            seen.add(id(child))
+            pending.append(_screenshot_children(child) if isinstance(child, dict) else iter(child))
     return None
+
+
+def _screenshot_children(value: dict):
+    for key in SCREENSHOT_KEYS:
+        if key in value:
+            yield value[key]
+    for key, child in value.items():
+        if key not in SCREENSHOT_KEYS:
+            yield child
 
 
 def extract_screenshot_data_uri(

@@ -127,7 +127,7 @@ def register_task_tools(tools: ToolService, tasks: TaskService) -> None:
                 "talking: it gets its own session and returns an id at once. Name a profile "
                 "for the kind of agent that should do it, and a subject when the work is "
                 "about one (tasks about the same subject run one at a time). Check it later "
-                "with get_task or list_tasks."
+                "with get_task or list_tasks. Background tasks cannot use this tool."
             ),
             parameters_schema={
                 "type": "object",
@@ -192,7 +192,8 @@ def register_task_tools(tools: ToolService, tasks: TaskService) -> None:
             description=(
                 "Send a message to a persistent agent, named by its profile and subject. It "
                 "continues that agent's own conversation, after any messages before it, and "
-                "returns a message id at once; read the reply with get_agent_message."
+                "returns a message id at once; read the reply with get_agent_message. "
+                "Background tasks cannot use this tool."
             ),
             parameters_schema={
                 "type": "object",

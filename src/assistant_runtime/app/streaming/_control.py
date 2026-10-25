@@ -22,6 +22,7 @@ class TurnControl:
     setup_task: asyncio.Future[Any] | None = None
     error: BaseException | None = None
     accepting_cancel: bool = True
+    owner_id: str | None = None
     # Receives every native Pydantic AI event of the turn's runs, before the
     # application mapping; protocol adapters build their own encoding from it.
     native_sink: Callable[[Any], None] | None = None

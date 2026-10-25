@@ -115,11 +115,13 @@ When the model calls one, the runtime emits `tool_call` with
 and `queued`: the call ids of further host actions from the same response,
 handed over one at a time as each continuation arrives), and waits. The host performs the action and sends a continuation: the
 same message body with `tool_call_id` = the pending `call_id` and
-`tool_result` = any JSON. The run resumes with that result on the same
+`tool_result` = JSON. The run resumes with that result on the same
 assistant message. When the host could not perform the action, it adds
 `tool_outcome: "failed"`: the model then sees a failed tool result (the
 `tool_result`, as text). The runtime rejects duplicate results for that call,
-but the model may request a new action in a later response. A screenshot data
+but the model may request a new action in a later response. Screenshot inspection is bounded to 10,000 values; a result
+that exhausts that search is rejected before acceptance, leaving the pending
+call available for a smaller result. A screenshot data
 URI anywhere in the result is removed from what the model reads and
 offered to `look_at_screen` instead.
 
