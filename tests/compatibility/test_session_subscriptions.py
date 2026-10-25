@@ -76,3 +76,20 @@ async def test_owner_update_waits_for_authorized_delivery(runtime):
     await delivery
     await transfer
     assert runtime.sessions.get_context("s1")["owner_id"] == "bob"
+
+
+async def test_join_redacts_unexpected_authorization_failures(runtime, monkeypatch):
+    from assistant_runtime.services.database.exceptions import DatabaseError
+
+    sio, ns, sid = await _subscriber(runtime, Principal(id="bob"))
+    monkeypatch.setattr(
+        runtime.sessions,
+        "get_context_if_exists_async",
+        AsyncMock(side_effect=DatabaseError("SQL parameters contain private data")),
+    )
+    await ns.on_assistant_join_session(sid, {"session_id": "private"})
+    assert not list(sio.manager.get_participants("/assistant", "session:private"))
+    assert ns.emit.await_args.args[1] == {
+        "type": "forbidden",
+        "message": "Session authorization unavailable",
+    }

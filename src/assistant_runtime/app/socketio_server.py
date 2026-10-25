@@ -212,8 +212,14 @@ class AssistantNamespace(socketio.AsyncNamespace):
         try:
             async with streaming_service.session_access(session_id, principal, allow_missing=True):
                 await self.enter_room(sid, f"session:{session_id}")
-        except Exception as exc:
+        except AccessDeniedError as exc:
             await self._forbid(sid, exc)
+            return
+        except Exception as exc:
+            logger.warning(
+                "Session authorization failed during join", session_id=session_id, error=str(exc)
+            )
+            await self._forbid(sid, AuthenticationError("Session authorization unavailable"))
             return
         # Warm-up is optional, but permission to join is not.
         try:
