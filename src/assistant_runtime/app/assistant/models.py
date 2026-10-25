@@ -97,24 +97,30 @@ SCREENSHOT_KEYS = (
 
 def _find_screenshot_data_uri(value: Any) -> str | None:
     """Search each child once, with bounded work even for deeply nested results."""
-    # Iterators avoid copying wide containers; the budget also bounds cycles
-    # in in-process payloads. Preferred screenshot keys keep their precedence.
+    # Iterators avoid copying wide containers. Preferred screenshot keys keep
+    # their precedence; repeated containers cannot amplify traversal work.
     pending = [iter((value,))]
+    seen: set[int] = set()
     remaining = 10_000
-    while pending and remaining:
+    while pending:
         try:
             child = next(pending[-1])
         except StopIteration:
             pending.pop()
             continue
+        if remaining == 0:
+            raise ValueError("Tool result exceeds screenshot inspection budget")
         remaining -= 1
         if isinstance(child, str):
             if child.startswith("data:image/"):
                 return child
-        elif isinstance(child, dict):
-            pending.append(_screenshot_children(child))
-        elif isinstance(child, Sequence) and not isinstance(child, (bytes, bytearray)):
-            pending.append(iter(child))
+        elif (
+            isinstance(child, (dict, Sequence))
+            and not isinstance(child, (bytes, bytearray))
+            and id(child) not in seen
+        ):
+            seen.add(id(child))
+            pending.append(_screenshot_children(child) if isinstance(child, dict) else iter(child))
     return None
 
 

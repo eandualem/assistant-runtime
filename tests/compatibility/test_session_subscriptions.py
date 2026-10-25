@@ -93,3 +93,31 @@ async def test_join_redacts_unexpected_authorization_failures(runtime, monkeypat
         "type": "forbidden",
         "message": "Session authorization unavailable",
     }
+
+
+@pytest.mark.parametrize("failure", ["authorization", "delivery"])
+async def test_subscriber_failure_does_not_block_other_recipients(runtime, monkeypatch, failure):
+    from assistant_runtime.services.database.exceptions import DatabaseError
+
+    sio, ns, sid = await _subscriber(runtime, Principal(id="alice"))
+    await runtime.sessions.register_user_message(request(session_id="s1"), owner_id="alice")
+    await ns.on_assistant_join_session(sid, {"session_id": "s1"})
+    second = await sio.manager.connect("second-transport", "/assistant")
+    ns._principals[second] = Principal(id="operator", roles={"admin"})
+    await ns.on_assistant_join_session(second, {"session_id": "s1"})
+    if failure == "authorization":
+        context = runtime.sessions.get_context("s1")
+        monkeypatch.setattr(
+            runtime.sessions,
+            "get_context_if_exists_async",
+            AsyncMock(side_effect=[DatabaseError("lookup failed"), context]),
+        )
+    else:
+        ns.emit.side_effect = [RuntimeError("socket failed"), None]
+    event = {"type": "text_delta", "content": "reply"}
+    await forward_ingress_events(sio)("s1", event)
+    ns.emit.assert_awaited_with("assistant:text_delta", event, to=second)
+    assert {client for client, _ in sio.manager.get_participants("/assistant", "session:s1")} == {
+        sid,
+        second,
+    }

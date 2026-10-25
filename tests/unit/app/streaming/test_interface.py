@@ -1725,3 +1725,16 @@ async def test_authorization_lookup_failure_keeps_terminal_envelope_and_redactio
     assert "sensitive database detail" not in str(events)
     assert service._active_turns == {}
     await service.stop()
+
+
+async def test_voice_reservation_does_not_disclose_another_owners_busy_state():
+    from assistant_runtime.app.access.exceptions import AccessDeniedError
+    from assistant_runtime.principal import Principal
+
+    service = _make_service()
+    await service.start()
+    await service._sessions.register_user_message(_request(message_id="first"), owner_id="alice")
+    service._session_leases["sess-1"] = "existing-lease"
+    with pytest.raises(AccessDeniedError):
+        await service.reserve_session("sess-1", "intruder", Principal(id="bob"))
+    await service.stop()

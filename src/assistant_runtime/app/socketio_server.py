@@ -244,6 +244,10 @@ class AssistantNamespace(socketio.AsyncNamespace):
                     await self.emit(socket_event_name(event), event, to=sid)
             except (AccessDeniedError, SessionError):
                 await self.leave_room(sid, room)
+            except Exception as exc:
+                logger.warning(
+                    "Session event delivery failed", sid=sid, session_id=session_id, error=str(exc)
+                )
 
     async def on_assistant_message(self, sid: str, data: dict[str, Any]) -> None:
         """Handle incoming chat message — start streaming to client."""

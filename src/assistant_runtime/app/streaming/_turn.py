@@ -269,6 +269,17 @@ class TurnPlanner:
                 "Continuation rejected: "
                 f"assistant message '{assistant_message_id}' is not cached for session '{session_id}'"
             )
+        # The host may attach a post-action screenshot; it goes to look_at_screen,
+        # not into the model context.
+        screenshot = request.screenshot or extract_screenshot_data_uri(
+            tool_result=request.tool_result
+        )
+        tool_result = (
+            strip_screenshot_from_tool_result(request.tool_result)
+            if screenshot
+            else request.tool_result
+        )
+
         session_context["current_assistant_message_id"] = assistant_message_id
 
         if assistant_record.get("model_messages") is not None:
@@ -299,16 +310,6 @@ class TurnPlanner:
                 )
             ]
 
-        # The host may attach a post-action screenshot; it goes to look_at_screen,
-        # not into the model context.
-        screenshot = request.screenshot or extract_screenshot_data_uri(
-            tool_result=request.tool_result
-        )
-        tool_result = (
-            strip_screenshot_from_tool_result(request.tool_result)
-            if screenshot
-            else request.tool_result
-        )
         pending_tool_name = session_context.get("pending_tool_name") or "unknown"
         batch = [
             str(c) for c in (session_context.get("pending_tool_batch") or [pending_tool_call_id])

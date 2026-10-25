@@ -240,8 +240,8 @@ class StreamingService:
         self, session_id: str, lease: str, principal: Principal
     ) -> list[dict]:
         """Reserve an idle session and return client-visible text history only."""
-        self.check_session_available(session_id)
         await self._authorize(session_id, principal)
+        self.check_session_available(session_id)
         async with self._admission_lock(session_id):
             self.check_session_available(session_id)
             if session_id in self._active_turns:
