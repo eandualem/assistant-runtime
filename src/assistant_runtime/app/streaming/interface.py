@@ -216,6 +216,8 @@ class StreamingService:
                 await self._authorize(session_id, principal)
             else:
                 await self.authorize_session(session_id, principal)
+            if not self._started:
+                raise StreamingError("Streaming service not started")
             yield
 
     async def set_session_owner(self, session_id: str, owner_id: str | None) -> None:
@@ -530,7 +532,9 @@ class StreamingService:
                         previous.cancel()
                 # Cleanup can run tools that publish events; never drain under the lock.
                 await previous.done.wait()
-        except AccessDeniedError as exc:
+        except (SessionError, StreamingError):
+            raise
+        except Exception as exc:
             async for event in self._setup_failure_envelope(request, exc):
                 yield event
             return
