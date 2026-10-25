@@ -114,11 +114,7 @@ def _find_screenshot_data_uri(value: Any) -> str | None:
         if isinstance(child, str):
             if child.startswith("data:image/"):
                 return child
-        elif (
-            isinstance(child, (dict, Sequence))
-            and not isinstance(child, (bytes, bytearray))
-            and id(child) not in seen
-        ):
+        elif isinstance(child, (dict, list)) and id(child) not in seen:
             seen.add(id(child))
             pending.append(_screenshot_children(child) if isinstance(child, dict) else iter(child))
     return None

@@ -531,11 +531,20 @@ async def test_failed_host_receipt_commit_can_be_retried(runtime, script, monkey
     assert record["segments"][0]["tools"][0]["output"] == {"ok": True}
 
 
-async def test_exhausted_screenshot_search_rejects_continuation_before_acceptance(runtime, script):
+@pytest.mark.parametrize("screenshot", [None, "data:image/png;base64,attached"])
+async def test_exhausted_screenshot_search_rejects_continuation_before_acceptance(
+    runtime, script, screenshot
+):
     script.steps = [[calls(("select_item", '{"item":"sample"}', "host-1"))], ["Selected."]]
     assert_terminal([e async for e in runtime.streaming.stream_message(request())])
     oversized = [None] * 10_000 + ["data:image/png;base64,private-image"]
-    bad = request(id="oversized", content="", tool_call_id="host-1", tool_result=oversized)
+    bad = request(
+        id="oversized",
+        content="",
+        tool_call_id="host-1",
+        tool_result=oversized,
+        screenshot=screenshot,
+    )
     events = [e async for e in runtime.streaming.stream_message(bad)]
     assert_terminal(events, error=True)
     assert "screenshot inspection budget" in str(events)

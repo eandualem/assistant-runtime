@@ -271,9 +271,8 @@ class TurnPlanner:
             )
         # The host may attach a post-action screenshot; it goes to look_at_screen,
         # not into the model context.
-        screenshot = request.screenshot or extract_screenshot_data_uri(
-            tool_result=request.tool_result
-        )
+        result_screenshot = extract_screenshot_data_uri(tool_result=request.tool_result)
+        screenshot = request.screenshot or result_screenshot
         tool_result = (
             strip_screenshot_from_tool_result(request.tool_result)
             if screenshot

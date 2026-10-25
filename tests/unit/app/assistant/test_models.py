@@ -279,3 +279,11 @@ def test_screenshot_search_visits_preferred_children_once_and_bounds_work():
         )
         == "data:image/png;first"
     )
+
+
+def test_screenshot_search_uses_the_same_json_containers_as_stripping():
+    from assistant_runtime.app.assistant.models import extract_screenshot_data_uri
+
+    image = "data:image/png;base64,sample"
+    assert extract_screenshot_data_uri(tool_result={"result": (image,)}) is None
+    assert extract_screenshot_data_uri(tool_result={"result": [image]}) == image
