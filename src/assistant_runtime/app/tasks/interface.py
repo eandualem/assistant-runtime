@@ -34,7 +34,11 @@ from pydantic import ValidationError
 from assistant_runtime.app.assistant.config import AssistantConfig, TunableOverrides
 from assistant_runtime.app.assistant.models import AssistantRequest
 from assistant_runtime.app.settings import outside_request_allowance
-from assistant_runtime.app.tasks._runner import INTERRUPTED, BackgroundTurnRunner
+from assistant_runtime.app.tasks._runner import (
+    INTERRUPTED,
+    BackgroundTurnRunner,
+    require_scheduling_allowed,
+)
 from assistant_runtime.app.tasks._store import (
     AgentTakenError,
     DatabaseTaskStore,
@@ -132,6 +136,7 @@ class TaskService:
         principal: Principal | None = None,
     ) -> TaskRecord:
         """Queue a task and return its record at once; it runs in the background."""
+        require_scheduling_allowed()
         self._require_enabled()
         store = self._require_store()
         task = (task or "").strip()
@@ -346,6 +351,7 @@ class TaskService:
         It runs as the agent's next turn, after the messages before it; the
         record is returned at once.
         """
+        require_scheduling_allowed()
         self._require_enabled()
         store = self._require_store()
         content = (content or "").strip()
@@ -441,7 +447,7 @@ class TaskService:
 
         subject_key = (record.profile, record.subject) if record.subject is not None else None
         await self._runner.execute(
-            record.id, subject_key, start, store.update, self._publish, principal
+            record.id, subject_key, start, store.update, self._publish, principal, is_task=True
         )
 
     async def _run_message(self, record: AgentMessageRecord, principal: Principal) -> None:
