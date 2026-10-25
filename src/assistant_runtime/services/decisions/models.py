@@ -1,9 +1,10 @@
 """The decision call: one state, typed questions, typed answers.
 
-The question and answer shapes follow the System One contract documented at
+The question and answer shapes retain the System One contract documented at
 https://docs.typesafe.ai/api: a ``choice`` picks one option from its
 ``criteria`` map, a ``score`` picks one level from its ``criteria`` list, and
 a ``noul`` answers whether a statement is true with a value from 0 to 1.
+OpenAI maps these types to its native Decisions API (see docs/decisions.md).
 The runtime validates structure; the provider validates meaning.
 """
 
@@ -60,7 +61,7 @@ class DecisionRequest(BaseModel):
 
 
 Probability = Annotated[float, Field(ge=0, le=1)]
-"""A calibrated value from 0 to 1; NaN and infinity are not answers."""
+"""A provider-supplied value from 0 to 1; NaN and infinity are not answers."""
 
 
 class ChoiceAnswer(BaseModel):

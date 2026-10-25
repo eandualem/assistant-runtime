@@ -336,9 +336,10 @@ execution, history, serialization, or the upstream dependency; see
 - **Decisions are a capability of the application, not of the model.**
   `services/decisions` sends program state plus typed questions (`choice`,
   `score`, `noul`) to a `DecisionProvider` (TypeSafe's System One endpoint in
-  `_typesafe.py`) in one request and returns typed answers under the same ids
+  `_typesafe.py`, or OpenAI Decisions in `_openai.py`) in one request and returns typed answers under the same ids
   through `POST /api/decisions`. The key is `DECISIONS__API_KEY_ENV`
-  (`TYPESAFE_API_KEY`) on the runtime; without it the status reports
+  (`TYPESAFE_API_KEY`, or `OPENAI_API_KEY` with `DECISIONS__PROVIDER=openai`)
+  on the runtime; without it the status reports
   `configured: false` and a call is `503`. There is no language-model fallback
   and the model is not offered a decision tool. Docs: `docs/decisions.md`.
 - **Voice delegates through the shared pipeline.** Optional `app/voice` imports
