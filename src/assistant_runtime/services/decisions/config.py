@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class DecisionsConfig(BaseModel):
@@ -17,12 +18,24 @@ class DecisionsConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    provider: Literal["typesafe", "openai"] = "typesafe"
     api_key_env: str = Field(default="TYPESAFE_API_KEY", pattern=r"^[A-Z][A-Z0-9_]*$")
     model: str = Field(default="jev-latest", min_length=1, max_length=128)
     base_url: str = Field(default="https://api.typesafe.ai", min_length=1, max_length=2048)
     timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     max_questions: int = Field(default=32, ge=1, le=256)
     max_state_bytes: int = Field(default=262144, ge=1024, le=8388608)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _provider_defaults(cls, value: Any) -> Any:
+        """Choose defaults only for the explicitly selected provider, retaining overrides."""
+        if isinstance(value, dict) and value.get("provider") == "openai":
+            value = value.copy()
+            value.setdefault("api_key_env", "OPENAI_API_KEY")
+            value.setdefault("model", "gpt-6-luna")
+            value.setdefault("base_url", "https://api.openai.com")
+        return value
 
     @field_validator("base_url")
     @classmethod

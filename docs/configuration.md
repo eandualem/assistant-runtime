@@ -189,10 +189,15 @@ from native [Pydantic AI capabilities](composition.md).
 
 ### Decisions (`DECISIONS__*`)
 
-Typed decisions from [TypeSafe's Jev](decisions.md), fixed at startup; these
+Typed decisions from [TypeSafe or OpenAI](decisions.md), fixed at startup; these
 are not request or runtime-overlay tunables. The capability is configured when
 the variable named by `api_key_env` contains a non-blank value; without it `GET /api/decisions/status`
 reports `configured: false` and a call returns `503`. There is no fallback.
+
+`provider` (`typesafe` or `openai`, default `typesafe`) selects the provider explicitly.
+The defaults below are for TypeSafe; selecting OpenAI changes only unset
+`api_key_env`, `model` and `base_url` to `OPENAI_API_KEY`, `gpt-6-luna` and
+`https://api.openai.com`, respectively.
 
 `api_key_env` (`TYPESAFE_API_KEY`, the name of an environment variable),
 `model` (`jev-latest`), `base_url` (`https://api.typesafe.ai`; `https://`, or `http://`

@@ -11,6 +11,7 @@ import httpx
 from loguru import logger
 from pydantic import TypeAdapter, ValidationError
 
+from assistant_runtime.services.decisions._openai import OpenAIDecisions
 from assistant_runtime.services.decisions._typesafe import TypeSafeDecisions
 from assistant_runtime.services.decisions.config import DecisionsConfig
 from assistant_runtime.services.decisions.exceptions import DecisionError
@@ -46,7 +47,7 @@ class DecisionService:
     def __init__(self, config: DecisionsConfig, *, provider: DecisionProvider | None = None):
         self.config = config
         self._provider = provider
-        # Without an injected provider the service owns a TypeSafe provider and
+        # Without an injected provider the service owns the configured provider and
         # its client, rebuilt on every start because stop() closes the client.
         self._owns_provider = provider is None
         self._client: httpx.AsyncClient | None = None
@@ -55,7 +56,10 @@ class DecisionService:
     async def start(self) -> None:
         if self._owns_provider:
             self._client = httpx.AsyncClient()
-            self._provider = TypeSafeDecisions(
+            provider_type = (
+                OpenAIDecisions if self.config.provider == "openai" else TypeSafeDecisions
+            )
+            self._provider = provider_type(
                 base_url=self.config.base_url,
                 model=self.config.model,
                 timeout_seconds=self.config.timeout_seconds,

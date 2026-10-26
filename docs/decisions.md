@@ -3,11 +3,11 @@
 The decision capability lets an application ask typed questions about its
 own state and act on typed answers, without a language model in the loop.
 The runtime holds the provider key, validates the call, sends every question
-to the provider in one request and returns the answers with calibrated
+to the provider in one request and returns the answers with provider-supplied
 probabilities. It is a separate capability from chat: the application receives structured
 answers rather than prose, and the assistant profile's prompt is not involved.
 
-The provider is [TypeSafe's Jev](https://docs.typesafe.ai), a System One
+The default provider is [TypeSafe's Jev](https://docs.typesafe.ai), a System One
 decision model served at `POST /v1/systemone`. One call carries the state and
 a map of questions; the model evaluates them in parallel and answers in one
 forward pass, in the provider's documented 70 to 500 ms. Batching is the point:
@@ -35,6 +35,45 @@ selects the provider model (default `jev-latest`); see
 As documented on September 18, 2026, TypeSafe charges $0.042 per million input
 tokens and nothing for output; see the current [models page](https://docs.typesafe.ai/models)
 for pricing, rate limits and the per-request token budget.
+
+## OpenAI provider
+
+Select OpenAI explicitly at startup:
+
+```bash
+export DECISIONS__PROVIDER=openai
+export OPENAI_API_KEY=...
+uv run assistant-runtime serve
+```
+
+This selects `gpt-6-luna` at `https://api.openai.com/v1/decisions`.
+`DECISIONS__MODEL`, `DECISIONS__BASE_URL` and `DECISIONS__API_KEY_ENV`
+still override their provider defaults. Leaving `DECISIONS__PROVIDER` unset
+keeps TypeSafe. There is no automatic provider selection or fallback.
+
+The HTTP request and response shapes below remain the same. The adapter sends
+`state` as JSON text evidence; fields resembling image URLs or message roles
+stay data and do not cause image fetching. Structured instructions and criteria
+are also preserved as JSON text, rather than treated as OpenAI content parts.
+
+- `choice` maps option names and descriptions to native choices (at most 255).
+- `score` maps criteria to ordered levels numbered from zero. OpenAI's score is
+  the probability-weighted average of those indices, so it may fall between levels.
+- `noul` maps to a predicate, preserving its returned probability. Optional
+  true/false criteria are included in the predicate instructions.
+
+Probabilities and confidence come from OpenAI, without invented or recalculated
+values. Their calibration is provider-specific; applications should validate
+thresholds with their own examples when switching providers. A refusal for any
+question fails the whole call with `502` and a clear refusal message, preserving
+this endpoint's all-questions-answered contract. Invalid input rejected by OpenAI
+with `400` becomes `422`, retaining `provider_status_code: 400`.
+
+The [official guide](https://developers.openai.com/api/docs/guides/decisions)
+and [API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create)
+describe the provider contract. Offline tests exercise the adapter and its error
+handling with fake HTTP responses; they do not establish account access or live
+provider quality.
 
 ## The call
 
@@ -77,7 +116,7 @@ session and reserves nothing.
 `state` is any JSON the questions are about, at most `DECISIONS__MAX_STATE_BYTES`
 serialised (default 256 KiB). `questions` is a map from the application's own
 ids to typed questions, at least one and at most `DECISIONS__MAX_QUESTIONS`
-(default 32). The three types follow the provider's
+(default 32). The three types follow TypeSafe's
 [primitives](https://docs.typesafe.ai/primitives):
 
 - `choice` picks one option from `criteria`, a map of at least two options.
