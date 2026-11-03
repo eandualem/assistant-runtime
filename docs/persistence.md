@@ -51,7 +51,11 @@ then migrates it; a host needs only a running PostgreSQL server.
 A database lost after startup is not a fallback, with or without
 `DATABASE__REQUIRED`. Each call tries it again, so the runtime recovers as
 soon as Postgres is back; until then a route that uses it answers `503`
-with `{"error": "Database not reachable", "type": "DatabaseError"}`. A
+with `{"error": "Database not reachable", "type": "DatabaseError"}`. Each
+attempt gives up after `DATABASE__CONNECT_TIMEOUT` (`5` seconds, see
+[configuration](configuration.md#database-database__)), so a database lost in
+a way that drops packets costs that much per call instead of holding it for
+asyncpg's 60-second default. A
 runtime-settings change or an inbox message that cannot be saved is
 refused the same way rather than kept in memory, and a turn whose
 artifacts cannot be read fails instead of building the prompt from the

@@ -298,6 +298,13 @@ never replaced by memory: calls that need it fail until it is back (see
   `MigrationError`. With `required` too, a reachable server that lacks the
   database gets it created first (the role needs the right to create
   databases).
+- `connect_timeout` (`5.0`): seconds to wait for a new database connection
+  (asyncpg's connect timeout). A Postgres that drops packets instead of
+  refusing connections no longer makes every call wait asyncpg's 60-second
+  default; a request waits this long before its `503`, and a startup probe
+  falls back to memory just as quickly. It must be positive, because asyncpg
+  reads `0` as an immediate timeout. Set it with
+  `DATABASE__CONNECT_TIMEOUT`.
 - An empty `password` connects without one (local `trust`
   authentication). A `host` starting with `/` is a Unix-socket directory,
   for `peer` or `trust` authentication over the socket.
