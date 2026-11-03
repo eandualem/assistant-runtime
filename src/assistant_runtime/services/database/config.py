@@ -27,6 +27,16 @@ class DatabaseConfig(BaseModel):
         default=False,
         description="Fail startup when Postgres is unreachable instead of keeping state in memory",
     )
+    connect_timeout: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Seconds to wait for a new database connection (asyncpg's connect timeout). "
+            "Bounds a call against a Postgres that drops packets instead of refusing "
+            "connections, instead of asyncpg's 60-second default. Must be positive: "
+            "asyncpg reads 0 as an immediate timeout."
+        ),
+    )
     migrate_on_start: bool = Field(
         default=False,
         description="Upgrade the schema to the packaged head before the services start",

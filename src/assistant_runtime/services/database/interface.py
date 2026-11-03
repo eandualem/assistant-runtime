@@ -55,6 +55,7 @@ class DatabaseService:
             pool_size=self._config.pool_size,
             max_overflow=self._config.pool_overflow,
             echo=self._config.echo,
+            connect_args={"timeout": self._config.connect_timeout},
         )
         self._session_factory = async_sessionmaker(
             self._engine,
